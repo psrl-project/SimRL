@@ -32,8 +32,7 @@ class SlimePolicy(StalenessPolicy):
         self.max_inflight = max_inflight
 
         self.remaining = 0
-        self._engine_v = 0
-        self._armed_push: int | None = None
+        self._rollout_version = 0
         self._steps_since_push = 0
         self.stall_since: float | None = None
         self.stall_time = 0.0
@@ -73,25 +72,24 @@ class SlimePolicy(StalenessPolicy):
         if st.inflight and self.stall_since is None:
             self.stall_since = st.now
 
-    def engine_version_after_train(self, st: SimState) -> int:
-        if self._armed_push is not None:
-            self._engine_v = self._armed_push
-            self._armed_push = None
-
+    def rollout_version_after_train(self, st: SimState) -> int:
         self._steps_since_push += 1
         if self._steps_since_push >= self.interval:
             self._steps_since_push = 0
-            self._armed_push = st.version
+            self._rollout_version = st.train_version
+        return self._rollout_version
 
-        return self._engine_v
+    def will_sync_after_train(self, st: SimState) -> bool:
+        return self._steps_since_push + 1 >= self.interval
 
-    def expire(self, st: SimState) -> list[Request]:
+    def expire(self, st: SimState, expected_train_version: int) -> list[Request]:
         if self.partial_rollout:
             return []
         return list(st.inflight)
 
     def check_invariants(self, st: SimState) -> None:
         if not self.partial_rollout:
-            assert st.version - self._engine_v <= self.interval, (
-                f"Version gap {st.version - self._engine_v} exceeds interval {self.interval}."
+            assert st.train_version - self._rollout_version <= self.interval, (
+                f"Version gap {st.train_version - self._rollout_version} exceeds "
+                f"interval {self.interval}."
             )

@@ -91,15 +91,17 @@ class PSRLPolicy(StalenessPolicy):
             staleness=st.max_staleness,
             rollout_n=1,
         )
-        self._inventory.ensure_buffer_exists(st.version + st.max_staleness)
+        self._inventory.ensure_buffer_exists(st.train_version + st.max_staleness)
 
     # --- StalenessPolicy interface ---
 
     def admit_quota(self, st: SimState) -> int:
         if self._inventory is None:
             self._lazy_init(st)
-        max_bid = st.version + st.max_staleness
-        self._inventory.ensure_buffer_exists(max_bid)
+        # New requests are generated at `rollout_version`, so only count slots
+        # those trajectories can actually occupy.
+        max_bid = st.rollout_version + st.max_staleness
+        self._inventory.ensure_buffer_exists(max(st.train_version, st.rollout_version) + st.max_staleness)
         return self._inventory.get_empty_entries_total_num(max_bid)
 
     def on_admit(self, req: Request, st: SimState) -> None:
@@ -128,7 +130,7 @@ class PSRLPolicy(StalenessPolicy):
 
     def peek_batch(self, st: SimState) -> list[Request] | None:
         assert self._inventory is not None
-        bid = st.version
+        bid = st.train_version
         if bid not in self._inventory.buffers:
             return None
 
@@ -159,12 +161,12 @@ class PSRLPolicy(StalenessPolicy):
             self.stuck_time += st.now - self.stuck_since
             self.stuck_since = None
         assert self._inventory is not None
-        self._inventory.delete_buffer(st.version)
+        self._inventory.delete_buffer(st.train_version)
         return chosen
 
     def on_batch_unavailable(self, st: SimState) -> None:
         assert self._inventory is not None
-        bid = st.version
+        bid = st.train_version
         if bid not in self._inventory.buffers:
             return
         status = self._inventory.get_buffer_status(bid)
@@ -173,16 +175,34 @@ class PSRLPolicy(StalenessPolicy):
                 self.stuck_since = st.now
             self._maybe_proactive_filter(bid, st)
 
-    def on_version_advance(self, version: int, st: SimState) -> None:
+    def on_train_version_advance(self, train_version: int, st: SimState) -> None:
         assert self._inventory is not None
-        self._inventory.ensure_buffer_exists(version + st.max_staleness)
+        self._inventory.ensure_buffer_exists(train_version + st.max_staleness)
 
-    def on_abort(self, reqs: list[Request], st: SimState) -> None:
+    def on_interrupt(self, reqs: list[Request], st: SimState) -> None:
+        # Partial rollout only resets engine-side prefill/KV state. Requests
+        # loop back and keep the reservation made from their original v_traj.
+        return
+
+    def on_discard(self, reqs: list[Request], st: SimState) -> None:
         if self._inventory is None:
             return
-        prompt_ids = [r.rid for r in reqs if r.rid in self._inventory.data_tracker]
-        if prompt_ids:
-            self._inventory.clear_reserved_entries(prompt_ids)
+        reserved: list[int] = []
+        occupied: list[int] = []
+        for prompt_id in dict.fromkeys(r.rid for r in reqs):
+            location = self._inventory.data_tracker.get(prompt_id)
+            if location is None:
+                continue
+            buffer_id, entry_id = location
+            category = self._inventory.buffers[buffer_id].entries[entry_id].category
+            if category == EntryCategory.RESERVED:
+                reserved.append(prompt_id)
+            elif category == EntryCategory.OCCUPIED:
+                occupied.append(prompt_id)
+        if reserved:
+            self._inventory.clear_reserved_entries(reserved)
+        if occupied:
+            self._inventory.clear_occupied_entries(occupied)
 
     def check_invariants(self, st: SimState) -> None:
         if self._inventory is None:

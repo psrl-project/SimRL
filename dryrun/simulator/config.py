@@ -7,6 +7,15 @@ from dataclasses import dataclass, field
 from ..component.rollout.engine import Request
 
 
+def clip_length(length: int, max_length: int | None) -> int:
+    """Truncate `length` to `max_length` when a system cap is set."""
+    if max_length is None:
+        return length
+    if max_length < 1:
+        raise ValueError(f"Expected max_length >= 1, got {max_length!r}.")
+    return min(length, max_length)
+
+
 @dataclass
 class SimConfig:
     """Configuration for a single simulation run."""
@@ -35,6 +44,8 @@ class SimConfig:
     reject_if_waiting: bool = False
     reject_if_running_full: bool = False
     prompt_lengths: list[int] = field(default_factory=lambda: [512])
+    max_prompt_length: int | None = None
+    max_output_length: int | None = None
     n_instances: int = 1
     livelock_rounds: int = 50
     max_engine_iters: int = 10_000

@@ -45,13 +45,13 @@ class RollPolicy(StalenessPolicy):
         if ratio > 0:
             self.budget = ratio * st.batch_size
         self.budget += st.batch_size
-        self._ensure_group(st.version)
+        self._ensure_group(st.train_version)
         self._configured = True
 
     def admit_quota(self, st: SimState) -> int:
         if not self._configured:
             self._configure(st)
-        self._ensure_group(st.version)
+        self._ensure_group(st.train_version)
         room = self.budget - (self.running_prompts + self.completed_prompts)
         if self.max_inflight is not None:
             room = min(room, self.max_inflight - len(st.inflight))
@@ -72,10 +72,10 @@ class RollPolicy(StalenessPolicy):
         return CompleteAction.KEEP
 
     def _eligible_steps(self, st: SimState) -> list[int]:
-        min_step = st.version - st.max_staleness
-        steps = [s for s in sorted(self.groups) if min_step <= s < st.version]
-        if st.version in self.groups:
-            steps.append(st.version)
+        min_step = st.train_version - st.max_staleness
+        steps = [s for s in sorted(self.groups) if min_step <= s < st.train_version]
+        if st.train_version in self.groups:
+            steps.append(st.train_version)
         return steps
 
     def peek_batch(self, st: SimState) -> list[Request] | None:
@@ -109,36 +109,40 @@ class RollPolicy(StalenessPolicy):
                 break
         return batch
 
-    def on_version_advance(self, version: int, st: SimState) -> None:
+    def on_train_version_advance(self, train_version: int, st: SimState) -> None:
         self.budget += st.batch_size
-        self._ensure_group(version)
+        self._ensure_group(train_version)
 
-    def expire(self, st: SimState) -> list[Request]:
-        max_gc_step = (st.version - 1) - st.max_staleness
+    def expire(self, st: SimState, expected_train_version: int) -> list[Request]:
+        max_gc_step = (expected_train_version - 1) - st.max_staleness
         if max_gc_step < 0:
             return []
-        by_rid = {r.rid: r for r in st.inflight}
+        by_rid = {r.rid: r for r in (*st.inflight, *st.ready)}
         victims = []
         for step in [s for s in self.groups if s <= max_gc_step]:
             group = self.groups.pop(step)
-            assert not group.finished, (
-                f"ROLL invariant violated: group {step} still holds "
-                f"{len(group.finished)} uncollected finished prompt(s) at gc time."
-            )
+            # Finished prompts that aged out of the consume window are dropped,
+            # not consumed. This can happen when they complete after the last
+            # take_batch that was still allowed to pull from this group.
+            while group.finished:
+                req = group.finished.popleft()
+                victims.append(req)
+                self.completed_prompts -= 1
+                self.gc_dropped += 1
             for rid in group.running:
                 req = by_rid.get(rid)
                 if req is not None:
                     victims.append(req)
-            self.running_prompts -= len(group.running)
-            self.gc_dropped += len(group.running)
+                self.running_prompts -= 1
+                self.gc_dropped += 1
         return victims
 
     def check_invariants(self, st: SimState) -> None:
-        floor = st.version - st.max_staleness
+        floor = st.train_version - st.max_staleness
         for step, group in self.groups.items():
             if step < floor:
                 assert not group.running and not group.finished, (
-                    f"Group {step} below floor {floor} (version={st.version}) "
+                    f"Group {step} below floor {floor} (version={st.train_version}) "
                     f"still has {len(group.running)} running / "
                     f"{len(group.finished)} finished."
                 )

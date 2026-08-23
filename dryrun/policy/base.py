@@ -19,8 +19,8 @@ class SimState:
     """What a policy is allowed to see when making decisions."""
 
     now: float = 0.0
-    version: int = 0
-    engine_version: int = 0
+    train_version: int = 0
+    rollout_version: int = 0
     batch_size: int = 0
     max_staleness: int = 0
     inflight: list[Request] = field(default_factory=list)
@@ -59,19 +59,31 @@ class StalenessPolicy(ABC):
     def on_batch_unavailable(self, st: SimState) -> None:
         """Called when no training batch is currently available."""
 
-    def on_version_advance(self, version: int, st: SimState) -> None:
-        """Called after a training step produces a new weight version."""
+    def on_train_version_advance(self, train_version: int, st: SimState) -> None:
+        """Called after training finishes and `train_version` is published."""
 
-    def on_abort(self, reqs: list[Request], st: SimState) -> None:
-        """Called when in-flight generation is aborted for a weight update."""
+    def will_sync_after_train(self, st: SimState) -> bool:
+        """Whether the current training step ends with a rollout weight sync."""
+        return True
 
-    def expire(self, st: SimState) -> list[Request]:
-        """Requests to permanently give up on right now."""
+    def on_interrupt(self, reqs: list[Request], st: SimState) -> None:
+        """Called when in-flight generation is interrupted and will resume."""
+
+    def on_discard(self, reqs: list[Request], st: SimState) -> None:
+        """Called when requests are permanently removed from the simulator."""
+
+    def expire(self, st: SimState, expected_train_version: int) -> list[Request]:
+        """Drop requests that would violate staleness at `expected_train_version`.
+
+        Called when a batch is committed, before training actually finishes.
+        `st.train_version` is still the last published version, `expected_train_version`
+        is the version this batch will produce.
+        """
         return []
 
-    def engine_version_after_train(self, st: SimState) -> int:
-        """The weight version the rollout engine is actually serving."""
-        return st.version
+    def rollout_version_after_train(self, st: SimState) -> int:
+        """The weight version the rollout engine should serve after publish."""
+        return st.train_version
 
     def check_invariants(self, st: SimState) -> None:
         """Assert this policy's own contract."""

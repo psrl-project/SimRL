@@ -1,0 +1,38 @@
+# Output-length distribution. Samples are rounded from N(mu, sigma).
+# Per-request caps are job.max_prompt_length / job.max_output_length.
+output:
+  name: normal
+
+  # Number of request lengths to sample.
+  n: 200
+
+  # RNG seed.
+  seed: 42
+
+  # Mean generated length in tokens.
+  mu: 2048.0
+
+  # Stddev of generated length in tokens.
+  sigma: 512.0
+
+  # Inclusive lower bound. Gauss draws below this are raised to `lo`.
+  lo: 1
+
+# Prompt-length distribution. Same normal family as output.
+prompt:
+  name: normal
+
+  # Number of request lengths to sample.
+  n: 200
+
+  # RNG seed. Distinct from output so the two dimensions are not paired.
+  seed: 43
+
+  # Mean prompt length in tokens.
+  mu: 1024.0
+
+  # Stddev of prompt length in tokens.
+  sigma: 256.0
+
+  # Inclusive lower bound. Gauss draws below this are raised to `lo`.
+  lo: 1

@@ -14,7 +14,18 @@ job:
   batch_size: 8
 
   # Maximum allowed staleness of consumed training data.
+  # Used as a version bound by areal, psrl, and roll. For verl it is the
+  # sample-overage ratio fallback when policy.staleness_threshold is null.
+  # Ignored by slime: its bound is policy.update_weights_interval.
   max_staleness: 2
+
+  # Per-request prompt cap in tokens. Sampled prompts longer than this are
+  # truncated. null = no cap.
+  max_prompt_length: null
+
+  # Per-request output cap in tokens. Generation stops at this length.
+  # null = no cap.
+  max_output_length: null
 
 # Rollout engine settings.
 rollout:
@@ -58,7 +69,8 @@ output_dir: outputs
 
 # Whether to log per-run telemetry (instance/rollout_step/train/request JSONL
 # streams) to output_dir/logs. When false, nothing is written to disk and no
-# plots are generated for this run.
+# plots are generated for this run. Re-running with the same output_dir
+# replaces the previous logs/ directory rather than appending to it.
 log_telemetry: true
 
 # Level for the "dryrun" logger (DEBUG, INFO, WARNING, ERROR).

@@ -11,6 +11,8 @@ class ArealPolicy(StalenessPolicy):
     AReaL's cumulative token bucket admission.
 
     Bounds total unconsumed work but NOT individual sample age.
+    The bucket is indexed by `train_version`, which the simulator advances
+    when a training step is published.
     """
 
     name = "areal"
@@ -22,7 +24,7 @@ class ArealPolicy(StalenessPolicy):
 
     def admit_quota(self, st: SimState) -> int:
         ofp, B = st.max_staleness, st.batch_size
-        staleness_capacity = (ofp + st.version + 1) * B - (self.accepted + self.running)
+        staleness_capacity = (ofp + st.train_version + 1) * B - (self.accepted + self.running)
         if self.max_inflight is not None:
             staleness_capacity = min(staleness_capacity, self.max_inflight - self.running)
         return max(0, staleness_capacity)

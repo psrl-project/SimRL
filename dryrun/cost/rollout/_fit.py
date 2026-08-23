@@ -71,7 +71,9 @@ def split_by_run(
     if not 0 <= validation_fraction < 1:
         raise ValueError("validation_fraction must be in [0, 1).")
     run_ids = sorted({sample.run_id for sample in samples})
-    if validation_fraction == 0 or len(run_ids) < 2:
+    if validation_fraction == 0:
+        return samples, []
+    if len(run_ids) < 2:
         return samples, samples
     ranked = sorted(
         run_ids,

@@ -1,4 +1,4 @@
-"""Normalize paired vLLM timing/trace sweep shards into `ProfileRecord` observations."""
+"""Normalize vLLM timing sweep shards into `ProfileRecord` observations."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import re
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from ...schema import (
     Parallelism,
@@ -16,15 +16,11 @@ from ...schema import (
     RunDescriptor,
     SoftwareDescriptor,
 )
+from ...._logging import dryrun_logger
 from .config import VLLMSweepConfig
-from .parse import (
-    _TRACE_RANK_PATTERN,
-    _IterationDetail,
-    aggregate_rank_traces,
-    apply_iteration_timings,
-    parse_sweep_log,
-    worker_trace_files,
-)
+from .parse import parse_sweep_log, payload_from_iteration, trusted_iterations
+
+_INPUT_LEN_PATTERN = re.compile(r"random-input-len[=-](?P<length>\d+)")
 
 
 def _value_from_keys(value: dict[str, Any], *keys: str, default: Any = None) -> Any:
@@ -69,17 +65,8 @@ def _manifest_path(path: Path, root: Path) -> str:
         return str(path.resolve())
 
 
-def _resolve_manifest_path(value: str, root: Path) -> Path:
-    path = Path(value)
-    return path if path.is_absolute() else root / path
-
-
-def _experiment_dirs(
-    config: VLLMSweepConfig,
-    phase: str,
-    measurement: str,
-) -> dict[str, Path]:
-    legacy = config.raw_experiment_dir(phase, measurement)
+def _experiment_dirs(config: VLLMSweepConfig, phase: str) -> dict[str, Path]:
+    legacy = config.raw_experiment_dir(phase, "timing")
     shard_pattern = re.compile(rf"{re.escape(legacy.name)}-(?P<shard>s\d+)")
     shards = {
         match.group("shard"): path
@@ -92,309 +79,176 @@ def _experiment_dirs(
     return {"": legacy} if legacy.is_dir() else {}
 
 
-def _group_worker_traces(
-    trace_results: Sequence[tuple[Path, int]],
-    trace_paths: Sequence[Path],
-) -> list[list[Path]]:
-    expected_rank_traces = sum(world_size for _, world_size in trace_results)
-    rank_zero_traces = [
-        path
-        for path in trace_paths
-        if (match := _TRACE_RANK_PATTERN.search(path.name)) is not None
-        and int(match.group("rank")) == 0
-    ]
-    if len(trace_paths) == expected_rank_traces:
-        grouped_traces: list[list[Path]] = []
-        cursor = 0
-        for _, world_size in trace_results:
-            grouped_traces.append(list(trace_paths[cursor : cursor + world_size]))
-            cursor += world_size
-        return grouped_traces
-    if len(rank_zero_traces) == len(trace_results):
-        return [[path] for path in rank_zero_traces]
-    if len(trace_paths) == len(trace_results):
-        return [[path] for path in trace_paths]
+def _input_len(combo_path: str, value: dict[str, Any]) -> int:
+    match = _INPUT_LEN_PATTERN.search(combo_path)
+    if match is not None:
+        return int(match.group("length"))
+    lengths = value.get("input_lens") or value.get("input_lengths")
+    if lengths:
+        unique = {int(item) for item in lengths}
+        if len(unique) == 1:
+            return next(iter(unique))
+        raise ProfileValidationError(
+            "Equal-length feature formulas require a single input length, "
+            f"got {sorted(unique)} in {combo_path}."
+        )
     raise ProfileValidationError(
-        "Cannot pair vLLM runs with worker traces: "
-        f"{len(trace_results)} runs, expected {expected_rank_traces} rank traces, "
-        f"found {len(trace_paths)} worker traces."
+        f"Cannot recover random-input-len for vLLM run {combo_path}."
     )
 
 
-def _index_vllm_shard(
-    config: VLLMSweepConfig,
-    phase: str,
-    shard_id: str,
-    timing_root: Path,
-    trace_root: Path,
-) -> list[tuple[str, dict[str, Any]]]:
-    timing_by_relative_path = {
-        path.relative_to(timing_root): path
-        for path in timing_root.rglob("run=*.json")
-    }
-    trace_result_paths = sorted(
-        trace_root.rglob("run=*.json"),
-        key=lambda path: (path.stat().st_mtime_ns, str(path)),
-    )
-    if not timing_by_relative_path:
-        raise ProfileValidationError(
-            f"No vLLM timing run JSON files were found under {timing_root}."
-        )
-    trace_relative_paths = {
-        path.relative_to(trace_root) for path in trace_result_paths
-    }
-    if set(timing_by_relative_path) != trace_relative_paths:
-        raise ProfileValidationError(
-            "Matched vLLM sweeps produced different parameter/run paths in "
-            f"shard {shard_id or 'legacy'}."
-        )
-    timing_result_paths = [
-        timing_by_relative_path[path.relative_to(trace_root)]
-        for path in trace_result_paths
-    ]
-    trace_dir = config.trace_dir(phase, shard_id or None)
-    trace_paths = worker_trace_files(trace_dir)
-    if not trace_paths:
-        raise ProfileValidationError(
-            f"No worker profiler traces were found under {trace_dir}."
-        )
-    timing_iterations = parse_sweep_log(
-        config.sweep_log_path(phase, "timing", shard_id or None)
-    )
-    trace_iterations = parse_sweep_log(
-        config.sweep_log_path(phase, "trace", shard_id or None)
-    )
-
-    trace_results: list[tuple[Path, int]] = []
-    for result_path in trace_result_paths:
-        with result_path.open(encoding="utf-8") as handle:
-            value = json.load(handle)
-        trace_results.append(
-            (
-                result_path,
-                int(_parallelism_from_result(value, config).world_size),
-            )
-        )
-    grouped_traces = _group_worker_traces(trace_results, trace_paths)
-
-    entries: list[tuple[str, dict[str, Any]]] = []
-    for timing_result, (trace_result, trace_world_size), run_traces in zip(
-        timing_result_paths,
-        trace_results,
-        grouped_traces,
-        strict=True,
-    ):
-        combo_path = str(trace_result.relative_to(trace_root))
-        timing_details = timing_iterations.get(timing_result.resolve(), [])
-        trace_details = trace_iterations.get(trace_result.resolve(), [])
-        if not timing_details or not trace_details:
+def _prompt_token_budget(combo_path: str, value: dict[str, Any]) -> int:
+    """Total prompt tokens a run may schedule before context means recompute."""
+    total = value.get("total_input_tokens")
+    if total is None:
+        lengths = value.get("input_lens") or value.get("input_lengths")
+        if not lengths:
             raise ProfileValidationError(
-                "Missing scheduler iteration timings for matched vLLM runs: "
-                f"timing={timing_result}, trace={trace_result}. "
-                "vLLM only emits Iteration(...) logs at INFO; "
-                "VLLM_LOGGING_LEVEL=WARN disables LoggingStatLogger."
+                f"Cannot recover the prompt token total for vLLM run {combo_path}."
             )
-        with timing_result.open(encoding="utf-8") as handle:
-            timing_value = json.load(handle)
-        timing_world_size = int(
-            _parallelism_from_result(timing_value, config).world_size
-        )
-        if timing_world_size != trace_world_size:
-            raise ProfileValidationError(
-                "Matched vLLM timing and trace runs use different parallelism."
-            )
-        entries.append(
-            (
-                combo_path,
-                {
-                    "combo_path": combo_path,
-                    "timing_result": _manifest_path(
-                        timing_result,
-                        config.output_dir,
-                    ),
-                    "trace_result": _manifest_path(
-                        trace_result,
-                        config.output_dir,
-                    ),
-                    "traces": [
-                        _manifest_path(trace_path, config.output_dir)
-                        for trace_path in run_traces
-                    ],
-                    "timing_iterations": [
-                        detail.to_dict() for detail in timing_details
-                    ],
-                    "trace_iterations": [
-                        detail.to_dict() for detail in trace_details
-                    ],
-                },
-            )
-        )
-    return entries
-
-
-def index_vllm_traces(
-    config: VLLMSweepConfig,
-    phase: str,
-) -> Path:
-    """Pair matched timing/trace runs within shards, then merge by combo path."""
-    timing_dirs = _experiment_dirs(config, phase, "timing")
-    trace_dirs = _experiment_dirs(config, phase, "trace")
-    if not timing_dirs or not trace_dirs:
-        raise FileNotFoundError(
-            "Matched vLLM experiment directories do not exist for "
-            f"phase {phase!r}."
-        )
-    if set(timing_dirs) != set(trace_dirs):
-        raise ProfileValidationError(
-            "Matched vLLM timing and trace sweeps produced different shard sets: "
-            f"timing={sorted(timing_dirs)}, trace={sorted(trace_dirs)}."
-        )
-
-    entries_by_combo: dict[str, dict[str, Any]] = {}
-    for shard_id in sorted(trace_dirs):
-        for combo_path, entry in _index_vllm_shard(
-            config,
-            phase,
-            shard_id,
-            timing_dirs[shard_id],
-            trace_dirs[shard_id],
-        ):
-            if combo_path in entries_by_combo:
-                raise ProfileValidationError(
-                    f"Duplicate vLLM combo path {combo_path!r} across sweep shards."
-                )
-            entries_by_combo[combo_path] = entry
-    manifest = {
-        "schema_version": 1,
-        "measurement_source": "vllm-unprofiled-timing-plus-detailed-trace",
-        "phase": phase,
-        "entries": [
-            entries_by_combo[key]
-            for key in sorted(entries_by_combo)
-        ],
-    }
-    path = config.trace_manifest_path(phase)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    return path
+        total = sum(int(item) for item in lengths)
+    return int(total)
 
 
 def collect_vllm_records(
     config: VLLMSweepConfig,
     phase: str,
 ) -> list[ProfileRecord]:
-    """Normalize official per-scheduler-step trace annotations into records."""
-    timing_dirs = _experiment_dirs(config, phase, "timing")
-    trace_dirs = _experiment_dirs(config, phase, "trace")
-    if not timing_dirs or not trace_dirs:
+    """Normalize scheduler iteration logs into one record per step."""
+    experiment_dirs = _experiment_dirs(config, phase)
+    if not experiment_dirs:
         raise FileNotFoundError(
-            f"Matched vLLM experiment directories do not exist for phase {phase!r}."
+            f"vLLM timing experiment directories do not exist for phase {phase!r}."
         )
-    manifest_path = config.trace_manifest_path(phase)
-    if not manifest_path.exists():
-        index_vllm_traces(config, phase)
-    with manifest_path.open(encoding="utf-8") as handle:
-        manifest = json.load(handle)
     records: list[ProfileRecord] = []
-    for entry in manifest["entries"]:
-        timing_result_path = _resolve_manifest_path(
-            entry["timing_result"],
-            config.output_dir,
+    for shard_id, timing_root in experiment_dirs.items():
+        result_paths = sorted(
+            timing_root.rglob("run=*.json"),
+            key=lambda path: (path.stat().st_mtime_ns, str(path)),
         )
-        trace_result_path = _resolve_manifest_path(
-            entry["trace_result"],
-            config.output_dir,
-        )
-        trace_paths = [
-            _resolve_manifest_path(item, config.output_dir)
-            for item in entry["traces"]
-        ]
-        with timing_result_path.open(encoding="utf-8") as handle:
-            value = json.load(handle)
-        if not isinstance(value, dict):
+        if not result_paths:
             raise ProfileValidationError(
-                f"Expected a JSON object in {timing_result_path}."
+                f"No vLLM timing run JSON files were found under {timing_root}."
             )
-        parallelism = _parallelism_from_result(value, config)
-        hardware = replace(config.hardware, gpu_count=int(parallelism.world_size))
-        timing_relative_path = _manifest_path(
-            timing_result_path,
-            config.output_dir,
+        iterations = parse_sweep_log(
+            config.sweep_log_path(phase, "timing", shard_id or None)
         )
-        trace_result_relative_path = _manifest_path(
-            trace_result_path,
-            config.output_dir,
-        )
-        trace_relative_paths = [
-            _manifest_path(trace_path, config.output_dir)
-            for trace_path in trace_paths
-        ]
-        combo_identity = entry.get("combo_path", timing_relative_path)
-        identity = hashlib.sha256(
-            f"{phase}:{combo_identity}".encode("utf-8")
-        ).hexdigest()[:20]
-        run_number = int(
-            value.get(
-                "run_number",
-                timing_result_path.stem.removeprefix("run="),
+        for result_path in result_paths:
+            details = iterations.get(result_path.resolve(), [])
+            if not details:
+                raise ProfileValidationError(
+                    "Missing scheduler iteration timings for vLLM run: "
+                    f"{result_path}. vLLM only emits Iteration(...) logs at INFO; "
+                    "VLLM_LOGGING_LEVEL=WARN disables LoggingStatLogger."
+                )
+            with result_path.open(encoding="utf-8") as handle:
+                value = json.load(handle)
+            if not isinstance(value, dict):
+                raise ProfileValidationError(f"Expected a JSON object in {result_path}.")
+            combo_path = str(result_path.relative_to(timing_root))
+            input_len = _input_len(combo_path, value)
+            details, trust = trusted_iterations(
+                details,
+                input_len=input_len,
+                prompt_token_budget=_prompt_token_budget(combo_path, value),
             )
-        )
-        run = RunDescriptor(
-            run_id=f"vllm-{identity}",
-            repeat=run_number,
-            status="success" if int(value.get("completed", 0)) > 0 else "failed",
-            duration_s=float(value["duration"]) if value.get("duration") is not None else None,
-            raw_artifact=trace_relative_paths[0],
-            error=None if int(value.get("completed", 0)) > 0 else "No requests completed.",
-        )
-        software = SoftwareDescriptor(
-            backend="vllm",
-            backend_version=config.backend_version,
-            source_commit=config.source_commit,
-            command=(config.executable, "bench", "sweep", "serve"),
-        )
-        trace_scheduler_details = [
-            _IterationDetail.from_dict(item)
-            for item in entry.get("trace_iterations", [])
-        ]
-        timing_scheduler_details = [
-            _IterationDetail.from_dict(item)
-            for item in entry.get("timing_iterations", [])
-        ]
-        traced_steps = apply_iteration_timings(
-            aggregate_rank_traces(trace_paths),
-            trace_scheduler_details,
-            iteration_tag="trace_scheduler_iteration",
-        )
-        steps = apply_iteration_timings(
-            traced_steps,
-            timing_scheduler_details,
-            iteration_tag="timing_scheduler_iteration",
-        )
-        for step in steps:
-            if phase == "prefill" and step.payload.phase == "decode":
+            if trust.truncation_reason is not None:
+                dryrun_logger.warning(
+                    "Truncated vLLM run %s at iteration %s (%s): kept %d steps and "
+                    "dropped %d after the KV cache filled and vLLM preempted requests. "
+                    "Lower max-concurrency or random-output-len to profile this point "
+                    "without preemption.",
+                    combo_path,
+                    trust.truncation_iteration,
+                    trust.truncation_reason,
+                    trust.kept,
+                    trust.dropped_after_preemption,
+                )
+            if trust.dropped_unmeasured:
+                dryrun_logger.warning(
+                    "Dropped %d step(s) of vLLM run %s whose elapsed time is an "
+                    "async-scheduling artifact rather than a forward pass.",
+                    trust.dropped_unmeasured,
+                    combo_path,
+                )
+            if not details:
+                dryrun_logger.warning(
+                    "Skipped vLLM run %s: no scheduler step carries a usable "
+                    "measurement. Re-run the sweep so the server disables async "
+                    "scheduling.",
+                    combo_path,
+                )
                 continue
-            if phase == "decode" and step.payload.phase == "prefill":
-                continue
-            records.append(
-                ProfileRecord(
-                    record_type="rollout",
-                    run=run,
-                    model=config.model,
-                    hardware=hardware,
-                    software=software,
-                    parallelism=parallelism,
-                    payload=step.payload,
-                    tags={
-                        "phase": phase,
-                        "observed_phase": step.payload.phase,
-                        "source": "vllm-unprofiled-timing-plus-detailed-trace",
-                        "latency_source": "unprofiled-scheduler-iteration-elapsed-ms",
-                        "timing_benchmark_artifact": timing_relative_path,
-                        "trace_benchmark_artifact": trace_result_relative_path,
-                        "trace_artifacts": trace_relative_paths,
-                        "trace_metrics": step.metrics,
-                    },
+            parallelism = _parallelism_from_result(value, config)
+            hardware = replace(config.hardware, gpu_count=int(parallelism.world_size))
+            relative_path = _manifest_path(result_path, config.output_dir)
+            identity = hashlib.sha256(
+                f"{phase}:{combo_path}".encode("utf-8")
+            ).hexdigest()[:20]
+            run_number = int(
+                value.get(
+                    "run_number",
+                    result_path.stem.removeprefix("run="),
                 )
             )
+            run = RunDescriptor(
+                run_id=f"vllm-{identity}",
+                repeat=run_number,
+                status="success" if int(value.get("completed", 0)) > 0 else "failed",
+                duration_s=(
+                    float(value["duration"]) if value.get("duration") is not None else None
+                ),
+                raw_artifact=relative_path,
+                error=None if int(value.get("completed", 0)) > 0 else "No requests completed.",
+            )
+            software = SoftwareDescriptor(
+                backend="vllm",
+                backend_version=config.backend_version,
+                source_commit=config.source_commit,
+                command=(config.executable, "bench", "sweep", "serve"),
+            )
+            # Age every request by the engine's own iteration index rather than
+            # by a running counter, so dropping an untrusted step in the middle
+            # of a run does not shift the ages of the steps after it.
+            first_generation_index = next(
+                (item.index for item in details if item.gen_requests > 0),
+                None,
+            )
+            for detail in details:
+                payload = payload_from_iteration(
+                    detail,
+                    input_len=input_len,
+                    decode_ordinal=(
+                        max(detail.index - first_generation_index, 0)
+                        if first_generation_index is not None
+                        else 0
+                    ),
+                    batch_step_index=detail.index,
+                )
+                if payload is None:
+                    continue
+                if phase == "prefill" and payload.phase == "decode":
+                    continue
+                if phase == "decode" and payload.phase == "prefill":
+                    continue
+                records.append(
+                    ProfileRecord(
+                        record_type="rollout",
+                        run=run,
+                        model=config.model,
+                        hardware=hardware,
+                        software=software,
+                        parallelism=parallelism,
+                        payload=payload,
+                        tags={
+                            "phase": phase,
+                            "observed_phase": payload.phase,
+                            "source": "vllm-scheduler-iteration-log",
+                            "latency_source": "scheduler-iteration-elapsed-ms",
+                            "feature_source": "equal-length-formula",
+                            "timing_benchmark_artifact": relative_path,
+                            "scheduler_iteration": detail.to_dict(),
+                        },
+                    )
+                )
     return records

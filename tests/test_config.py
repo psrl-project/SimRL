@@ -49,6 +49,8 @@ class TestStructuredConfigs:
         assert cfg.job.batch_size == 8
         assert cfg.job.max_staleness == 2
         assert cfg.job.n_versions == 20
+        assert cfg.job.max_prompt_length is None
+        assert cfg.job.max_output_length is None
         assert cfg.rollout.n_instances == 1
         assert cfg.rollout.partial_rollout is True
         assert cfg.rollout.admission_control.reject_if_kv_full is True
@@ -123,17 +125,49 @@ class TestFactoryFunctions:
             assert isinstance(policy, cls), f"Expected {cls}, got {type(policy)}."
             assert policy.name == name
 
+    def test_build_verl_uses_staleness_fallback(self):
+        fallback = build_policy(
+            OmegaConf.create({"name": "verl", "staleness_threshold": None}),
+            max_staleness=2,
+        )
+        assert isinstance(fallback, VerlPolicy)
+        assert fallback.threshold == 2.0
+
+        explicit = build_policy(
+            OmegaConf.create({
+                "name": "verl",
+                "staleness_threshold": 0.25,
+            }),
+            max_staleness=2,
+        )
+        assert isinstance(explicit, VerlPolicy)
+        assert explicit.threshold == 0.25
+
     def test_build_unknown_policy(self):
         cfg = OmegaConf.create({"name": "nonexistent"})
         with pytest.raises(ValueError, match="Unknown policy"):
             build_policy(cfg, max_staleness=2)
 
     def test_build_all_distributions(self):
-        for name in ["uniform", "bimodal", "lognormal", "powerlaw"]:
+        for name in ["uniform", "bimodal", "lognormal", "normal", "powerlaw"]:
             cfg = OmegaConf.create({"name": name, "n": 50, "seed": 42})
             lengths = build_distribution(cfg)
             assert len(lengths) == 50
             assert all(isinstance(length, int) for length in lengths)
+
+    def test_build_normal_distribution_optional_hi(self):
+        cfg = OmegaConf.create({
+            "name": "normal",
+            "n": 40,
+            "seed": 0,
+            "mu": 100.0,
+            "sigma": 50.0,
+            "lo": 16,
+            "hi": 64,
+        })
+        lengths = build_distribution(cfg)
+        assert len(lengths) == 40
+        assert all(16 <= length <= 64 for length in lengths)
 
     def test_build_fixed_distribution(self):
         cfg = OmegaConf.create({"name": "fixed", "n": 10, "lo": 512})

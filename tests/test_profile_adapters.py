@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import gzip
-import json
 import shutil
 import subprocess
 import sys
@@ -23,7 +21,12 @@ from dryrun.profiler.adapters.vllm.execute import (
     _sweep_runtime_environment,
 )
 from dryrun.profiler.adapters.vllm.prepare import VLLMSweepJob
-from dryrun.profiler.adapters.vllm.parse import parse_sweep_log
+from dryrun.profiler.adapters.vllm.parse import (
+    _IterationDetail,
+    parse_sweep_log,
+    payload_from_iteration,
+    trusted_iterations,
+)
 from dryrun.profiler.io import profile_digest, read_records, write_records
 from dryrun.profiler.schema import (
     HardwareDescriptor,
@@ -67,107 +70,172 @@ def _vllm_config(tmp_path: Path) -> VLLMSweepConfig:
 
 
 @pytest.mark.parametrize(
-    ("phase", "result_fixture", "trace_fixture", "expected_records"),
+    ("phase", "result_fixture", "expected_records"),
     [
-        ("prefill", "prefill_run.json", "prefill_trace.json", 1),
-        ("decode", "decode_run.json", "decode_trace.json", 2),
+        ("prefill", "prefill_run.json", 1),
+        ("decode", "decode_run.json", 2),
     ],
 )
-def test_vllm_detailed_trace_normalization(
+def test_vllm_timing_formula_normalization(
     tmp_path: Path,
     phase: str,
     result_fixture: str,
-    trace_fixture: str,
     expected_records: int,
 ):
     config = _vllm_config(tmp_path)
-    result_paths = {}
-    for measurement in ("timing", "trace"):
-        run_dir = config.raw_experiment_dir(phase, measurement) / "point"
-        run_dir.mkdir(parents=True)
-        result_paths[measurement] = run_dir / "run=0.json"
-        shutil.copy(
-            FIXTURES / "vllm" / result_fixture,
-            result_paths[measurement],
-        )
-    trace_dir = config.trace_dir(phase)
-    trace_dir.mkdir(parents=True)
-    trace_path = trace_dir / "dp0_pp0_tp0_dcp0_ep0_rank0.123.pt.trace.json"
-    if phase == "decode":
-        trace_path = trace_path.with_suffix(f"{trace_path.suffix}.gz")
-        with (
-            (FIXTURES / "vllm" / trace_fixture).open("rb") as source,
-            gzip.open(trace_path, "wb") as destination,
-        ):
-            shutil.copyfileobj(source, destination)
-    else:
-        shutil.copy(FIXTURES / "vllm" / trace_fixture, trace_path)
-    for measurement in ("timing", "trace"):
-        prefill_elapsed = 10.0 if measurement == "timing" else 11.0
-        decode_elapsed = (
-            (4.2, 4.4) if measurement == "timing" else (5.2, 5.4)
-        )
-        iteration_lines = {
-            "prefill": [
-                "Iteration(0): 2 context requests, 256 context tokens, "
-                "0 generation requests, 0 generation tokens, "
-                f"iteration elapsed time: {prefill_elapsed:.2f} ms, "
-                "GPU KV cache usage: 1.0%",
-            ],
-            "decode": [
-                "Iteration(0): 2 context requests, 384 context tokens, "
-                "0 generation requests, 0 generation tokens, "
-                "iteration elapsed time: 12.00 ms, GPU KV cache usage: 1.0%",
-                "Iteration(1): 0 context requests, 0 context tokens, "
-                "2 generation requests, 2 generation tokens, "
-                f"iteration elapsed time: {decode_elapsed[0]:.2f} ms, "
-                "GPU KV cache usage: 1.0%",
-                "Iteration(2): 0 context requests, 0 context tokens, "
-                "2 generation requests, 2 generation tokens, "
-                f"iteration elapsed time: {decode_elapsed[1]:.2f} ms, "
-                "GPU KV cache usage: 1.0%",
-            ],
-        }
-        config.sweep_log_path(phase, measurement).parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-        profile_markers = (
-            ["Traffic request rate: inf"]
-            if measurement == "timing"
-            else ["Profiler started"]
-        )
-        config.sweep_log_path(phase, measurement).write_text(
-            "\n".join(
-                [
-                    f"Output file: {result_paths[measurement]}",
-                    *profile_markers,
-                    *iteration_lines[phase],
-                    "Stopping profiler..."
-                    if measurement == "trace"
-                    else "[END BENCHMARK]",
-                ]
-            ),
-            encoding="utf-8",
-        )
+    run_dir = (
+        config.raw_experiment_dir(phase, "timing")
+        / "BENCH--random-input-len=128"
+    )
+    run_dir.mkdir(parents=True)
+    result_path = run_dir / "run=0.json"
+    shutil.copy(FIXTURES / "vllm" / result_fixture, result_path)
+    iteration_lines = {
+        "prefill": [
+            "Iteration(0): 2 context requests, 256 context tokens, "
+            "0 generation requests, 0 generation tokens, "
+            "iteration elapsed time: 10.00 ms, GPU KV cache usage: 1.0%",
+        ],
+        "decode": [
+            "Iteration(0): 2 context requests, 256 context tokens, "
+            "0 generation requests, 0 generation tokens, "
+            "iteration elapsed time: 12.00 ms, GPU KV cache usage: 1.0%",
+            "Iteration(1): 0 context requests, 0 context tokens, "
+            "2 generation requests, 2 generation tokens, "
+            "iteration elapsed time: 4.20 ms, GPU KV cache usage: 1.0%",
+            "Iteration(2): 0 context requests, 0 context tokens, "
+            "2 generation requests, 2 generation tokens, "
+            "iteration elapsed time: 4.40 ms, GPU KV cache usage: 1.0%",
+        ],
+    }
+    config.sweep_log_path(phase, "timing").parent.mkdir(parents=True, exist_ok=True)
+    config.sweep_log_path(phase, "timing").write_text(
+        "\n".join(
+            [
+                f"Output file: {result_path}",
+                "Traffic request rate: inf",
+                *iteration_lines[phase],
+                "[END BENCHMARK]",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
     records = collect_vllm_records(config, phase)
     assert len(records) == expected_records
     assert all(record.record_type == "rollout" for record in records)
     assert all(record.payload.phase == phase for record in records)
     assert all(record.payload.request_count == 2 for record in records)
+    assert all(
+        record.tags["feature_source"] == "equal-length-formula" for record in records
+    )
     if phase == "prefill":
         assert records[0].payload.sum_l2 == 2 * 128**2
         assert records[0].payload.latency_s == 0.01
     else:
-        assert records[0].payload.ctxsum == 129 + 257
+        assert records[0].payload.ctxsum == 2 * (128 + 1)
+        assert records[1].payload.ctxsum == 2 * (128 + 2)
         assert records[0].payload.latency_s == pytest.approx(0.0042)
-        assert records[0].tags["trace_metrics"]["gen_sqsk"] == 386
 
     output = tmp_path / f"{phase}.jsonl"
     write_records(output, records)
     assert read_records(output) == records
     assert profile_digest(output) == profile_digest(records)
+
+
+def test_payload_from_iteration_prefill_and_chunked_sum_l2():
+    full = payload_from_iteration(
+        _IterationDetail(0, 4, 1024, 0, 0, 10.0),
+        input_len=256,
+        decode_ordinal=0,
+        batch_step_index=0,
+    )
+    assert full is not None
+    assert full.phase == "prefill"
+    assert full.n_tokens == 1024
+    assert full.sum_l2 == 4 * 256**2
+    assert full.ctxsum == 0
+    assert full.latency_s == 0.01
+
+    chunked = payload_from_iteration(
+        _IterationDetail(1, 2, 512, 0, 0, 8.0),
+        input_len=256,
+        decode_ordinal=0,
+        batch_step_index=1,
+    )
+    assert chunked is not None
+    assert chunked.sum_l2 == 2 * 256**2
+
+    # Token budget that does not divide evenly uses as-equal-as-possible packing.
+    uneven = payload_from_iteration(
+        _IterationDetail(0, 3, 256, 0, 0, 1.0),
+        input_len=256,
+        decode_ordinal=0,
+        batch_step_index=0,
+    )
+    assert uneven is not None
+    assert uneven.sum_l2 == 1 * 86**2 + 2 * 85**2
+
+
+def test_trusted_iterations_truncates_the_run_at_preemption_recompute():
+    details = [
+        _IterationDetail(0, 2, 2048, 0, 0, 40.0),
+        _IterationDetail(1, 0, 0, 2, 2, 12.0),
+        _IterationDetail(2, 0, 0, 2, 2, 12.0),
+        # A request evicted when the KV cache filled re-prefills prompt plus
+        # everything it already generated.
+        _IterationDetail(3, 1, 3808, 1, 1, 900.0),
+        _IterationDetail(4, 0, 0, 2, 2, 12.0),
+    ]
+    kept, trust = trusted_iterations(details, input_len=1024, prompt_token_budget=2048)
+    assert [item.index for item in kept] == [0, 1, 2]
+    assert trust.truncation_iteration == 3
+    assert trust.truncation_reason == "context-longer-than-prompt"
+    assert trust.dropped_after_preemption == 2
+
+    # A resumed request whose chunk is short still exceeds the prompt budget.
+    resumed = [
+        _IterationDetail(0, 2, 2048, 0, 0, 40.0),
+        _IterationDetail(1, 0, 0, 2, 2, 12.0),
+        _IterationDetail(2, 1, 512, 1, 1, 30.0),
+    ]
+    kept, trust = trusted_iterations(resumed, input_len=1024, prompt_token_budget=2048)
+    assert [item.index for item in kept] == [0, 1]
+    assert trust.truncation_reason == "context-beyond-prompt-token-budget"
+
+
+def test_trusted_iterations_drops_unmeasured_steps_without_shifting_the_rest():
+    details = [
+        _IterationDetail(0, 1, 1024, 0, 0, 0.03),
+        _IterationDetail(1, 0, 0, 1, 1, 12.0),
+        _IterationDetail(2, 0, 0, 1, 1, 0.02),
+        _IterationDetail(3, 0, 0, 1, 1, 12.5),
+    ]
+    kept, trust = trusted_iterations(details, input_len=1024, prompt_token_budget=1024)
+    assert [item.index for item in kept] == [1, 3]
+    assert trust.dropped_unmeasured == 2
+    assert trust.truncation_reason is None
+
+
+def test_payload_from_iteration_decode_ordinal_walk():
+    first = payload_from_iteration(
+        _IterationDetail(1, 0, 0, 8, 8, 4.2),
+        input_len=128,
+        decode_ordinal=0,
+        batch_step_index=1,
+    )
+    second = payload_from_iteration(
+        _IterationDetail(2, 0, 0, 8, 8, 4.4),
+        input_len=128,
+        decode_ordinal=1,
+        batch_step_index=2,
+    )
+    assert first is not None and second is not None
+    assert first.phase == "decode"
+    assert first.n_tokens == 8
+    assert first.ctxsum == 8 * (128 + 1)
+    assert second.ctxsum == 8 * (128 + 2)
+    assert first.sum_l2 == 0
 
 
 def test_vllm_collect_merges_parallel_shards_by_combo_path(tmp_path: Path):
@@ -186,69 +254,33 @@ def test_vllm_collect_merges_parallel_shards_by_combo_path(tmp_path: Path):
     for shard_index in range(2):
         shard_id = f"s{shard_index:03d}"
         combo = f"BENCH--random-input-len={128 * (shard_index + 1)}"
-        for measurement in ("timing", "trace"):
-            run_dir = (
-                config.raw_experiment_dir(
-                    "prefill",
-                    measurement,
-                    shard_id,
-                )
-                / combo
-            )
-            run_dir.mkdir(parents=True)
-            result_path = run_dir / "run=0.json"
-            shutil.copy(
-                FIXTURES / "vllm" / "prefill_run.json",
-                result_path,
-            )
-            log_path = config.sweep_log_path(
-                "prefill",
-                measurement,
-                shard_id,
-            )
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text(
-                "\n".join(
-                    [
-                        f"Output file: {result_path}",
-                        (
-                            "Traffic request rate: inf"
-                            if measurement == "timing"
-                            else "Profiler started"
-                        ),
-                        "Iteration(0): 2 context requests, 256 context tokens, "
-                        "0 generation requests, 0 generation tokens, "
-                        "iteration elapsed time: 10.00 ms, "
-                        "GPU KV cache usage: 1.0%",
-                        (
-                            "[END BENCHMARK]"
-                            if measurement == "timing"
-                            else "Stopping profiler..."
-                        ),
-                    ]
-                ),
-                encoding="utf-8",
-            )
-        trace_dir = config.trace_dir("prefill", shard_id)
-        trace_dir.mkdir(parents=True)
-        shutil.copy(
-            FIXTURES / "vllm" / "prefill_trace.json",
-            trace_dir
-            / f"dp0_pp0_tp0_dcp0_ep0_rank0.{shard_index}.pt.trace.json",
+        run_dir = config.raw_experiment_dir("prefill", "timing", shard_id) / combo
+        run_dir.mkdir(parents=True)
+        result_path = run_dir / "run=0.json"
+        shutil.copy(FIXTURES / "vllm" / "prefill_run.json", result_path)
+        log_path = config.sweep_log_path("prefill", "timing", shard_id)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "\n".join(
+                [
+                    f"Output file: {result_path}",
+                    "Traffic request rate: inf",
+                    "Iteration(0): 2 context requests, 256 context tokens, "
+                    "0 generation requests, 0 generation tokens, "
+                    "iteration elapsed time: 10.00 ms, "
+                    "GPU KV cache usage: 1.0%",
+                    "[END BENCHMARK]",
+                ]
+            ),
+            encoding="utf-8",
         )
 
     records = collect_vllm_records(config, "prefill")
-    manifest = json.loads(
-        config.trace_manifest_path("prefill").read_text(encoding="utf-8")
-    )
-
     assert len(records) == 2
-    assert [entry["combo_path"] for entry in manifest["entries"]] == [
-        "BENCH--random-input-len=128/run=0.json",
-        "BENCH--random-input-len=256/run=0.json",
-    ]
-    assert all("-s00" in entry["timing_result"] for entry in manifest["entries"])
-    assert all("/s00" in entry["traces"][0] for entry in manifest["entries"])
+    artifacts = sorted(record.run.raw_artifact for record in records)
+    assert all("-s00" in artifact for artifact in artifacts)
+    assert any("random-input-len=128" in artifact for artifact in artifacts)
+    assert any("random-input-len=256" in artifact for artifact in artifacts)
 
 
 def _bridge_config(tmp_path: Path) -> MegatronBridgeConfig:
@@ -437,7 +469,6 @@ def _fake_jobs(
             ),
             experiment_dir=tmp_path / "raw" / f"s{index:03d}",
             log_path=tmp_path / "control" / f"s{index:03d}.log",
-            trace_dir=None,
             world_size=1,
             expected_runs=1,
         )

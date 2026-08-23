@@ -1,5 +1,5 @@
 # HuggingFace checkpoint. Architecture fields are read from config.json / AutoConfig.
-model: /apdcephfs_zwfy10_303541817/share_303541817/lhy/models/Qwen3-8B
+model: /apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B
 
 # Hardware fingerprint. gpu_count is overwritten from each sweep point's world_size.
 hardware:
@@ -22,11 +22,7 @@ server_ready_timeout: 900
 # trip server_ready_timeout. Raise it when the checkpoint sits on a fast local disk.
 run:
   max_parallel: auto
-  max_concurrent_startups: 1
-
-profiling:
-  profiler_args:
-    torch_profiler_use_gzip: true
+  max_concurrent_startups: 8
 
 serve:
   args:
@@ -37,26 +33,55 @@ serve:
   parameters:
     - tensor-parallel-size: 1
       pipeline-parallel-size: 1
-      max-num-seqs: 64
+      max-num-seqs: 1024
 
 bench:
   args:
-    num-prompts: 64
     request-rate: "inf"
     random-range-ratio: 0.0
     seed: 42
 
-# Collect already writes one JSONL record per scheduler iteration, not per grid cell.
-# Prefill is one shot, so the grid must vary prompt length and concurrency.
-# Decode walks context across steps, so one long output per (input, concurrency) is enough.
+# Collect writes one JSONL record per scheduler iteration from the timing sweep.
+# Prefill/decode features (sum_l2, ctxsum) are filled from equal-length formulas.
+# A decode point that fills the KV cache is truncated at its first preemption, so
+# keep max-concurrency * (input + output) inside the cache.
+# Prefill is one shot (or token-budget chunks), so the grid must vary prompt length
+# and concurrency. Decode walks context across steps, so one long output per
+# (input, concurrency) is enough.
+# Both phases set num-prompts = max-concurrency so a point costs one scheduler
+# step (prefill) or random-output-len steps (decode), not extra request waves.
 phases:
   prefill:
-    grid:
-      random-input-len: [256, 512, 1024, 2048, 4096, 8192]
-      random-output-len: [1]
-      max-concurrency: [1, 4, 16, 64]
+    parameters:
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
   decode:
-    grid:
-      random-input-len: [1024, 8192]
-      random-output-len: [4096]
-      max-concurrency: [1, 2, 4, 8, 16, 32, 48, 64]
+    parameters:
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 32, num-prompts: 32}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 48, num-prompts: 48}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 64, num-prompts: 64}

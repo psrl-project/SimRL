@@ -16,7 +16,6 @@ from .vllm import (
     format_vllm_job_command,
     prepare_vllm_jobs,
     prepare_vllm_sweep,
-    prepare_vllm_sweeps,
     run_vllm_profiles,
     run_vllm_sweep,
 )
@@ -32,7 +31,6 @@ __all__ = [
     "prepare_bridge_candidate",
     "prepare_vllm_jobs",
     "prepare_vllm_sweep",
-    "prepare_vllm_sweeps",
     "read_candidate_manifest",
     "run_bridge_candidate",
     "run_vllm_profiles",

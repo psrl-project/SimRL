@@ -1,11 +1,8 @@
 # Staleness policy name.
 name: verl
 
-# Fraction of the generation window after which old requests are dropped.
-staleness_threshold: 0.1
-
-# Steps between weight syncs that open a new generation window.
-trigger_parameter_sync_step: 4
+# Sample-overage ratio. null falls back to job.max_staleness.
+staleness_threshold: null
 
 # Number of training batches that must be ready before a train step.
 require_batches: 1

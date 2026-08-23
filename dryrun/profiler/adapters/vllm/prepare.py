@@ -1,7 +1,7 @@
 """Job planning for the official ``vllm bench sweep serve`` workflow.
 
-Prepares matched timing/trace sweep shards, allocates GPUs and ports for
-concurrent execution, and writes the parameter/manifest files the official
+Prepares timing sweep shards, allocates GPUs and ports for concurrent
+execution, and writes the parameter/manifest files the official
 ``vllm bench sweep serve`` CLI reads.
 """
 
@@ -58,7 +58,6 @@ def _mapping_with_override(
 def _prepare_vllm_sweep(
     config: VLLMSweepConfig,
     phase: str,
-    measurement: str,
     *,
     serve_parameters: Sequence[dict[str, Any]],
     bench_parameters: Sequence[dict[str, Any]],
@@ -68,18 +67,12 @@ def _prepare_vllm_sweep(
 ) -> tuple[list[str], Path]:
     if phase not in config.phase_parameters:
         raise ProfileValidationError(f"Phase {phase!r} is not configured.")
-    if measurement not in {"timing", "trace"}:
-        raise ProfileValidationError(
-            f"Unsupported vLLM measurement mode {measurement!r}."
-        )
     if not serve_parameters or not bench_parameters:
         raise ProfileValidationError("A vLLM sweep shard must contain serve and bench parameters.")
+    measurement = "timing"
     raw_root = config.output_dir / "raw" / f"vllm_{measurement}"
-    trace_dir = config.trace_dir(phase, shard_id)
     control_dir = config.output_dir / "control" / "vllm" / phase
     raw_root.mkdir(parents=True, exist_ok=True)
-    if measurement == "trace":
-        trace_dir.mkdir(parents=True, exist_ok=True)
     control_dir.mkdir(parents=True, exist_ok=True)
 
     file_suffix = f"_{shard_id}" if shard_id else ""
@@ -116,18 +109,14 @@ def _prepare_vllm_sweep(
     serve_args = {
         **config.serve_args,
         "enable-logging-iteration-details": True,
+        # Async scheduling overlaps a step with its neighbours, so the iteration
+        # log's elapsed time stops describing that step's own forward pass: a
+        # 65k-token prefill can report microseconds while its cost lands on a
+        # later step. Timing collection needs one measurement per step.
+        "no-async-scheduling": True,
     }
     if port is not None:
         serve_args = _mapping_with_override(serve_args, "port", port)
-    if measurement == "trace":
-        serve_args["profiler-config"] = {
-            **config.profiler_args,
-            "profiler": "torch",
-            "torch_profiler_dir": str(trace_dir),
-            "torch_profiler_with_stack": False,
-            "torch_profiler_dump_cuda_time_total": False,
-            "detailed_trace_annotation": True,
-        }
     serve_command = [
         config.executable,
         "serve",
@@ -141,6 +130,7 @@ def _prepare_vllm_sweep(
         "dataset-name": "random",
         "request-rate": "inf",
         "save-detailed": True,
+        "random-range-ratio": 0.0,
     }
     default_bench_args.update(config.bench_args)
     if port is not None:
@@ -149,8 +139,6 @@ def _prepare_vllm_sweep(
             "base-url",
             f"http://127.0.0.1:{port}",
         )
-    if measurement == "trace":
-        default_bench_args["profile"] = True
     bench_command = [
         config.executable,
         "bench",
@@ -193,14 +181,8 @@ def _prepare_vllm_sweep(
         "port": port,
         "backend_version": config.backend_version,
         "source_commit": config.source_commit,
-        "measurement_source": (
-            "vllm-scheduler-iteration-log"
-            if measurement == "timing"
-            else "vllm-profiler-detailed-trace"
-        ),
+        "measurement_source": "vllm-scheduler-iteration-log",
     }
-    if measurement == "trace":
-        manifest["trace_dir"] = str(trace_dir)
     (control_dir / f"{measurement}{file_suffix}_manifest.json").write_text(
         json.dumps(manifest, indent=2),
         encoding="utf-8",
@@ -211,27 +193,14 @@ def _prepare_vllm_sweep(
 def prepare_vllm_sweep(
     config: VLLMSweepConfig,
     phase: str,
-    measurement: str,
 ) -> tuple[list[str], Path]:
     """Write official sweep parameter files and return the executable command."""
     return _prepare_vllm_sweep(
         config,
         phase,
-        measurement,
         serve_parameters=config.serve_parameters,
         bench_parameters=config.phase_parameters.get(phase, ()),
     )
-
-
-def prepare_vllm_sweeps(
-    config: VLLMSweepConfig,
-    phase: str,
-) -> dict[str, tuple[list[str], Path]]:
-    """Prepare matched low-overhead timing and detailed-feature sweeps."""
-    return {
-        measurement: prepare_vllm_sweep(config, phase, measurement)
-        for measurement in ("timing", "trace")
-    }
 
 
 @dataclass(frozen=True)
@@ -247,7 +216,6 @@ class VLLMSweepJob:
     command: tuple[str, ...]
     experiment_dir: Path
     log_path: Path
-    trace_dir: Path | None
     world_size: int
     expected_runs: int
 
@@ -255,7 +223,6 @@ class VLLMSweepJob:
 @dataclass(frozen=True)
 class _VLLMJobSpec:
     phase: str
-    measurement: str
     shard_id: str
     serve_parameters: tuple[dict[str, Any], ...]
     bench_parameters: tuple[dict[str, Any], ...]
@@ -394,18 +361,16 @@ def _parallel_job_specs(
                     )
                 )
                 shard_number += 1
-        for measurement in ("timing", "trace"):
-            for shard_id, serve_shard, bench_shard, world_size in phase_shards:
-                specs.append(
-                    _VLLMJobSpec(
-                        phase=phase,
-                        measurement=measurement,
-                        shard_id=shard_id,
-                        serve_parameters=serve_shard,
-                        bench_parameters=bench_shard,
-                        world_size=world_size,
-                    )
+        for shard_id, serve_shard, bench_shard, world_size in phase_shards:
+            specs.append(
+                _VLLMJobSpec(
+                    phase=phase,
+                    shard_id=shard_id,
+                    serve_parameters=serve_shard,
+                    bench_parameters=bench_shard,
+                    world_size=world_size,
                 )
+            )
     return specs
 
 
@@ -450,11 +415,6 @@ def _write_jobs_manifest(
                         "world_size": job.world_size,
                         "experiment_dir": str(job.experiment_dir),
                         "log_path": str(job.log_path),
-                        "trace_dir": (
-                            str(job.trace_dir)
-                            if job.trace_dir is not None
-                            else None
-                        ),
                         "command": list(job.command),
                     }
                     for job in jobs
@@ -501,32 +461,19 @@ def prepare_vllm_jobs(
     if effective_max_parallel <= 1:
         jobs: list[VLLMSweepJob] = []
         required_gpus = max(world_sizes)
-        for wave, (phase, measurement) in enumerate(
-            (phase, measurement)
-            for phase in phases
-            for measurement in ("timing", "trace")
-        ):
-            command, experiment_dir = prepare_vllm_sweep(
-                config,
-                phase,
-                measurement,
-            )
+        for wave, phase in enumerate(phases):
+            command, experiment_dir = prepare_vllm_sweep(config, phase)
             jobs.append(
                 VLLMSweepJob(
                     phase=phase,
-                    measurement=measurement,
+                    measurement="timing",
                     shard_id=None,
                     wave=wave,
                     gpu_ids=gpu_ids[:required_gpus],
                     port=None,
                     command=tuple(command),
                     experiment_dir=experiment_dir,
-                    log_path=config.sweep_log_path(phase, measurement),
-                    trace_dir=(
-                        config.trace_dir(phase)
-                        if measurement == "trace"
-                        else None
-                    ),
+                    log_path=config.sweep_log_path(phase, "timing"),
                     world_size=required_gpus,
                     expected_runs=(
                         len(config.serve_parameters)
@@ -589,7 +536,6 @@ def prepare_vllm_jobs(
         command, experiment_dir = _prepare_vllm_sweep(
             config,
             spec.phase,
-            spec.measurement,
             serve_parameters=spec.serve_parameters,
             bench_parameters=spec.bench_parameters,
             shard_id=spec.shard_id,
@@ -599,7 +545,7 @@ def prepare_vllm_jobs(
         jobs.append(
             VLLMSweepJob(
                 phase=spec.phase,
-                measurement=spec.measurement,
+                measurement="timing",
                 shard_id=spec.shard_id,
                 wave=wave,
                 gpu_ids=assigned_gpu_ids,
@@ -608,13 +554,8 @@ def prepare_vllm_jobs(
                 experiment_dir=experiment_dir,
                 log_path=config.sweep_log_path(
                     spec.phase,
-                    spec.measurement,
+                    "timing",
                     spec.shard_id,
-                ),
-                trace_dir=(
-                    config.trace_dir(spec.phase, spec.shard_id)
-                    if spec.measurement == "trace"
-                    else None
                 ),
                 world_size=spec.world_size,
                 expected_runs=len(spec.bench_parameters) * config.num_runs,

@@ -14,10 +14,24 @@ pip install -e ".[dev]"
 ## vLLM rollout
 
 `qwen3_8b_tp1.yaml` defines separate output-one prefill and long-output decode workloads.
-For each phase the adapter launches matched official sweeps: an unprofiled timing sweep using scheduler iteration
-logs, and a feature sweep using detailed profiler trace annotations. It validates the scheduler signatures before
-joining low-overhead elapsed times with exact `sq`, `sk`, `sqsq`, and `sqsk` features. Client TTFT/ITL remain in
-the untouched benchmark JSON for diagnostics but are not clustered into synthetic GPU steps.
+For each phase the adapter launches one official unprofiled timing sweep. Collection reads
+scheduler `Iteration(...)` logs for step elapsed time and fills `sum_l2` / `ctxsum` from
+equal-length formulas (`sum_l2` from as-equal-as-possible packing of `T` tokens across
+`R` prefill requests; `ctxsum = R*(L+1+k)` on the `k`-th decode step). Client TTFT/ITL
+remain in the untouched benchmark JSON for diagnostics but are not clustered into
+synthetic GPU steps.
+
+Servers always run with `--no-async-scheduling`. Async scheduling overlaps a step with
+its neighbours, so an iteration's elapsed time stops measuring its own forward pass: a
+65k-token prefill can report microseconds while its cost lands on a later step. Steps
+that still report an impossibly short elapsed time are dropped at collection.
+
+Collection also truncates a run at its first preemption. Once the KV cache fills, vLLM
+evicts requests and later re-prefills each one's prompt *plus* the tokens it already
+generated; from then on the running requests no longer share one age, so `ctxsum` cannot
+describe any later step. Keep `max-concurrency * (input + output)` inside the KV cache to
+avoid losing the tail of a decode point — the warning names the run and the step count it
+dropped.
 
 Preview commands without starting a server:
 
@@ -38,7 +52,7 @@ legacy serial layout with `MAX_PARALLEL=1` (equivalent to
 `dryrun-profile vllm run --max-parallel 1`). `--max-parallel auto` is the
 default; a workflow can set the same policy with `run.max_parallel: auto|N`.
 Each parallel worker gets an isolated server port, experiment directory,
-scheduler log, and profiler trace directory.
+and scheduler log.
 
 Shards benchmark in parallel but boot one at a time, because concurrent imports of
 torch, vLLM, and the checkpoint from a shared filesystem are slow enough to trip
@@ -48,8 +62,7 @@ disk. A shard that still fails no longer cancels the others; rerunning the same 
 retries only the unfinished shards.
 
 The normalized output is `outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl`. Official benchmark JSON remains
-under `raw/vllm_timing/` and `raw/vllm_trace/`, worker traces under `raw/vllm_traces/`, and scheduler logs plus the
-pairing manifest under `control/vllm/`. Parallel experiment directories and
+under `raw/vllm_timing/` and scheduler logs under `control/vllm/`. Parallel experiment directories and
 control files carry an `sNNN` shard suffix; collection merges them by their
 original serve/bench combination path.
 

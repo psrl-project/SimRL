@@ -1,0 +1,20 @@
+# Prompt and output length distributions for examples/simulate.
+# Edit this file, then run simulate_with_fitted_cost.sh.
+# Samples are round(N(mu, sigma)) with a positivity floor of `lo`.
+# Max prompt/output length is a job setting, not a distribution parameter.
+
+prompt:
+  name: normal
+  n: 256
+  seed: 42
+  mu: 1024.0
+  sigma: 256.0
+  lo: 1
+
+output:
+  name: normal
+  n: 256
+  seed: 43
+  mu: 8192.0
+  sigma: 512.0
+  lo: 1

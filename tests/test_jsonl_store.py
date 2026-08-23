@@ -95,3 +95,38 @@ class TestClose:
         store.write("s", a=1)
         store.close()
         store.close()  # must not raise
+
+
+class TestOverwrite:
+    def test_default_reopen_appends(self, tmp_path):
+        first = JsonlStore(tmp_path)
+        first.write("train", t=1.0)
+        first.close()
+        second = JsonlStore(tmp_path)
+        second.write("train", t=2.0)
+        second.close()
+        assert list(second.iter("train")) == [{"t": 1.0}, {"t": 2.0}]
+
+    def test_overwrite_replaces_existing_streams(self, tmp_path):
+        first = JsonlStore(tmp_path)
+        first.write("train", t=1.0)
+        first.write("instance/0", t=1.0)
+        first.write("instance/1", t=1.0)
+        first.close()
+
+        second = JsonlStore(tmp_path, overwrite=True)
+        second.write("train", t=99.0)
+        second.write("instance/0", t=99.0)
+        second.close()
+
+        assert list(second.iter("train")) == [{"t": 99.0}]
+        assert list(second.iter("instance/0")) == [{"t": 99.0}]
+        assert list(second.iter("instance/1")) == []
+        assert second.list_streams() == ["instance/0", "train"]
+
+    def test_overwrite_false_on_reopen_does_not_wipe(self, tmp_path):
+        first = JsonlStore(tmp_path)
+        first.write("train", t=1.0)
+        first.close()
+        reopened = JsonlStore(tmp_path)
+        assert list(reopened.iter("train")) == [{"t": 1.0}]

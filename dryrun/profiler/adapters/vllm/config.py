@@ -87,7 +87,6 @@ class VLLMSweepConfig:
     phase_parameters: dict[str, tuple[dict[str, Any], ...]] = field(default_factory=dict)
     num_runs: int = 3
     server_ready_timeout: int = 900
-    profiler_args: dict[str, Any] = field(default_factory=dict)
     executable: str = "vllm"
     backend_version: str = PINNED_VLLM_VERSION
     source_commit: str = PINNED_VLLM_COMMIT
@@ -109,20 +108,30 @@ class VLLMSweepConfig:
             raise ProfileValidationError("startup_stagger_seconds must not be negative.")
         if self.max_concurrent_startups <= 0:
             raise ProfileValidationError("max_concurrent_startups must be positive.")
-        request_rate = self.bench_args.get(
-            "request-rate",
-            self.bench_args.get("request_rate", "inf"),
+        range_ratio = self.bench_args.get(
+            "random-range-ratio",
+            self.bench_args.get("random_range_ratio", 0.0),
         )
-        if str(request_rate).lower() not in {"inf", "infinity"}:
+        if float(range_ratio) != 0.0:
             raise ProfileValidationError(
-                "Atomic timing/trace alignment requires bench request-rate=inf."
+                "Equal-length feature formulas require bench random-range-ratio=0."
             )
         if any(
             key.replace("_", "-") in {"profiler", "profiler-config"}
             for key in self.serve_args
         ):
             raise ProfileValidationError(
-                "serve.args must not override the adapter-managed profiler configuration."
+                "serve.args must not enable a profiler; timing-only collection "
+                "uses scheduler iteration logs."
+            )
+        if any(
+            key.replace("_", "-") in {"async-scheduling", "no-async-scheduling"}
+            for key in self.serve_args
+        ):
+            raise ProfileValidationError(
+                "serve.args must not set async scheduling; timing collection "
+                "always disables it so each iteration's elapsed time measures "
+                "its own forward pass."
             )
         if not self.phase_parameters:
             raise ProfileValidationError("At least one vLLM phase must be configured.")
@@ -149,7 +158,6 @@ class VLLMSweepConfig:
         output_dir = output_dir.resolve()
         serve = value.get("serve", {})
         bench = value.get("bench", {})
-        profiling = value.get("profiling", {})
         run = value.get("run", {})
         if not isinstance(run, dict):
             raise ProfileValidationError("run must be a mapping.")
@@ -164,7 +172,6 @@ class VLLMSweepConfig:
             phase_parameters=phases,
             num_runs=int(value.get("num_runs", 3)),
             server_ready_timeout=int(value.get("server_ready_timeout", 900)),
-            profiler_args=dict(profiling.get("profiler_args", {})),
             executable=str(value.get("executable", "vllm")),
             environment={str(key): str(item) for key, item in value.get("environment", {}).items()},
             max_parallel=_max_parallel_value(run.get("max_parallel")),
@@ -190,13 +197,6 @@ class VLLMSweepConfig:
             / f"vllm_{measurement}"
             / f"{self.experiment_name}-{phase}-{measurement}{suffix}"
         )
-
-    def trace_dir(self, phase: str, shard_id: str | None = None) -> Path:
-        path = self.output_dir / "raw" / "vllm_traces" / f"{self.experiment_name}-{phase}"
-        return path / shard_id if shard_id else path
-
-    def trace_manifest_path(self, phase: str) -> Path:
-        return self.output_dir / "control" / "vllm" / phase / "trace_manifest.json"
 
     def sweep_log_path(
         self,

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from dryrun.cli import regress as regress_cli
 from dryrun.cli.profile import build_parser as build_profile_parser
 from dryrun.cli.regress import build_parser as build_regress_parser
 from dryrun.profiler.adapters.megatron_bridge import (
@@ -14,7 +18,7 @@ from dryrun.profiler.adapters.vllm import (
     VLLMSweepConfig,
     format_vllm_job_command,
     prepare_vllm_jobs,
-    prepare_vllm_sweeps,
+    prepare_vllm_sweep,
 )
 from dryrun.profiler.schema import HardwareDescriptor, ModelDescriptor, Parallelism
 from dryrun.profiler.search_space import TrainingCandidate
@@ -55,11 +59,59 @@ def test_regress_cli_exposes_model_owned_fitters():
         ]
     )
     assert rollout.model == "distserve"
+    assert rollout.validation_fraction == 0.0
     assert training.latency_model == "hydraulis"
     assert training.memory_model == "hydraulis"
 
 
-def test_vllm_generated_command_uses_official_detailed_trace(tmp_path: Path):
+@pytest.mark.parametrize(("backend", "plots_expected"), [("vllm", True), ("megatron", False)])
+def test_rollout_regress_automatically_plots_only_vllm(
+    tmp_path: Path,
+    monkeypatch,
+    backend: str,
+    plots_expected: bool,
+):
+    records = [SimpleNamespace(software=SimpleNamespace(backend=backend))]
+    saved_paths: list[Path] = []
+    plotted: list[tuple] = []
+
+    class FakeArtifact:
+        entries = (object(),)
+
+        def save(self, path):
+            saved_paths.append(Path(path))
+
+    artifact = FakeArtifact()
+    monkeypatch.setattr(regress_cli, "read_records", lambda *_args, **_kwargs: records)
+    monkeypatch.setattr(
+        regress_cli.PSRLFitted,
+        "fit",
+        classmethod(lambda _cls, _records, *, validation_fraction: artifact),
+    )
+    monkeypatch.setattr(
+        regress_cli,
+        "plot_vllm_rollout_regression",
+        lambda *args, **kwargs: plotted.append((args, kwargs)) or [],
+    )
+    output = tmp_path / "rollout_psrl.json"
+    args = SimpleNamespace(
+        model="psrl",
+        input=tmp_path / "profile.jsonl",
+        output=output,
+        validation_fraction=0.2,
+    )
+
+    regress_cli.cmd_rollout(args)
+
+    assert saved_paths == [output]
+    assert bool(plotted) is plots_expected
+    if plots_expected:
+        plot_args, plot_kwargs = plotted[0]
+        assert plot_args == (records, artifact, tmp_path / "rollout_psrl_plots")
+        assert plot_kwargs == {"validation_fraction": 0.2}
+
+
+def test_vllm_generated_command_uses_iteration_logs(tmp_path: Path):
     config = VLLMSweepConfig(
         model=ModelDescriptor(name="Qwen3-8B"),
         hardware=HardwareDescriptor(gpu_name="H100", gpu_count=1),
@@ -67,20 +119,15 @@ def test_vllm_generated_command_uses_official_detailed_trace(tmp_path: Path):
         experiment_name="test",
         phase_parameters={"prefill": ({"random-output-len": 1},)},
     )
-    sweeps = prepare_vllm_sweeps(config, "prefill")
-    timing_command, _ = sweeps["timing"]
-    trace_command, _ = sweeps["trace"]
-    assert timing_command[:4] == ["vllm", "bench", "sweep", "serve"]
-    timing_bench = timing_command[timing_command.index("--bench-cmd") + 1]
-    timing_serve = timing_command[timing_command.index("--serve-cmd") + 1]
-    trace_bench = trace_command[trace_command.index("--bench-cmd") + 1]
-    trace_serve = trace_command[trace_command.index("--serve-cmd") + 1]
-    assert "--save-detailed" in timing_bench
-    assert "--profile" not in timing_bench
-    assert "--enable-logging-iteration-details" in timing_serve
-    assert "--profile" in trace_bench
-    assert '"detailed_trace_annotation":true' in trace_serve
-    assert '"profiler":"torch"' in trace_serve
+    command, _ = prepare_vllm_sweep(config, "prefill")
+    assert command[:4] == ["vllm", "bench", "sweep", "serve"]
+    bench = command[command.index("--bench-cmd") + 1]
+    serve = command[command.index("--serve-cmd") + 1]
+    assert "--save-detailed" in bench
+    assert "--profile" not in bench
+    assert "--enable-logging-iteration-details" in serve
+    assert "--profiler-config" not in serve
+    assert "random-range-ratio" in bench
 
 
 def test_vllm_parallel_jobs_shard_points_across_eight_gpus(tmp_path: Path):
@@ -105,7 +152,7 @@ def test_vllm_parallel_jobs_shard_points_across_eight_gpus(tmp_path: Path):
         visible_devices=[str(index) for index in range(8)],
     )
 
-    assert len(jobs) == 16
+    assert len(jobs) == 8
     assert {job.shard_id for job in jobs} == {
         f"s{index:03d}" for index in range(8)
     }
@@ -120,9 +167,8 @@ def test_vllm_parallel_jobs_shard_points_across_eight_gpus(tmp_path: Path):
     first_bench = jobs[0].command[jobs[0].command.index("--bench-cmd") + 1]
     assert f"--port {jobs[0].port}" in first_serve
     assert f"--base-url http://127.0.0.1:{jobs[0].port}" in first_bench
-    trace_jobs = [job for job in jobs if job.measurement == "trace"]
-    assert len({job.trace_dir for job in trace_jobs}) == 8
-    assert len({job.log_path for job in jobs}) == 16
+    assert all(job.measurement == "timing" for job in jobs)
+    assert len({job.log_path for job in jobs}) == 8
     assert "--dry-run" in format_vllm_job_command(jobs[0], dry_run=True)
     assert "CUDA_VISIBLE_DEVICES=" in format_vllm_job_command(jobs[0])
 
@@ -155,7 +201,7 @@ def test_vllm_parallel_jobs_pack_tp2_into_four_slots(tmp_path: Path):
         visible_devices=[str(index) for index in range(8)],
     )
 
-    assert len(jobs) == 8
+    assert len(jobs) == 4
     assert all(job.world_size == 2 for job in jobs)
     assert all(len(job.gpu_ids) == 2 for job in jobs)
     for wave in {job.wave for job in jobs}:
@@ -184,9 +230,9 @@ def test_vllm_max_parallel_one_preserves_legacy_sweeps(tmp_path: Path):
         visible_devices=[str(index) for index in range(8)],
     )
 
-    assert len(jobs) == 2
+    assert len(jobs) == 1
     assert all(job.shard_id is None for job in jobs)
-    assert [job.wave for job in jobs] == [0, 1]
+    assert [job.wave for job in jobs] == [0]
     assert all(job.port is None for job in jobs)
     assert all("-s000" not in job.experiment_dir.name for job in jobs)
 

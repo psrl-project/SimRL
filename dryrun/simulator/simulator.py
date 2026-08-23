@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import heapq
 
+from tqdm import tqdm
+
 from ..component.recompute.cost import FixedRecomputeCost, RecomputeCostModel
 from ..component.rollout.engine import EngineEvent, EventKind, NativeInstance, ReqStatus, Request
 from ..component.sync.cost import FixedSyncCost, SyncCostModel
@@ -23,7 +25,7 @@ from ..cost.training import (
 from ..policy.base import CompleteAction, SimState, StalenessPolicy
 from ..telemetry.store import JsonlStore
 from ..telemetry.writer import SimTelemetry
-from .config import SimConfig, SimResult
+from .config import SimConfig, SimResult, clip_length
 
 
 class Simulator:
@@ -84,8 +86,8 @@ class Simulator:
             )
 
         self.t: float = 0.0
-        self.version: int = 0
-        self.engine_version: int = 0
+        self.train_version: int = 0
+        self.rollout_version: int = 0
         self.next_rid: int = 0
         self.inflight: list[Request] = []
         self.ready: list[Request] = []
@@ -105,8 +107,8 @@ class Simulator:
     def _state(self) -> SimState:
         return SimState(
             now=self.t,
-            version=self.version,
-            engine_version=self.engine_version,
+            train_version=self.train_version,
+            rollout_version=self.rollout_version,
             batch_size=self.cfg.batch_size,
             max_staleness=self.cfg.max_staleness,
             inflight=self.inflight,
@@ -117,10 +119,12 @@ class Simulator:
         )
 
     def _next_length(self) -> int:
-        return int(self.lengths[self.next_rid % len(self.lengths)])
+        sampled = int(self.lengths[self.next_rid % len(self.lengths)])
+        return clip_length(sampled, self.cfg.max_output_length)
 
     def _next_prompt_length(self) -> int:
-        return int(self.prompt_lengths[self.next_rid % len(self.prompt_lengths)])
+        sampled = int(self.prompt_lengths[self.next_rid % len(self.prompt_lengths)])
+        return clip_length(sampled, self.cfg.max_prompt_length)
 
     def _select_instance(self, req: Request) -> int:
         loads = [inst.n_active for inst in self.instances]
@@ -136,7 +140,7 @@ class Simulator:
                 rid=self.next_rid,
                 prompt_len=self._next_prompt_length(),
                 target_len=self._next_length(),
-                v_traj=self.engine_version,
+                v_traj=self.rollout_version,
                 admit_time=self.t,
             )
             instance_id = self._select_instance(req)
@@ -156,31 +160,42 @@ class Simulator:
 
     def run(self) -> SimResult:
         idle_rounds = 0
-        while self.version < self.cfg.n_versions:
-            self._admit()
+        pbar = tqdm(
+            total=self.cfg.n_versions,
+            desc="simulate versions",
+            unit="ver",
+            dynamic_ncols=True,
+        )
+        try:
+            while self.train_version < self.cfg.n_versions:
+                self._admit()
 
-            batch = self.policy.take_batch(self._state())
-            if batch is None:
-                self.policy.on_batch_unavailable(self._state())
-                if not self.inflight and self._admit() == 0:
-                    has_waiting = any(inst.waiting for inst in self.instances)
-                    if not has_waiting:
-                        idle_rounds += 1
-                        if idle_rounds > self.cfg.livelock_rounds:
-                            return self._result(livelocked=True)
-                        continue
-                before = (self.t, len(self.inflight), len(self.ready), len(self.dropped))
-                self._run_engine(stop_on_batch=True)
-                after = (self.t, len(self.inflight), len(self.ready), len(self.dropped))
-                idle_rounds = 0 if after != before else idle_rounds + 1
-                if idle_rounds > self.cfg.livelock_rounds:
-                    return self._result(livelocked=True)
-                continue
+                batch = self.policy.take_batch(self._state())
+                if batch is None:
+                    self.policy.on_batch_unavailable(self._state())
+                    if not self.inflight and self._admit() == 0:
+                        has_waiting = any(inst.waiting for inst in self.instances)
+                        if not has_waiting:
+                            idle_rounds += 1
+                            if idle_rounds > self.cfg.livelock_rounds:
+                                return self._result(livelocked=True)
+                            continue
+                    before = (self.t, len(self.inflight), len(self.ready), len(self.dropped))
+                    self._run_engine(stop_on_batch=True)
+                    after = (self.t, len(self.inflight), len(self.ready), len(self.dropped))
+                    idle_rounds = 0 if after != before else idle_rounds + 1
+                    if idle_rounds > self.cfg.livelock_rounds:
+                        return self._result(livelocked=True)
+                    continue
 
-            idle_rounds = 0
-            self._train(batch)
+                idle_rounds = 0
+                self._train(batch)
+                pbar.set_postfix(t=f"{self.t:.1f}s", refresh=False)
+                pbar.update(1)
 
-        return self._result()
+            return self._result()
+        finally:
+            pbar.close()
 
     def _collect(self, done: list[Request]) -> None:
         st = self._state()
@@ -198,11 +213,17 @@ class Simulator:
 
     def _discard(self, reqs: list[Request]) -> None:
         seen: set[int] = set()
-        to_cancel: list[Request] = []
+        unique_reqs: list[Request] = []
         for req in reqs:
             if id(req) in seen:
                 continue
             seen.add(id(req))
+            unique_reqs.append(req)
+
+        self.policy.on_discard(unique_reqs, self._state())
+
+        to_cancel: list[Request] = []
+        for req in unique_reqs:
             if req in self.inflight:
                 self.inflight.remove(req)
                 to_cancel.append(req)
@@ -232,7 +253,7 @@ class Simulator:
         """Advance every lagging instance to a common global time."""
         for inst in self.instances:
             assert inst.t_local <= t, "Instance time must be less than or equal to the target time."
-            extra_done, _ = inst.advance_to(t, self.engine_version)
+            extra_done, _ = inst.advance_to(t, self.rollout_version)
             assert not extra_done, "No extra completions expected."
             if force_align_t_local:
                 inst.t_local = t
@@ -260,7 +281,7 @@ class Simulator:
         for inst in self.instances:
             if not inst.running and not inst.waiting:
                 continue
-            event = inst.advance_one_event(self.engine_version)
+            event = inst.advance_one_event(self.rollout_version)
             if event is not None:
                 events[inst.instance_id] = event
                 heapq.heappush(queue, (event.t, inst.instance_id))
@@ -350,7 +371,7 @@ class Simulator:
 
             # --- Produce next event from this instance ---
             if inst.running or inst.waiting:
-                next_event = inst.advance_one_event(self.engine_version)
+                next_event = inst.advance_one_event(self.rollout_version)
                 if next_event is not None:
                     events[inst.instance_id] = next_event
                     heapq.heappush(queue, (next_event.t, inst.instance_id))
@@ -364,32 +385,47 @@ class Simulator:
             self._align_instances(self.t, force_align_t_local=False)
         self.telemetry.sync_all(self.instances)
 
+    def _publish_weights(self) -> None:
+        """Publish the finished training step, then interrupt and refill.
+
+        `train_version` advances here, after recompute/train/sync actually
+        finished. Rollout then loads the new weights, aborts in-flight partials,
+        and the policy is asked for a new admit quota.
+        """
+        previous_rollout_version = self.rollout_version
+        self.train_version += 1
+        self.policy.on_train_version_advance(self.train_version, self._state())
+        self.rollout_version = self.policy.rollout_version_after_train(self._state())
+        weights_changed = self.rollout_version != previous_rollout_version
+        if weights_changed and self.cfg.partial_rollout and self.inflight:
+            for inst in self.instances:
+                inst.abort_all()
+            self.policy.on_interrupt(list(self.inflight), self._state())
+            self.telemetry.emit_instance_all(self.instances)
+        self._admit()  # emits instance telemetry itself if it admits anything.
+
     def _train(self, batch: list[Request]) -> None:
+        """Consume `batch`, expire against the expected version, train, then publish.
+
+        Committing this batch means it will become `train_version + 1`. Stale
+        in-flight work is expired against that expected version immediately,
+        without publishing yet. Rollout keeps the previous `rollout_version`
+        until train+sync finish.
+        """
         train_start = self.t
         for req in batch:
-            req.consume_version = self.version
+            req.consume_version = self.train_version
             if req in self.ready:
                 self.ready.remove(req)
             self.consumed.append(req)
             self.n_consumed += 1
             self.telemetry.write_request("consume", self.t, req)
 
-        self.version += 1
-        self.policy.on_version_advance(self.version, self._state())
-        self.engine_version = self.policy.engine_version_after_train(self._state())
-
-        expired = self.policy.expire(self._state())
+        expected_train_version = self.train_version + 1
+        expired = self.policy.expire(self._state(), expected_train_version)
         if expired:
             self._discard(expired)
             self.telemetry.emit_instance_all(self.instances)
-
-        if self.cfg.partial_rollout and self.inflight:
-            for inst in self.instances:
-                inst.abort_all()
-            self.policy.on_abort(list(self.inflight), self._state())
-            self.telemetry.emit_instance_all(self.instances)
-
-        self._admit()  # emits instance telemetry itself if it admits anything.
 
         sequence_lengths = tuple(req.ctx for req in batch)
         total_tokens = sum(sequence_lengths)
@@ -414,7 +450,8 @@ class Simulator:
                 f"Predicted training peak memory {peak_memory_bytes} exceeds configured capacity "
                 f"{self.cfg.training_gpu_memory_bytes}."
             )
-        sync_time = self.sync_cost.sync_time(0, self.cfg.n_instances, 0)
+        weight_sync = self.policy.will_sync_after_train(self._state())
+        sync_time = self.sync_cost.sync_time(0, self.cfg.n_instances, 0) if weight_sync else 0.0
         recompute_time = self.recompute_cost.recompute_time(
             len(batch),
             total_tokens,
@@ -424,13 +461,15 @@ class Simulator:
         total_duration = train_time + sync_time + recompute_time
         deadline = self.t + total_duration
         self._run_engine(deadline=deadline)
+        self._publish_weights()
+
         self.train_timestamps.append((train_start, self.t))
         self.train_peak_memory_bytes.append(peak_memory_bytes)
         self.telemetry.write_train(
             t=self.t,
             start=train_start,
             end=self.t,
-            version=self.version,
+            version=self.train_version,
             batch_size=len(batch),
             n_reqs=len(batch),
             total_tokens=total_tokens,
@@ -456,7 +495,7 @@ class Simulator:
             consumed=self.consumed,
             dropped=self.dropped,
             sim_time=self.t,
-            versions_done=self.version,
+            versions_done=self.train_version,
             livelocked=livelocked,
             train_timestamps=self.train_timestamps,
             train_peak_memory_bytes=self.train_peak_memory_bytes,

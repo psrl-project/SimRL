@@ -20,9 +20,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from ...._logging import dryrun_logger
-from .collect import index_vllm_traces
 from .config import VLLMSweepConfig
-from .parse import worker_trace_files
 from .prepare import VLLMSweepJob, format_vllm_job_command, prepare_vllm_jobs
 
 _LEVELS_WITHOUT_ITERATION_LOGS = frozenset(
@@ -141,8 +139,6 @@ def _vllm_job_is_complete(job: VLLMSweepJob) -> bool:
         return False
     if len(list(job.experiment_dir.rglob("run=*.json"))) < job.expected_runs:
         return False
-    if job.trace_dir is not None:
-        return len(worker_trace_files(job.trace_dir)) >= job.expected_runs
     return True
 
 
@@ -304,8 +300,6 @@ def run_vllm_profiles(
         }
 
     _run_vllm_job_pool(config, jobs, resume=resume)
-    for phase in phases:
-        index_vllm_traces(config, phase)
     return {
         phase: config.raw_experiment_dir(phase, "timing")
         for phase in phases

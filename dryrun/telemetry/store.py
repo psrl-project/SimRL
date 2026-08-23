@@ -1,12 +1,13 @@
 """General-purpose JSONL stream store for simulation telemetry.
 
 A `JsonlStore` maps a stream name (e.g. "train", "instance/0", "rollout_step")
-to an append-only `.jsonl` file under a root directory. Writers append one
-JSON object per call and the store never holds history in memory; readers
-stream records back with `iter`. This lets the simulator log richly (per-step,
-per-instance telemetry) without accumulating large lists in `SimResult`, and
-lets visualization run standalone against a previous run's logs without
-re-simulating.
+to a `.jsonl` file under a root directory. Within one store lifetime writers
+append one JSON object per call and the store never holds history in memory;
+readers stream records back with `iter`. Pass `overwrite=True` to wipe that
+root first, so a new simulation does not concatenate onto a previous run.
+This lets the simulator log richly (per-step, per-instance telemetry) without
+accumulating large lists in `SimResult`, and lets visualization run standalone
+against a previous run's logs without re-simulating.
 
 Records have no fixed schema: callers pass whatever keyword fields matter for
 that stream. Adding a field or a new stream never requires touching this
@@ -16,6 +17,7 @@ module.
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Iterator
 from dataclasses import asdict, is_dataclass
 from enum import Enum
@@ -46,10 +48,18 @@ class JsonlStore:
 
     Stream names may contain `/` to group related streams into
     subdirectories, e.g. `instance/0` maps to `root/instance/0.jsonl`.
+
+    Args:
+        root: Directory that holds the `.jsonl` stream files.
+        overwrite: If True, delete `root` (when it already exists) before
+            creating it, so this run's logs replace any previous run. Plotting
+            and other read-only reopenings should leave this False.
     """
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, *, overwrite: bool = False):
         self.root = Path(root)
+        if overwrite and self.root.exists():
+            shutil.rmtree(self.root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._files: dict[str, TextIO] = {}
 

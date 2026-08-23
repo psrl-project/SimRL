@@ -26,6 +26,19 @@ def lognormal(n: int, mu: float, sigma: float, lo: int = 1, hi: int | None = Non
     return out
 
 
+def normal(n: int, mu: float, sigma: float, lo: int = 1, hi: int | None = None, seed: int = 0) -> list[int]:
+    """Round samples from `N(mu, sigma)`. Draws below `lo` are raised to `lo`."""
+    rng = random.Random(seed)
+    out = []
+    for _ in range(n):
+        v = int(round(rng.gauss(mu, sigma)))
+        v = max(lo, v)
+        if hi is not None:
+            v = min(hi, v)
+        out.append(v)
+    return out
+
+
 def powerlaw(n: int, alpha: float, lo: int, hi: int, seed: int = 0) -> list[int]:
     """Pareto-ish lengths truncated to [lo, hi]."""
     rng = random.Random(seed)

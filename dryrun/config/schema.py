@@ -47,14 +47,17 @@ class PolicyConfig:
     max_inflight: int | None = None
     update_weights_interval: int = 1
     over_sampling_ratio: float = 1.0
-    staleness_threshold: float = 0.1
-    trigger_parameter_sync_step: int = 4
+    staleness_threshold: float | None = None
     require_batches: int = 1
 
 
 @dataclass
 class DistributionConfig:
-    """Length distribution configuration for one dimension (prompt or output)."""
+    """Length distribution configuration for one dimension (prompt or output).
+
+    `lo` / `hi` describe the distribution's own support where that family needs
+    them (for example uniform or powerlaw). Per-request caps belong on `JobConfig`.
+    """
 
     name: str = "uniform"
     n: int = 200
@@ -135,6 +138,9 @@ class JobConfig:
     n_versions: int = 20
     batch_size: int = 8
     max_staleness: int = 2
+    # Per-request caps applied after sampling. None means no truncation.
+    max_prompt_length: int | None = None
+    max_output_length: int | None = None
 
 
 @dataclass

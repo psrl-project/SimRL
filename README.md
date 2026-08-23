@@ -27,6 +27,7 @@ Hydra controls simulation configuration:
 
 ```bash
 dryrun policy=psrl job.n_versions=20 rollout.n_instances=4 job.batch_size=8
+dryrun job.max_prompt_length=8192 job.max_output_length=8192 workload=normal
 dryrun policy=areal workload=bimodal job.n_versions=10
 dryrun --multirun policy=psrl,areal,roll rollout.n_instances=1,2,4
 ```
@@ -36,7 +37,7 @@ The principal configuration groups are:
 - `rollout_cost=roofline|psrl|distserve`
 - `training_cost=fixed|linear|analytical|hydraulis`
 - `policy=psrl|areal|roll|slime|verl`
-- `workload=uniform|bimodal|lognormal|powerlaw`
+- `workload=uniform|bimodal|lognormal|normal|powerlaw`
 
 Fitted artifacts use explicit topology:
 

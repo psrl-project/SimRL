@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections import Counter
 from pathlib import Path
 
 import hydra
@@ -36,7 +37,7 @@ from ..profiler.schema import Parallelism, mib_to_bytes
 from ..simulator import SimConfig, Simulator
 from ..telemetry.store import JsonlStore
 from ..visualizer.plots import SimPlotter
-from ..workload.distributions import bimodal, fixed, from_trace, lognormal, powerlaw, uniform
+from ..workload.distributions import bimodal, fixed, from_trace, lognormal, normal, powerlaw, uniform
 
 register_configs()
 
@@ -106,9 +107,11 @@ def build_policy(cfg: DictConfig, max_staleness: int) -> StalenessPolicy:
             max_inflight=cfg.get("max_inflight", None),
         )
     if name == "verl":
+        configured_threshold = cfg.get("staleness_threshold", None)
         return VerlPolicy(
-            staleness_threshold=cfg.get("staleness_threshold", 0.1),
-            trigger_parameter_sync_step=cfg.get("trigger_parameter_sync_step", 4),
+            staleness_threshold=float(
+                max_staleness if configured_threshold is None else configured_threshold
+            ),
             require_batches=cfg.get("require_batches", 1),
             max_inflight=cfg.get("max_inflight", None),
         )
@@ -131,7 +134,23 @@ def build_distribution(cfg: DictConfig) -> list[int]:
             seed=seed,
         )
     if name == "lognormal":
-        return lognormal(n, cfg.get("mu", 4.0), cfg.get("sigma", 1.0), seed=seed)
+        return lognormal(
+            n,
+            cfg.get("mu", 4.0),
+            cfg.get("sigma", 1.0),
+            lo=cfg.get("lo", 1),
+            hi=cfg.get("hi", None),
+            seed=seed,
+        )
+    if name == "normal":
+        return normal(
+            n,
+            cfg.get("mu", 512.0),
+            cfg.get("sigma", 128.0),
+            lo=cfg.get("lo", 1),
+            hi=cfg.get("hi", None),
+            seed=seed,
+        )
     if name == "powerlaw":
         return powerlaw(
             n, cfg.get("alpha", 2.0), cfg.get("lo", 10), cfg.get("hi", 1000), seed=seed
@@ -224,6 +243,12 @@ def build_recompute_cost(cfg: DictConfig) -> RecomputeCostModel:
     raise ValueError(f"Unknown recompute cost model: {name!r}.")
 
 
+def _length_cap(value) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
 def run_simulate(cfg: DictConfig) -> None:
     """Run a simulation from a resolved Hydra config."""
     job = cfg.job
@@ -264,6 +289,8 @@ def run_simulate(cfg: DictConfig) -> None:
         reject_if_running_full=admit.get("reject_if_running_full", False),
         n_instances=rollout.n_instances,
         prompt_lengths=prompt_lengths,
+        max_prompt_length=_length_cap(job.get("max_prompt_length", None)),
+        max_output_length=_length_cap(job.get("max_output_length", None)),
         livelock_rounds=rollout.get("livelock_rounds", 50),
         max_engine_iters=rollout.get("max_engine_iters", 10_000),
         log_telemetry=log_telemetry,
@@ -278,12 +305,14 @@ def run_simulate(cfg: DictConfig) -> None:
     dryrun_logger.info(
         f"Starting simulation: policy={policy.name}, n_versions={sim_cfg.n_versions}, "
         f"n_instances={sim_cfg.n_instances}, batch_size={sim_cfg.batch_size}, "
+        f"max_prompt_length={sim_cfg.max_prompt_length!r}, "
+        f"max_output_length={sim_cfg.max_output_length!r}, "
         f"log_telemetry={log_telemetry}."
     )
 
     # Only create the logs directory / JSONL files at all when telemetry
     # logging is switched on; `log_telemetry=False` must not touch disk.
-    store = JsonlStore(output_dir / "logs") if log_telemetry else None
+    store = JsonlStore(output_dir / "logs", overwrite=True) if log_telemetry else None
 
     sim = Simulator(
         rollout_cost=rollout_cost,
@@ -303,7 +332,11 @@ def run_simulate(cfg: DictConfig) -> None:
     print(f"  Throughput: {result.throughput:.1f} tokens/s")
     if result.consumed:
         print(f"  Max staleness (true): {result.max_staleness_true}")
-        print(f"  Max staleness (reported): {result.max_staleness_reported}")
+        staleness_counts = Counter(result.staleness_true_values)
+        print("  Staleness distribution:")
+        for staleness, count in sorted(staleness_counts.items()):
+            percentage = count / result.n_consumed * 100
+            print(f"    {staleness}: {count} requests ({percentage:.2f}%)")
     if result.livelocked:
         print("  WARNING: Simulation livelocked!")
 

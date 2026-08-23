@@ -22,17 +22,16 @@ class VerlPolicy(StalenessPolicy):
     def __init__(
         self,
         staleness_threshold: float = 0.1,
-        trigger_parameter_sync_step: int = 4,
         require_batches: int = 1,
         max_inflight: int | None = None,
     ):
+        assert staleness_threshold >= 0, "staleness_threshold must be >= 0."
+        assert require_batches >= 1, "require_batches must be >= 1."
         self.threshold = staleness_threshold
-        self.sync_step = trigger_parameter_sync_step
         self.require_batches = require_batches
         self.max_inflight = max_inflight
 
         self.staleness_samples = 0
-        self.local_trigger_step = 1
         self.queue: deque = deque()
         self.max_queue_size = 1
         self.max_required = 1
@@ -41,7 +40,7 @@ class VerlPolicy(StalenessPolicy):
 
     def _configure(self, st: SimState) -> None:
         required = st.batch_size * self.require_batches
-        self.max_required = int(required * (self.threshold + 1) * self.sync_step)
+        self.max_required = int(required * (self.threshold + 1))
         self.max_queue_size = self.max_required
         self.queue = deque(self.queue, maxlen=self.max_queue_size)
         self._configured = True
@@ -83,11 +82,7 @@ class VerlPolicy(StalenessPolicy):
         required = len(batch)
         return [self.queue.popleft() for _ in range(required)]
 
-    def on_version_advance(self, version: int, st: SimState) -> None:
-        if self.local_trigger_step < self.sync_step:
-            self.local_trigger_step += 1
-            return
-        self.local_trigger_step = 1
+    def on_train_version_advance(self, train_version: int, st: SimState) -> None:
         self.staleness_samples = len(st.inflight) + len(self.queue)
 
     def check_invariants(self, st: SimState) -> None:

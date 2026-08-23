@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from .._logging import dryrun_logger, setup_logging
 from ..cost.rollout import DistServe, PSRLFitted, UnifiedRoofline
+from ..cost.rollout.plot import plot_vllm_rollout_regression
 from ..cost.training import HydraulisTrainingCost
 from ..profiler.io import read_records
 
@@ -39,6 +41,17 @@ def cmd_rollout(args: argparse.Namespace) -> None:
         f"Saved {args.model!r} rollout artifact with {len(artifact.entries)} entries "
         f"to {args.output}."
     )
+    if {record.software.backend for record in records} == {"vllm"}:
+        output = Path(args.output)
+        plot_dir = output.parent / f"{output.stem}_plots"
+        plot_paths = plot_vllm_rollout_regression(
+            records,
+            artifact,
+            plot_dir,
+            validation_fraction=args.validation_fraction,
+        )
+        for plot_path in plot_paths:
+            dryrun_logger.info(f"Saved vLLM rollout regression plot to {plot_path}.")
 
 
 def cmd_training(args: argparse.Namespace) -> None:
@@ -71,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     rollout.add_argument("--input", required=True)
     rollout.add_argument("--output", required=True)
     rollout.add_argument("--block-size", type=int, default=16)
-    rollout.add_argument("--validation-fraction", type=float, default=0.2)
+    rollout.add_argument("--validation-fraction", type=float, default=0.0)
     rollout.add_argument("--hidden-size", type=int)
     rollout.add_argument("--intermediate-size", type=int)
     rollout.set_defaults(func=cmd_rollout)
