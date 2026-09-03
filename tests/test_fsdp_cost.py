@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -955,3 +956,48 @@ def test_in_range_values_produce_no_extrapolation_notes():
     )
     estimate = cost.estimate(workload, TrainingParallelism(dp=8))
     assert "extrapolation_notes" not in estimate.diagnostics
+
+
+def test_the_quadratic_term_sums_per_sequence_squares_not_the_packed_square():
+    """Attention does not cross sequence boundaries, so packing must not be charged its square.
+
+    The shared `_records` fixture generates step times from a purely linear formula and uses one
+    sequence per microbatch, so it cannot discriminate here. This builds records with a known
+    quadratic ground truth expressed in `Sum(s^2)` and with packing, then checks the fit recovers
+    that coefficient. Charging `(Sum s)^2` instead would need a coefficient smaller by the
+    sequence count to fit the same data, so recovering the true value is the discriminating
+    assertion.
+    """
+    quad_true = 2.0e-8
+    records = []
+    for length, n_seqs, num_microbatches in (
+        (512, 1, 1),
+        (512, 1, 4),
+        (1024, 1, 1),
+        (2048, 1, 1),
+        (2048, 1, 2),
+        (1024, 2, 1),
+        (1024, 2, 2),
+        (512, 4, 1),
+    ):
+        microbatches = tuple(
+            SequenceStats.from_lengths([length] * n_seqs) for _ in range(num_microbatches)
+        )
+        tokens = float(max(item.sum_tokens for item in microbatches))
+        sum_sq = float(max(item.sum_squared_tokens for item in microbatches))
+        slots = float(num_microbatches)
+        step = PER_STEP + slots * (
+            TOKEN_COST * tokens + quad_true * sum_sq + MICROBATCH_OVERHEAD
+        )
+        record = _record(
+            n_seqs=n_seqs, length=length, num_microbatches=num_microbatches
+        )
+        payload = replace(record.payload, step_times_s=(step,) * 8)
+        records.append(replace(record, payload=payload))
+
+    artifact = FsdpTrainingCost.fit(records, validation_fraction=0.0)
+    entry = next(e for e in artifact.entries if e.selector["component"] == "latency")
+    assert entry.coefficients["token_quadratic_cost"] == pytest.approx(quad_true, rel=0.05), (
+        "the fitted quadratic coefficient must match the Sum(s^2) ground truth; a mismatch "
+        "means the design row squared the packed total instead"
+    )

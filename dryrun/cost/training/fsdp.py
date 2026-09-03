@@ -333,8 +333,19 @@ def _latency_design_row(payload: TrainingPayload) -> tuple[float, float, float, 
     a throughput far above the hardware's. The two backends differ because their profiled
     domains differ, not because their physics does.
     """
-    num_microbatches, max_tokens = _latency_features(payload).slots, _latency_features(payload).tokens
-    return (1.0, num_microbatches * max_tokens, num_microbatches, num_microbatches * max_tokens**2)
+    features = _latency_features(payload)
+    # Attention does not cross sequence boundaries, so a packed microbatch costs the SUM of
+    # each sequence's square, not the square of the packed total. Those differ by the
+    # sequence count: eight 2048-token sequences give Sum(s^2) = 3.36e7 against
+    # (Sum s)^2 = 2.68e8, an 8x error. `SequenceStats.sum_squared_tokens` is exactly the
+    # right quantity and is already recorded, so use it rather than squaring the total.
+    quadratic = float(max(item.sum_squared_tokens for item in payload.microbatches))
+    return (
+        1.0,
+        features.slots * features.tokens,
+        features.slots,
+        features.slots * quadratic,
+    )
 
 
 def _latency_arrays(records: list[ProfileRecord]) -> tuple[np.ndarray, np.ndarray]:
@@ -423,7 +434,8 @@ def _fit_latency_entry(
         diagnostics={
             "formula": (
                 "per_step_overhead + num_microbatches * (token_cost * max_microbatch_tokens "
-                "+ token_quadratic_cost * max_microbatch_tokens ** 2 + microbatch_overhead)"
+                "+ token_quadratic_cost * max_microbatch_sum_squared_tokens "
+                "+ microbatch_overhead)"
             ),
             # There is no pipeline, so the slots multiplier of the shared latency form
             # degenerates to the microbatch count rather than taking a fitted term.
@@ -865,9 +877,14 @@ class FsdpLatencyModel(_FsdpCellModel, TrainingLatencyModel):
             if note is not None:
                 notes.append(note)
         coefficients = entry.coefficients
+        # Must match `_latency_design_row` exactly: the quadratic term is the sum of each
+        # sequence's square, not the square of the packed total. Squaring `features.tokens`
+        # here would overcharge a packed microbatch by its sequence count while the fit
+        # charged it correctly, so predict and fit would disagree on the same input.
+        quadratic = float(max(item.sum_squared_tokens for item in microbatches))
         latency = coefficients["per_step_overhead"] + features.slots * (
             coefficients["token_cost"] * features.tokens
-            + coefficients["token_quadratic_cost"] * features.tokens**2
+            + coefficients["token_quadratic_cost"] * quadratic
             + coefficients["microbatch_overhead"]
         )
         if latency <= 0:
