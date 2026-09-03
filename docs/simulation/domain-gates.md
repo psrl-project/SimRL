@@ -5,8 +5,8 @@ is the single most common first-run failure, and it is intentional: a plausible-
 number derived from a region where the hardware cannot even run is worse than no number,
 because it passes downstream checks that would have caught a hard error.
 
-This page explains the two categories of refusal — out-of-domain queries and OOM
-projections — plus the three batching modes that affect how a real batch's lengths become
+This page explains the two categories of refusal, out-of-domain queries and OOM projections,
+plus the three batching modes that affect how a real batch's lengths become
 a cost query.
 
 ---
@@ -17,8 +17,8 @@ The most common misunderstanding is conflating the two. They are different:
 
 - **Interpolation** means the query lies within the range of the profiled grid. It is
   *always allowed* and requires no configuration. A query at 5905 tokens against a grid
-  of `[512, 1024, 2048, 4096, 8192, 16384]` is interpolation — the value falls between
-  two profiled points — and the cost model answers it without complaint.
+  of `[512, 1024, 2048, 4096, 8192, 16384]` is interpolation, because the value falls between
+  two profiled points, and the cost model answers it without complaint.
 - **Extrapolation** means the query lies outside the profiled range. Going below 512 or
   above 16384 tokens in the example above is extrapolation, and the cost model raises
   `TrainingOutOfDomainError` unless the feature name has been explicitly listed in
@@ -69,28 +69,33 @@ Every step that used an extrapolated prediction is therefore auditable after the
 Not all features are safe to extrapolate, even upward. The FSDP artifact documents the
 reasoning per feature in `dryrun/config/defaults/training_cost/fsdp.yaml`.
 
-### `num_microbatches` — yes, upward
+### `num_microbatches`: yes, upward
 
 Latency under gradient accumulation is exactly linear in the number of microbatches.
 Each accumulation step repeats identical work on its own microbatch, and the steps do
 not interact. The latency form is:
 
 ```
-latency = per_step_overhead + num_microbatches * (token_cost * tokens + microbatch_overhead)
+latency = per_step_overhead + num_microbatches * (token_cost * tokens
+          + token_quadratic_cost * sum_squared_tokens + microbatch_overhead)
 ```
+
+Every term inside the bracket is per-microbatch work, so the whole bracket scales with
+`num_microbatches` regardless of how many terms it holds. That is why the argument here
+survived the addition of the quadratic term unchanged.
 
 Because the relationship is a physical identity rather than a statistical correlation,
 extrapolation is defensible. Fitting on `num_microbatches` in `{1, 2}` and predicting
 the 23 measured `nmb=4` candidates gave a median absolute error of **7.7%**, on par
-with the model's own 9–11% in-domain MRE (measured for Qwen3-8B on 8x H20, 2026-08-31,
+with the model's own 9-11% in-domain MRE (measured for Qwen3-8B on 8x H20, 2026-08-31,
 23 held-out candidates). The risk is not the extrapolation itself but the assumption
-that the overhead terms do not change with microbatch count; for the FSDP sweep they
+that the overhead terms do not change with microbatch count. For the FSDP sweep they
 did not.
 
-### `tokens` — no
+### `tokens`: no
 
 Beyond 16384 tokens per rank the hardware cannot run. The FSDP sweep found: at 32768
-tokens/rank, 0 successes and 18 OOM failures; at 65536 tokens/rank, 0 successes and 9
+tokens/rank there were 0 successes and 18 OOM failures, and at 65536 tokens/rank, 0 successes and 9
 OOM failures (Qwen3-8B on 8x H20, 2026-08-31). There is no measured latency at those
 shapes to extrapolate toward. A prediction there looks numerically plausible because the
 linear form has no saturation term, but it describes a configuration that the hardware
@@ -179,7 +184,7 @@ backend to support packed sequences (flash-attention with variable-length inputs
 ## Why a three-way tie is expected, not a wiring bug
 
 At `micro_batch_size=1`, there is exactly one sequence per microbatch. `pad_to_max`
-pads to the single sequence's own length — which is itself — so padding adds nothing.
+pads to the single sequence's own length, which is itself, so padding adds nothing.
 `token_budget` forms microbatches of one sequence each. `packed_no_pad` concatenates
 one sequence, which is already contiguous. All three charge the same true token count,
 and the simulator correctly reports identical results.
@@ -195,7 +200,7 @@ same real tokens. The three modes converge again.
 
 To see the modes separate you need `mbs>1` **and** grouping that mixes long and short
 sequences in the same microbatch. The **1.17x to 4.34x** figure quoted above was
-measured on deliberately ragged microbatches; it does not transfer to a simulation using
+measured on deliberately ragged microbatches. It does not transfer to a simulation using
 the balanced planner. If you believe padding is a significant cost in your real system,
 measure the fill ratio in your actual training runs before choosing a mode.
 
