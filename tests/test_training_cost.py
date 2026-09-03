@@ -241,7 +241,10 @@ def test_hydraulis_fit_roundtrip_and_known_latency(tmp_path: Path):
         "latency",
         "memory",
     }
-    assert all(entry.train_metrics.design_rank in {2, 3} for entry in artifact.entries)
+    # Latency is rank 4 (it carries a quadratic token term), memory is rank 2 or 3.
+    ranks = {e.selector["component"]: e.train_metrics.design_rank for e in artifact.entries}
+    assert ranks["latency"] == 4
+    assert ranks["memory"] in {2, 3}
 
 
 def test_hydraulis_records_whether_validation_was_held_out():

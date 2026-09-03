@@ -62,7 +62,9 @@ def test_design_row_separates_the_three_costs():
     )
     assert features.tokens == 512
     assert features.slots == 4
-    assert features.design_row() == (1.0, 4 * 512.0, 4.0)
+    # Four columns: intercept, slots*tokens, slots, slots*sum_squared_tokens. The last is
+    # slots * 512^2 here because each microbatch holds a single 512-token sequence.
+    assert features.design_row() == (1.0, 4 * 512.0, 4.0, 4 * 512.0**2)
 
 
 def test_design_row_is_rank_deficient_when_only_the_sequence_varies():
@@ -70,8 +72,8 @@ def test_design_row_is_rank_deficient_when_only_the_sequence_varies():
     Sequence length alone cannot separate the per-microbatch from the per-step cost.
 
     At a fixed microbatch count the slot column is constant and therefore collinear with
-    the intercept, so the design falls to rank two however many sequence lengths are
-    measured. This is why the sweep must vary both axes.
+    the intercept, so the design cannot reach its full rank of four however many sequence
+    lengths are measured. This is why the sweep must vary both axes.
     """
     import numpy as np
 
@@ -82,7 +84,10 @@ def test_design_row_is_rank_deficient_when_only_the_sequence_varies():
             for seq in (512, 1024, 2048, 4096)
         ]
     )
-    assert np.linalg.matrix_rank(design) == 2
+    # Three of four: varying the sequence moves the linear and quadratic token columns
+    # independently, but the intercept and slots columns stay collinear.
+    assert np.linalg.matrix_rank(design) == 3
+    assert design.shape[1] == 4
 
     with_both = np.array(
         [
@@ -91,7 +96,9 @@ def test_design_row_is_rank_deficient_when_only_the_sequence_varies():
             for nmb in (1, 4)
         ]
     )
-    assert np.linalg.matrix_rank(with_both) == 3
+    # Both axes varied, three sequence lengths: full rank four. Two lengths would leave the
+    # linear and quadratic token columns collinear and cap it at three.
+    assert np.linalg.matrix_rank(with_both) == 4
 
 
 def test_features_use_the_largest_microbatch():

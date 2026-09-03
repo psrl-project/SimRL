@@ -183,14 +183,16 @@ def _fit_latency_entry(
     )
     train_x, train_y = _latency_arrays(train_records, key.pp)
     validation_x, validation_y = _latency_arrays(validation_records, key.pp)
-    if len(train_y) < 3:
-        raise ValueError(f"Hydraulis latency needs at least three candidates for {key!r}.")
+    if len(train_y) < 4:
+        raise ValueError(f"Hydraulis latency needs at least four candidates for {key!r}.")
     parameters, inliers, rank = scaled_nonnegative_fit(train_x, train_y)
-    if require_full_rank and rank < 3:
+    if require_full_rank and rank < 4:
         raise ValueError(
-            f"Hydraulis latency design matrix is rank {rank}, expected 3 for {key!r}. "
-            "Vary both the sequence length and the microbatch count: sequence length "
-            "alone cannot separate the per-microbatch cost from the per-step cost."
+            f"Hydraulis latency design matrix is rank {rank}, expected 4 for {key!r}. "
+            "Vary both the sequence length and the microbatch count, and use at least three "
+            "sequence lengths: sequence length alone cannot separate the per-microbatch cost "
+            "from the per-step cost, and two lengths leave the linear and quadratic token "
+            "columns collinear."
         )
     train_predicted = train_x @ parameters
     validation_predicted = validation_x @ parameters
@@ -219,6 +221,7 @@ def _fit_latency_entry(
             "per_step_overhead": float(parameters[0]),
             "token_cost": float(parameters[1]),
             "microbatch_overhead": float(parameters[2]),
+            "token_quadratic_cost": float(parameters[3]),
         },
         train_metrics=FitMetrics.from_predictions(
             train_y,
@@ -234,8 +237,9 @@ def _fit_latency_entry(
         feature_ranges=feature_ranges,
         diagnostics={
             "formula": (
-                "per_step_overhead + (num_microbatches + PP - 1) * "
-                "(token_cost * max_microbatch_tokens + microbatch_overhead)"
+                "per_step_overhead + (num_microbatches + PP - 1) * (token_cost * "
+                "max_microbatch_tokens + token_quadratic_cost * "
+                "max_microbatch_sum_squared_tokens + microbatch_overhead)"
             ),
             "dp_latency": "ideal-local-workload-scaling",
             "step_aggregation": "median-per-candidate",
@@ -546,6 +550,7 @@ class HydraulisLatencyModel(TrainingLatencyModel):
         coefficients = entry.coefficients
         latency = coefficients["per_step_overhead"] + features.slots * (
             coefficients["token_cost"] * features.tokens
+            + coefficients["token_quadratic_cost"] * features.sum_squared_tokens
             + coefficients["microbatch_overhead"]
         )
         if latency <= 0:

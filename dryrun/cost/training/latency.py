@@ -68,15 +68,34 @@ class LatencyFeatures:
 
     tokens: float
     slots: float
+    sum_squared_tokens: float
 
-    def design_row(self) -> tuple[float, float, float]:
+    def design_row(self) -> tuple[float, float, float, float]:
         """
-        Return the row for `[per_step_overhead, token_cost, microbatch_overhead]`.
+        Return the row for
+        `[per_step_overhead, token_cost, microbatch_overhead, token_quadratic_cost]`.
 
-        The intercept is first so a rank check reads naturally against the three
-        physical terms.
+        The intercept is first so a rank check reads naturally against the four physical
+        terms.
+
+        The quadratic term is `slots * sum_squared_tokens`, not `slots * tokens ** 2`.
+        Attention does not cross sequence boundaries, so a packed microbatch costs the sum
+        of each sequence's square; squaring the packed total would overcharge it by the
+        sequence count, an 8x error for eight packed sequences.
+
+        Both backends carry the term because both need it once the profiled sequence length
+        is long enough for attention to matter. Measured by leave-one-out on real Megatron
+        candidates: at seq <= 2048 the linear form wins (14.17% against 16.29% at TP1/PP1),
+        but at seq <= 8192 the quadratic form wins decisively (60.48% against 5.52%). The
+        earlier decision to reject this term was correct for the domain it was tested in and
+        wrong for the domain the simulator actually needs.
         """
-        return (1.0, self.slots * self.tokens, self.slots)
+        return (
+            1.0,
+            self.slots * self.tokens,
+            self.slots,
+            self.slots * self.sum_squared_tokens,
+        )
 
 
 def pipeline_slots(num_microbatches: int, pipeline_parallel: int) -> float:
@@ -106,6 +125,7 @@ def latency_features(
     return LatencyFeatures(
         tokens=float(max(item.sum_tokens for item in microbatches)),
         slots=pipeline_slots(len(microbatches), parallelism.pp),
+        sum_squared_tokens=float(max(item.sum_squared_tokens for item in microbatches)),
     )
 
 

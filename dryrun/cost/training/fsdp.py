@@ -312,42 +312,6 @@ def _successful(records: list[ProfileRecord]) -> list[ProfileRecord]:
     ]
 
 
-def _latency_design_row(payload: TrainingPayload) -> tuple[float, float, float, float]:
-    """
-    Return the FSDP latency design row, which carries a quadratic token term.
-
-    Megatron's shared three-term row is linear in tokens. That holds while attention is a
-    small share of a step, but FSDP is profiled to 16384 tokens per microbatch where it is
-    not, and the linear form then bends: measured per-token cost is U-shaped, falling from
-    918 us/token at 512 tokens to 525 at 8192 and rising again to 608 at 16384. Fitting a
-    line through a U leaves a systematic residual -- under-predicting by 28% at 512 tokens
-    and 17% at 16384 -- which no amount of extra data removes.
-
-    The fourth term is `num_microbatches * tokens^2`, the shape attention's cost actually
-    takes. Leave-one-out error falls from 20.8% to 6.3% at shard 8, and the fitted
-    coefficient lands within 7% across all three shard degrees (1.26e-8 to 1.35e-8), which
-    is what distinguishes a physical term from an overfit one.
-
-    Megatron keeps the three-term row deliberately: at its 2048-token ceiling the quadratic
-    term improves in-sample fit but *not* leave-one-out (10.24% against 10.38%), and implies
-    a throughput far above the hardware's. The two backends differ because their profiled
-    domains differ, not because their physics does.
-    """
-    features = _latency_features(payload)
-    # Attention does not cross sequence boundaries, so a packed microbatch costs the SUM of
-    # each sequence's square, not the square of the packed total. Those differ by the
-    # sequence count: eight 2048-token sequences give Sum(s^2) = 3.36e7 against
-    # (Sum s)^2 = 2.68e8, an 8x error. `SequenceStats.sum_squared_tokens` is exactly the
-    # right quantity and is already recorded, so use it rather than squaring the total.
-    quadratic = float(max(item.sum_squared_tokens for item in payload.microbatches))
-    return (
-        1.0,
-        features.slots * features.tokens,
-        features.slots,
-        features.slots * quadratic,
-    )
-
-
 def _latency_arrays(records: list[ProfileRecord]) -> tuple[np.ndarray, np.ndarray]:
     """Build one design row per candidate, its steps reduced by a median."""
     rows: list[tuple[float, float, float, float]] = []
@@ -358,7 +322,7 @@ def _latency_arrays(records: list[ProfileRecord]) -> tuple[np.ndarray, np.ndarra
             continue
         if not payload.step_times_s:
             continue
-        rows.append(_latency_design_row(payload))
+        rows.append(_latency_features(payload).design_row())
         targets.append(robust_step_time(payload.step_times_s))
     return np.asarray(rows, dtype=np.float64), np.asarray(targets, dtype=np.float64)
 
@@ -877,11 +841,11 @@ class FsdpLatencyModel(_FsdpCellModel, TrainingLatencyModel):
             if note is not None:
                 notes.append(note)
         coefficients = entry.coefficients
-        # Must match `_latency_design_row` exactly: the quadratic term is the sum of each
-        # sequence's square, not the square of the packed total. Squaring `features.tokens`
-        # here would overcharge a packed microbatch by its sequence count while the fit
-        # charged it correctly, so predict and fit would disagree on the same input.
-        quadratic = float(max(item.sum_squared_tokens for item in microbatches))
+        # `features.sum_squared_tokens` rather than `features.tokens ** 2`: attention does
+        # not cross sequence boundaries, so a packed microbatch costs the sum of each
+        # sequence's square. It comes from the same LatencyFeatures the fit used, so predict
+        # and fit cannot disagree on the same input.
+        quadratic = features.sum_squared_tokens
         latency = coefficients["per_step_overhead"] + features.slots * (
             coefficients["token_cost"] * features.tokens
             + coefficients["token_quadratic_cost"] * quadratic
