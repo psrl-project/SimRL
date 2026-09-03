@@ -8,22 +8,22 @@ from dryrun.policy.psrl import PSRLPolicy
 from dryrun.simulator import SimConfig, Simulator
 from dryrun.visualizer.plots import SimPlotter
 from dryrun.workload.distributions import uniform
+from dryrun.workload.grouped import GroupedWorkload
 
 
 def _simulate_into_store(tmp_path, n_instances=2):
     store = JsonlStore(tmp_path / "logs")
     cost = UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7)
-    lengths = uniform(80, 50, 120, seed=1)
     cfg = SimConfig(
         batch_size=4,
         max_staleness=2,
         n_versions=5,
         n_instances=n_instances,
+        workload=GroupedWorkload.from_lengths([512], uniform(80, 50, 120, seed=1)),
     )
     sim = Simulator(
         rollout_cost=cost,
         policy=PSRLPolicy(),
-        lengths=lengths,
         cfg=cfg,
         store=store,
     )

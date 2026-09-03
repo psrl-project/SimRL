@@ -6,8 +6,7 @@ accounting, and preemption.
 
 from __future__ import annotations
 
-from ....cost.rollout import RolloutCostModel
-from . import advance
+from ....cost.rollout import RolloutCostModel, advance
 from .event import EngineEvent, EventKind
 from .request import ReqStatus, Request
 from .snapshot import InstanceSnapshot
@@ -204,12 +203,18 @@ class NativeInstance:
 
         stepped = []
         oldest = min(self.running, key=lambda r: (r.dispatch_time, r.rid)) if self.running else None
+        # blocks_for(p + 1) - blocks_for(p) == 1 exactly when p % block_size == 0,
+        # which is the `grows` flag below. So track free blocks incrementally
+        # instead of recomputing the O(len(queues)) occupancy sum per request.
+        free = self.free_blocks()
         for r in decoding:
             grows = (r.prefilled % self.block_size) == 0
-            if grows and self.free_blocks() <= 0 and r is not oldest:
+            if grows and free <= 0 and r is not oldest:
                 continue
             r.add_tokens(version, 1)
             r.prefilled += 1
+            if grows:
+                free -= 1
             stepped.append(r)
         newly_done = [r for r in stepped if r.remaining <= 0]
 
@@ -221,32 +226,55 @@ class NativeInstance:
             self.running.append(req)
         return dt, newly_done
 
-    def _decode_coeffs(self):
-        n_d = len(self.running)
-        ctxsum = sum(r.ctx for r in self.running)
-        return self.cost.decode_coeffs(n_d, ctxsum)
+    def _decode_batch(self):
+        """Return the running batch size and total context, the segment methods' arguments."""
+        return len(self.running), sum(r.ctx for r in self.running)
 
     def _kv_exhaustion_steps(self) -> int | None:
-        base = self.blocks_used()
+        """
+        Steps of decode until this instance would exceed its KV budget.
+
+        Returns the smallest `k >= 0` such that every running request gaining `k`
+        tokens overflows `kv_blocks`, or None when even the longest remaining
+        request finishes before that happens.
+        """
+        B = self.block_size
+        # blocks_for(p) == p // B + blocks_for(p % B), so occupancy at step k is
+        #     blocks(k) = fixed + sum(count * blocks_for(residue + k))
+        # over the B residue buckets, independent of how many requests there are.
+        # blocks(0) is exactly what `blocks_used()` returns, so `base` below is
+        # that value and does not need computing twice.
+        fixed = sum(blocks_for(r.prefilled, B) for r in self.waiting)
+        residues = [0] * B
+        for r in self.running:
+            fixed += r.prefilled // B
+            residues[r.prefilled % B] += 1
+        base = fixed + sum(c * blocks_for(res, B) for res, c in enumerate(residues) if c)
         if base > self.kv_blocks:
             return 0
 
-        def blocks_at(k: int) -> int:
-            return sum(blocks_for(r.prefilled + k, self.block_size) for r in self.running) + sum(
-                blocks_for(r.prefilled, self.block_size) for r in self.waiting
-            )
-
         cap = max((r.remaining for r in self.running), default=0)
-        if cap == 0 or blocks_at(cap) <= self.kv_blocks:
+        if cap == 0:
             return None
-        lo, hi = 0, cap
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if blocks_at(mid) > self.kv_blocks:
-                hi = mid
-            else:
-                lo = mid + 1
-        return lo
+
+        # blocks(k) is periodic-linear rather than merely monotone:
+        #     blocks(k + B) == blocks(k) + len(running)   (each request rolls one block)
+        #     blocks(s + 1) - blocks(s) == residues[(B - s) % B]
+        # So for each phase s in [0, B) the overflow point is the first term of an
+        # arithmetic progression above the budget, which is one division. Taking the
+        # min over the B phases is the exact answer -- no search, and cost depends on
+        # block_size alone, not on cap or the batch size.
+        n_run = len(self.running)
+        target = self.kv_blocks + 1
+        best = cap + 1
+        blocks_s = base
+        for s in range(B):
+            need = target - blocks_s
+            steps = s if need <= 0 else -(-need // n_run) * B + s
+            if steps < best:
+                best = steps
+            blocks_s += residues[(B - s) % B]
+        return best if best <= cap else None
 
     def _step_time_estimate(self) -> float:
         """
@@ -321,27 +349,26 @@ class NativeInstance:
 
     def _decode_one_event(self, version: int) -> EngineEvent:
         """Advance one full decode segment (until completion or KV exhaustion) and return the event."""
-        F, alpha, beta = self._decode_coeffs()
+        n_d, ctxsum = self._decode_batch()
         k_done, _ = advance.next_completion([r.remaining for r in self.running])
         k_kv = self._kv_exhaustion_steps()
         k = k_done if k_kv is None else min(k_done, k_kv)
 
         if k > 0:
-            n_d = len(self.running)
             for r in self.running:
                 r.add_tokens(version, k)
                 r.prefilled += k
-            dt = advance.elapsed(F, alpha, beta, k)
+            dt = self.cost.decode_segment_time(n_d, ctxsum, k)
             self.t_local += dt
-            k0 = advance.crossing_step(F, alpha, beta, k_cap=k)
+            saturated_steps = self.cost.decode_saturated_steps(n_d, ctxsum, k)
             self.step_stats.append(
                 StepStat(
                     n_tokens=n_d * k,
                     n_decode=n_d * k,
                     n_prefill=0,
-                    saturated=k > k0,
+                    saturated=saturated_steps > 0,
                     steps=k,
-                    saturated_steps=k - k0,
+                    saturated_steps=saturated_steps,
                     dt=dt,
                     phase="decode",
                     t=self.t_local,
@@ -427,30 +454,29 @@ class NativeInstance:
                 self.t_local = t_limit
                 return done, True
 
-            F, alpha, beta = self._decode_coeffs()
+            n_d, ctxsum = self._decode_batch()
             k_done, _ = advance.next_completion([r.remaining for r in self.running])
             k_kv = self._kv_exhaustion_steps()
             k_int = k_done if k_kv is None else min(k_done, k_kv)
             budget = t_limit - self.t_local
-            k_budget = advance.steps_within(F, alpha, beta, budget)
+            k_budget = self.cost.decode_steps_within(n_d, ctxsum, budget)
 
             k = min(k_int, k_budget)
             if k > 0:
-                n_d = len(self.running)
                 for r in self.running:
                     r.add_tokens(version, k)
                     r.prefilled += k
-                dt = advance.elapsed(F, alpha, beta, k)
+                dt = self.cost.decode_segment_time(n_d, ctxsum, k)
                 self.t_local += dt
-                k0 = advance.crossing_step(F, alpha, beta, k_cap=k)
+                saturated_steps = self.cost.decode_saturated_steps(n_d, ctxsum, k)
                 self.step_stats.append(
                     StepStat(
                         n_tokens=n_d * k,
                         n_decode=n_d * k,
                         n_prefill=0,
-                        saturated=k > k0,
+                        saturated=saturated_steps > 0,
                         steps=k,
-                        saturated_steps=k - k0,
+                        saturated_steps=saturated_steps,
                         dt=dt,
                         phase="decode",
                         t=self.t_local,

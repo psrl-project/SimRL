@@ -69,11 +69,18 @@ class InstanceSnapshot:
     completed_len: int
     n_preemptions: int
     stats_len: int
-    req_snapshots: dict[int, ReqSnapshot]  # keyed by id(req)
+    # Paired with the request object itself, not keyed by id(req): the snapshot
+    # already pins every request it captured, so restore needs no lookup.
+    req_snapshots: list[tuple[Request, ReqSnapshot]]
 
     @classmethod
     def capture(cls, inst: NativeInstance) -> InstanceSnapshot:
-        all_reqs = inst.waiting + inst.running + inst.completed
+        # `completed` is deliberately not snapshotted per-request. Events only
+        # mutate requests in `waiting`/`running`, and a request retired *by* this
+        # event was in `running` at capture time, so it is already covered. Once
+        # retired a request is never touched again, and `restore` truncates the
+        # list back to `completed_len`. Including it would make snapshot cost grow
+        # with the whole run instead of with the live batch.
         return cls(
             t_local=inst.t_local,
             waiting=list(inst.waiting),
@@ -81,7 +88,9 @@ class InstanceSnapshot:
             completed_len=len(inst.completed),
             n_preemptions=inst.n_preemptions,
             stats_len=len(inst.step_stats),
-            req_snapshots={id(r): ReqSnapshot.capture(r) for r in all_reqs},
+            req_snapshots=[
+                (r, ReqSnapshot.capture(r)) for r in (*inst.waiting, *inst.running)
+            ],
         )
 
     def restore(self, inst: NativeInstance) -> None:
@@ -91,7 +100,5 @@ class InstanceSnapshot:
         del inst.completed[self.completed_len :]
         inst.n_preemptions = self.n_preemptions
         del inst.step_stats[self.stats_len :]
-        for req_id, rs in self.req_snapshots.items():
-            # Find the request object. It must still exist since we only hold references.
-            req = next(r for r in inst.waiting + inst.running + inst.completed if id(r) == req_id)
+        for req, rs in self.req_snapshots:
             rs.restore(req)

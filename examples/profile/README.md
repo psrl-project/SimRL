@@ -6,9 +6,15 @@ validated JSONL normalization as the only regression input.
 Install pinned vLLM and Megatron-Bridge into the current conda environment first:
 
 ```bash
-source /apdcephfs_zwfy10_303541817/share_303541817/lhy/env/dryrun-rl.sh
+conda activate dryrun-rl
 bash third_party/install.sh
 pip install -e ".[dev]"
+```
+
+The example configs read the checkpoint from `MODEL_PATH`, so export it once:
+
+```bash
+export MODEL_PATH=/path/to/Qwen3-8B
 ```
 
 ## vLLM rollout
@@ -36,14 +42,14 @@ dropped.
 Preview commands without starting a server:
 
 ```bash
-bash examples/profile/vllm/profile_qwen3_8b_tp1.sh generate
-bash examples/profile/vllm/profile_qwen3_8b_tp1.sh run --dry-run
+bash examples/profile/vllm/profile_qwen3_8b.sh generate
+bash examples/profile/vllm/profile_qwen3_8b.sh run --dry-run
 ```
 
 Run and collect both phases:
 
 ```bash
-bash examples/profile/vllm/profile_qwen3_8b_tp1.sh all
+bash examples/profile/vllm/profile_qwen3_8b.sh all
 ```
 
 When multiple GPUs are visible, TP=1 benchmark points are sharded across them and
@@ -73,21 +79,48 @@ Prefill must enumerate prompt length and concurrency because each request is a s
 emits one record per generation step, so the decode grid only needs a few starting contexts, one medium output
 length to walk `ctxsum`, and a concurrency sweep up to `max-num-seqs`.
 
+## vLLM rollout, without a server
+
+`kernel/qwen3_8b_h20_tp1.yaml` profiles attention and GEMM kernels directly instead of
+launching `vllm bench sweep serve`. There is no server, KV cache manager, or scheduler
+involved, so the KV-cache-overflow, preemption, and startup-serialization constraints
+above do not apply, and the sweep grid can be far denser. See
+[`kernel/README.md`](kernel/README.md).
+
+```bash
+bash examples/profile/kernel/profile_qwen3_8b.sh all
+```
+
 ## Megatron-Bridge training
 
-The YAML only needs a HuggingFace checkpoint path. Architecture constraints, the Megatron-Bridge recipe, and
-`--gpu` are inferred from `config.json` and `hardware.gpu_name`. `hardware.gpu_count` is the fixed world size;
-remaining ranks after TP and PP become DP. Each candidate warms up for one step and records three step times, with
-micro-batch size 1 and full activation recomputation. The same topology is not repeated.
+The YAML only needs a HuggingFace checkpoint path. Architecture constraints and the Megatron-Bridge recipe are
+inferred from `config.json`. `hardware.gpu_count` is the fixed world size; remaining ranks after TP and PP become
+DP. Each candidate discards four warmup steps and records eight, with micro-batch size 1 and full activation
+recomputation. The same topology is not repeated.
 
 `num_microbatches` is the local 1F1B depth on one DP rank. Global batch is `MBS * DP * num_microbatches`. A value
 smaller than PP leaves the pipeline underfilled, so peak activation memory is lower than a full `PP` in-flight
 window.
 
+DryRun owns the training entry point. `prepare` writes a `launch_spec.json` and `run` starts
+`torchrun -m dryrun.profiler.adapters.megatron.launch`, which applies the candidate to the library recipe's
+`ConfigContainer` in Python. The vendored `scripts/performance` CLI is not used: it parses only its own known
+arguments and discards the rest, so recompute, profiling, and output-path settings never reached the model, and its
+`--gpu` choices exclude H20 outright. Because the launcher owns the loop, step times and per-rank CUDA peaks are
+measured through the official callback API and written to `dryrun_metrics.json`, which replaces TensorBoard scalar
+scraping and memory-snapshot pickles.
+
 Generate candidates from architecture, topology, batch, and pipeline constraints:
 
 ```bash
 bash examples/profile/megatron/profile_qwen3_8b.sh generate
+```
+
+Prove the chain on one GPU with a two-layer model before launching a full-model candidate:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 CONFIG=examples/profile/megatron/qwen3_8b_smoke.yaml \
+  bash examples/profile/megatron/profile_qwen3_8b.sh run
 ```
 
 The script defaults to candidate index zero so an accidental invocation cannot launch the entire sweep:
@@ -98,18 +131,21 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 bash examples/profile/megatron/profile_qwen3_8b.sh collect
 ```
 
-Set `CANDIDATE_INDEX=all` only for a provisioned sweep. A Slurm submission uses the same candidate manifest:
+Set `CANDIDATE_INDEX=all` only for a provisioned sweep. Multiple nodes use the same launcher through
+`torchrun --nnodes N --node-rank`; there is no separate Slurm path.
 
-```bash
-BACKEND=slurm CANDIDATE_INDEX=12 \
-  bash examples/profile/megatron/profile_qwen3_8b.sh run
-```
+The sweep covers three sequence lengths at MBS=1 and local microbatch counts `{1, 4}` across four `(TP, PP)` cells.
+Both axes are required: the latency design row is `[1, slots * tokens, slots]` with `slots = num_microbatches + PP - 1`,
+so at a fixed microbatch count the slot column is constant and collinear with the intercept, capping the design at
+rank two where the fit needs rank three. Fitted `feature_ranges` become hard out-of-domain gates at prediction time,
+so extend both axes to whatever the simulator needs once the sweep is green.
 
-Each candidate uses the official Qwen3-8B recipe, mock data, training timers, and PyTorch memory history. The
-adapter reads resolved configuration, TensorBoard timer scalars, memory snapshots, and OOM status. A launcher can
-instead provide `dryrun_metrics.json` in a candidate directory with `step_times_s`, `rank_memory`, and optional
-`microbatch_sequence_lengths`.
+Each candidate runs twelve steps and discards four. One warmup step was not enough: the first profiled step was the
+slowest in 18 of 24 runs, where chance alone would give about 8, and dropping the second step as well cut the median
+spread within a candidate from 16.4% to 0.5%. The retained steps are reduced by a median rather than a mean, since
+interference inflates individual steps but nothing makes a step faster than the hardware allows.
 
-The seed search covers four sequence lengths at MBS=1 and local microbatch counts `{1, 4, 8, 16}`. That keeps
-Hydraulis `pipeline_slots` inside range for simulated GBS up to 16 on DP=1. Qwen3-8B TP=1 training can OOM even on
-an 80 GiB GPU. OOM candidates are expected data for memory regression and are preserved instead of being discarded.
+OOM candidates are expected data for memory regression and are preserved instead of being discarded. The launcher
+catches `torch.OutOfMemoryError` and writes a per-rank `oom_rank{N}.json` marker; classification reads those markers
+rather than scanning the log, because a log that merely mentions the phrase would add an inequality constraint that
+can only raise the fitted memory floor.

@@ -123,6 +123,7 @@ class TestEnabledWritesRichRecords:
         assert row["t"] == 1.5
         assert row["event"] == "admit"
         assert row["rid"] == 7
+        assert row["group_id"] == 0
         assert row["prompt_len"] == 512
         assert row["target_len"] == 50
 

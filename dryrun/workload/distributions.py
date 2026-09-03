@@ -58,34 +58,3 @@ def uniform(n: int, lo: int, hi: int, seed: int = 0) -> list[int]:
 def fixed(n: int, value: int, seed: int = 0) -> list[int]:
     """Constant length for every request."""
     return [value] * n
-
-
-def from_trace(path: str, column: str = "length", limit: int | None = None) -> list[int]:
-    """
-    Load real profiled lengths from a JSONL or Parquet trace.
-
-    JSONL lines that do not contain `column` (e.g. a `_meta` provenance
-    header written by `dryrun-workload fit-prompt`/`fit-output`) are skipped.
-    """
-    if path.endswith(".parquet"):
-        import pyarrow.parquet as pq  # noqa: PLC0415
-
-        table = pq.read_table(path, columns=[column])
-        values = [int(v) for v in table[column].to_pylist()]
-        return values[:limit] if limit else values
-
-    import json  # noqa: PLC0415
-
-    out = []
-    with open(path) as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            record = json.loads(line)
-            if column not in record:
-                continue
-            out.append(int(record[column]))
-            if limit and len(out) >= limit:
-                break
-    return out

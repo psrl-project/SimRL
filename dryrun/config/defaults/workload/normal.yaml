@@ -1,5 +1,7 @@
 # Output-length distribution. Samples are rounded from N(mu, sigma).
 # Per-request caps are job.max_prompt_length / job.max_output_length.
+source: distributions
+
 output:
   name: normal
 

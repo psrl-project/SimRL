@@ -1,0 +1,144 @@
+"""Physically structured training step latency.
+
+The previous form was a single linear combination,
+`a_q*Q_eff + b_t*T_eff + c_pipeline*(nmb + pp - 1) + update_overhead`, where `Q_eff` and
+`T_eff` folded the pipeline bubble into the workload features themselves. Three problems
+followed from that.
+
+The features were collinear by construction. With micro-batch size one and a uniform
+shape, the design row is `[k*S^2, k*S, k, 1]` with `k = nmb + pp - 1`, so the rank-four
+requirement could only be met by varying two axes at once, and the three non-constant
+columns stayed proportional to one another within a cell. The quadratic term therefore
+absorbed whatever the linear term could not explain rather than representing attention.
+
+Costs that scale differently were summed with one coefficient each. A training step is
+three physically distinct pieces: work proportional to the tokens in a microbatch, a
+fixed cost paid once per microbatch, and a fixed cost paid once per step. Measured
+per-microbatch times grow by factors of 1.0 to 1.9 when the sequence length doubles.
+Pure token-proportional work would give 2.0 and attention-dominated work would give 4.0,
+so the sub-linear growth is a fixed per-microbatch cost that a token-proportional term
+cannot express.
+
+And the pipeline bubble was inseparable from the workload. Modelling it as its own
+multiplier on the per-microbatch cost keeps it interpretable: `nmb + pp - 1` slots for
+1F1B, which reduces to `nmb` without pipelining.
+
+The resulting form, per data-parallel rank:
+
+    step = per_step_overhead + slots * (token_cost * tokens + microbatch_overhead)
+
+with `slots = nmb + pp - 1` and `tokens` the largest microbatch's token count. All three
+coefficients are non-negative and separately identifiable: sequence length at fixed
+microbatch count moves only `token_cost`, microbatch count at fixed sequence length
+separates `microbatch_overhead` from `per_step_overhead`.
+
+A quadratic token term was tried and rejected. Adding `slots * tokens^2` improves the
+in-sample error on clean data (6.60% to 4.65% at TP1/PP1) but not leave-one-out error
+(10.24% to 10.38%), so it buys no generalization. It is also not physically attention:
+the fitted coefficient implies roughly 18000% of the H20's bf16 throughput, and directly
+measured attention kernels account for only 10 to 45 ms of a 515 to 1297 ms step, about
+2 to 3%. Attention is not the bottleneck at these sequence lengths under full recompute,
+so a quadratic term absorbs residual rather than representing a mechanism. Do not re-add
+it without sequence lengths long enough for attention to dominate, and check the implied
+utilization when doing so.
+
+The residual that remains is structured: the shortest sequence is over-predicted by
+about 6 to 7% in every cell, the regime where small GEMMs underutilize the device so the
+effective per-token rate is worse than at longer sequences. Capturing that needs a
+throughput curve rather than a constant `token_cost` -- a kernel-level concern that the
+rollout cost model already solves by interpolating measured utility, so feeding training
+GEMMs through the same kernel tables is the principled next step rather than another
+fitted polynomial term.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from dryrun.profiler.schema import SequenceStats
+
+from .base import TrainingParallelism
+
+
+@dataclass(frozen=True)
+class LatencyFeatures:
+    """Design row for one candidate: the pipeline-slot and token structure."""
+
+    tokens: float
+    slots: float
+
+    def design_row(self) -> tuple[float, float, float]:
+        """
+        Return the row for `[per_step_overhead, token_cost, microbatch_overhead]`.
+
+        The intercept is first so a rank check reads naturally against the three
+        physical terms.
+        """
+        return (1.0, self.slots * self.tokens, self.slots)
+
+
+def pipeline_slots(num_microbatches: int, pipeline_parallel: int) -> float:
+    """
+    Return the number of serialized microbatch slots on the critical path.
+
+    Under 1F1B a stage runs `nmb` microbatches plus a `pp - 1` bubble it cannot fill,
+    which collapses to `nmb` when there is no pipeline.
+    """
+    if num_microbatches <= 0 or pipeline_parallel <= 0:
+        raise ValueError("num_microbatches and pipeline_parallel must be positive.")
+    return float(num_microbatches + pipeline_parallel - 1)
+
+
+def latency_features(
+    microbatches: tuple[SequenceStats, ...],
+    parallelism: TrainingParallelism,
+) -> LatencyFeatures:
+    """
+    Build the design row for one rank's microbatch sequence.
+
+    The critical path is set by the largest microbatch, since the pipeline advances at
+    the speed of its slowest stage occupant.
+    """
+    if not microbatches:
+        raise ValueError("Latency features need at least one microbatch.")
+    return LatencyFeatures(
+        tokens=float(max(item.sum_tokens for item in microbatches)),
+        slots=pipeline_slots(len(microbatches), parallelism.pp),
+    )
+
+
+def robust_step_time(step_times: tuple[float, ...]) -> float:
+    """
+    Reduce one candidate's retained step times to a single robust estimate.
+
+    The median, not the mean. Step times are right-skewed: an interfering process or a
+    straggling collective inflates individual steps but nothing makes a step faster than
+    the hardware allows, so the mean is biased upward while the median is not. One run
+    showed a 107.7% spread across three retained steps from a single outlier.
+
+    Every step also used to enter the fit as its own row, which let a candidate with an
+    outlier outvote a clean one. Collapsing to one row per candidate weights each
+    profiled configuration equally, which is what the model is meant to be fitted over.
+    """
+    if not step_times:
+        raise ValueError("A candidate needs at least one retained step time.")
+    return float(np.median(np.asarray(step_times, dtype=np.float64)))
+
+
+def step_time_dispersion(step_times: tuple[float, ...]) -> float:
+    """
+    Return the relative median absolute deviation of a candidate's step times.
+
+    Reported as a diagnostic so a noisy candidate is visible in the artifact instead of
+    silently widening the fit. Values above roughly 0.05 mean the measurement, not the
+    model, is the limiting factor.
+    """
+    if len(step_times) < 2:
+        return 0.0
+    values = np.asarray(step_times, dtype=np.float64)
+    median = float(np.median(values))
+    if median <= 0:
+        return 0.0
+    return float(np.median(np.abs(values - median)) / median)

@@ -1,4 +1,12 @@
-"""Static parameter, gradient, and optimizer state inventory."""
+"""Static parameter, gradient, and optimizer state inventory.
+
+Sizing follows Megatron's distributed-optimizer layout, which was measured directly
+rather than assumed. For Qwen3-8B at TP1/PP1/DP8 the allocator reported
+`param_data` at 15.256 GiB and `grad_data` at 30.513 GiB -- exactly `2p` and `4p`
+with no data-parallel division -- while the fp32 master shard was 3.814 GiB, exactly
+`4p/DP`. The gradient buffer is the reduce-scatter *source*, so every rank holds it
+at full local size; only optimizer state is sharded.
+"""
 
 from __future__ import annotations
 
@@ -55,6 +63,47 @@ class ParameterInventory:
         }
 
 
+def heaviest_stage_parameters(
+    *,
+    parameter_count: int,
+    num_layers: int,
+    hidden_size: int,
+    vocab_size: int,
+    parallelism: TrainingParallelism,
+    tied_embeddings: bool = False,
+) -> float:
+    """
+    Return the parameter count on the most loaded pipeline stage.
+
+    Megatron splits transformer layers evenly across pipeline stages, but the
+    embedding sits on the first stage and the output projection on the last, and
+    neither is a transformer layer. A uniform `parameter_count / (tp * pp)` therefore
+    understates the stage that carries one of them, and peak memory is set by the
+    worst stage. Measured at PP=4 on Qwen3-8B, the uniform assumption predicted
+    15.26 GiB of static state where the heaviest rank held 19.32 GiB; accounting for
+    the embedding brings the prediction to 17.57 GiB.
+
+    Tensor parallelism splits every tensor, including the embedding, so it divides the
+    result uniformly.
+    """
+    if parameter_count <= 0 or num_layers <= 0:
+        raise ValueError("parameter_count and num_layers must be positive.")
+    if parallelism.pp == 1:
+        return parameter_count / parallelism.tp
+    if num_layers % parallelism.pp != 0:
+        raise ValueError(
+            f"num_layers {num_layers} is not divisible by pipeline degree {parallelism.pp}."
+        )
+    embedding = hidden_size * vocab_size
+    # Untied weights mean two separate vocabulary-sized tensors, one per end stage.
+    embedding_copies = 1 if tied_embeddings else 2
+    layer_parameters = parameter_count - embedding * embedding_copies
+    if layer_parameters <= 0:
+        raise ValueError("Embeddings cannot exceed the total parameter count.")
+    per_stage_layers = layer_parameters / parallelism.pp
+    return (per_stage_layers + embedding) / parallelism.tp
+
+
 def parameter_inventory(
     *,
     parameter_count: int,
@@ -63,20 +112,36 @@ def parameter_inventory(
     gradient_dtype: str,
     optimizer_state_dtype: str,
     distributed_optimizer: bool,
+    local_parameters: float | None = None,
 ) -> ParameterInventory:
-    """Compute V1 uniform-layer static state bytes on one rank."""
+    """
+    Compute per-rank static state bytes.
+
+    Model parameters and gradients are held at full model-parallel-local size on
+    every rank. The distributed optimizer shards state, not the gradient buffer:
+    gradients are reduce-scattered *from* a full-size buffer, so dividing them by
+    the data-parallel degree understates the true footprint roughly twofold.
+
+    `local_parameters` overrides the uniform `parameter_count / (tp * pp)` share. Pass
+    `heaviest_stage_parameters` for a pipelined topology, where the stage holding the
+    embedding or output projection exceeds a uniform split.
+    """
     if parameter_count <= 0:
         raise ValueError("parameter_count must be positive.")
     model_parallel = parallelism.tp * parallelism.pp
-    local_parameters = parameter_count / model_parallel
+    if local_parameters is None:
+        local_parameters = parameter_count / model_parallel
     optimizer_shard = parallelism.dp if distributed_optimizer else 1
     parameter_bytes = dtype_bytes(parameter_dtype)
     gradient_bytes = dtype_bytes(gradient_dtype)
     optimizer_bytes = dtype_bytes(optimizer_state_dtype)
+    # A separate fp32 master copy exists only when parameters are kept narrower.
     master_bytes = optimizer_bytes if parameter_bytes < optimizer_bytes else 0
     return ParameterInventory(
         model_parameters=local_parameters * parameter_bytes,
-        gradients=local_parameters * gradient_bytes / optimizer_shard,
+        gradients=local_parameters * gradient_bytes,
         master_parameters=local_parameters * master_bytes / optimizer_shard,
+        # Adam keeps two moments. They allocate lazily on the first optimizer step,
+        # so a snapshot taken before that step reports less than steady state.
         optimizer_moments=local_parameters * 2 * optimizer_bytes / optimizer_shard,
     )

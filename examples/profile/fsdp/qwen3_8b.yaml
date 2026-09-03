@@ -1,0 +1,53 @@
+# HuggingFace checkpoint. Architecture fields are read from config.json / AutoConfig.
+model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}
+
+# gpu_count is the fixed world size: shard_size * replicate_size must equal it.
+hardware:
+  gpu_name: H20
+  gpu_count: 8
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen3_8b/fsdp
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  # Twelve steps discarding four, inherited from the Megatron measurement work: one
+  # warmup step left the first profiled step the slowest in 18 of 24 runs, and eight
+  # retained samples are what make a median and outlier rejection possible.
+  max_steps: 12
+  warmup_steps: 4
+  # flash_attention_2 is what verl runs and what the packed no-pad mode requires.
+  attn_implementation: flash_attention_2
+
+profiling:
+  allow_incomplete: false
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+search_space:
+  world_size: 8
+  # Pure FSDP and both HSDP meshes. The replicate degree is derived from world_size.
+  shard_sizes: [2, 4, 8]
+  # Varied independently of sequence_lengths so the latency design row
+  # [1, nmb*tokens, nmb] and the memory design [nmb, tokens, 1] both reach rank 3.
+  # Sweeping either axis alone caps both designs at rank 2 and the fit refuses them.
+  num_microbatches: [1, 2, 4]
+  n_seqs_per_rank: [1, 2, 4]
+  # Reaches 16384 because a real DAPO batch puts far more tokens on a rank than a
+  # short grid covers, and an out-of-domain query is refused rather than extrapolated.
+  sequence_lengths: [512, 2048, 8192, 16384]
+  # psrl enables gradient checkpointing, so the profiled cell matches what runs.
+  gradient_checkpointing: [true]
+  # Pinned False for this sweep. Offloading is a first-order effect on both latency and
+  # memory and deserves its own cells, but sweeping it doubles a 5.5-hour run, and one
+  # complete surface is worth more than two half-covered ones. Profile True separately.
+  optimizer_offload: [false]
+  reshard_after_forward: [true]

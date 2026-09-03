@@ -1,0 +1,34 @@
+# HuggingFace checkpoint. Set MODEL_PATH, or edit this line; the default is a
+# placeholder and will not resolve.
+model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}
+hardware:
+  gpu_name: H20
+  gpu_count: 1
+  gpu_memory_mib: 97871
+output_dir: ../../../outputs/profile/qwen3_8b/kernel_tp1
+experiment_name: qwen3-8b
+parallelism:
+  tensor_parallel: 1
+
+gemm:
+  token_counts: [1, 2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
+attention:
+  batch_sizes: [1, 2, 4, 8, 16, 32, 48, 64]
+  context_seq_lens: [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+  generation_steps: [0, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+  block_size: 16
+  window_size: 0
+  max_context_tokens: 262144
+
+elementwise:
+  token_counts: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
+collective:
+  token_counts: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
+measurement:
+  warmup_iterations: 5
+  active_iterations: 20
+  dtype: bfloat16
+  kv_cache_dtype: bfloat16

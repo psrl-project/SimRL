@@ -39,6 +39,8 @@ TRANSFORMERS_VERSION="$(pin_value "huggingface.transformers")"
 FLASHINFER_PYTHON_VERSION="$(pin_value "flashinfer.python")"
 FLASHINFER_CUBIN_VERSION="$(pin_value "flashinfer.cubin")"
 FLASHINFER_INDEX_URL="$(pin_value "flashinfer.index_url")"
+FLASH_ATTENTION_VERSION="$(pin_value "flash_attention.version")"
+FLASH_ATTENTION_CUDA_ARCHS="$(pin_value "flash_attention.cuda_archs")"
 
 clone_pinned() {
     local repository="$1"
@@ -170,12 +172,33 @@ python -m uv pip install --extra-index-url "${FLASHINFER_INDEX_URL}" \
     "flashinfer-python==${FLASHINFER_PYTHON_VERSION}" \
     "flashinfer-cubin==${FLASHINFER_CUBIN_VERSION}"
 
-echo "7. Verify imports"
+echo "7. Install FlashAttention ${FLASH_ATTENTION_VERSION} (source build, sm${FLASH_ATTENTION_CUDA_ARCHS})"
+# The published wheels link against GLIBC_2.32 while this host provides 2.28, so
+# the prebuilt artifact imports but fails to load its C extension. Building from
+# source is the only option here, the same situation as nvidia-resiliency-ext above.
+#
+# MAX_JOBS is capped deliberately. The host reports hundreds of cores but only a
+# few GiB of free RAM, and each nvcc invocation on these kernels peaks near a
+# gigabyte, so an uncapped build is killed by the OOM reaper with no diagnostic.
+# Restricting the architecture list to the target GPU keeps the build to one arch
+# instead of the six the sdist compiles by default.
+MAX_JOBS="${FLASH_ATTENTION_MAX_JOBS:-8}" \
+FLASH_ATTN_CUDA_ARCHS="${FLASH_ATTENTION_CUDA_ARCHS}" \
+TORCH_CUDA_ARCH_LIST="9.0" \
+FLASH_ATTENTION_FORCE_BUILD="TRUE" \
+FLASH_ATTENTION_SKIP_CUDA_BUILD="FALSE" \
+    python -m uv pip install --no-build-isolation --no-deps \
+    "flash-attn==${FLASH_ATTENTION_VERSION}"
+
+echo "8. Verify imports"
 python -c "import vllm; print('  vLLM', vllm.__version__)"
 python -c "import megatron.bridge, megatron.core; print('  Megatron-Bridge / Megatron-Core OK')"
 python -c "from nvidia_resiliency_ext.inprocess import CallWrapper; print('  nvidia-resiliency-ext OK')"
 python -c "import torch; print('  PyTorch', torch.__version__, 'CUDA', torch.cuda.is_available())"
 python -c "import transformers; from transformers.configuration_utils import ALLOWED_LAYER_TYPES; print('  transformers', transformers.__version__)"
 python -c "import flashinfer, inspect; from flashinfer.autotuner import autotune; print('  flashinfer', flashinfer.__version__, inspect.signature(autotune))"
+# Importing the C extension explicitly: the pure-python package imports fine even
+# when the compiled object cannot load, which is exactly how the wheel failed.
+python -c "import flash_attn, flash_attn_2_cuda; from flash_attn import flash_attn_varlen_func; print('  flash-attn', flash_attn.__version__)"
 
 echo "Successfully installed vLLM and Megatron-Bridge into the current environment"

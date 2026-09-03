@@ -1,0 +1,13 @@
+# Vendor-published peak numbers. `tc_flops_per_s` is dense tensor-core throughput
+# without sparsity. Adding a GPU here is a data change, not a code change.
+h20:
+  name: NVIDIA H20
+  sm_count: 78
+  memory_bytes: 102010650624
+  memory_bandwidth_bytes_per_s: 4.0e12
+  link_bandwidth_bytes_per_s: 4.5e11
+  tc_flops_per_s:
+    bfloat16: 148.0e12
+    float16: 148.0e12
+    fp8: 296.0e12
+    float32: 74.0e12

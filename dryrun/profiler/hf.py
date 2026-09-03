@@ -19,6 +19,20 @@ _DTYPE_BYTES = {
     "fp8": 1,
 }
 
+# Keys that identify a block shape the dense kernel-shape family does not describe. They are
+# forwarded verbatim so `families_dense.py` can refuse the model instead of pricing a
+# mixture-of-experts or compressed-KV block as though it were dense. Nothing reads them for
+# arithmetic yet; they exist so the refusal is reachable from a real checkpoint.
+_ARCHITECTURE_MARKER_KEYS = (
+    "num_experts",
+    "num_local_experts",
+    "n_routed_experts",
+    "num_experts_per_tok",
+    "moe_intermediate_size",
+    "kv_lora_rank",
+    "q_lora_rank",
+)
+
 
 def model_descriptor_from_yaml(value: Any, *, base_dir: Path) -> ModelDescriptor:
     """
@@ -68,6 +82,10 @@ def load_hf_model_descriptor(source: str | Path) -> ModelDescriptor:
         extra["model_type"] = config["model_type"]
     if config.get("head_dim") is not None:
         extra["head_dim"] = int(config["head_dim"])
+    for marker in _ARCHITECTURE_MARKER_KEYS:
+        value = config.get(marker)
+        if value is not None:
+            extra[marker] = int(value)
     return ModelDescriptor(
         name=source_name,
         architecture=None if architecture is None else str(architecture),

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from omegaconf import OmegaConf
 
+import dryrun.config
 from dryrun.cli.main import (
     build_distribution,
     build_policy,
@@ -174,13 +177,6 @@ class TestFactoryFunctions:
         lengths = build_distribution(cfg)
         assert lengths == [512] * 10
 
-    def test_build_from_trace_distribution(self, tmp_path):
-        trace_path = tmp_path / "trace.jsonl"
-        trace_path.write_text('{"_meta": true}\n{"length": 10}\n{"length": 20}\n')
-        cfg = OmegaConf.create({"name": "from_trace", "trace_path": str(trace_path), "n": 0})
-        lengths = build_distribution(cfg)
-        assert lengths == [10, 20]
-
     def test_build_unknown_distribution(self):
         cfg = OmegaConf.create({"name": "nonexistent"})
         with pytest.raises(ValueError, match="Unknown workload distribution"):
@@ -191,9 +187,9 @@ class TestFactoryFunctions:
             "output": {"name": "uniform", "n": 20, "seed": 1, "lo": 50, "hi": 100},
             "prompt": {"name": "fixed", "n": 20, "seed": 1, "lo": 512},
         })
-        prompt_lengths, output_lengths = build_workload(cfg)
-        assert prompt_lengths == [512] * 20
-        assert len(output_lengths) == 20
+        workload = build_workload(cfg)
+        assert workload.n_requests == 20
+        assert {workload.request(i)[1] for i in range(20)} == {512}
 
     def test_build_fixed_training_cost(self):
         cfg = OmegaConf.create({"name": "fixed", "latency_s": 2.5, "peak_memory_bytes": 123})
@@ -277,3 +273,58 @@ class TestOmegaConfIntegration:
         loaded = OmegaConf.load(yaml_path)
         assert loaded.job.batch_size == cfg.job.batch_size
         assert loaded.rollout_cost.name == cfg.rollout_cost.name
+
+
+class TestWorkloadSource:
+    def test_distributions_source_builds_single_response_groups(self):
+        cfg = OmegaConf.create({
+            "source": "distributions",
+            "output": {"name": "uniform", "n": 20, "seed": 1, "lo": 50, "hi": 100},
+            "prompt": {"name": "fixed", "n": 20, "seed": 1, "lo": 512},
+        })
+        workload = build_workload(cfg)
+        assert workload.group_size == 1
+        assert workload.n_requests == 20
+
+    def test_source_defaults_to_distributions(self):
+        cfg = OmegaConf.create({
+            "output": {"name": "uniform", "n": 4, "seed": 1, "lo": 50, "hi": 100},
+            "prompt": {"name": "fixed", "n": 4, "seed": 1, "lo": 512},
+        })
+        assert build_workload(cfg).group_size == 1
+
+    def test_trace_source_reads_groups(self, tmp_path):
+        from dryrun.workload.trace import RequestGroup, write_group_trace
+
+        path = write_group_trace(
+            [RequestGroup(0, 100, (7, 8)), RequestGroup(1, 200, (9, 10))],
+            tmp_path / "joint.jsonl",
+            metadata={"max_output_tokens": 10},
+        )
+        cfg = OmegaConf.create({"source": "trace", "trace": {"path": str(path), "n_groups": 0}})
+        workload = build_workload(cfg)
+        assert workload.group_size == 2
+        assert workload.n_requests == 4
+
+    def test_trace_source_requires_a_path(self):
+        cfg = OmegaConf.create({"source": "trace", "trace": {"path": "", "n_groups": 0}})
+        with pytest.raises(ValueError, match="workload.trace.path is required"):
+            build_workload(cfg)
+
+    def test_unknown_source_is_rejected(self):
+        cfg = OmegaConf.create({"source": "nonsense"})
+        with pytest.raises(ValueError, match="Unknown workload source"):
+            build_workload(cfg)
+
+
+class TestWorkloadConfigGroups:
+    def test_dapo_trace_group_selects_the_trace_source(self):
+        from hydra import compose, initialize_config_dir
+
+        from dryrun.config import register_configs
+
+        register_configs()
+        config_dir = str(Path(dryrun.config.__file__).parent / "defaults")
+        with initialize_config_dir(config_dir=config_dir, version_base=None):
+            cfg = compose(config_name="simulate", overrides=["workload=dapo_trace"])
+        assert cfg.workload.source == "trace"

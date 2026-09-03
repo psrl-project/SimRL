@@ -103,8 +103,15 @@ class SimPlotter:
                 ax.set_ylabel("# requests")
                 ax.legend(loc="upper left", fontsize=8)
 
+                # KV is interpolated, not stepped: a committed decode segment
+                # covers many steps with no event in between, and every running
+                # request gains one token per step, so occupancy climbs linearly
+                # across the gap. Stepping it would hold the segment's opening
+                # value flat and understate KV for the whole segment. Genuine
+                # discontinuities (abort on weight update) are logged as two
+                # samples at the same `t`, so they still render vertical.
                 kv_ax = ax.twinx()
-                kv_ax.fill_between(ts, kv, step="post", color="lightskyblue", alpha=0.4, zorder=1)
+                kv_ax.fill_between(ts, kv, color="lightskyblue", alpha=0.4, zorder=1)
                 kv_ax.set_ylim(0, 1)
                 kv_ax.set_ylabel("KV util")
             ax.set_title(f"instance {iid}", fontsize=10)

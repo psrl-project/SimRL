@@ -345,6 +345,12 @@ class RankMemory:
         )
 
 
+# Pipeline schedule identifiers a training payload may carry. `1f1b` is Megatron's
+# interleaved-free pipeline schedule; `fsdp` marks a backend with no pipeline at all,
+# where the schedule axis degenerates rather than taking another value.
+TRAINING_SCHEDULES = frozenset({"1f1b", "fsdp"})
+
+
 @dataclass(frozen=True)
 class TrainingPayload:
     """Store one training candidate's workload, timings, and memory peaks."""
@@ -371,8 +377,11 @@ class TrainingPayload:
     def __post_init__(self) -> None:
         for name in ("micro_batch_size", "global_batch_size", "num_microbatches"):
             _positive(getattr(self, name), name)
-        if self.schedule.lower() != "1f1b":
-            raise ProfileValidationError(f"Training schema V1 only supports 1F1B, got {self.schedule!r}.")
+        if self.schedule.lower() not in TRAINING_SCHEDULES:
+            raise ProfileValidationError(
+                f"Training schedule must be one of {sorted(TRAINING_SCHEDULES)}, "
+                f"got {self.schedule!r}."
+            )
         if len(self.microbatches) != self.num_microbatches:
             raise ProfileValidationError("microbatches must have num_microbatches entries.")
         if any(item.count != self.micro_batch_size for item in self.microbatches):

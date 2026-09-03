@@ -34,16 +34,23 @@ class Segment:
     tokens: int = 0
 
 
-@dataclass
+@dataclass(eq=False)
 class Request:
     """
     A single inference request flowing through the RL pipeline.
+
+    `eq=False` keeps the inherited identity-based `__eq__`/`__hash__`. A request
+    is a mutable entity, not a value: the queues hold the same objects the
+    simulator mutates, and `req in queue` / `queue.remove(req)` mean "this exact
+    request". Generated equality would deep-compare every field including
+    `segments` on each membership test, which dominated the engine loop.
     """
 
     rid: int
     prompt_len: int
     target_len: int
     v_traj: int
+    group_id: int = 0
     instance_id: int | None = None
     admit_time: float = 0.0
     dispatch_time: float = 0.0

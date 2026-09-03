@@ -1,0 +1,27 @@
+# Collective-only config. The tp=4 and tp=8 sweeps exist to complete the all_reduce
+# `world_size` slices, which cannot be interpolated: a 2-rank all-reduce and an 8-rank one run
+# different schedules over different link topologies, so `world_size` is a slice column and each
+# degree needs its own measurement. GEMM and attention are deliberately absent -- no composed
+# rollout is scored at tp=4 here, so sweeping them would cost hours and write tables nothing
+# reads. Run with FAMILY=collective.
+model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}
+hardware:
+  gpu_name: H20
+  gpu_count: 4
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+output_dir: ../../../outputs/profile/qwen3_8b/kernel_tp4
+experiment_name: qwen3-8b
+parallelism:
+  tensor_parallel: 4
+
+collective:
+  token_counts: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
+measurement:
+  warmup_iterations: 5
+  active_iterations: 20
+  dtype: bfloat16
+  kv_cache_dtype: bfloat16

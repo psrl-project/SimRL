@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.adapters.megatron_bridge import (
+from dryrun.profiler.adapters.megatron import (
     MegatronBridgeConfig,
     collect_bridge_record,
     prepare_bridge_candidate,
@@ -52,7 +52,7 @@ def _model() -> ModelDescriptor:
         hidden_size=4096,
         num_attention_heads=32,
         num_query_groups=8,
-        extra={"intermediate_size": 12288},
+        extra={"intermediate_size": 12288, "vocab_size": 151936},
     )
 
 
@@ -314,6 +314,7 @@ def _prepare_bridge_fixture(
     *,
     repeat: int,
     success: bool,
+    oom_marker: bool = False,
 ) -> tuple[MegatronBridgeConfig, TrainingCandidate, Path]:
     config = _bridge_config(tmp_path)
     candidate = _candidate(repeat)
@@ -325,7 +326,10 @@ def _prepare_bridge_fixture(
         shutil.copy(fixture_dir / "dryrun_metrics.json", run_dir / "dryrun_metrics.json")
     else:
         shutil.copy(fixture_dir / "status_failed.json", run_dir / "status.json")
+        # A log that merely mentions the phrase is not evidence of an OOM.
         shutil.copy(fixture_dir / "oom_output.txt", run_dir / "run.log")
+        if oom_marker:
+            shutil.copy(fixture_dir / "oom_rank0.json", run_dir / "oom_rank0.json")
     return config, candidate, run_dir
 
 
@@ -345,17 +349,51 @@ def test_megatron_bridge_timer_memory_and_resolved_config(tmp_path: Path):
     assert record.tags["resolved_config"].endswith("ConfigContainer.yaml")
 
 
+def test_megatron_bridge_success_without_measurements_is_rejected(tmp_path: Path):
+    """A run cannot claim success with no measurements; that is a launcher bug."""
+    config, candidate, run_dir = _prepare_bridge_fixture(
+        tmp_path,
+        repeat=0,
+        success=True,
+    )
+    (run_dir / "dryrun_metrics.json").unlink()
+    with pytest.raises(ProfileValidationError, match="No measured step time"):
+        collect_bridge_record(config, candidate, run_dir=run_dir)
+
+
 def test_megatron_bridge_oom_is_preserved(tmp_path: Path):
     config, candidate, run_dir = _prepare_bridge_fixture(
         tmp_path,
         repeat=1,
         success=False,
+        oom_marker=True,
     )
     record = collect_bridge_record(config, candidate, run_dir=run_dir)
     assert record.run.status == "oom"
     assert isinstance(record.payload, TrainingPayload)
     assert record.payload.step_times_s == ()
-    assert record.run.error == "CUDA out of memory."
+    assert record.run.error == "CUDA out of memory on rank(s) 0."
+    # The activation feature comes from the candidate, so the record still carries
+    # everything the memory model needs to bound itself.
+    assert record.payload.num_microbatches == candidate.num_microbatches
+
+
+def test_megatron_bridge_oom_needs_a_marker_not_a_log_mention(tmp_path: Path):
+    """
+    A log mentioning the phrase must stay `failed`.
+
+    An out-of-memory record contributes an inequality that can only raise the
+    fitted memory floor, so a false positive silently biases the model.
+    """
+    config, candidate, run_dir = _prepare_bridge_fixture(
+        tmp_path,
+        repeat=1,
+        success=False,
+        oom_marker=False,
+    )
+    assert "out of memory" in (run_dir / "run.log").read_text().lower()
+    record = collect_bridge_record(config, candidate, run_dir=run_dir)
+    assert record.run.status == "failed"
 
 
 def test_candidate_generator_enforces_parallel_constraints():

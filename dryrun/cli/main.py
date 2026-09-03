@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from collections import Counter
 from pathlib import Path
@@ -37,7 +38,8 @@ from ..profiler.schema import Parallelism, mib_to_bytes
 from ..simulator import SimConfig, Simulator
 from ..telemetry.store import JsonlStore
 from ..visualizer.plots import SimPlotter
-from ..workload.distributions import bimodal, fixed, from_trace, lognormal, normal, powerlaw, uniform
+from ..workload.distributions import bimodal, fixed, lognormal, normal, powerlaw, uniform
+from ..workload.grouped import GroupedWorkload
 
 register_configs()
 
@@ -49,6 +51,31 @@ def _rollout_parallelism(cfg: DictConfig) -> Parallelism:
         pp=value.get("pp", 1),
         dp=value.get("dp", 1),
         cp=value.get("cp", 1),
+    )
+
+
+def _build_composed_rollout(cfg: DictConfig, parallelism: Parallelism) -> RolloutCostModel:
+    """Build a ComposedRollout from measured kernel tables."""
+    from ..cost.kernel.database import KernelDatabase
+    from ..cost.kernel.model_ops import ModelOps
+    from ..cost.rollout.composed import ComposedRollout
+
+    for field in ("kernel_table_root", "gpu", "model_path"):
+        if not cfg.get(field, ""):
+            raise ValueError(f"rollout_cost.{field} is required for the composed model.")
+    database = KernelDatabase.from_root(
+        cfg.kernel_table_root,
+        gpu=cfg.gpu,
+        utility_surface=cfg.get("utility_surface", "pchip"),
+    )
+    ops = ModelOps.from_checkpoint(cfg.model_path, tensor_parallel=parallelism.tp)
+    return ComposedRollout(
+        database,
+        ops,
+        tensor_parallel=parallelism.tp,
+        stride=cfg.get("decode_integration_stride", 1024),
+        attention_backend=cfg.get("attention_backend", "") or None,
+        saturation_step_threshold=cfg.get("saturation_step_threshold", 1 << 62),
     )
 
 
@@ -85,6 +112,8 @@ def build_rollout_cost(cfg: DictConfig) -> RolloutCostModel:
             b=cfg.get("b", 16),
             F=cfg.get("F", 0.0),
         )
+    if name == "composed":
+        return _build_composed_rollout(cfg, parallelism)
     raise AssertionError(f"Unhandled rollout cost registry entry: {name!r}.")
 
 
@@ -157,18 +186,24 @@ def build_distribution(cfg: DictConfig) -> list[int]:
         )
     if name == "fixed":
         return fixed(n, cfg.get("lo", 512), seed=seed)
-    if name == "from_trace":
-        trace_path = cfg.get("trace_path", "")
-        if not trace_path:
-            raise ValueError("workload distribution 'from_trace' requires trace_path.")
-        limit = n or None
-        return from_trace(trace_path, column=cfg.get("trace_column", "length"), limit=limit)
     raise ValueError(f"Unknown workload distribution: {name!r}.")
 
 
-def build_workload(cfg: DictConfig) -> tuple[list[int], list[int]]:
-    """Generate (prompt_lengths, output_lengths) from workload config."""
-    return build_distribution(cfg.prompt), build_distribution(cfg.output)
+def build_workload(cfg: DictConfig) -> GroupedWorkload:
+    """Build the simulator's workload source from config."""
+    source = cfg.get("source", "distributions")
+    if source == "distributions":
+        return GroupedWorkload.from_lengths(
+            build_distribution(cfg.prompt),
+            build_distribution(cfg.output),
+        )
+    if source == "trace":
+        trace = cfg.trace
+        path = trace.get("path", "")
+        if not path:
+            raise ValueError("workload.trace.path is required when workload.source is trace.")
+        return GroupedWorkload.from_trace(path, n_groups=trace.get("n_groups", 0))
+    raise ValueError(f"Unknown workload source: {source!r}.")
 
 
 def build_training_cost(cfg: DictConfig) -> TrainingCostModel:
@@ -197,14 +232,34 @@ def build_training_cost(cfg: DictConfig) -> TrainingCostModel:
         artifact_path = cfg.get("artifact_path", "")
         if not artifact_path:
             raise ValueError(f"training_cost.artifact_path is required for {name}.")
-        return model_type.from_artifact(
-            artifact_path,
-            parameter_dtype=cfg.get("parameter_dtype", "bf16"),
-            gradient_dtype=cfg.get("gradient_dtype", "fp32"),
-            optimizer_state_dtype=cfg.get("optimizer_state_dtype", "fp32"),
-            distributed_optimizer=cfg.get("distributed_optimizer", True),
-            allow_extrapolation=cfg.get("allow_extrapolation", False),
-        )
+        selectors = {
+            "parameter_dtype": cfg.get("parameter_dtype", "bf16"),
+            "gradient_dtype": cfg.get("gradient_dtype", "fp32"),
+            "optimizer_state_dtype": cfg.get("optimizer_state_dtype", "fp32"),
+            "extrapolate": list(cfg.get("extrapolate", [])) or None,
+        }
+        # Batching is an FSDP-only concept: profiling measures uniform shapes, and only
+        # the FSDP model owns a planner that turns real trajectory lengths into
+        # microbatches. Passing these to a model without a planner is a TypeError, so the
+        # arguments are selected by what the model actually accepts rather than sent to
+        # every registry entry.
+        parameters = inspect.signature(model_type.from_artifact).parameters
+        # FSDP2 shards optimizer state unconditionally, so it has no
+        # `distributed_optimizer` selector at all and rejects one as unknown.
+        if "distributed_optimizer" in parameters:
+            selectors["distributed_optimizer"] = cfg.get("distributed_optimizer", True)
+        if "batching_mode" in parameters:
+            selectors["batching_mode"] = cfg.get("batching_mode", "pad_to_max")
+        if "max_tokens_per_rank" in parameters:
+            selectors["max_tokens_per_rank"] = cfg.get("max_tokens_per_rank", None)
+        # An FSDP cell is a measurement of ONE mesh, so a multi-mesh artifact cannot infer
+        # which one to answer for. These reach `from_artifact` through its **selectors, so
+        # they are invisible to the signature check above and are passed by name.
+        for field in ("shard_size", "replicate_size", "optimizer_offload", "reshard_after_forward"):
+            value = cfg.get(field, None)
+            if value is not None and "selectors" in parameters:
+                selectors[field] = value
+        return model_type.from_artifact(artifact_path, **selectors)
     raise ValueError(f"Unknown training cost model: {name!r}.")
 
 
@@ -263,7 +318,7 @@ def run_simulate(cfg: DictConfig) -> None:
     setup_logging(level=cfg.get("log_level", "INFO"), log_file=output_dir / "run.log")
 
     memory_mib = training.get("gpu_memory_mib", None)
-    prompt_lengths, output_lengths = build_workload(cfg.workload)
+    workload = build_workload(cfg.workload)
     sim_cfg = SimConfig(
         batch_size=job.batch_size,
         max_staleness=job.max_staleness,
@@ -288,7 +343,7 @@ def run_simulate(cfg: DictConfig) -> None:
         reject_if_waiting=admit.get("reject_if_waiting", False),
         reject_if_running_full=admit.get("reject_if_running_full", False),
         n_instances=rollout.n_instances,
-        prompt_lengths=prompt_lengths,
+        workload=workload,
         max_prompt_length=_length_cap(job.get("max_prompt_length", None)),
         max_output_length=_length_cap(job.get("max_output_length", None)),
         livelock_rounds=rollout.get("livelock_rounds", 50),
@@ -317,7 +372,6 @@ def run_simulate(cfg: DictConfig) -> None:
     sim = Simulator(
         rollout_cost=rollout_cost,
         policy=policy,
-        lengths=output_lengths,
         cfg=sim_cfg,
         training_cost=training_cost,
         sync_cost=sync_cost,

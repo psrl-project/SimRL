@@ -1,0 +1,95 @@
+# Serial re-measurement of the TP=2 baseline, on the same grid as qwen3_8b_tp2.yaml and tp1.
+# HuggingFace checkpoint. Architecture fields are read from config.json / AutoConfig.
+#
+# The `phases:` grid below is byte-identical to qwen3_8b_tp1.yaml, deliberately: this baseline
+# exists to score the composed model at tp=2, and comparing its per-phase MRE against the tp=1
+# figures is only meaningful if the two sweeps differ by tensor parallelism alone. Do not tune
+# the grid here without re-running tp=1.
+model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}
+
+# Hardware fingerprint. gpu_count is overwritten from each sweep point's world_size.
+hardware:
+  gpu_name: H20
+  gpu_count: 2
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen3_8b/vllm_tp2_serial
+experiment_name: qwen3-8b
+num_runs: 1
+server_ready_timeout: 900
+
+# Serial by construction, which is the whole point of this config. The parallel TP=2 run put four
+# servers on 8 GPUs and one CephFS mount and one degraded mid-run: at per-request depth 8,960,
+# reqs=16 measured 35.76 ms against reqs=32's 19.24 ms -- half the batch at half the total KV
+# taking nearly double the time. No cost model should reproduce that. Scoring against each
+# bucket's minimum latency barely moved the error (16.39% -> 16.51%), so it was sustained
+# degradation, not transient spikes. One server at a time costs wall clock and buys a usable
+# number. Do not raise these back to `auto` for a run whose figures will be quoted.
+run:
+  max_parallel: 1
+  max_concurrent_startups: 1
+
+serve:
+  args:
+    dtype: bfloat16
+    max-model-len: 32768
+    max-num-batched-tokens: 65536
+    gpu-memory-utilization: 0.9
+  parameters:
+    - tensor-parallel-size: 2
+      pipeline-parallel-size: 1
+      max-num-seqs: 1024
+
+bench:
+  args:
+    request-rate: "inf"
+    random-range-ratio: 0.0
+    seed: 42
+
+# Collect writes one JSONL record per scheduler iteration from the timing sweep.
+# Prefill/decode features (sum_l2, ctxsum) are filled from equal-length formulas.
+# A decode point that fills the KV cache is truncated at its first preemption, so
+# keep max-concurrency * (input + output) inside the cache.
+# Prefill is one shot (or token-budget chunks), so the grid must vary prompt length
+# and concurrency. Decode walks context across steps, so one long output per
+# (input, concurrency) is enough.
+# Both phases set num-prompts = max-concurrency so a point costs one scheduler
+# step (prefill) or random-output-len steps (decode), not extra request waves.
+phases:
+  prefill:
+    parameters:
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+  decode:
+    parameters:
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 32, num-prompts: 32}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 48, num-prompts: 48}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 64, num-prompts: 64}

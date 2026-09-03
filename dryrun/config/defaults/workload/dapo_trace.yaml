@@ -1,0 +1,10 @@
+# Joint (prompt, n responses) workload read from a collected group trace.
+# Collect one with `examples/workload/collect_joint_trace.sh`.
+source: trace
+
+trace:
+  # Path to a joint group trace artifact.
+  path: ""
+
+  # Cap on groups read from the trace. 0 = all groups.
+  n_groups: 0

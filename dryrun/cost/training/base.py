@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from dryrun.profiler.schema import Parallelism, SequenceStats
+from dryrun.profiler.schema import TRAINING_SCHEDULES, Parallelism, SequenceStats
 
 
 class TrainingOutOfDomainError(ValueError):
@@ -63,8 +63,11 @@ class TrainingWorkload:
             raise ValueError("Training sequence lengths must be non-empty and positive.")
         if self.micro_batch_size <= 0:
             raise ValueError("micro_batch_size must be positive.")
-        if self.schedule.lower() != "1f1b":
-            raise TrainingOutOfDomainError("Hydraulis V1 only supports the 1F1B schedule.")
+        if self.schedule.lower() not in TRAINING_SCHEDULES:
+            raise TrainingOutOfDomainError(
+                f"Training schedule must be one of {sorted(TRAINING_SCHEDULES)}, "
+                f"got {self.schedule!r}."
+            )
 
     @property
     def global_batch_size(self) -> int:

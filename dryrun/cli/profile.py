@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import subprocess
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +26,21 @@ from ..profiler.adapters import (
     run_vllm_profiles,
     write_candidate_manifest,
 )
+from ..profiler.adapters.fsdp import (
+    FsdpProfileConfig,
+    collect_fsdp_records,
+    prepare_fsdp_candidate,
+    run_fsdp_candidate,
+)
+from ..profiler.adapters.fsdp import (
+    read_candidate_manifest as read_fsdp_manifest,
+)
+from ..profiler.adapters.fsdp import (
+    write_candidate_manifest as write_fsdp_manifest,
+)
+from ..profiler.fsdp_search_space import enumerate_fsdp_candidates
 from ..profiler.io import write_records
+from ..profiler.kernels import KernelProfileConfig
 from ..profiler.search_space import (
     ModelConstraints,
     TrainingCandidate,
@@ -51,6 +67,11 @@ def _phases(config: VLLMSweepConfig, requested: str) -> list[str]:
 def _vllm_config(path: str | Path) -> VLLMSweepConfig:
     value, base_dir = _load_config(path)
     return VLLMSweepConfig.from_dict(value, base_dir=base_dir)
+
+
+def _kernel_config(path: str | Path) -> KernelProfileConfig:
+    value, base_dir = _load_config(path)
+    return KernelProfileConfig.from_dict(value, base_dir=base_dir)
 
 
 def _max_parallel_arg(value: str) -> int | str:
@@ -196,6 +217,217 @@ def cmd_vllm_collect(args: argparse.Namespace) -> None:
     dryrun_logger.info(f"Wrote {len(records)} normalized vLLM observations to {output}.")
 
 
+def cmd_kernels_run(args: argparse.Namespace) -> None:
+    """Profile every registered kernel op, or one family of them, directly on the GPU."""
+    import torch
+
+    from ..cost.kernel.ops.base import families, ops_for_family
+    from ..profiler.kernels.measurements import PerfTableWriter
+
+    config = _kernel_config(args.config)
+    device = torch.cuda.get_device_name(0)
+    table_root = config.table_root()
+    selected = families() if args.family == "all" else (args.family,)
+
+    def writer_factory(framework: str, version: str, kernel_source: str) -> PerfTableWriter:
+        return PerfTableWriter(
+            output_root=table_root,
+            device=device,
+            framework=framework,
+            version=version,
+            kernel_source=kernel_source,
+        )
+
+    written: list[Path] = []
+    for family in selected:
+        ops = ops_for_family(family)
+        if not ops:
+            raise SystemExit(f"No registered kernel ops in family {family!r}.")
+        # One call per family, not per op. Both attention phases come out of a single backend
+        # sweep that builds one KV cache and times both phases against it, so calling per op
+        # would measure the grid twice and could pick a different backend for each phase.
+        written.extend(ops[0].measure(config.model, config, writer_factory=writer_factory))
+
+    for path in written:
+        dryrun_logger.info(f"Wrote kernel perf table {path}.")
+
+
+def cmd_kernels_fit_floor(args: argparse.Namespace) -> None:
+    """Scan candidate floors and write floors.json into every floor-taking version directory."""
+    from ..cost.kernel.floor import CANDIDATE_FLOORS_US, fit_floors_report
+
+    config = _kernel_config(args.config)
+    candidates_us = tuple(float(v) for v in args.candidates_us) if args.candidates_us else CANDIDATE_FLOORS_US
+    written = fit_floors_report(
+        config.table_root(),
+        gpu=config.gpu(),
+        candidates_us=candidates_us,
+    )
+    if not written:
+        raise SystemExit(
+            f"No floor-taking perf tables found under {config.table_root()}. "
+            "Run dryrun-profile kernels run first."
+        )
+    for path in written:
+        dryrun_logger.info(f"Wrote {path}.")
+
+
+def cmd_kernels_verify_shapes(args: argparse.Namespace) -> None:
+    """Compare a family's declared kernel shapes against the checkpoint's real module graph."""
+    from ..profiler.hf import load_hf_model_descriptor
+    from ..profiler.kernels.introspect import verify_shapes
+
+    if args.model_path:
+        model_path = args.model_path
+    elif args.config:
+        model_path = _kernel_config(args.config).model.name
+    else:
+        raise SystemExit("Pass --model-path or --config so the checkpoint can be located.")
+
+    descriptor = load_hf_model_descriptor(model_path)
+    report = verify_shapes(model_path, descriptor)
+    dryrun_logger.info(
+        f"{report.architecture} -> family {report.family!r}, {report.layer_count} layers."
+    )
+    for item in report.comparisons:
+        observed = "absent" if item.observed is None else str(item.observed)
+        dryrun_logger.info(
+            f"  {item.name}: declared {item.declared}, observed {observed} "
+            f"{'OK' if item.matches else 'MISMATCH'}."
+        )
+    if report.heterogeneous_layers:
+        dryrun_logger.error(
+            f"Layers {list(report.heterogeneous_layers)} do not share layer "
+            f"{min(report.heterogeneous_layers) - 1 if report.heterogeneous_layers else 0}'s shape "
+            f"set. This family multiplies one layer's shapes by the layer count, so a "
+            f"heterogeneous model would be priced as though every layer matched the first."
+        )
+    if not report.ok:
+        raise SystemExit(
+            f"Declared kernel shapes do not match {model_path}'s module graph. Either the family "
+            f"is wrong for this architecture or the checkpoint is not what it claims."
+        )
+    dryrun_logger.info("Declared shapes match the module graph.")
+
+
+def cmd_kernels_holdout(args: argparse.Namespace) -> None:
+    """Report held-out interpolation accuracy per measured kernel family."""
+    from ..cost.kernel.holdout import holdout_report
+
+    config = _kernel_config(args.config)
+    if args.fraction < 1.0:
+        # A subset can make a bad surface look good: GEMM once scored 3.38% over 13 sampled
+        # points where the full set was 8.48%. Reporting a sampled figure as the surface's
+        # accuracy is the specific mistake this warning exists to prevent.
+        dryrun_logger.warning(
+            f"--fraction {args.fraction} scores only a subset of the bracketed points, so the "
+            f"MRE below understates the surface's real error. Do not report it as the gate "
+            f"result; rerun with --fraction 1.0."
+        )
+    results = holdout_report(
+        config.table_root(),
+        gpu=config.gpu(),
+        fraction=args.fraction,
+        seed=args.seed,
+    )
+    if not results:
+        raise SystemExit(
+            f"No kernel perf tables under {config.table_root()}. Run dryrun-profile kernels run first."
+        )
+    failed = []
+    for result in results:
+        if result.point_count == 0:
+            dryrun_logger.warning(
+                f"{result.op_name} [{result.backend}]: 0 held-out points scored, "
+                f"{result.skipped_slices} slices skipped, "
+                f"utility {result.utility_min:.3f}-{result.utility_max:.3f}. "
+                "This is a coverage problem (sweep grid too sparse or degenerate), not an accuracy problem."
+            )
+        else:
+            dryrun_logger.info(
+                f"{result.op_name} [{result.backend}]: {result.point_count} held-out points, "
+                f"MRE {result.mre_percent:.2f}%, p90 {result.p90_percent:.2f}%, "
+                f"max {result.max_percent:.2f}% at {result.worst_coords}, "
+                f"utility {result.utility_min:.3f}-{result.utility_max:.3f}, "
+                f"{result.skipped_slices} slices skipped."
+            )
+        if not result.passes(args.gate):
+            failed.append(result)
+    output = Path(args.output) if args.output else config.table_root() / "holdout_report.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps([asdict(result) for result in results], indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    dryrun_logger.info(f"Wrote holdout report to {output}.")
+    if failed:
+        coverage_failed = [r for r in failed if r.point_count == 0]
+        accuracy_failed = [r for r in failed if r.point_count > 0]
+        parts = []
+        if accuracy_failed:
+            names = ", ".join(f"{r.op_name} [{r.backend}]" for r in accuracy_failed)
+            parts.append(f"Held-out MRE exceeded the {args.gate:.1f}% gate for: {names}.")
+        if coverage_failed:
+            names = ", ".join(f"{r.op_name} [{r.backend}]" for r in coverage_failed)
+            parts.append(
+                f"No held-out point was scorable for: {names}. "
+                "This is a coverage problem, not an accuracy problem."
+            )
+        raise SystemExit(" ".join(parts))
+
+
+def cmd_kernels_validate(args: argparse.Namespace) -> None:
+    """Score the composed cost model against a real vLLM baseline, per phase."""
+    from ..cost.kernel.database import KernelDatabase
+    from ..cost.kernel.model_ops import ModelOps
+    from ..cost.kernel.validate import load_baseline, score_model
+    from ..cost.rollout.composed import ComposedRollout
+
+    config = _kernel_config(args.config)
+    buckets = load_baseline(args.baseline, min_samples=args.min_samples)
+    if not buckets:
+        raise SystemExit(f"No usable iterations in {args.baseline}.")
+    # Warn about a phase the baseline holds but `--min-samples` dropped entirely. The default
+    # of 20 suppresses noisy one-off buckets, but on a decode-dominated baseline it can also
+    # hide prefill and mixed completely, and a report naming only decode reads as "prefill was
+    # never validated" rather than "prefill was filtered out".
+    scored_phases = {bucket.phase for bucket in buckets}
+    for phase in sorted({bucket.phase for bucket in load_baseline(args.baseline)} - scored_phases):
+        dryrun_logger.warning(
+            f"Phase {phase} appears in {args.baseline}, but no bucket holds "
+            f"{args.min_samples} or more iterations, so it is not scored below. "
+            f"Pass --min-samples 1 to score it."
+        )
+    database = KernelDatabase.from_root(
+        config.table_root(), gpu=config.gpu(), utility_surface=args.surface
+    )
+    ops = ModelOps.from_checkpoint(
+        args.model_path or config.model.name, tensor_parallel=config.tensor_parallel
+    )
+    model = ComposedRollout(database, ops, tensor_parallel=config.tensor_parallel)
+    results = score_model(model, buckets)
+    failed = []
+    for result in results:
+        dryrun_logger.info(
+            f"{result.phase}: {result.bucket_count} buckets, "
+            f"MRE {result.mre_percent:.2f}%, p90 {result.p90_percent:.2f}%, "
+            f"max {result.max_percent:.2f}% at reqs/ctxsum {result.worst_bucket}, "
+            f"median ratio {result.median_ratio:.4f}."
+        )
+        if not result.passes(args.gate):
+            failed.append(result)
+    output = Path(args.output) if args.output else config.table_root() / "validate_report.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps([asdict(result) for result in results], indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    dryrun_logger.info(f"Wrote validation report to {output}.")
+    if failed:
+        names = ", ".join(f"{r.phase} ({r.mre_percent:.2f}%)" for r in failed)
+        raise SystemExit(f"Composed-model MRE exceeded the {args.gate:.1f}% gate for: {names}.")
+
+
 def cmd_megatron_generate(args: argparse.Namespace) -> None:
     config, raw_config = _bridge_config(args.config)
     candidates = _generate_bridge_candidates(config, raw_config)
@@ -215,19 +447,14 @@ def cmd_megatron_run(args: argparse.Namespace) -> None:
     failures = 0
     for candidate in candidates:
         if args.dry_run:
-            command, _ = prepare_bridge_candidate(config, candidate, backend=args.backend)
+            command, _ = prepare_bridge_candidate(config, candidate)
             dryrun_logger.info(
                 f"Prepared Megatron-Bridge candidate {candidate.candidate_id!r}: "
                 f"{shlex.join(command)}."
             )
             continue
         try:
-            run_bridge_candidate(
-                config,
-                candidate,
-                backend=args.backend,
-                resume=args.resume,
-            )
+            run_bridge_candidate(config, candidate, resume=args.resume)
         except subprocess.CalledProcessError as exc:
             failures += 1
             dryrun_logger.warning(
@@ -258,8 +485,103 @@ def cmd_megatron_collect(args: argparse.Namespace) -> None:
     )
 
 
+def _fsdp_config(path: str | Path) -> tuple[FsdpProfileConfig, dict[str, Any]]:
+    value, base_dir = _load_config(path)
+    return FsdpProfileConfig.from_dict(value, base_dir=base_dir), value
+
+
+def _fsdp_candidate_path(config: FsdpProfileConfig, explicit: str | None) -> Path:
+    if explicit:
+        return Path(explicit)
+    return config.output_dir / "control" / "fsdp" / "candidates.json"
+
+
+def _generate_fsdp_candidates(
+    config: FsdpProfileConfig,
+    raw_config: dict[str, Any],
+) -> list:
+    search = raw_config.get("search_space", {})
+    world_size = int(search.get("world_size", config.hardware.gpu_count))
+    return enumerate_fsdp_candidates(
+        world_size=world_size,
+        shard_sizes=_as_int_list(search["shard_sizes"]),
+        n_seqs_per_rank=_as_int_list(search["n_seqs_per_rank"]),
+        sequence_lengths=_as_int_list(search["sequence_lengths"]),
+        gradient_checkpointing=[bool(item) for item in search.get("gradient_checkpointing", [True])],
+        optimizer_offload=[bool(item) for item in search.get("optimizer_offload", [False])],
+        reshard_after_forward=[bool(item) for item in search.get("reshard_after_forward", [True])],
+        num_microbatches=_as_int_list(search["num_microbatches"]) if "num_microbatches" in search else None,
+    )
+
+
+def cmd_fsdp_generate(args: argparse.Namespace) -> None:
+    config, raw_config = _fsdp_config(args.config)
+    candidates = _generate_fsdp_candidates(config, raw_config)
+    output = _fsdp_candidate_path(config, args.candidates)
+    write_fsdp_manifest(output, candidates)
+    dryrun_logger.info(f"Wrote {len(candidates)} FSDP candidates to {output}.")
+
+
+def cmd_fsdp_run(args: argparse.Namespace) -> None:
+    config, _ = _fsdp_config(args.config)
+    path = _fsdp_candidate_path(config, args.candidates)
+    all_candidates = read_fsdp_manifest(path)
+    candidates = _select_candidates(
+        all_candidates,
+        candidate_id=args.candidate_id,
+        index=args.index,
+    )
+    failures = 0
+    for candidate in candidates:
+        if args.dry_run:
+            command, _ = prepare_fsdp_candidate(config, candidate)
+            dryrun_logger.info(
+                f"Prepared FSDP candidate {candidate.candidate_id!r}: "
+                f"{shlex.join(command)}."
+            )
+            continue
+        try:
+            run_fsdp_candidate(config, candidate, resume=args.resume)
+        except subprocess.CalledProcessError as exc:
+            failures += 1
+            dryrun_logger.warning(
+                f"Candidate {candidate.candidate_id!r} exited with code {exc.returncode}; "
+                "its status and raw log were preserved."
+            )
+    if failures:
+        dryrun_logger.warning(f"{failures} FSDP candidates failed or ran out of memory.")
+
+
+def cmd_fsdp_collect(args: argparse.Namespace) -> None:
+    config, _ = _fsdp_config(args.config)
+    path = _fsdp_candidate_path(config, args.candidates)
+    candidates = _select_candidates(
+        read_fsdp_manifest(path),
+        candidate_id=args.candidate_id,
+        index=args.index,
+    )
+    records = collect_fsdp_records(config, candidates)
+    output = (
+        Path(args.output)
+        if args.output
+        else config.output_dir / "profiles" / "fsdp.jsonl"
+    )
+    write_records(output, records)
+    dryrun_logger.info(f"Wrote {len(records)} normalized FSDP observations to {output}.")
+
+
 def _add_config_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", required=True, help="YAML workflow configuration.")
+
+
+def _kernel_families() -> tuple[str, ...]:
+    """Return every registered kernel family, for the --family choices."""
+    # Importing `ops.base` runs `ops/__init__.py`, which imports every op module and so
+    # populates the registry. Nothing under `dryrun.profiler` is touched, which keeps
+    # building the parser free of the GPU stack.
+    from ..cost.kernel.ops.base import families
+
+    return families()
 
 
 def _add_candidate_arguments(parser: argparse.ArgumentParser) -> None:
@@ -304,6 +626,71 @@ def build_parser() -> argparse.ArgumentParser:
             workflow.add_argument("--output")
         workflow.set_defaults(func=handler)
 
+    kernels = backends.add_parser("kernels", help="Profile attention/GEMM/collective kernels directly.")
+    kernels_workflows = kernels.add_subparsers(dest="workflow", required=True)
+
+    run_kernels = kernels_workflows.add_parser("run")
+    _add_config_argument(run_kernels)
+    run_kernels.add_argument(
+        "--family",
+        choices=["all", *_kernel_families()],
+        default="all",
+        help="Kernel family to measure. Defaults to every registered family.",
+    )
+    run_kernels.set_defaults(func=cmd_kernels_run)
+
+    fit_floor_kernels = kernels_workflows.add_parser("fit-floor")
+    _add_config_argument(fit_floor_kernels)
+    fit_floor_kernels.add_argument(
+        "--candidates-us",
+        type=float,
+        nargs="+",
+        metavar="US",
+        default=None,
+        help=(
+            "Floor candidates in microseconds. Defaults to "
+            "[0, 2, 4, 6, 8, 12, 16, 22, 32, 45, 60, 80]."
+        ),
+    )
+    fit_floor_kernels.set_defaults(func=cmd_kernels_fit_floor)
+
+    holdout_kernels = kernels_workflows.add_parser("holdout")
+    _add_config_argument(holdout_kernels)
+    holdout_kernels.add_argument(
+        "--fraction",
+        type=float,
+        default=1.0,
+        help="Fraction of bracketed points to score. Below 1.0 samples a subset and can "
+        "flatter the surface: GEMM once measured 3.38%% over 13 sampled points against "
+        "8.48%% over all 64. Lower it only for a quick smoke check.",
+    )
+    holdout_kernels.add_argument("--seed", type=int, default=0)
+    holdout_kernels.add_argument("--gate", type=float, default=5.0)
+    holdout_kernels.add_argument("--output", help="Holdout report JSON path.")
+    holdout_kernels.set_defaults(func=cmd_kernels_holdout)
+
+    verify_shapes_kernels = kernels_workflows.add_parser("verify-shapes")
+    # --config is optional here, unlike every other kernels subcommand: this check needs only a
+    # checkpoint, so it must be runnable on a model that has no profiling config yet.
+    verify_shapes_kernels.add_argument("--config", help="YAML workflow configuration.")
+    verify_shapes_kernels.add_argument(
+        "--model-path",
+        help="Checkpoint directory or hub id. Defaults to the config's model.",
+    )
+    verify_shapes_kernels.set_defaults(func=cmd_kernels_verify_shapes)
+
+    validate_kernels = kernels_workflows.add_parser("validate")
+    _add_config_argument(validate_kernels)
+    validate_kernels.add_argument(
+        "--baseline", required=True, help="vLLM profiling JSONL to score against."
+    )
+    validate_kernels.add_argument("--model-path", help="Checkpoint path; defaults to the config's.")
+    validate_kernels.add_argument("--surface", default="pchip", choices=["pchip", "shepard"])
+    validate_kernels.add_argument("--min-samples", type=int, default=20)
+    validate_kernels.add_argument("--gate", type=float, default=6.0)
+    validate_kernels.add_argument("--output", help="Validation report JSON path.")
+    validate_kernels.set_defaults(func=cmd_kernels_validate)
+
     megatron = backends.add_parser("megatron", help="Use Megatron-Bridge recipes.")
     megatron_workflows = megatron.add_subparsers(dest="workflow", required=True)
     generate = megatron_workflows.add_parser("generate")
@@ -314,7 +701,6 @@ def build_parser() -> argparse.ArgumentParser:
     run = megatron_workflows.add_parser("run")
     _add_config_argument(run)
     _add_candidate_arguments(run)
-    run.add_argument("--backend", choices=["local", "slurm"], default="local")
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--resume", action="store_true")
     run.set_defaults(func=cmd_megatron_run)
@@ -324,6 +710,26 @@ def build_parser() -> argparse.ArgumentParser:
     _add_candidate_arguments(collect)
     collect.add_argument("--output")
     collect.set_defaults(func=cmd_megatron_collect)
+
+    fsdp = backends.add_parser("fsdp", help="Use the DryRun FSDP2 launcher.")
+    fsdp_workflows = fsdp.add_subparsers(dest="workflow", required=True)
+    fsdp_generate = fsdp_workflows.add_parser("generate")
+    _add_config_argument(fsdp_generate)
+    fsdp_generate.add_argument("--candidates")
+    fsdp_generate.set_defaults(func=cmd_fsdp_generate)
+
+    fsdp_run = fsdp_workflows.add_parser("run")
+    _add_config_argument(fsdp_run)
+    _add_candidate_arguments(fsdp_run)
+    fsdp_run.add_argument("--dry-run", action="store_true")
+    fsdp_run.add_argument("--resume", action="store_true")
+    fsdp_run.set_defaults(func=cmd_fsdp_run)
+
+    fsdp_collect = fsdp_workflows.add_parser("collect")
+    _add_config_argument(fsdp_collect)
+    _add_candidate_arguments(fsdp_collect)
+    fsdp_collect.add_argument("--output")
+    fsdp_collect.set_defaults(func=cmd_fsdp_collect)
     return parser
 
 

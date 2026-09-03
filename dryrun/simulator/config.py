@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..component.rollout.engine import Request
+from ..workload.grouped import GroupedWorkload
 
 
 def clip_length(length: int, max_length: int | None) -> int:
@@ -43,7 +44,9 @@ class SimConfig:
     reject_if_kv_full: bool = True
     reject_if_waiting: bool = False
     reject_if_running_full: bool = False
-    prompt_lengths: list[int] = field(default_factory=lambda: [512])
+    workload: GroupedWorkload = field(
+        default_factory=lambda: GroupedWorkload.from_lengths([512], [100])
+    )
     max_prompt_length: int | None = None
     max_output_length: int | None = None
     n_instances: int = 1

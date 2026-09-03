@@ -1,0 +1,51 @@
+# Two-layer smoke configuration. Proves the launcher, the mesh, and the sidecar work
+# before a full sweep spends hours on candidates that would fail the same way.
+#
+# num_layers_override changes the parameter count, so these records must never be mixed
+# into a production fit. The cost-model cell key includes parameter_count, which
+# separates them automatically.
+model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 8
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen3_8b_smoke/fsdp
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  # Two layers keep a candidate under a minute while still exercising per-layer
+  # wrapping, which a single-layer model would not.
+  num_layers_override: 2
+  max_steps: 12
+  warmup_steps: 4
+
+profiling:
+  allow_incomplete: false
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+search_space:
+  world_size: 8
+  # Both a pure-FSDP and an HSDP mesh, so mesh handling is covered.
+  shard_sizes: [4, 8]
+  n_seqs_per_rank: [1, 2]
+  sequence_lengths: [512, 1024]
+  # A genuine axis, not a formality. The latency design row is `[1, nmb*tokens, nmb]`, so
+  # at a fixed nmb the last column is collinear with the intercept and the design caps at
+  # rank two while the model needs three. Two values make all three coefficients
+  # identifiable; a rank runs nmb identically-shaped microbatches with gradient
+  # accumulation, exactly as real FSDP training does.
+  num_microbatches: [1, 2]
+  gradient_checkpointing: [true]
+  optimizer_offload: [false]
+  reshard_after_forward: [true]

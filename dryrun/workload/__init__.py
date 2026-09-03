@@ -1,11 +1,12 @@
 """Workload module."""
 
-from .distributions import bimodal, fixed, from_trace, lognormal, normal, powerlaw, uniform
+from .distributions import bimodal, fixed, lognormal, normal, powerlaw, uniform
+from .grouped import GroupedWorkload
 
 __all__ = [
+    "GroupedWorkload",
     "bimodal",
     "fixed",
-    "from_trace",
     "lognormal",
     "normal",
     "powerlaw",

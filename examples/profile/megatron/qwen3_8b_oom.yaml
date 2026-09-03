@@ -1,0 +1,49 @@
+# Out-of-memory validation, not a fitting sweep.
+#
+# The memory model's out-of-memory path turns a failed candidate into an inequality
+# that raises the fitted floor, and that path had never been exercised by real data.
+# These candidates deliberately exceed the H20's 95.6 GiB.
+#
+# The sequence lengths are also an extrapolation test with a falsifiable prediction.
+# From the TP1/PP1/DP8 fit (57.2 GiB static, 1.257 GiB residual, activation scale
+# 1.0003) the model predicts: 32768 fits at ~77.5 GiB, 65536 runs out at ~96.6 GiB.
+# Both are far outside the 512-2048 range the coefficients were fitted on, so a wrong
+# call in either direction is information.
+model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 8
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen3_8b_oom/megatron_bridge
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  max_steps: 3
+  warmup_steps: 1
+
+profiling:
+  # A candidate that runs out of memory produces no measurements, and that is the
+  # point: the record carries its status and the activation features derived from the
+  # candidate itself, which is all the inequality needs.
+  allow_incomplete: true
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+search_space:
+  tensor_parallel_sizes: [1]
+  pipeline_parallel_sizes: [1]
+  micro_batch_size: 1
+  num_microbatches: [1]
+  sequence_lengths: [32768, 65536]
+  recompute: full

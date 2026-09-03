@@ -1,5 +1,5 @@
 # HuggingFace checkpoint. Architecture fields are read from config.json / AutoConfig.
-model: /apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B
+model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}
 
 # Hardware fingerprint. gpu_count is overwritten from each sweep point's world_size.
 hardware:

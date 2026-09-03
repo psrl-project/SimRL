@@ -1,4 +1,6 @@
 # Output-length distribution.
+source: distributions
+
 output:
   name: uniform
 

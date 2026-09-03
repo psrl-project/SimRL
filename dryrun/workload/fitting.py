@@ -1,9 +1,4 @@
-"""Fit prompt-length distributions by tokenizing dataset prompts.
-
-Reads a chat-formatted parquet dataset (e.g. dapo-math-17k.parquet, with a
-`prompt` column of `list[{content, role}]` messages) and writes the
-tokenized prompt lengths as a trace artifact via `dryrun.workload.trace`.
-"""
+"""Load and render distinct dataset prompts for joint workload collection."""
 
 from __future__ import annotations
 
@@ -12,26 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from .._logging import dryrun_logger
-from .trace import write_length_trace
 
 _CONTENT_KEY = "content"
-
-
-def load_prompt_messages(
-    dataset_path: str | Path,
-    sample_size: int | None,
-    seed: int,
-) -> list[list[dict[str, Any]]]:
-    """Read the `prompt` column from a parquet dataset, optionally subsampled."""
-    import pyarrow.parquet as pq  # noqa: PLC0415
-
-    table = pq.read_table(dataset_path, columns=["prompt"])
-    messages = table.column("prompt").to_pylist()
-    if sample_size is not None and sample_size < len(messages):
-        rng = random.Random(seed)
-        indices = rng.sample(range(len(messages)), sample_size)
-        messages = [messages[i] for i in indices]
-    return messages
 
 
 def render_prompt(tokenizer: Any, messages: list[dict[str, Any]]) -> str:
@@ -58,55 +35,48 @@ def render_prompt(tokenizer: Any, messages: list[dict[str, Any]]) -> str:
         return "\n".join(message[_CONTENT_KEY] for message in messages)
 
 
-def fit_prompt_lengths(
+def load_unique_prompt_messages(
     dataset_path: str | Path,
-    tokenizer_path: str,
-    output_path: str | Path,
-    sample_size: int | None = None,
-    seed: int = 42,
-    batch_size: int = 256,
-) -> Path:
+    sample_size: int | None,
+    seed: int,
+    index_key: str = "index",
+) -> list[list[dict[str, Any]]]:
     """
-    Tokenize dataset prompts and write their lengths as a trace artifact.
+    Read distinct prompts from a parquet dataset, optionally subsampled.
+
+    dapo-math-17k repeats every prompt ~100 times (1.79M rows over 17,917
+    distinct problems), so sampling rows draws mostly duplicates. Prompts are
+    deduplicated on `extra_info[index_key]` before subsampling, which makes one
+    sampled prompt one distinct problem.
 
     Args:
-        dataset_path (str | Path): Parquet dataset with a `prompt` column of
-            `list[{content, role}]` chat messages.
-        tokenizer_path (str): HuggingFace tokenizer name or local path.
-        output_path (str | Path): Destination for the JSONL trace artifact.
-        sample_size (int | None): If set, randomly subsample this many rows
-            before tokenizing. If `None`, tokenize the entire dataset.
+        dataset_path (str | Path): Parquet dataset with `prompt` and
+            `extra_info` columns.
+        sample_size (int | None): If set, sample this many distinct prompts.
         seed (int): RNG seed for subsampling.
-        batch_size (int): Prompts tokenized per `tokenizer()` call.
+        index_key (str): Field inside `extra_info` holding the unique id.
 
     Returns:
-        Path: Path to the written trace artifact.
+        list[list[dict[str, Any]]]: Chat-message lists, one per distinct prompt.
     """
-    from transformers import AutoTokenizer  # noqa: PLC0415
+    import pyarrow.parquet as pq  # noqa: PLC0415
 
-    dryrun_logger.info(f"Loading tokenizer from {tokenizer_path!r}...")
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+    table = pq.read_table(dataset_path, columns=["prompt", "extra_info"])
+    prompts = table.column("prompt").to_pylist()
+    extra_info = table.column("extra_info").to_pylist()
 
-    dryrun_logger.info(f"Reading dataset from {dataset_path!r}...")
-    messages_list = load_prompt_messages(dataset_path, sample_size, seed)
-    dryrun_logger.info(f"Tokenizing {len(messages_list)} prompts...")
-
-    lengths: list[int] = []
-    for start in range(0, len(messages_list), batch_size):
-        batch = messages_list[start : start + batch_size]
-        texts = [render_prompt(tokenizer, messages) for messages in batch]
-        encoded = tokenizer(texts, add_special_tokens=False)
-        lengths.extend(len(ids) for ids in encoded["input_ids"])
-
-    written = write_length_trace(
-        lengths,
-        output_path,
-        metadata={
-            "kind": "prompt_length",
-            "dataset": str(dataset_path),
-            "tokenizer": str(tokenizer_path),
-            "seed": seed,
-        },
+    unique: dict[str, list[dict[str, Any]]] = {}
+    for messages, info in zip(prompts, extra_info):
+        key = str(info[index_key])
+        if key not in unique:
+            unique[key] = messages
+    messages_list = [unique[key] for key in sorted(unique)]
+    dryrun_logger.info(
+        f"Found {len(messages_list)} distinct prompts among {len(prompts)} rows."
     )
-    dryrun_logger.info(f"Wrote {len(lengths)} prompt lengths to {written}.")
-    return written
+
+    if sample_size is not None and sample_size < len(messages_list):
+        rng = random.Random(seed)
+        indices = rng.sample(range(len(messages_list)), sample_size)
+        messages_list = [messages_list[i] for i in sorted(indices)]
+    return messages_list

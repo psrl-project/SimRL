@@ -14,6 +14,10 @@
     "cubin": "0.6.14",
     "index_url": "https://flashinfer.ai/whl/"
   },
+  "flash_attention": {
+    "version": "2.8.3.post1",
+    "cuda_archs": "90"
+  },
   "sources": {
     "vllm": {
       "repository": "https://github.com/vllm-project/vllm.git",

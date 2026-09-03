@@ -8,7 +8,7 @@ from pathlib import Path
 from .._logging import dryrun_logger, setup_logging
 from ..cost.rollout import DistServe, PSRLFitted, UnifiedRoofline
 from ..cost.rollout.plot import plot_vllm_rollout_regression
-from ..cost.training import HydraulisTrainingCost
+from ..cost.training import FsdpTrainingCost, HydraulisTrainingCost
 from ..profiler.io import read_records
 
 
@@ -55,10 +55,27 @@ def cmd_rollout(args: argparse.Namespace) -> None:
 
 
 def cmd_training(args: argparse.Namespace) -> None:
-    """Fit Hydraulis V1 latency and memory entries together."""
+    """Fit training latency and memory entries for the selected model family."""
+    records = read_records(args.input, record_type="training")
+    if args.latency_model == "fsdp" or args.memory_model == "fsdp":
+        if args.latency_model != args.memory_model:
+            raise ValueError(
+                "FSDP latency and memory must be fitted together; "
+                "set both --latency-model and --memory-model to fsdp."
+            )
+        artifact = FsdpTrainingCost.fit(
+            records,
+            validation_fraction=args.validation_fraction,
+            require_full_rank=not args.allow_rank_deficient,
+        )
+        artifact.save(args.output)
+        dryrun_logger.info(
+            f"Saved FSDP training artifact with {len(artifact.entries)} entries "
+            f"to {args.output}."
+        )
+        return
     if args.latency_model != "hydraulis" or args.memory_model != "hydraulis":
         raise ValueError("Training V1 only supports hydraulis latency and memory.")
-    records = read_records(args.input, record_type="training")
     artifact = HydraulisTrainingCost.fit(
         records,
         validation_fraction=args.validation_fraction,
@@ -90,8 +107,8 @@ def build_parser() -> argparse.ArgumentParser:
     rollout.set_defaults(func=cmd_rollout)
 
     training = commands.add_parser("training")
-    training.add_argument("--latency-model", choices=["hydraulis"], default="hydraulis")
-    training.add_argument("--memory-model", choices=["hydraulis"], default="hydraulis")
+    training.add_argument("--latency-model", choices=["hydraulis", "fsdp"], default="hydraulis")
+    training.add_argument("--memory-model", choices=["hydraulis", "fsdp"], default="hydraulis")
     training.add_argument("--input", required=True)
     training.add_argument("--output", required=True)
     training.add_argument("--validation-fraction", type=float, default=0.2)

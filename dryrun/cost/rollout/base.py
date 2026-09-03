@@ -5,6 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from . import advance
+
 
 @dataclass(frozen=True)
 class RolloutWorkload:
@@ -64,3 +66,18 @@ class RolloutCostModel(ABC):
     def saturated(self, n_tokens, t2, ctxsum, n_reqs=0) -> bool:
         """Return whether the workload is above a fitted low-load floor."""
         return False
+
+    def decode_segment_time(self, n_d: int, ctxsum: float, k: int) -> float:
+        """Return the wall-clock seconds of k decode steps over a fixed batch."""
+        floor, alpha, beta = self.decode_coeffs(n_d, ctxsum)
+        return advance.elapsed(floor, alpha, beta, k)
+
+    def decode_steps_within(self, n_d: int, ctxsum: float, budget: float) -> int:
+        """Return the largest step count whose segment time fits inside `budget`."""
+        floor, alpha, beta = self.decode_coeffs(n_d, ctxsum)
+        return advance.steps_within(floor, alpha, beta, budget)
+
+    def decode_saturated_steps(self, n_d: int, ctxsum: float, k: int) -> int:
+        """Return how many of k steps run above the low-load floor."""
+        floor, alpha, beta = self.decode_coeffs(n_d, ctxsum)
+        return k - advance.crossing_step(floor, alpha, beta, k_cap=k)

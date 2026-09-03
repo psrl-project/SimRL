@@ -1,0 +1,77 @@
+{
+  "step_times_s": [
+    4.947960969991982,
+    0.08340579178184271,
+    0.07715002354234457,
+    0.07638323958963156,
+    0.0759104210883379,
+    0.07539723254740238,
+    0.07543170172721148,
+    0.07473481725901365,
+    0.0755541892722249,
+    0.07489327434450388,
+    0.0745916310697794,
+    0.0773040484637022
+  ],
+  "timers_s": {
+    "all_gather": [
+      0.014588380999999994
+    ],
+    "reduce_scatter": [
+      0.016637815999999993
+    ]
+  },
+  "rank_memory": [
+    {
+      "rank": 0,
+      "allocated_bytes": 10177373696,
+      "reserved_bytes": 22470983680
+    },
+    {
+      "rank": 1,
+      "allocated_bytes": 10177373696,
+      "reserved_bytes": 22470983680
+    },
+    {
+      "rank": 2,
+      "allocated_bytes": 10177373696,
+      "reserved_bytes": 22470983680
+    },
+    {
+      "rank": 3,
+      "allocated_bytes": 10177373696,
+      "reserved_bytes": 22470983680
+    },
+    {
+      "rank": 4,
+      "allocated_bytes": 10177373696,
+      "reserved_bytes": 22470983680
+    },
+    {
+      "rank": 5,
+      "allocated_bytes": 10177373696,
+      "reserved_bytes": 22470983680
+    },
+    {
+      "rank": 6,
+      "allocated_bytes": 10177373696,
+      "reserved_bytes": 22470983680
+    },
+    {
+      "rank": 7,
+      "allocated_bytes": 10177373696,
+      "reserved_bytes": 22470983680
+    }
+  ],
+  "microbatch_sequence_lengths": [
+    [
+      512
+    ]
+  ],
+  "parameter_count": 1630556672,
+  "observed_mesh": {
+    "replicate_size": 1,
+    "shard_size": 8
+  },
+  "static_allocated_bytes_at_train_start": 3329812480
+}

@@ -19,6 +19,8 @@ from .fixed import (
     FixedTrainingLatency,
     FixedTrainingMemory,
 )
+from .fsdp import FsdpLatencyModel, FsdpMemoryModel, FsdpTrainingCost
+from .fsdp_inventory import FsdpInventory, fsdp_inventory
 from .hydraulis import (
     HydraulisLatencyModel,
     HydraulisMemoryModel,
@@ -30,24 +32,32 @@ from .linear import (
     LinearTrainingLatency,
     LinearTrainingMemory,
 )
+from .microbatch import BatchingMode, MicrobatchPlanner, verl_workload
 
 TRAINING_MODEL_REGISTRY = {
     "hydraulis": HydraulisTrainingCost,
+    "fsdp": FsdpTrainingCost,
 }
 
 __all__ = [
     "AnalyticalTrainingCost",
     "AnalyticalTrainingLatency",
     "AnalyticalTrainingMemory",
+    "BatchingMode",
     "FixedTrainingCost",
     "FixedTrainingLatency",
     "FixedTrainingMemory",
+    "FsdpInventory",
+    "FsdpLatencyModel",
+    "FsdpMemoryModel",
+    "FsdpTrainingCost",
     "HydraulisLatencyModel",
     "HydraulisMemoryModel",
     "HydraulisTrainingCost",
     "LinearTrainingCost",
     "LinearTrainingLatency",
     "LinearTrainingMemory",
+    "MicrobatchPlanner",
     "ParameterInventory",
     "TRAINING_MODEL_REGISTRY",
     "TrainingCostEstimate",
@@ -58,5 +68,7 @@ __all__ = [
     "TrainingParallelism",
     "TrainingWorkload",
     "dtype_bytes",
+    "fsdp_inventory",
     "parameter_inventory",
+    "verl_workload",
 ]

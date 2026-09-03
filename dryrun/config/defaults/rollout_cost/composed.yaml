@@ -1,0 +1,17 @@
+name: composed
+
+parallelism:
+  tp: 1
+  pp: 1
+  dp: 1
+  cp: 1
+
+kernel_table_root: ""
+gpu: ""
+model_path: ""
+attention_backend: ""
+utility_surface: pchip
+decode_integration_stride: 1024
+# Effectively disabled: the closed-form fast path measured 1.2x for 4.6% deviation on the
+# real DAPO trace. Set a finite depth (e.g. 8192) only for long deep-KV decode workloads.
+saturation_step_threshold: 4611686018427387904

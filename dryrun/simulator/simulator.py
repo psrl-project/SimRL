@@ -40,7 +40,6 @@ class Simulator:
         self,
         rollout_cost: RolloutCostModel,
         policy: StalenessPolicy,
-        lengths: list[int],
         cfg: SimConfig,
         training_cost: TrainingCostModel | None = None,
         sync_cost: SyncCostModel | None = None,
@@ -49,8 +48,7 @@ class Simulator:
     ):
         self.rollout_cost = rollout_cost
         self.policy = policy
-        self.lengths = list(lengths)
-        self.prompt_lengths = list(cfg.prompt_lengths)
+        self.workload = cfg.workload
         self.cfg = cfg
         self.training_cost = training_cost or TrainingCostModel(
             FixedTrainingLatency(1.0),
@@ -63,7 +61,7 @@ class Simulator:
             cp=cfg.training_cp,
         )
         self.sync_cost = sync_cost or FixedSyncCost(cfg.sync_time)
-        mean_prompt_len = sum(self.prompt_lengths) / len(self.prompt_lengths)
+        mean_prompt_len = self.workload.mean_prompt_len
         self.recompute_cost = recompute_cost or FixedRecomputeCost(
             cfg.recompute_time / max(1, cfg.batch_size * mean_prompt_len) if cfg.recompute_time > 0 else 0.0
         )
@@ -118,13 +116,23 @@ class Simulator:
             n_instances=self.cfg.n_instances,
         )
 
-    def _next_length(self) -> int:
-        sampled = int(self.lengths[self.next_rid % len(self.lengths)])
-        return clip_length(sampled, self.cfg.max_output_length)
+    def _next_request_shape(self) -> tuple[int, int, int]:
+        """
+        Return `(group_id, prompt_len, target_len)` for the next request.
 
-    def _next_prompt_length(self) -> int:
-        sampled = int(self.prompt_lengths[self.next_rid % len(self.prompt_lengths)])
-        return clip_length(sampled, self.cfg.max_prompt_length)
+        Both lengths come from the same workload group, so the prompt/response
+        pairing is the one that was observed rather than a product of two
+        independent modulo lookups.
+
+        Returns:
+            tuple[int, int, int]: The group id and the system-capped lengths.
+        """
+        group_id, prompt_len, output_len = self.workload.request(self.next_rid)
+        return (
+            group_id,
+            clip_length(prompt_len, self.cfg.max_prompt_length),
+            clip_length(output_len, self.cfg.max_output_length),
+        )
 
     def _select_instance(self, req: Request) -> int:
         loads = [inst.n_active for inst in self.instances]
@@ -136,10 +144,12 @@ class Simulator:
             quota = self.policy.admit_quota(st)
         admitted = 0
         while admitted < quota:
+            group_id, prompt_len, target_len = self._next_request_shape()
             req = Request(
                 rid=self.next_rid,
-                prompt_len=self._next_prompt_length(),
-                target_len=self._next_length(),
+                group_id=group_id,
+                prompt_len=prompt_len,
+                target_len=target_len,
                 v_traj=self.rollout_version,
                 admit_time=self.t,
             )
@@ -487,6 +497,7 @@ class Simulator:
             n_inflight=len(self.inflight),
             n_ready=len(self.ready),
             n_dropped_step=len(expired or []),
+            extrapolation_notes=training_estimate.diagnostics.get("extrapolation_notes"),
         )
         self.policy.check_invariants(self._state())
 

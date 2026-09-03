@@ -1,6 +1,5 @@
-"""Engine module: the request model, closed-form advance, and instance simulation."""
+"""Engine module: the request model and instance simulation."""
 
-from .advance import crossing_step, elapsed, next_completion, steps_within
 from .event import EngineEvent, EventKind
 from .instance import NativeInstance, blocks_for
 from .request import ReqStatus, Request, Segment
@@ -19,8 +18,4 @@ __all__ = [
     "Segment",
     "StepStat",
     "blocks_for",
-    "crossing_step",
-    "elapsed",
-    "next_completion",
-    "steps_within",
 ]

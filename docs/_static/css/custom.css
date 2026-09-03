@@ -1,0 +1,24 @@
+/* DryRun-RL documentation theme overrides. */
+
+/* Feature cards on the landing page: flat, no hover lift. */
+.dryrun-feature-card {
+    border: 1px solid var(--pst-color-border);
+    border-radius: 0.35rem;
+}
+
+/* Wide tables (accuracy figures, config references) should not overflow. */
+table {
+    display: table;
+    width: 100%;
+}
+
+table td,
+table th {
+    white-space: normal;
+}
+
+/* Measured-number tables read better with a tighter monospace column. */
+table code {
+    font-size: 0.85em;
+    white-space: nowrap;
+}

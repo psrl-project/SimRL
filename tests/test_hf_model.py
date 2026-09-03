@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from dryrun.cli.profile import _generate_bridge_candidates
-from dryrun.profiler.adapters.megatron_bridge import (
+from dryrun.profiler.adapters.megatron import (
     MegatronBridgeConfig,
-    infer_gpu_type,
     prepare_bridge_candidate,
 )
 from dryrun.profiler.adapters.vllm import VLLMSweepConfig
@@ -24,7 +24,7 @@ from dryrun.profiler.search_space import ModelConstraints, TrainingCandidate, en
 
 FIXTURES = Path(__file__).parent / "fixtures"
 HF_QWEN = FIXTURES / "hf" / "qwen3_8b"
-REAL_QWEN = Path("/apdcephfs_zwfy10_303541817/share_303541817/lhy/models/Qwen3-8B")
+REAL_QWEN = Path("/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B")
 
 
 def test_load_hf_model_descriptor_from_local_checkpoint():
@@ -95,7 +95,6 @@ def test_megatron_yaml_uses_hf_path_and_fixed_world_size(tmp_path: Path):
     assert config.model.num_layers == 36
     assert config.model_family_name == "qwen"
     assert config.model_recipe_name == "qwen3_8b"
-    assert config.gpu_type == "h100"
     assert config.max_steps == 4
     assert config.warmup_steps == 1
     assert {candidate.parallelism.world_size for candidate in candidates} == {8}
@@ -130,7 +129,14 @@ def test_fixed_world_size_assigns_remaining_ranks_to_dp():
     assert candidates[0].repeat == 0
 
 
-def test_megatron_full_recompute_command_uses_official_overrides(tmp_path: Path):
+def test_megatron_full_recompute_reaches_the_launch_spec(tmp_path: Path):
+    """
+    Recompute settings travel in the launch spec, not on a command line.
+
+    The vendored performance CLI dropped unknown arguments, so the recompute
+    overrides it was handed never reached the model. The spec is read directly by
+    the launcher, which removes that whole class of silent loss.
+    """
     config = MegatronBridgeConfig(
         bridge_dir=tmp_path / "Megatron-Bridge",
         output_dir=tmp_path,
@@ -149,11 +155,16 @@ def test_megatron_full_recompute_command_uses_official_overrides(tmp_path: Path)
         sequence_shape=(512,),
         recompute="full",
     )
-    command, _ = prepare_bridge_candidate(config, candidate)
-    assert command[command.index("--recompute_num_layers") + 1] == "1"
-    assert "model.recompute_granularity=full" in command
-    assert command[command.index("--vocab_size") + 1] == "151936"
-    assert command[command.index("--max_steps") + 1] == "4"
+    command, run_dir = prepare_bridge_candidate(config, candidate)
+    spec = json.loads((run_dir / "launch_spec.json").read_text())
+    assert spec["recompute"] == "full"
+    assert spec["recompute_method"] == "uniform"
+    assert spec["recompute_num_layers"] == 1
+    assert spec["vocab_size"] == 151936
+    assert spec["train_iters"] == 4
+    # Nothing is marshalled through the vendored CLI any more.
+    assert command[command.index("--spec") + 1] == str(run_dir / "launch_spec.json")
+    assert not any("run_recipe.py" in item for item in command)
 
 
 @pytest.mark.skipif(not REAL_QWEN.exists(), reason="Qwen3-8B checkpoint is not available.")
@@ -167,6 +178,22 @@ def test_load_real_qwen3_checkpoint():
     assert descriptor.parameter_count > 8_000_000_000
 
 
-def test_infer_gpu_type_from_hardware_name():
-    assert infer_gpu_type("NVIDIA H100 80GB HBM3") == "h100"
-    assert infer_gpu_type("H100") == "h100"
+def test_megatron_config_carries_no_gpu_token(tmp_path: Path):
+    """
+    GPU identity lives only on the hardware descriptor.
+
+    A second, differently spelled GPU field existed to feed the vendored CLI's
+    `--gpu` choices, which rejected this cluster's accelerator outright. The
+    launcher never needed it, so the duplicate source of truth is gone.
+    """
+    config = MegatronBridgeConfig.from_dict(
+        {
+            "model": str(HF_QWEN),
+            "hardware": {"gpu_name": "Custom Accelerator", "gpu_count": 8},
+            "output_dir": str(tmp_path),
+        },
+        base_dir=tmp_path,
+    )
+
+    assert not hasattr(config, "gpu_type")
+    assert config.hardware.gpu_name == "Custom Accelerator"

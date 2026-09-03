@@ -35,6 +35,17 @@ class RolloutCostConfig:
     C3: float = 0.0
     C4: float = 0.0
     C5: float = 0.0
+    # ComposedRollout: predict from measured kernel tables instead of fitted coefficients.
+    kernel_table_root: str = ""
+    gpu: str = ""
+    model_path: str = ""
+    attention_backend: str = ""
+    utility_surface: str = "pchip"
+    decode_integration_stride: int = 1024
+    # Per-request KV depth above which a decode segment uses the O(1) closed form instead of
+    # the lattice integrator. Defaults to effectively disabled: measured end to end on the
+    # DAPO trace the fast path gave 1.2x for 4.6% deviation, which is not a good trade.
+    saturation_step_threshold: int = 1 << 62
 
 
 @dataclass
@@ -62,6 +73,11 @@ class DistributionConfig:
     name: str = "uniform"
     n: int = 200
     seed: int = 42
+    # Kept because dryrun/config/defaults/workload/from_trace.yaml still sets them and
+    # build_distribution still reads them. Retiring the from_trace workload is a separate
+    # change that must drop the YAML group, the CLI branch, and these together.
+    trace_path: str = ""
+    trace_column: str = "length"
     lo: int = 50
     hi: int = 200
     short_len: int = 50
@@ -70,18 +86,26 @@ class DistributionConfig:
     mu: float = 4.0
     sigma: float = 1.0
     alpha: float = 2.0
-    trace_path: str = ""
-    trace_column: str = "length"
+
+
+@dataclass
+class JointTraceConfig:
+    """Joint group trace source (see `dryrun-workload collect-groups`)."""
+
+    path: str = ""
+    n_groups: int = 0
 
 
 @dataclass
 class WorkloadConfig:
-    """Combined prompt- and output-length workload configuration."""
+    """Workload source: synthetic marginal distributions or a joint group trace."""
 
+    source: str = "distributions"
     output: DistributionConfig = field(default_factory=DistributionConfig)
     prompt: DistributionConfig = field(
         default_factory=lambda: DistributionConfig(name="fixed", lo=512, hi=512)
     )
+    trace: JointTraceConfig = field(default_factory=JointTraceConfig)
 
 
 @dataclass
@@ -101,7 +125,12 @@ class TrainingCostConfig:
     gradient_dtype: str = "fp32"
     optimizer_state_dtype: str = "fp32"
     distributed_optimizer: bool = True
-    allow_extrapolation: bool = False
+    # Feature names for which out-of-domain queries are allowed. Empty means strict.
+    # Valid names: FSDP latency: num_microbatches, sequences_per_microbatch, tokens
+    #              FSDP memory:  num_microbatches, activation_tokens
+    #              Megatron latency: micro_batch_size, pipeline_slots, tokens
+    #              Megatron memory:  activation_bytes, profiled_dp
+    extrapolate: list = field(default_factory=list)
     gpu_memory_mib: int | None = None
     model_params: int = 0
     peak_flops: float = 312e12
@@ -110,6 +139,20 @@ class TrainingCostConfig:
     bytes_per_parameter: float = 16.0
     time_per_token: float = 1e-4
     base_memory_bytes: int = 0
+    # How real trajectory lengths become microbatches. Profiling measures uniform
+    # shapes, so this is a simulate-time choice, and the three modes span a measured
+    # 1.17x to 4.34x latency range on DAPO-like bimodal lengths.
+    batching_mode: str = "pad_to_max"
+    # Token budget per rank for the token_budget mode. verl's default is 10240.
+    max_tokens_per_rank: int | None = None
+    # Which profiled FSDP mesh to answer for. A cell is a measurement of one mesh, so an
+    # artifact spanning several shard degrees cannot infer the choice; null lets a
+    # single-mesh artifact infer it. parallelism.dp must equal shard * replicate.
+    shard_size: int | None = None
+    replicate_size: int | None = None
+    # Discrete FSDP cell selectors. Must match a profiled cell.
+    optimizer_offload: bool = False
+    reshard_after_forward: bool = True
 
 
 @dataclass

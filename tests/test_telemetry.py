@@ -7,22 +7,22 @@ from dryrun.telemetry.store import JsonlStore
 from dryrun.policy.psrl import PSRLPolicy
 from dryrun.simulator import SimConfig, Simulator
 from dryrun.workload.distributions import uniform
+from dryrun.workload.grouped import GroupedWorkload
 
 
 def _run_with_store(tmp_path, n_instances=2, n_versions=6):
     store = JsonlStore(tmp_path / "logs")
     cost = UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7)
-    lengths = uniform(100, 50, 150, seed=0)
     cfg = SimConfig(
         batch_size=4,
         max_staleness=2,
         n_versions=n_versions,
         n_instances=n_instances,
+        workload=GroupedWorkload.from_lengths([512], uniform(100, 50, 150, seed=0)),
     )
     sim = Simulator(
         rollout_cost=cost,
         policy=PSRLPolicy(),
-        lengths=lengths,
         cfg=cfg,
         store=store,
     )
@@ -34,9 +34,13 @@ def _run_with_store(tmp_path, n_instances=2, n_versions=6):
 class TestNoStoreIsNoOp:
     def test_runs_identically_without_a_store(self):
         cost = UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7)
-        lengths = uniform(50, 50, 100, seed=0)
-        cfg = SimConfig(batch_size=4, max_staleness=2, n_versions=5)
-        sim = Simulator(rollout_cost=cost, policy=PSRLPolicy(), lengths=lengths, cfg=cfg)
+        cfg = SimConfig(
+            batch_size=4,
+            max_staleness=2,
+            n_versions=5,
+            workload=GroupedWorkload.from_lengths([512], uniform(50, 50, 100, seed=0)),
+        )
+        sim = Simulator(rollout_cost=cost, policy=PSRLPolicy(), cfg=cfg)
         result = sim.run()
         assert not result.livelocked
         assert result.versions_done == 5
@@ -47,17 +51,16 @@ class TestLogTelemetrySwitch:
         """`cfg.log_telemetry=False` must win over passing a real store in."""
         store = JsonlStore(tmp_path / "logs")
         cost = UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7)
-        lengths = uniform(50, 50, 100, seed=0)
         cfg = SimConfig(
             batch_size=4,
             max_staleness=2,
             n_versions=5,
             log_telemetry=False,
+            workload=GroupedWorkload.from_lengths([512], uniform(50, 50, 100, seed=0)),
         )
         sim = Simulator(
             rollout_cost=cost,
             policy=PSRLPolicy(),
-            lengths=lengths,
             cfg=cfg,
             store=store,
         )
@@ -71,13 +74,16 @@ class TestLogTelemetrySwitch:
     def test_log_telemetry_true_is_the_default_and_writes_files(self, tmp_path):
         store = JsonlStore(tmp_path / "logs")
         cost = UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7)
-        lengths = uniform(50, 50, 100, seed=0)
-        cfg = SimConfig(batch_size=4, max_staleness=2, n_versions=5)
+        cfg = SimConfig(
+            batch_size=4,
+            max_staleness=2,
+            n_versions=5,
+            workload=GroupedWorkload.from_lengths([512], uniform(50, 50, 100, seed=0)),
+        )
         assert cfg.log_telemetry is True
         sim = Simulator(
             rollout_cost=cost,
             policy=PSRLPolicy(),
-            lengths=lengths,
             cfg=cfg,
             store=store,
         )

@@ -1,0 +1,83 @@
+# Fitted FSDP2/HSDP training cost. Requires a profile JSONL regression artifact.
+name: fsdp
+
+# Path to a CostArtifact produced by `dryrun-regress training --latency-model fsdp`.
+artifact_path: ""
+
+# Simulated mesh. Every rank consumes distinct data, so dp is the world size;
+# sharding and replication are recorded as artifact selectors, not here.
+parallelism:
+  tp: 1
+  pp: 1
+  dp: 8
+  cp: 1
+
+# Sequences per microbatch on one rank when the batching mode pads.
+micro_batch_size: 1
+
+# FSDP has no pipeline schedule; the axis degenerates rather than taking a value.
+schedule: fsdp
+
+# How real trajectory lengths become microbatches. pad_to_max charges for pad tokens,
+# token_budget reproduces verl's dynamic batching, packed_no_pad charges only real
+# tokens. Measured spread between the extremes is 1.17x to 4.34x with the fill ratio.
+batching_mode: pad_to_max
+
+# Token budget per rank for the token_budget mode. verl's DAPO scripts use 10240.
+max_tokens_per_rank: null
+
+# Activation checkpoint policy. Must match a profiled discrete cell.
+activation_recompute: full
+
+# Optimizer name. Must match a profiled discrete cell.
+optimizer: adam
+
+# Dtypes used by the static FSDP inventory and cell lookup. FSDP2 shards parameters,
+# gradients, and optimizer state alike, so there is no distributed_optimizer flag.
+parameter_dtype: bf16
+gradient_dtype: fp32
+optimizer_state_dtype: fp32
+
+# Which profiled mesh to answer for. An artifact fitted over several shard degrees holds
+# one cell per mesh, and a cell is a measurement of that mesh alone, so the choice cannot
+# be inferred. parallelism.dp must equal shard_size * replicate_size.
+shard_size: null
+replicate_size: null
+
+# Discrete cell selectors. Must match a profiled cell.
+optimizer_offload: false
+reshard_after_forward: true
+
+# Feature names for which out-of-domain queries are permitted instead of rejected.
+# Empty (the default) means strict: any query outside the fitted range raises immediately.
+# When a name is listed the prediction proceeds and the exceedance is recorded in the
+# estimate's diagnostics under 'extrapolation_notes' -- a permitted extrapolation is never
+# silent.  An unknown name (e.g. a typo) raises at construction rather than silently
+# enabling nothing.
+#
+# Selectable names for FSDP:
+#   num_microbatches       -- LATENCY and MEMORY: the number of gradient-accumulation steps
+#                             per rank. The latency form is exactly linear in this term
+#                             (per_step + nmb*(token_cost*tokens + microbatch_overhead)), so
+#                             fitting on nmb in {1,2} and predicting nmb=4 measured a median
+#                             absolute error of 7.7%, on par with the model's own in-domain
+#                             MRE of 9-11%. Upward extrapolation is defensible.
+#   sequences_per_microbatch -- LATENCY only: sequences packed into one microbatch. Enters
+#                             only as a guard; the linear form does not use it directly.
+#                             Extrapolating upward increases the effective batch size beyond
+#                             what was profiled; treat with caution.
+#   tokens                 -- LATENCY: total tokens on the critical rank per microbatch.
+#                             Beyond 16384 tokens/rank the hardware cannot run: of the
+#                             profiled candidates, 32768 had 0 successes and 18 OOMs, 65536
+#                             had 0 successes and 9 OOMs. A prediction there looks plausible
+#                             while describing a configuration that physically cannot run.
+#                             Do NOT list this name unless you have profiled beyond 16384.
+#   activation_tokens      -- MEMORY: max tokens/rank used for the activation residual term.
+#                             The same OOM evidence applies: do not extrapolate without data.
+#
+# Example Hydra override to permit only the safe dimension:
+#   training_cost.extrapolate=[num_microbatches]
+extrapolate: []
+
+# Per-GPU capacity in MiB used by the simulator to flag OOM. null disables the check.
+gpu_memory_mib: null

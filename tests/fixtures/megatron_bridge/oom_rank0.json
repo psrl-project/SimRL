@@ -1,0 +1,10 @@
+{
+  "rank": 0,
+  "torch_oom": true,
+  "device_free_bytes": 1048576,
+  "device_total_bytes": 102637043712,
+  "device_reserved_bytes": 101234567890,
+  "seq_length": 512,
+  "num_microbatches": 4,
+  "message": "CUDA out of memory. Tried to allocate 2.00 GiB."
+}

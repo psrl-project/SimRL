@@ -129,6 +129,7 @@ class SimTelemetry:
             t=t,
             event=event,
             rid=req.rid,
+            group_id=req.group_id,
             instance_id=req.instance_id,
             admit_time=req.admit_time,
             dispatch_time=req.dispatch_time,
@@ -176,11 +177,11 @@ class SimTelemetry:
         n_inflight: int,
         n_ready: int,
         n_dropped_step: int,
+        extrapolation_notes: list[str] | None = None,
     ) -> None:
         if self.store is None:
             return
-        self.store.write(
-            "train",
+        payload: dict = dict(
             t=t,
             start=start,
             end=end,
@@ -204,6 +205,9 @@ class SimTelemetry:
             n_ready=n_ready,
             n_dropped_step=n_dropped_step,
         )
+        if extrapolation_notes:
+            payload["extrapolation_notes"] = extrapolation_notes
+        self.store.write("train", **payload)
 
     def close(self) -> None:
         if self.store is not None:

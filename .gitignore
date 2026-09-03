@@ -54,6 +54,11 @@ tensorflow/my_graph/*
 **/*log*/
 **/models/
 **/data/
+# The GPU specs YAML is a small static config file (not a dataset) that must ship
+# with the package. Git negation cannot re-include a file inside an ignored directory,
+# so we un-ignore the directory first, then re-include only the one file.
+!dryrun/cost/kernel/data/
+!dryrun/cost/kernel/data/gpu_specs.yaml
 
 
 # =========================================================================
@@ -255,3 +260,10 @@ dmypy.json
 *.swp
 # macOS
 .DS_Store
+
+# Subagent-driven-development scratch (local only).
+.superpowers/
+
+# Claude Code machine-local settings (proxy env, permission allowlists).
+# .claude/coding-style.md and codebase-map.md ARE tracked; only this file is local.
+.claude/settings.local.json

@@ -1,0 +1,54 @@
+# Smoke configuration: one GPU, two transformer layers.
+#
+# Proves the whole chain (generate -> run -> collect -> regress) in about a minute
+# before any full-model candidate is launched. The grid is the real bring-up grid,
+# so the Hydraulis latency design still reaches rank four and the fit is exercised
+# rather than assumed.
+#
+# num_layers_override changes the parameter count, so these records must never be
+# mixed into a production fit. The cost-model cell key includes parameter_count,
+# which separates them automatically.
+model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 1
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 1
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen3_8b_smoke/megatron_bridge
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  # Twelve steps with four discarded. The first profiled step was the slowest in 18 of
+  # 24 runs under a single warmup step -- chance alone would give about 8 -- so one step
+  # is not enough to reach steady state. Dropping the second step as well cut the median
+  # spread across a candidate from 16.4% to 0.5%. Eight retained samples then allow a
+  # median and outlier rejection, which two samples cannot. The extra steps are nearly
+  # free: a candidate spends about 2.5 minutes in distributed setup and well under a
+  # second per step.
+  max_steps: 12
+  warmup_steps: 4
+  num_layers_override: 2
+
+profiling:
+  allow_incomplete: false
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+search_space:
+  world_size: 1
+  tensor_parallel_sizes: [1]
+  pipeline_parallel_sizes: [1]
+  micro_batch_size: 1
+  num_microbatches: [1, 4]
+  sequence_lengths: [512, 1024, 2048]
+  recompute: full

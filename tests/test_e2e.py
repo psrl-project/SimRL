@@ -18,19 +18,30 @@ from dryrun.policy.verl import VerlPolicy
 from dryrun.simulator import SimConfig, Simulator, clip_length
 from dryrun.telemetry.store import JsonlStore
 from dryrun.workload.distributions import bimodal, uniform
+from dryrun.workload.grouped import GroupedWorkload
 
 
 def _run_sim(policy, lengths, cfg):
+    """
+    Run a simulation, optionally re-pairing `cfg.workload` with `lengths`.
+
+    `lengths` is a list of output lengths for the common case where a test only
+    varies the response distribution. It is cycled against the prompt lengths
+    already in `cfg.workload`. Pass None when the test set `cfg.workload` itself.
+    """
     cost = UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7)
     training_cost = TrainingCostModel(
         FixedTrainingLatency(0.5),
         FixedTrainingMemory(0),
     )
+    if lengths is not None:
+        cfg.workload = GroupedWorkload.from_lengths(
+            [group.prompt_len for group in cfg.workload.groups], lengths
+        )
     sim = Simulator(
         rollout_cost=cost,
         training_cost=training_cost,
         policy=policy,
-        lengths=lengths,
         cfg=cfg,
     )
     return sim.run()
@@ -204,10 +215,9 @@ class TestVariablePromptLengths:
             batch_size=4,
             max_staleness=2,
             n_versions=8,
-            prompt_lengths=prompt_lengths,
+            workload=GroupedWorkload.from_lengths(prompt_lengths, uniform(100, 50, 100, seed=0)),
         )
-        lengths = uniform(100, 50, 100, seed=0)
-        result = _run_sim(PSRLPolicy(), lengths, cfg)
+        result = _run_sim(PSRLPolicy(), None, cfg)
         assert not result.livelocked
         assert result.versions_done == 8
         observed_prompt_lens = {r.prompt_len for r in result.consumed}
@@ -242,12 +252,12 @@ class TestPartialRolloutPublish:
             n_instances=1,
             partial_rollout=True,
             sync_time=0.25,
+            workload=GroupedWorkload.from_lengths([512], uniform(80, 200, 400, seed=0)),
         )
         sim = Simulator(
             rollout_cost=cost,
             training_cost=training_cost,
             policy=ArealPolicy(),
-            lengths=uniform(80, 200, 400, seed=0),
             cfg=cfg,
             store=store,
         )
@@ -294,12 +304,12 @@ class TestPartialRolloutPublish:
             n_instances=1,
             partial_rollout=True,
             sync_time=0.25,
+            workload=GroupedWorkload.from_lengths([512], uniform(80, 200, 400, seed=0)),
         )
         sim = Simulator(
             rollout_cost=cost,
             training_cost=training_cost,
             policy=ArealPolicy(),
-            lengths=uniform(80, 200, 400, seed=0),
             cfg=cfg,
             store=store,
         )
@@ -330,12 +340,12 @@ class TestPartialRolloutPublish:
             n_instances=1,
             partial_rollout=True,
             sync_time=0.25,
+            workload=GroupedWorkload.from_lengths([512], uniform(80, 200, 400, seed=0)),
         )
         sim = Simulator(
             rollout_cost=cost,
             training_cost=training_cost,
             policy=PSRLPolicy(),
-            lengths=uniform(80, 200, 400, seed=0),
             cfg=cfg,
             store=store,
         )
@@ -376,14 +386,59 @@ class TestLengthCaps:
             batch_size=4,
             max_staleness=2,
             n_versions=4,
-            prompt_lengths=[100, 4000, 50],
+            workload=GroupedWorkload.from_lengths([100, 4000, 50], [500, 400, 10]),
             max_prompt_length=256,
             max_output_length=80,
             log_telemetry=False,
         )
-        result = _run_sim(PSRLPolicy(), [500, 400, 10], cfg)
+        result = _run_sim(PSRLPolicy(), None, cfg)
         requests = result.consumed + result.dropped
         assert requests, "Expected at least one admitted request."
         assert all(r.prompt_len <= 256 for r in requests)
         assert all(r.target_len <= 80 for r in requests)
         assert any(r.target_len == 10 for r in requests)
+
+
+class TestGroupIdPropagation:
+    def test_group_id_reaches_requests(self):
+        """Group ids from the workload must appear on the generated requests."""
+        from collections import Counter
+
+        from dryrun.workload.trace import RequestGroup
+
+        groups = [
+            RequestGroup(group_id=i, prompt_len=128, output_lens=(50, 60, 70, 80))
+            for i in range(6)
+        ]
+        cfg = SimConfig(
+            batch_size=8,
+            max_staleness=2,
+            n_versions=6,
+            workload=GroupedWorkload.from_groups(groups),
+            log_telemetry=False,
+        )
+        result = _run_sim(PSRLPolicy(), None, cfg)
+        all_requests = result.consumed + result.dropped
+        assert all_requests, "Expected at least one admitted request."
+
+        workload_group_ids = {g.group_id for g in groups}
+        observed_group_ids = {r.group_id for r in all_requests}
+
+        # Every observed group id must come from the workload.
+        assert observed_group_ids <= workload_group_ids, (
+            f"Unexpected group ids {observed_group_ids - workload_group_ids!r} found on requests."
+        )
+
+        # More than one distinct group id must be seen. If group_id is not
+        # threaded from the workload into Request, every request would land
+        # on the default (group 0) and len(observed_group_ids) would be 1.
+        assert len(observed_group_ids) > 1, (
+            f"Expected more than one distinct group id, got {observed_group_ids!r}."
+        )
+
+        # At least one group id must appear on more than one request, proving
+        # that multi-response groups are actually used (not just group 0 for all).
+        counts = Counter(r.group_id for r in all_requests)
+        assert max(counts.values()) > 1, (
+            "Expected at least one group id to appear on more than one request."
+        )

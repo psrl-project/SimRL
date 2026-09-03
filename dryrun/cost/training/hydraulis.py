@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 from collections import defaultdict
 from dataclasses import asdict, dataclass
@@ -10,21 +9,34 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.optimize import least_squares
 
 from dryrun.cost.artifact import ArtifactEntry, CostArtifact, FitMetrics
 from dryrun.profiler.io import profile_digest
 from dryrun.profiler.schema import Parallelism, ProfileRecord, TrainingPayload
 
+from .activation import ActivationGeometry, activation_bytes
 from .base import (
+    TrainingCostEstimate,
     TrainingCostModel,
     TrainingLatencyModel,
     TrainingMemoryModel,
-    TrainingOutOfDomainError,
     TrainingParallelism,
     TrainingWorkload,
 )
-from .inventory import parameter_inventory
+from .fitting import (
+    check_feature_range,
+    scaled_nonnegative_fit,
+    split_records_by_run,
+    validate_extrapolate_names,
+    validation_is_in_sample,
+)
+from .inventory import dtype_bytes, heaviest_stage_parameters, parameter_inventory
+from .latency import (
+    LatencyFeatures,
+    latency_features,
+    robust_step_time,
+    step_time_dispersion,
+)
 
 
 @dataclass(frozen=True)
@@ -40,6 +52,7 @@ class _CellKey:
     optimizer_state_dtype: str
     distributed_optimizer: bool
     parameter_count: int
+    geometry: ActivationGeometry
 
     @property
     def parallelism(self) -> Parallelism:
@@ -84,6 +97,10 @@ def _training_records(records: list[ProfileRecord]) -> tuple[dict[_CellKey, list
             optimizer_state_dtype=payload.optimizer_state_dtype,
             distributed_optimizer=payload.distributed_optimizer,
             parameter_count=int(parameter_count),
+            geometry=ActivationGeometry.from_model(
+                record.model,
+                activation_dtype_bytes=dtype_bytes(payload.parameter_dtype),
+            ),
         )
         groups[key].append(record)
     if not groups:
@@ -91,96 +108,56 @@ def _training_records(records: list[ProfileRecord]) -> tuple[dict[_CellKey, list
     return dict(groups), materialized
 
 
-def _split_records(
-    records: list[ProfileRecord],
-    *,
-    validation_fraction: float,
-) -> tuple[list[ProfileRecord], list[ProfileRecord]]:
-    if not 0 <= validation_fraction < 1:
-        raise ValueError("validation_fraction must be in [0, 1).")
-    run_ids = sorted({record.run.run_id for record in records})
-    if validation_fraction == 0 or len(run_ids) < 2:
-        return records, records
-    ranked = sorted(
-        run_ids,
-        key=lambda run_id: hashlib.sha256(run_id.encode("utf-8")).digest(),
+def _latency_features(payload: TrainingPayload, pp: int) -> LatencyFeatures:
+    """Build the structured latency design row for one payload."""
+    return latency_features(
+        payload.microbatches,
+        TrainingParallelism(tp=1, pp=pp, dp=1, cp=1),
     )
-    count = max(1, round(len(ranked) * validation_fraction))
-    validation_ids = set(ranked[:count])
-    train = [record for record in records if record.run.run_id not in validation_ids]
-    validation = [record for record in records if record.run.run_id in validation_ids]
-    return (train, validation) if train else (records, records)
 
 
-def _latency_features(payload: TrainingPayload, pp: int) -> tuple[float, float, float]:
-    q_values = [microbatch.sum_squared_tokens for microbatch in payload.microbatches]
-    t_values = [microbatch.sum_tokens for microbatch in payload.microbatches]
-    q_effective = sum(q_values) + (pp - 1) * max(q_values)
-    t_effective = sum(t_values) + (pp - 1) * max(t_values)
-    pipeline_slots = payload.num_microbatches + pp - 1
-    return float(q_effective), float(t_effective), float(pipeline_slots)
+def _activation_feature(
+    payload: TrainingPayload,
+    pp: int,
+    geometry: ActivationGeometry,
+    parallelism: Parallelism,
+) -> float:
+    """
+    Return predicted activation bytes for one payload.
 
-
-def _activation_feature(payload: TrainingPayload, pp: int) -> float:
-    max_tokens = max(microbatch.sum_tokens for microbatch in payload.microbatches)
-    in_flight_microbatches = min(payload.num_microbatches, pp)
-    return float(max_tokens * in_flight_microbatches)
-
-
-def _scaled_nonnegative_fit(
-    design: np.ndarray,
-    target: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, int]:
-    scales = np.maximum(np.max(np.abs(design), axis=0), 1.0)
-    scaled = design / scales
-    initial = np.maximum(np.linalg.lstsq(scaled, target, rcond=None)[0], 0)
-
-    def residual(parameters: np.ndarray) -> np.ndarray:
-        return scaled @ parameters - target
-
-    first = least_squares(
-        residual,
-        x0=np.maximum(initial, np.finfo(np.float64).eps),
-        bounds=(0, np.inf),
-        loss="soft_l1",
-        max_nfev=50_000,
+    This is an architecture-derived quantity in bytes, not an opaque token count, so
+    the fitted coefficient is a dimensionless correction near one rather than a
+    per-model scale factor.
+    """
+    return activation_bytes(
+        geometry,
+        payload.microbatches,
+        TrainingParallelism(tp=parallelism.tp, pp=pp, dp=parallelism.dp, cp=parallelism.cp),
     )
-    raw_residual = residual(first.x)
-    median = float(np.median(raw_residual))
-    mad = float(np.median(np.abs(raw_residual - median)))
-    if mad <= np.finfo(np.float64).eps:
-        inliers = np.ones(len(target), dtype=bool)
-    else:
-        inliers = np.abs(raw_residual - median) <= 4.5 * 1.4826 * mad
-    if int(np.sum(inliers)) > design.shape[1]:
-        second = least_squares(
-            lambda parameters: residual(parameters)[inliers],
-            x0=first.x,
-            bounds=(0, np.inf),
-            loss="soft_l1",
-            max_nfev=50_000,
-        )
-        fitted = second.x
-    else:
-        fitted = first.x
-        inliers = np.ones(len(target), dtype=bool)
-    return fitted / scales, inliers, int(np.linalg.matrix_rank(design))
 
 
 def _latency_arrays(
     records: list[ProfileRecord],
     pp: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    rows: list[tuple[float, float, float, float]] = []
+    """
+    Build one design row per candidate, not per step.
+
+    Every retained step used to be its own row, so a candidate whose steps were noisy
+    outvoted a clean one. Each profiled configuration should carry equal weight, and its
+    steps are repeat measurements of one quantity -- reduced by a median, which is
+    unbiased against the right-skew that stragglers produce.
+    """
+    rows: list[tuple[float, float, float]] = []
     targets: list[float] = []
     for record in records:
         payload = record.payload
         if record.run.status != "success" or not isinstance(payload, TrainingPayload):
             continue
-        q_effective, t_effective, pipeline_slots = _latency_features(payload, pp)
-        for step_time in payload.step_times_s:
-            rows.append((q_effective, t_effective, pipeline_slots, 1.0))
-            targets.append(step_time)
+        if not payload.step_times_s:
+            continue
+        rows.append(_latency_features(payload, pp).design_row())
+        targets.append(robust_step_time(payload.step_times_s))
     return np.asarray(rows, dtype=np.float64), np.asarray(targets, dtype=np.float64)
 
 
@@ -200,35 +177,35 @@ def _fit_latency_entry(
     ]
     if not successful:
         return None
-    train_records, validation_records = _split_records(
+    train_records, validation_records = split_records_by_run(
         successful,
         validation_fraction=validation_fraction,
     )
     train_x, train_y = _latency_arrays(train_records, key.pp)
     validation_x, validation_y = _latency_arrays(validation_records, key.pp)
-    if len(train_y) < 4:
-        raise ValueError(f"Hydraulis latency needs at least four samples for {key!r}.")
-    parameters, inliers, rank = _scaled_nonnegative_fit(train_x, train_y)
-    if require_full_rank and rank < 4:
+    if len(train_y) < 3:
+        raise ValueError(f"Hydraulis latency needs at least three candidates for {key!r}.")
+    parameters, inliers, rank = scaled_nonnegative_fit(train_x, train_y)
+    if require_full_rank and rank < 3:
         raise ValueError(
-            f"Hydraulis latency design matrix is rank {rank}, expected 4 for {key!r}. "
-            "Add sequence-shape and pipeline-microbatch coverage."
+            f"Hydraulis latency design matrix is rank {rank}, expected 3 for {key!r}. "
+            "Vary both the sequence length and the microbatch count: sequence length "
+            "alone cannot separate the per-microbatch cost from the per-step cost."
         )
     train_predicted = train_x @ parameters
     validation_predicted = validation_x @ parameters
     all_features = [_latency_features(record.payload, key.pp) for record in successful]
+    dispersions = [
+        step_time_dispersion(record.payload.step_times_s) for record in successful
+    ]
     feature_ranges = {
-        "q_effective": (
-            min(item[0] for item in all_features),
-            max(item[0] for item in all_features),
-        ),
-        "t_effective": (
-            min(item[1] for item in all_features),
-            max(item[1] for item in all_features),
+        "tokens": (
+            min(item.tokens for item in all_features),
+            max(item.tokens for item in all_features),
         ),
         "pipeline_slots": (
-            min(item[2] for item in all_features),
-            max(item[2] for item in all_features),
+            min(item.slots for item in all_features),
+            max(item.slots for item in all_features),
         ),
         "micro_batch_size": (
             float(min(record.payload.micro_batch_size for record in successful)),
@@ -239,10 +216,9 @@ def _fit_latency_entry(
         parallelism=key.parallelism,
         selector=key.selector("latency"),
         coefficients={
-            "a_q": float(parameters[0]),
-            "b_t": float(parameters[1]),
-            "c_pipeline": float(parameters[2]),
-            "update_overhead": float(parameters[3]),
+            "per_step_overhead": float(parameters[0]),
+            "token_cost": float(parameters[1]),
+            "microbatch_overhead": float(parameters[2]),
         },
         train_metrics=FitMetrics.from_predictions(
             train_y,
@@ -257,25 +233,73 @@ def _fit_latency_entry(
         ),
         feature_ranges=feature_ranges,
         diagnostics={
-            "formula": "a_q*Q_eff+b_t*T_eff+c_pipeline*(num_microbatches+PP-1)+update_overhead",
+            "formula": (
+                "per_step_overhead + (num_microbatches + PP - 1) * "
+                "(token_cost * max_microbatch_tokens + microbatch_overhead)"
+            ),
             "dp_latency": "ideal-local-workload-scaling",
+            "step_aggregation": "median-per-candidate",
+            "validation_fraction": validation_fraction,
+            # `split_records_by_run` hands back the same list twice at fraction zero or
+            # with a single run, so `validation_metrics` is then the training metric.
+            "validation_is_in_sample": validation_is_in_sample(
+                successful,
+                validation_fraction=validation_fraction,
+            ),
+            # Relative median absolute deviation of the retained step times. Above
+            # roughly 0.05 the measurement, not the model, limits accuracy.
+            "max_step_dispersion": max(dispersions) if dispersions else 0.0,
+            "median_step_dispersion": float(np.median(dispersions)) if dispersions else 0.0,
         },
     )
+
+
+def _static_bytes(
+    *,
+    parameter_count: int,
+    geometry: ActivationGeometry,
+    parallelism: TrainingParallelism,
+    parameter_dtype: str,
+    gradient_dtype: str,
+    optimizer_state_dtype: str,
+    distributed_optimizer: bool,
+) -> float:
+    """
+    Return static state bytes on the most loaded rank.
+
+    Peak memory is set by the heaviest pipeline stage, which holds the embedding or
+    the output projection on top of its share of transformer layers.
+    """
+    return parameter_inventory(
+        parameter_count=parameter_count,
+        parallelism=parallelism,
+        parameter_dtype=parameter_dtype,
+        gradient_dtype=gradient_dtype,
+        optimizer_state_dtype=optimizer_state_dtype,
+        distributed_optimizer=distributed_optimizer,
+        local_parameters=heaviest_stage_parameters(
+            parameter_count=parameter_count,
+            num_layers=geometry.num_layers,
+            hidden_size=geometry.hidden_size,
+            vocab_size=geometry.vocab_size,
+            parallelism=parallelism,
+        ),
+    ).total_bytes
 
 
 def _record_inventory(
     key: _CellKey,
     record: ProfileRecord,
 ) -> float:
-    parallelism = TrainingParallelism.from_profile_parallelism(record.parallelism)
-    return parameter_inventory(
+    return _static_bytes(
         parameter_count=key.parameter_count,
-        parallelism=parallelism,
+        geometry=key.geometry,
+        parallelism=TrainingParallelism.from_profile_parallelism(record.parallelism),
         parameter_dtype=key.parameter_dtype,
         gradient_dtype=key.gradient_dtype,
         optimizer_state_dtype=key.optimizer_state_dtype,
         distributed_optimizer=key.distributed_optimizer,
-    ).total_bytes
+    )
 
 
 def _memory_arrays(
@@ -289,11 +313,13 @@ def _memory_arrays(
         payload = record.payload
         if record.run.status != "success" or not isinstance(payload, TrainingPayload):
             continue
-        peak = payload.peak_reserved_bytes
+        peak = payload.peak_allocated_bytes
         if peak is None:
             continue
         static = _record_inventory(key, record)
-        features.append(_activation_feature(payload, key.pp))
+        features.append(
+            _activation_feature(payload, key.pp, key.geometry, record.parallelism)
+        )
         targets.append(float(peak))
         static_bytes.append(static)
     return (
@@ -310,18 +336,35 @@ def _fit_memory_entry(
     validation_fraction: float,
     require_full_rank: bool,
 ) -> ArtifactEntry | None:
+    """
+    Fit peak allocated bytes as analytic static state plus a corrected activation term.
+
+    The target is `peak_allocated_bytes`, the live-tensor high-water mark, not
+    `peak_reserved_bytes`. Reserved memory is the caching allocator's segment pool: it
+    is quantized, sticky, and under full recompute it barely responds to sequence
+    length because a longer activation reuses segments the static state already
+    caused to be reserved. Measured on 8x H20 at TP1/PP1/DP8, doubling the sequence
+    length from 512 to 1024 moved allocated by +304 MiB and reserved by -4 MiB, so
+    fitting reserved produced a near-zero coefficient of determination. Reserved is
+    still recorded, and callers that need a provisioning number should add an
+    allocator-overhead margin on top of this prediction.
+
+    Both terms are in bytes, so `activation_scale` is a dimensionless correction that
+    should land near one; a value far from one means the geometry is wrong rather than
+    the machine being unusual.
+    """
     successful = [
         record
         for record in records
         if record.run.status == "success"
         and isinstance(record.payload, TrainingPayload)
-        and record.payload.peak_reserved_bytes is not None
+        and record.payload.peak_allocated_bytes is not None
     ]
     oom_records = [record for record in records if record.run.status == "oom"]
     if not successful and not oom_records:
         return None
     if successful:
-        train_records, validation_records = _split_records(
+        train_records, validation_records = split_records_by_run(
             successful,
             validation_fraction=validation_fraction,
         )
@@ -332,7 +375,7 @@ def _fit_memory_entry(
         )
         train_residual = np.maximum(train_target - train_static, 0)
         design = np.column_stack((train_feature, np.ones(len(train_feature))))
-        parameters, inliers, rank = _scaled_nonnegative_fit(design, train_residual)
+        parameters, inliers, rank = scaled_nonnegative_fit(design, train_residual)
         if require_full_rank and rank < 2:
             raise ValueError(
                 f"Hydraulis memory design matrix is rank {rank}, expected 2 for {key!r}. "
@@ -355,7 +398,7 @@ def _fit_memory_entry(
         payload = record.payload
         if not isinstance(payload, TrainingPayload) or record.hardware.gpu_memory_bytes is None:
             continue
-        feature = _activation_feature(payload, key.pp)
+        feature = _activation_feature(payload, key.pp, key.geometry, record.parallelism)
         static = _record_inventory(key, record)
         required_residual = record.hardware.gpu_memory_bytes + 1 - static
         deficit = required_residual - (parameters[0] * feature + parameters[1])
@@ -368,20 +411,20 @@ def _fit_memory_entry(
     validation_predicted = (
         validation_static + parameters[0] * validation_feature + parameters[1]
     )
-    all_payloads = [
-        record.payload
+    activation_features = [
+        _activation_feature(record.payload, key.pp, key.geometry, record.parallelism)
         for record in successful + oom_records
         if isinstance(record.payload, TrainingPayload)
     ]
-    activation_features = [_activation_feature(payload, key.pp) for payload in all_payloads]
     dp_values = [float(record.parallelism.dp) for record in successful + oom_records]
     return ArtifactEntry(
         parallelism=key.parallelism,
         selector=key.selector("memory"),
         coefficients={
-            "activation_slope": float(parameters[0]),
+            "activation_scale": float(parameters[0]),
             "residual_constant": float(parameters[1]),
             "parameter_count": float(key.parameter_count),
+            **{f"geometry_{name}": value for name, value in key.geometry.to_dict().items()},
         },
         train_metrics=FitMetrics.from_predictions(
             train_target,
@@ -395,18 +438,29 @@ def _fit_memory_entry(
             design_rank=rank,
         ),
         feature_ranges={
-            "activation_feature": (
+            "activation_bytes": (
                 min(activation_features),
                 max(activation_features),
             ),
             "profiled_dp": (min(dp_values), max(dp_values)),
         },
         diagnostics={
-            "memory_metric": "peak_reserved_bytes",
-            "static_inventory": "uniform-layer-parameter-gradient-master-adam",
+            "memory_metric": "peak_allocated_bytes",
+            "static_inventory": "full-param-and-grad-buffer-with-dp-sharded-optimizer",
             "optimizer_sharding": "distributed-optimizer-dp",
+            "activation_model": (
+                "(num_layers+1)*hidden*bytes + vocab*bytes per token, scaled by "
+                "min(num_microbatches, pp) in-flight microbatches over pp stages"
+            ),
             "oom_constraints": constrained_oom,
             "oom_intercept_increase": max(intercept_increase, 0.0),
+            "validation_fraction": validation_fraction,
+            # `split_records_by_run` hands back the same list twice at fraction zero or
+            # with a single run, so `validation_metrics` is then the training metric.
+            "validation_is_in_sample": validation_is_in_sample(
+                successful,
+                validation_fraction=validation_fraction,
+            ),
         },
     )
 
@@ -432,20 +486,6 @@ def _selector(
     }
 
 
-def _check_feature(
-    entry: ArtifactEntry,
-    name: str,
-    value: float,
-    *,
-    allow_extrapolation: bool,
-) -> None:
-    lower, upper = entry.feature_ranges[name]
-    if not allow_extrapolation and not lower <= value <= upper:
-        raise TrainingOutOfDomainError(
-            f"Feature {name!r}={value} is outside the profiled range [{lower}, {upper}]."
-        )
-
-
 class HydraulisLatencyModel(TrainingLatencyModel):
     """Evaluate fitted Hydraulis latency cells with explicit OOD checks."""
 
@@ -457,20 +497,29 @@ class HydraulisLatencyModel(TrainingLatencyModel):
         gradient_dtype: str,
         optimizer_state_dtype: str,
         distributed_optimizer: bool,
-        allow_extrapolation: bool = False,
+        extrapolate: frozenset[str] = frozenset(),
     ):
         self.artifact = artifact
         self.parameter_dtype = parameter_dtype
         self.gradient_dtype = gradient_dtype
         self.optimizer_state_dtype = optimizer_state_dtype
         self.distributed_optimizer = distributed_optimizer
-        self.allow_extrapolation = allow_extrapolation
+        self.extrapolate = extrapolate
 
     def predict(
         self,
         workload: TrainingWorkload,
         parallelism: TrainingParallelism,
     ) -> float:
+        latency, _ = self.predict_with_notes(workload, parallelism)
+        return latency
+
+    def predict_with_notes(
+        self,
+        workload: TrainingWorkload,
+        parallelism: TrainingParallelism,
+    ) -> tuple[float, list[str]]:
+        """Return (latency, extrapolation_notes) so the caller can record them."""
         canonical = parallelism.to_profile_parallelism(canonical_dp=True)
         entry = self.artifact.entry_for(
             canonical,
@@ -484,38 +533,24 @@ class HydraulisLatencyModel(TrainingLatencyModel):
             ),
         )
         microbatches = workload.critical_rank_microbatches(parallelism)
-        payload = TrainingPayload(
-            micro_batch_size=workload.micro_batch_size,
-            global_batch_size=workload.global_batch_size,
-            num_microbatches=len(microbatches),
-            schedule=workload.schedule,
-            recompute=workload.recompute,
-            optimizer=workload.optimizer,
-            microbatches=microbatches,
-        )
-        q_effective, t_effective, pipeline_slots = _latency_features(payload, parallelism.pp)
+        features = latency_features(microbatches, parallelism)
+        notes: list[str] = []
         for name, value in (
-            ("q_effective", q_effective),
-            ("t_effective", t_effective),
-            ("pipeline_slots", pipeline_slots),
+            ("tokens", features.tokens),
+            ("pipeline_slots", features.slots),
             ("micro_batch_size", float(workload.micro_batch_size)),
         ):
-            _check_feature(
-                entry,
-                name,
-                value,
-                allow_extrapolation=self.allow_extrapolation,
-            )
+            note = check_feature_range(entry, name, value, extrapolate=self.extrapolate)
+            if note is not None:
+                notes.append(note)
         coefficients = entry.coefficients
-        latency = (
-            coefficients["a_q"] * q_effective
-            + coefficients["b_t"] * t_effective
-            + coefficients["c_pipeline"] * pipeline_slots
-            + coefficients["update_overhead"]
+        latency = coefficients["per_step_overhead"] + features.slots * (
+            coefficients["token_cost"] * features.tokens
+            + coefficients["microbatch_overhead"]
         )
         if latency <= 0:
             raise ValueError("Hydraulis latency prediction must be positive.")
-        return latency
+        return latency, notes
 
 
 class HydraulisMemoryModel(TrainingMemoryModel):
@@ -529,20 +564,29 @@ class HydraulisMemoryModel(TrainingMemoryModel):
         gradient_dtype: str,
         optimizer_state_dtype: str,
         distributed_optimizer: bool,
-        allow_extrapolation: bool = False,
+        extrapolate: frozenset[str] = frozenset(),
     ):
         self.artifact = artifact
         self.parameter_dtype = parameter_dtype
         self.gradient_dtype = gradient_dtype
         self.optimizer_state_dtype = optimizer_state_dtype
         self.distributed_optimizer = distributed_optimizer
-        self.allow_extrapolation = allow_extrapolation
+        self.extrapolate = extrapolate
 
     def predict(
         self,
         workload: TrainingWorkload,
         parallelism: TrainingParallelism,
     ) -> int:
+        memory, _ = self.predict_with_notes(workload, parallelism)
+        return memory
+
+    def predict_with_notes(
+        self,
+        workload: TrainingWorkload,
+        parallelism: TrainingParallelism,
+    ) -> tuple[int, list[str]]:
+        """Return (peak_memory_bytes, extrapolation_notes) so the caller can record them."""
         canonical = parallelism.to_profile_parallelism(canonical_dp=True)
         entry = self.artifact.entry_for(
             canonical,
@@ -556,37 +600,34 @@ class HydraulisMemoryModel(TrainingMemoryModel):
             ),
         )
         microbatches = workload.critical_rank_microbatches(parallelism)
-        payload = TrainingPayload(
-            micro_batch_size=workload.micro_batch_size,
-            global_batch_size=workload.global_batch_size,
-            num_microbatches=len(microbatches),
-            schedule=workload.schedule,
-            recompute=workload.recompute,
-            optimizer=workload.optimizer,
-            microbatches=microbatches,
+        geometry = ActivationGeometry.from_dict(
+            {
+                name.removeprefix("geometry_"): value
+                for name, value in entry.coefficients.items()
+                if name.startswith("geometry_")
+            }
         )
-        feature = _activation_feature(payload, parallelism.pp)
-        _check_feature(
-            entry,
-            "activation_feature",
-            feature,
-            allow_extrapolation=self.allow_extrapolation,
-        )
+        feature = activation_bytes(geometry, microbatches, parallelism)
+        notes: list[str] = []
+        note = check_feature_range(entry, "activation_bytes", feature, extrapolate=self.extrapolate)
+        if note is not None:
+            notes.append(note)
         parameter_count = int(entry.coefficients["parameter_count"])
-        static = parameter_inventory(
+        static = _static_bytes(
             parameter_count=parameter_count,
+            geometry=geometry,
             parallelism=parallelism,
             parameter_dtype=self.parameter_dtype,
             gradient_dtype=self.gradient_dtype,
             optimizer_state_dtype=self.optimizer_state_dtype,
             distributed_optimizer=self.distributed_optimizer,
-        ).total_bytes
+        )
         predicted = (
             static
-            + entry.coefficients["activation_slope"] * feature
+            + entry.coefficients["activation_scale"] * feature
             + entry.coefficients["residual_constant"]
         )
-        return int(math.ceil(predicted))
+        return int(math.ceil(predicted)), notes
 
 
 class HydraulisTrainingCost(TrainingCostModel):
@@ -657,9 +698,20 @@ class HydraulisTrainingCost(TrainingCostModel):
         gradient_dtype: str | None = None,
         optimizer_state_dtype: str | None = None,
         distributed_optimizer: bool | None = None,
-        allow_extrapolation: bool = False,
+        extrapolate: list[str] | None = None,
     ) -> HydraulisTrainingCost:
-        """Load composable latency and memory models from one artifact."""
+        """Load composable latency and memory models from one artifact.
+
+        Args:
+            extrapolate: Feature names for which out-of-domain queries are permitted.
+                An empty list or None (the default) keeps the strict behaviour. When a
+                name is listed and the query is out of range, the prediction proceeds and
+                the exceedance is recorded in TrainingCostEstimate.diagnostics under the
+                key 'extrapolation_notes'. Unknown names raise ValueError at construction.
+                Valid names per component:
+                  latency: micro_batch_size, pipeline_slots, tokens
+                  memory:  activation_bytes, profiled_dp
+        """
         artifact = (
             artifact_or_path
             if isinstance(artifact_or_path, CostArtifact)
@@ -685,15 +737,48 @@ class HydraulisTrainingCost(TrainingCostModel):
         selected_distributed_optimizer = bool(
             infer("distributed_optimizer", distributed_optimizer)
         )
+        extrapolate_set = frozenset(extrapolate) if extrapolate else frozenset()
+        all_valid_names = frozenset().union(
+            *(frozenset(entry.feature_ranges.keys()) for entry in artifact.entries)
+        )
+        validate_extrapolate_names(
+            extrapolate_set, all_valid_names, context="Hydraulis artifact"
+        )
         common = {
             "artifact": artifact,
             "parameter_dtype": selected_parameter_dtype,
             "gradient_dtype": selected_gradient_dtype,
             "optimizer_state_dtype": selected_optimizer_state_dtype,
             "distributed_optimizer": selected_distributed_optimizer,
-            "allow_extrapolation": allow_extrapolation,
+            "extrapolate": extrapolate_set,
         }
         return cls(
             latency_model=HydraulisLatencyModel(**common),
             memory_model=HydraulisMemoryModel(**common),
+        )
+
+    def estimate(
+        self,
+        workload: TrainingWorkload,
+        parallelism: TrainingParallelism,
+    ) -> TrainingCostEstimate:
+        """Estimate latency and memory, recording any permitted extrapolations."""
+        latency, lat_notes = self.latency_model.predict_with_notes(workload, parallelism)
+        memory, mem_notes = self.memory_model.predict_with_notes(workload, parallelism)
+        diagnostics: dict[str, Any] = {
+            "tp": parallelism.tp,
+            "pp": parallelism.pp,
+            "dp": parallelism.dp,
+            "cp": parallelism.cp,
+            "micro_batch_size": workload.micro_batch_size,
+            "schedule": workload.schedule,
+            "recompute": workload.recompute,
+        }
+        all_notes = lat_notes + mem_notes
+        if all_notes:
+            diagnostics["extrapolation_notes"] = all_notes
+        return TrainingCostEstimate(
+            latency_s=latency,
+            peak_memory_bytes=memory,
+            diagnostics=diagnostics,
         )

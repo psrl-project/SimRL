@@ -8,6 +8,8 @@ import pytest
 
 from dryrun.cost.artifact import CostArtifact
 from dryrun.cost.rollout import UnifiedRoofline
+from dryrun.cost.training.activation import ActivationGeometry, activation_bytes
+from dryrun.cost.training.inventory import heaviest_stage_parameters
 from dryrun.cost.training import (
     AnalyticalTrainingCost,
     HydraulisTrainingCost,
@@ -33,11 +35,42 @@ from dryrun.profiler.schema import (
 )
 from dryrun.simulator import SimConfig, Simulator
 from dryrun.workload.distributions import uniform
+from dryrun.workload.grouped import GroupedWorkload
 
 PARAMETER_COUNT = 10_000_000
-LATENCY_COEFFICIENTS = (2e-10, 1e-7, 0.002, 0.01)
-ACTIVATION_SLOPE = 2048.0
+# (per_step_overhead, token_cost, microbatch_overhead) for the physical latency form
+# `per_step_overhead + slots * (token_cost * tokens + microbatch_overhead)`.
+LATENCY_COEFFICIENTS = (0.010, 1e-7, 0.002)
+# The activation term is architecture-derived bytes, so the synthetic peaks are built
+# from the same geometry the fit reconstructs and the recovered scale must be one.
+ACTIVATION_SCALE = 1.0
 MEMORY_RESIDUAL = 5_000_000.0
+NUM_LAYERS = 8
+HIDDEN_SIZE = 1024
+# Small enough that two untied embeddings fit inside PARAMETER_COUNT. The memory model
+# partitions a pipeline by putting the embedding on the first stage and the output
+# projection on the last, so a fixture whose embeddings exceed its own parameter count
+# is not a physically consistent architecture and is rejected.
+VOCAB_SIZE = 2_048
+
+
+def _synthetic_static_bytes(parallelism: TrainingParallelism) -> float:
+    """Mirror the model's heaviest-stage share so the fit must recover a scale of one."""
+    return parameter_inventory(
+        parameter_count=PARAMETER_COUNT,
+        parallelism=parallelism,
+        parameter_dtype="bf16",
+        gradient_dtype="fp32",
+        optimizer_state_dtype="fp32",
+        distributed_optimizer=True,
+        local_parameters=heaviest_stage_parameters(
+            parameter_count=PARAMETER_COUNT,
+            num_layers=NUM_LAYERS,
+            hidden_size=HIDDEN_SIZE,
+            vocab_size=VOCAB_SIZE,
+            parallelism=parallelism,
+        ),
+    ).total_bytes
 
 
 def _training_records() -> tuple[list[ProfileRecord], ProfileRecord]:
@@ -45,10 +78,11 @@ def _training_records() -> tuple[list[ProfileRecord], ProfileRecord]:
     model = ModelDescriptor(
         name="synthetic-qwen",
         parameter_count=PARAMETER_COUNT,
-        num_layers=8,
-        hidden_size=1024,
+        num_layers=NUM_LAYERS,
+        hidden_size=HIDDEN_SIZE,
         num_attention_heads=16,
         num_query_groups=4,
+        extra={"vocab_size": VOCAB_SIZE},
     )
     software = SoftwareDescriptor(
         backend="megatron_bridge",
@@ -73,14 +107,11 @@ def _training_records() -> tuple[list[ProfileRecord], ProfileRecord]:
                     q_values = [item.sum_squared_tokens for item in microbatches]
                     t_values = [item.sum_tokens for item in microbatches]
                     q_effective = sum(q_values) + max(q_values)
-                    t_effective = sum(t_values) + max(t_values)
-                    pipeline_slots = num_microbatches + 1
-                    a_q, b_t, c_pipeline, update = LATENCY_COEFFICIENTS
-                    latency = (
-                        a_q * q_effective
-                        + b_t * t_effective
-                        + c_pipeline * pipeline_slots
-                        + update
+                    slots = num_microbatches + 1
+                    peak_tokens = max(t_values)
+                    per_step, token_cost, microbatch_overhead = LATENCY_COEFFICIENTS
+                    latency = per_step + slots * (
+                        token_cost * peak_tokens + microbatch_overhead
                     )
                     training_parallelism = TrainingParallelism(
                         tp=1,
@@ -88,18 +119,19 @@ def _training_records() -> tuple[list[ProfileRecord], ProfileRecord]:
                         dp=dp,
                         cp=1,
                     )
-                    static = parameter_inventory(
-                        parameter_count=PARAMETER_COUNT,
-                        parallelism=training_parallelism,
-                        parameter_dtype="bf16",
-                        gradient_dtype="fp32",
-                        optimizer_state_dtype="fp32",
-                        distributed_optimizer=True,
-                    ).total_bytes
-                    activation_feature = max(t_values) * min(num_microbatches, 2)
+                    static = _synthetic_static_bytes(training_parallelism)
+                    activation_feature = activation_bytes(
+                        ActivationGeometry(
+                            num_layers=NUM_LAYERS,
+                            hidden_size=HIDDEN_SIZE,
+                            vocab_size=VOCAB_SIZE,
+                        ),
+                        microbatches,
+                        training_parallelism,
+                    )
                     peak = int(
                         static
-                        + ACTIVATION_SLOPE * activation_feature
+                        + ACTIVATION_SCALE * activation_feature
                         + MEMORY_RESIDUAL
                     )
                     payload = TrainingPayload(
@@ -114,12 +146,12 @@ def _training_records() -> tuple[list[ProfileRecord], ProfileRecord]:
                         rank_memory=(
                             RankMemory(
                                 rank=0,
-                                allocated_bytes=peak - 1024,
-                                reserved_bytes=peak,
+                                allocated_bytes=peak,
+                                reserved_bytes=peak + 1024,
                             ),
                         ),
-                        peak_allocated_bytes=peak - 1024,
-                        peak_reserved_bytes=peak,
+                        peak_allocated_bytes=peak,
+                        peak_reserved_bytes=peak + 1024,
                         parameter_count=PARAMETER_COUNT,
                     )
                     run_id = (
@@ -143,17 +175,18 @@ def _training_records() -> tuple[list[ProfileRecord], ProfileRecord]:
         SequenceStats.from_lengths([1024])
         for _ in range(2)
     )
-    oom_static = parameter_inventory(
-        parameter_count=PARAMETER_COUNT,
-        parallelism=TrainingParallelism(tp=1, pp=2, dp=1, cp=1),
-        parameter_dtype="bf16",
-        gradient_dtype="fp32",
-        optimizer_state_dtype="fp32",
-        distributed_optimizer=True,
-    ).total_bytes
-    oom_activation = 1024 * 2
+    oom_static = _synthetic_static_bytes(TrainingParallelism(tp=1, pp=2, dp=1, cp=1))
+    oom_activation = activation_bytes(
+        ActivationGeometry(
+            num_layers=NUM_LAYERS,
+            hidden_size=HIDDEN_SIZE,
+            vocab_size=VOCAB_SIZE,
+        ),
+        oom_microbatches,
+        TrainingParallelism(tp=1, pp=2, dp=1, cp=1),
+    )
     unconstrained_peak = int(
-        oom_static + ACTIVATION_SLOPE * oom_activation + MEMORY_RESIDUAL
+        oom_static + ACTIVATION_SCALE * oom_activation + MEMORY_RESIDUAL
     )
     oom_hardware = HardwareDescriptor(
         gpu_name="H100",
@@ -196,21 +229,39 @@ def test_hydraulis_fit_roundtrip_and_known_latency(tmp_path: Path):
     parallelism = TrainingParallelism(tp=1, pp=2, dp=1, cp=1)
     estimate = model.estimate(workload, parallelism)
 
-    q_effective = 5 * (2 * 512**2)
-    t_effective = 5 * (2 * 512)
-    expected = (
-        LATENCY_COEFFICIENTS[0] * q_effective
-        + LATENCY_COEFFICIENTS[1] * t_effective
-        + LATENCY_COEFFICIENTS[2] * 5
-        + LATENCY_COEFFICIENTS[3]
-    )
-    assert estimate.latency_s == pytest.approx(expected * 1.0005, rel=2e-3)
+    # Four microbatches of two 512-token sequences, plus the PP=2 bubble slot.
+    slots = 5
+    peak_tokens = 2 * 512
+    per_step, token_cost, microbatch_overhead = LATENCY_COEFFICIENTS
+    expected = per_step + slots * (token_cost * peak_tokens + microbatch_overhead)
+    # The fit must recover the generating coefficients, not merely interpolate.
+    assert estimate.latency_s == pytest.approx(expected, rel=5e-3)
     assert estimate.peak_memory_bytes > 0
     assert {entry.selector["component"] for entry in artifact.entries} == {
         "latency",
         "memory",
     }
-    assert all(entry.train_metrics.design_rank in {2, 4} for entry in artifact.entries)
+    assert all(entry.train_metrics.design_rank in {2, 3} for entry in artifact.entries)
+
+
+def test_hydraulis_records_whether_validation_was_held_out():
+    """
+    The same trap the FSDP model carries: `validation_metrics` may be in-sample.
+
+    `split_records_by_run` returns the same list twice at fraction zero, so an entry's
+    `r_squared` is then a training score under an out-of-sample name. Both backends record
+    the fraction and the flag so a reader of either artifact can tell the difference.
+    """
+    records, _ = _training_records()
+    in_sample = HydraulisTrainingCost.fit(records, validation_fraction=0.0)
+    for entry in in_sample.entries:
+        assert entry.diagnostics["validation_fraction"] == 0.0
+        assert entry.diagnostics["validation_is_in_sample"] is True
+
+    held_out = HydraulisTrainingCost.fit(records, validation_fraction=0.2)
+    for entry in held_out.entries:
+        assert entry.diagnostics["validation_fraction"] == 0.2
+        assert entry.diagnostics["validation_is_in_sample"] is False
 
 
 def test_hydraulis_uses_oom_as_memory_inequality():
@@ -267,6 +318,13 @@ def test_hydraulis_rejects_numerical_extrapolation():
 
 
 def test_hydraulis_rejects_rank_deficient_design():
+    """
+    Varying only the sequence length cannot separate the per-microbatch cost.
+
+    At a fixed microbatch count the slot count is constant, so the intercept and the
+    per-microbatch column become collinear and the design falls to rank two. Both axes
+    have to move, which is exactly the coverage the error message asks for.
+    """
     records, _ = _training_records()
     restricted = [
         record
@@ -274,9 +332,10 @@ def test_hydraulis_rejects_rank_deficient_design():
         if isinstance(record.payload, TrainingPayload)
         and record.run.status == "success"
         and record.parallelism.dp == 1
-        and record.payload.micro_batch_size == 1
+        # A single microbatch count, so only the sequence length varies.
         and record.payload.num_microbatches == 2
     ]
+    assert len(restricted) >= 3, "the subset must be large enough to reach the rank check"
     with pytest.raises(ValueError, match="design matrix is rank"):
         HydraulisTrainingCost.fit(restricted)
 
@@ -297,13 +356,13 @@ def test_fitted_training_cost_integrates_with_simulator(tmp_path: Path):
         ),
         training_cost=training_cost,
         policy=PSRLPolicy(),
-        lengths=uniform(32, 50, 100, seed=1),
         cfg=SimConfig(
             batch_size=8,
             n_versions=1,
             max_staleness=2,
             training_pp=2,
             training_micro_batch_size=2,
+            workload=GroupedWorkload.from_lengths([512], uniform(32, 50, 100, seed=1)),
         ),
         store=store,
     )
