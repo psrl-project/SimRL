@@ -162,3 +162,140 @@ def step_time_dispersion(step_times: tuple[float, ...]) -> float:
     if median <= 0:
         return 0.0
     return float(np.median(np.abs(values - median)) / median)
+
+
+# Number of fitted latency coefficients, and therefore the rank the design must reach. Both
+# backends share it because they share the design row.
+LATENCY_TERM_COUNT = 4
+
+LATENCY_COEFFICIENT_NAMES = (
+    "per_step_overhead",
+    "token_cost",
+    "microbatch_overhead",
+    "token_quadratic_cost",
+)
+
+
+def latency_design_arrays(
+    features_and_targets: list[tuple[LatencyFeatures, float]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Stack design rows and targets for a least-squares latency fit.
+
+    Args:
+        features_and_targets (list[tuple[LatencyFeatures, float]]): One pair per candidate,
+            its step times already reduced to a single robust value.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: The design matrix and the target vector.
+    """
+    rows = [features.design_row() for features, _ in features_and_targets]
+    targets = [target for _, target in features_and_targets]
+    return np.asarray(rows, dtype=np.float64), np.asarray(targets, dtype=np.float64)
+
+
+def check_latency_rank(
+    rank: int,
+    *,
+    backend: str,
+    key: object,
+    slots_feature: str,
+) -> None:
+    """
+    Raise unless the design reached the rank the four-term form needs.
+
+    Args:
+        rank (int): Rank reported by the fit.
+        backend (str): Backend name, for the message only.
+        key (object): Cell key, for the message only.
+        slots_feature (str): What the backend calls its slots axis, so the message names the
+            knob the caller actually sets.
+
+    Raises:
+        ValueError: If `rank` is below `LATENCY_TERM_COUNT`.
+    """
+    if rank >= LATENCY_TERM_COUNT:
+        return
+    raise ValueError(
+        f"{backend} latency design matrix is rank {rank}, expected {LATENCY_TERM_COUNT} for "
+        f"{key!r}. Vary both the sequence length and {slots_feature}, and use at least three "
+        f"sequence lengths: at a fixed {slots_feature} the slots column is constant and "
+        f"collinear with the intercept, and two sequence lengths leave the linear and "
+        f"quadratic token columns collinear."
+    )
+
+
+def latency_coefficients(parameters: np.ndarray) -> dict[str, float]:
+    """Name the fitted latency parameters in design-row order."""
+    if len(parameters) != LATENCY_TERM_COUNT:
+        raise ValueError(
+            f"Expected {LATENCY_TERM_COUNT} latency parameters, got {len(parameters)}."
+        )
+    return {
+        name: float(value)
+        for name, value in zip(LATENCY_COEFFICIENT_NAMES, parameters, strict=True)
+    }
+
+
+def latency_from_coefficients(
+    coefficients: dict[str, float],
+    features: LatencyFeatures,
+) -> float:
+    """
+    Evaluate the fitted latency form at one candidate's features.
+
+    Both backends call this rather than inlining the arithmetic. The two copies were
+    byte-identical once the quadratic term landed, and a formula written twice is a formula
+    that can drift: this codebase has already had a fit and its predictor disagree on the
+    same input.
+
+    Args:
+        coefficients (dict[str, float]): The four fitted terms.
+        features (LatencyFeatures): The same features the fit was built from.
+
+    Returns:
+        float: Predicted step latency in seconds, strictly positive.
+
+    Raises:
+        ValueError: If the prediction is not positive.
+    """
+    latency = coefficients["per_step_overhead"] + features.slots * (
+        coefficients["token_cost"] * features.tokens
+        + coefficients["token_quadratic_cost"] * features.sum_squared_tokens
+        + coefficients["microbatch_overhead"]
+    )
+    if latency <= 0:
+        raise ValueError("Training latency prediction must be positive.")
+    return latency
+
+
+def latency_feature_ranges(
+    all_features: list[LatencyFeatures],
+    *,
+    slots_feature: str,
+    extra: dict[str, tuple[float, float]] | None = None,
+) -> dict[str, tuple[float, float]]:
+    """
+    Return the profiled span of each latency feature, which becomes a prediction-time gate.
+
+    Args:
+        all_features (list[LatencyFeatures]): Features of every successful candidate.
+        slots_feature (str): The backend's name for its slots axis, so the recorded range
+            matches the name `predict` checks against.
+        extra (dict[str, tuple[float, float]] | None): Backend-specific ranges to merge in.
+
+    Returns:
+        dict[str, tuple[float, float]]: Feature name to `(minimum, maximum)`.
+    """
+    ranges = {
+        "tokens": (
+            min(item.tokens for item in all_features),
+            max(item.tokens for item in all_features),
+        ),
+        slots_feature: (
+            min(item.slots for item in all_features),
+            max(item.slots for item in all_features),
+        ),
+    }
+    ranges.update(extra or {})
+    return ranges

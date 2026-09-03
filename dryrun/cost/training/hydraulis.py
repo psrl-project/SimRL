@@ -32,8 +32,13 @@ from .fitting import (
 )
 from .inventory import dtype_bytes, heaviest_stage_parameters, parameter_inventory
 from .latency import (
+    LATENCY_TERM_COUNT,
     LatencyFeatures,
+    check_latency_rank,
+    latency_coefficients,
+    latency_feature_ranges,
     latency_features,
+    latency_from_coefficients,
     robust_step_time,
     step_time_dispersion,
 )
@@ -183,16 +188,14 @@ def _fit_latency_entry(
     )
     train_x, train_y = _latency_arrays(train_records, key.pp)
     validation_x, validation_y = _latency_arrays(validation_records, key.pp)
-    if len(train_y) < 4:
-        raise ValueError(f"Hydraulis latency needs at least four candidates for {key!r}.")
-    parameters, inliers, rank = scaled_nonnegative_fit(train_x, train_y)
-    if require_full_rank and rank < 4:
+    if len(train_y) < LATENCY_TERM_COUNT:
         raise ValueError(
-            f"Hydraulis latency design matrix is rank {rank}, expected 4 for {key!r}. "
-            "Vary both the sequence length and the microbatch count, and use at least three "
-            "sequence lengths: sequence length alone cannot separate the per-microbatch cost "
-            "from the per-step cost, and two lengths leave the linear and quadratic token "
-            "columns collinear."
+            f"Hydraulis latency needs at least {LATENCY_TERM_COUNT} candidates for {key!r}."
+        )
+    parameters, inliers, rank = scaled_nonnegative_fit(train_x, train_y)
+    if require_full_rank:
+        check_latency_rank(
+            rank, backend="Hydraulis", key=key, slots_feature="the microbatch count"
         )
     train_predicted = train_x @ parameters
     validation_predicted = validation_x @ parameters
@@ -200,29 +203,20 @@ def _fit_latency_entry(
     dispersions = [
         step_time_dispersion(record.payload.step_times_s) for record in successful
     ]
-    feature_ranges = {
-        "tokens": (
-            min(item.tokens for item in all_features),
-            max(item.tokens for item in all_features),
-        ),
-        "pipeline_slots": (
-            min(item.slots for item in all_features),
-            max(item.slots for item in all_features),
-        ),
-        "micro_batch_size": (
-            float(min(record.payload.micro_batch_size for record in successful)),
-            float(max(record.payload.micro_batch_size for record in successful)),
-        ),
-    }
+    feature_ranges = latency_feature_ranges(
+        all_features,
+        slots_feature="pipeline_slots",
+        extra={
+            "micro_batch_size": (
+                float(min(record.payload.micro_batch_size for record in successful)),
+                float(max(record.payload.micro_batch_size for record in successful)),
+            ),
+        },
+    )
     return ArtifactEntry(
         parallelism=key.parallelism,
         selector=key.selector("latency"),
-        coefficients={
-            "per_step_overhead": float(parameters[0]),
-            "token_cost": float(parameters[1]),
-            "microbatch_overhead": float(parameters[2]),
-            "token_quadratic_cost": float(parameters[3]),
-        },
+        coefficients=latency_coefficients(parameters),
         train_metrics=FitMetrics.from_predictions(
             train_y,
             train_predicted,
@@ -548,14 +542,9 @@ class HydraulisLatencyModel(TrainingLatencyModel):
             if note is not None:
                 notes.append(note)
         coefficients = entry.coefficients
-        latency = coefficients["per_step_overhead"] + features.slots * (
-            coefficients["token_cost"] * features.tokens
-            + coefficients["token_quadratic_cost"] * features.sum_squared_tokens
-            + coefficients["microbatch_overhead"]
-        )
-        if latency <= 0:
-            raise ValueError("Hydraulis latency prediction must be positive.")
-        return latency, notes
+        # `latency_from_coefficients` raises on a non-positive result, so there is no
+        # separate guard here.
+        return latency_from_coefficients(coefficients, features), notes
 
 
 class HydraulisMemoryModel(TrainingMemoryModel):

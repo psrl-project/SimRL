@@ -92,7 +92,17 @@ from .fitting import (
     validation_is_in_sample,
 )
 from .fsdp_inventory import fsdp_inventory
-from .latency import LatencyFeatures, latency_features, robust_step_time, step_time_dispersion
+from .latency import (
+    LATENCY_TERM_COUNT,
+    LatencyFeatures,
+    check_latency_rank,
+    latency_coefficients,
+    latency_feature_ranges,
+    latency_features,
+    latency_from_coefficients,
+    robust_step_time,
+    step_time_dispersion,
+)
 from .microbatch import BatchingMode, MicrobatchPlanner
 
 FSDP_SCHEDULE = "fsdp"
@@ -343,46 +353,36 @@ def _fit_latency_entry(
     )
     train_x, train_y = _latency_arrays(train_records)
     validation_x, validation_y = _latency_arrays(validation_records)
-    if len(train_y) < 4:
-        raise ValueError(f"FSDP latency needs at least four candidates for {key!r}.")
-    parameters, inliers, rank = scaled_nonnegative_fit(train_x, train_y)
-    if require_full_rank and rank < 4:
+    if len(train_y) < LATENCY_TERM_COUNT:
         raise ValueError(
-            f"FSDP latency design matrix is rank {rank}, expected 4 for {key!r}. "
-            "Vary both the sequence length and the microbatch count, and use at least "
-            "three sequence lengths: the row is [1, nmb*tokens, nmb, nmb*tokens^2], so two "
-            "lengths leave the linear and quadratic token columns collinear, and at a fixed "
-            "microbatch count the slots column is constant and collinear with the intercept."
+            f"FSDP latency needs at least {LATENCY_TERM_COUNT} candidates for {key!r}."
+        )
+    parameters, inliers, rank = scaled_nonnegative_fit(train_x, train_y)
+    if require_full_rank:
+        check_latency_rank(
+            rank, backend="FSDP", key=key, slots_feature="the microbatch count"
         )
     train_predicted = train_x @ parameters
     validation_predicted = validation_x @ parameters
     all_features = [_latency_features(record.payload) for record in successful]
     dispersions = [step_time_dispersion(record.payload.step_times_s) for record in successful]
-    feature_ranges = {
-        "tokens": (
-            min(item.tokens for item in all_features),
-            max(item.tokens for item in all_features),
-        ),
-        "num_microbatches": (
-            min(item.slots for item in all_features),
-            max(item.slots for item in all_features),
-        ),
-        # The profile sweeps `n_seqs_per_rank`, and the planner decides how many sequences
-        # a predicted microbatch holds, so this guards the GEMM shape rather than a config.
-        "sequences_per_microbatch": (
-            float(min(record.payload.micro_batch_size for record in successful)),
-            float(max(record.payload.micro_batch_size for record in successful)),
-        ),
-    }
+    feature_ranges = latency_feature_ranges(
+        all_features,
+        slots_feature="num_microbatches",
+        extra={
+            # The profile sweeps `n_seqs_per_rank`, and the planner decides how many
+            # sequences a predicted microbatch holds, so this guards the GEMM shape rather
+            # than a config.
+            "sequences_per_microbatch": (
+                float(min(record.payload.micro_batch_size for record in successful)),
+                float(max(record.payload.micro_batch_size for record in successful)),
+            ),
+        },
+    )
     return ArtifactEntry(
         parallelism=key.parallelism,
         selector=key.selector("latency"),
-        coefficients={
-            "per_step_overhead": float(parameters[0]),
-            "token_cost": float(parameters[1]),
-            "microbatch_overhead": float(parameters[2]),
-            "token_quadratic_cost": float(parameters[3]),
-        },
+        coefficients=latency_coefficients(parameters),
         train_metrics=FitMetrics.from_predictions(
             train_y,
             train_predicted,
@@ -841,19 +841,10 @@ class FsdpLatencyModel(_FsdpCellModel, TrainingLatencyModel):
             if note is not None:
                 notes.append(note)
         coefficients = entry.coefficients
-        # `features.sum_squared_tokens` rather than `features.tokens ** 2`: attention does
-        # not cross sequence boundaries, so a packed microbatch costs the sum of each
-        # sequence's square. It comes from the same LatencyFeatures the fit used, so predict
-        # and fit cannot disagree on the same input.
-        quadratic = features.sum_squared_tokens
-        latency = coefficients["per_step_overhead"] + features.slots * (
-            coefficients["token_cost"] * features.tokens
-            + coefficients["token_quadratic_cost"] * quadratic
-            + coefficients["microbatch_overhead"]
-        )
-        if latency <= 0:
-            raise ValueError("FSDP latency prediction must be positive.")
-        return latency, notes
+        # Shared with hydraulis so the formula exists once. It raises on a non-positive
+        # result, and it reads `features.sum_squared_tokens` -- the same LatencyFeatures the
+        # fit was built from -- so predict and fit cannot disagree on the same input.
+        return latency_from_coefficients(coefficients, features), notes
 
 
 class FsdpMemoryModel(_FsdpCellModel, TrainingMemoryModel):
