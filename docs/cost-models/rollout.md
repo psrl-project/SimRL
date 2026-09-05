@@ -4,7 +4,7 @@ Three fitted rollout models are provided: `roofline`, `psrl`, and `distserve`. A
 trained on vLLM profiling data (see {doc}`../profiling/vllm`), stored as a `CostArtifact` JSON,
 and loaded by the simulator without a code change. This page covers the formulas, the regression
 command, and the accuracy of the fitted models. The CostArtifact schema in full is in
-{doc}`../reference/schemas`; the in-sample caveat that applies to all three models is discussed
+{doc}`../reference/schemas`. The in-sample caveat that applies to all three models is discussed
 in {doc}`../reference/validation`.
 
 ## Fitting
@@ -51,7 +51,7 @@ in-sample fit quality, not generalisation evidence.
 |-------|-----|-----|-------|
 | `roofline` | 5.25% | 0.9999 | in-sample, 49,208 points |
 | `psrl` | 5.16% | 0.9999 | in-sample, 49,208 points |
-| `distserve` | fitted, not scored | — | identifiability limit (see below) |
+| `distserve` | fitted, not scored | | identifiability limit (see below) |
 
 ## The three models
 
@@ -75,7 +75,7 @@ Features:
 - `ctxsum` ($\sum (L_i + k)$ over decode requests at KV depth $k$): the decode attention term.
   This term appears only in decode and mixed steps.
 
-A mixed step simply includes both attention features — the model sees both `sum_l2` and
+A mixed step simply includes both attention features, so the model sees both `sum_l2` and
 `ctxsum` simultaneously.
 
 ### PSRL fitted (`psrl`)
@@ -119,7 +119,7 @@ latency = max(F, (C3 + C4*gemm)
              + C5 * 3*h * ctxsum)
 ```
 
-The intent is that `C1`–`C5` are hardware properties rather than per-model properties, enabling
+The intent is that `C1` through `C5` are hardware properties rather than per-model properties, enabling
 cross-model transfer: calibrate on one model, predict on another. In practice a single-model fit
 can only identify the combined overhead term `C3 + C4 * gemm`, not `C3` and `C4` independently
 (they are linearly dependent on a single architecture). The artifact records the minimum-norm
@@ -127,7 +127,7 @@ canonical solution and includes a `c3_c4_identifiability` diagnostic. Cross-mode
 calibration that resolves the ambiguity is listed as a deferred stage in the design document.
 
 DistServe does not produce a held-out accuracy score from a single-model fit because the
-underlying coefficients are not uniquely identified — the fit result is the same as roofline with
+underlying coefficients are not uniquely identified. The fit result is the same as roofline with
 renamed parameters. Score the roofline artifact instead if a number is needed.
 
 ## Sharing the feature vocabulary
@@ -144,7 +144,7 @@ All three models operate on the same four input features:
 These features are extracted by the vLLM profiler adapter from the scheduler iteration log and
 stored verbatim in each `ProfileRecord`. The feature ranges in the artifact record the observed
 minimum and maximum, and the simulator refuses to query outside that range unless extrapolation
-is explicitly permitted — see {doc}`../reference/schemas` for the extrapolation flag.
+is explicitly permitted. See {doc}`../reference/schemas` for the extrapolation flag.
 
 ## `decode_coeffs()` and the simulator's closed-form advance
 
@@ -154,19 +154,20 @@ expresses one decode step as:
 $$\tau(k) = \max\bigl(F,\ \alpha + \beta \cdot k\bigr)$$
 
 where $k$ is the step index within a pure-decode segment and $n_d$ is the fixed batch size.
-The simulator uses this to integrate a run of $k$ steps in closed form — summing the arithmetic
-series exactly rather than iterating over every token — which is what makes long rollouts fast
+The simulator uses this to integrate a run of $k$ steps in closed form, summing the arithmetic
+series exactly rather than iterating over every token, which is what makes long rollouts fast
 to simulate.
 
 For the unified roofline:
 
 $$F = F,\quad \alpha = W + G \cdot n_d + A_d \cdot \text{ctxsum},\quad \beta = A_d \cdot n_d$$
 
-For PSRL, $F = 0$ (no separate floor at the advance level; it is absorbed into $\alpha$), and
+For PSRL, $F = 0$, since there is no separate floor at the advance level and it is absorbed into
+$\alpha$. And
 the attention slope drives $\beta = \text{d\_attn\_k} \cdot n_d$.
 
 `ComposedRollout` does not use this interface because a composed step cost cannot be written
-as `max(F, alpha + beta*k)` — the kernel sum is a more complex function of KV depth. It uses a
+as `max(F, alpha + beta*k)`, because the kernel sum is a more complex function of KV depth. It uses a
 numerical `LatticeIntegrator` instead. See {doc}`../development/adapters-and-cost-models` for
 the protocol that all cost models must satisfy.
 
@@ -184,4 +185,4 @@ All three models are close in accuracy on the Qwen3-8B / H20 sweep. The practica
 
 To use a fitted artifact in a simulation, set `rollout_cost.name` in the YAML and point it at the
 JSON file. The simulator loads the entry matching the requested parallelism and calls `predict()`
-or the closed-form advance; no regression code runs at simulation time.
+or the closed-form advance, and no regression code runs at simulation time.

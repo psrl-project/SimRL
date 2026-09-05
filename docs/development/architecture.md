@@ -8,12 +8,12 @@ three pieces fit together and the decisions behind the design.
 
 ## The three-layer separation
 
-**Profiler adapters** drive real systems — vLLM, Megatron-Bridge, an FSDP2 launcher, or
-individual CUDA kernels — and normalise what they observe into versioned JSONL. An
-adapter never models anything; it records.
+**Profiler adapters** drive real systems (vLLM, Megatron-Bridge, an FSDP2 launcher, or
+individual CUDA kernels) and normalise what they observe into versioned JSONL. An adapter
+never models anything. It records.
 
 **Cost models** are fitted from that JSONL and reduced to a small set of coefficients
-plus the input range they are valid over. A cost model never measures anything; it
+plus the input range they are valid over. A cost model never measures anything. It
 interpolates.
 
 **The simulator** drives a rollout/training loop under a staleness policy, querying
@@ -21,7 +21,7 @@ cost models for latency and peak memory as it goes. The simulator never touches 
 GPU.
 
 The boundary between the first two layers is a documented JSONL schema (`ProfileRecord`
-in `dryrun/profiler/schema.py`). Adding a new backend means writing a new adapter;
+in `dryrun/profiler/schema.py`). Adding a new backend means writing a new adapter, and
 adding a new cost model means writing a new fitter. Neither change requires touching the
 other side.
 
@@ -61,7 +61,7 @@ admit → generate → complete → select batch → (recompute) → train → s
 `recompute`
 : If any request in the batch was preempted and interrupted, its prefix tokens must be
   re-prefilled. The `RecomputeCostModel` charges for this. `recompute_time` defaults to
-  zero; set it to a non-zero value when re-prefill is a material cost in your system.
+  zero. Set it to a non-zero value when re-prefill is a material cost in your system.
 
 `train`
 : The `TrainingCostModel` returns a `TrainingCostEstimate` with `latency_s` and
@@ -76,8 +76,8 @@ admit → generate → complete → select batch → (recompute) → train → s
 `publish`
 : `train_version` increments. The staleness policy's `rollout_version_after_train` hook
   decides whether the rollout engine's visible weight version also advances (it always
-  does for most policies; `slime` defers it by `update_weights_interval` steps). In-
-  flight requests whose partial tokens predate the new version are interrupted; the
+  does for most policies, while `slime` defers it by `update_weights_interval` steps).
+  In-flight requests whose partial tokens predate the new version are interrupted, and the
   policy's `on_interrupt` hook handles them.
 
 ---
@@ -85,7 +85,7 @@ admit → generate → complete → select batch → (recompute) → train → s
 ## The closed-form pure-decode advance
 
 Simulating every decode token individually would make simulation cost proportional to
-output length — a problem for long DAPO-style outputs at ~7800 mean tokens each. For a
+output length, which is a problem for long DAPO-style outputs at about 7800 mean tokens each. For a
 pure-decode segment (no new prefills, same running set), the simulator uses a closed-
 form integration instead.
 
@@ -97,7 +97,7 @@ contiguous range has a closed-form expression. The `advance` function in
 time for the entire segment in one call.
 
 The closed form applies whenever a decode segment's running set is unchanged from step
-to step — no arrivals, no completions, no preemptions. As soon as one of those events
+to step, meaning no arrivals, no completions, and no preemptions. As soon as one of those events
 occurs, the simulator falls back to a per-step walk for the steps around the event.
 
 ---
@@ -147,7 +147,7 @@ and a cost model refittable without re-profiling. The `ProfileRecord` schema is 
 contract: if an adapter writes valid records, the fitter can consume them, and the
 simulator can query the resulting artifact.
 
-The alternative — having adapters return Python objects directly to the fitter — would
+The alternative, having adapters return Python objects directly to the fitter, would
 couple the adapter interface to the model's input type. Any change to a cost model's
 feature set would require an adapter change. The JSONL boundary breaks that coupling:
 adapters record everything they observe, and cost models read what they need.

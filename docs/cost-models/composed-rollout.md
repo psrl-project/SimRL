@@ -1,6 +1,6 @@
 # ComposedRollout
 
-Every other rollout cost model in this project — `roofline`, `psrl`, `distserve` — is fitted to
+Every other rollout cost model in this project (`roofline`, `psrl`, `distserve`) is fitted to
 end-to-end vLLM server measurements. That means running the vLLM profiling sweep and the
 `dryrun-regress rollout` step before any simulation. `ComposedRollout` takes a different
 approach: it predicts one inference engine iteration by **summing the measured latencies of the
@@ -24,7 +24,7 @@ bash examples/profile/kernel/profile_qwen3_8b.sh all
 ```
 
 That writes parquet tables under `outputs/profile/qwen3_8b/kernel_tp1/` and prints the holdout
-accuracy gate. Check that the vLLM-backend families pass before running a simulation — see
+accuracy gate. Check that the vLLM-backend families pass before running a simulation. See
 {doc}`../profiling/kernels` for the gate results and what each family's MRE means.
 
 ## Configuration
@@ -60,15 +60,15 @@ Field descriptions:
   degree. See {doc}`../profiling/tensor-parallel`.
 - `kernel_table_root`: Root of the kernel profiling output tree. `ComposedRollout` resolves
   tables at `{kernel_table_root}/kernel/{gpu}/`. Use the repo-relative path produced by the
-  profiling sweep; do not hard-code an absolute path.
+  profiling sweep. Do not hard-code an absolute path.
 - `gpu`: GPU name that selects which subdirectory to load. Must match what the profiling run
   recorded (for example `H20` if the tree contains `kernel/h20/`).
-- `model_path`: Path to the HuggingFace checkpoint directory. The model reads the architecture —
-  hidden size, number of heads, GQA groups, intermediate size, number of layers — to derive the
+- `model_path`: Path to the HuggingFace checkpoint directory. The model reads the architecture
+  (hidden size, number of heads, GQA groups, intermediate size, number of layers) to derive the
   correct GEMM shapes for each step. Use `$MODEL_PATH` in scripts so the path is not hard-coded.
 - `attention_backend`: Override the attention backend (`vllm` or `flashinfer`). Leave empty to
   use the backend vLLM's own selector picks. On H20 that resolves to `FLASH_ATTN` / FA3. Any
-  end-to-end comparison against a real vLLM server must use the same backend the server used —
+  end-to-end comparison against a real vLLM server must use the same backend the server used.
   overriding it compares against kernels that never ran.
 - `utility_surface`: Interpolation strategy. `pchip` (monotone-preserving cubic Hermite splines,
   hand-rolled) is more accurate than `shepard` on every measured family at this grid density and
@@ -88,12 +88,12 @@ run with `--min-samples 1 --gate 100` to include all three phases.
 | Phase | Buckets | MRE (pchip) | MRE (shepard) | Note |
 |-------|---------|-------------|---------------|------|
 | prefill | 29 | 3.72% | 3.72% | 58 real iterations |
-| decode | 216 | **4.84%** | 4.95% | — |
-| mixed | 5 | 0.48% | 0.43% | 6 real iterations; see Limitations |
+| decode | 216 | **4.84%** | 4.95% | |
+| mixed | 5 | 0.48% | 0.43% | 6 real iterations, see Limitations |
 
 The baseline is almost entirely decode. Prefill has 58 real iterations spread across 29 buckets.
 The five mixed buckets collapse from six raw iterations total, so the 0.48% mixed figure is
-indicative, not a validated claim — see the mixed-step limitation below.
+indicative rather than a validated claim. See the mixed-step limitation below.
 
 ### TP=2
 
@@ -108,16 +108,16 @@ bucket for bucket.
 | mixed | 7 | 3.64% | 7 real iterations |
 | decode, whole grid | 204 | 9.51% | includes the small-batch gap |
 
-This is the first score of the communication path at all — at TP=1 `comm_queries` returns empty,
+This is the first score of the communication path at all. At TP=1 `comm_queries` returns empty,
 so none of the figures above it exercised a collective. The collective contributes 13.2% of a TP=2
-decode step (max 21.0%); pricing it as zero moves median decode error from 3.07% to 10.70%, so
+decode step (max 21.0%), and pricing it as zero moves median decode error from 3.07% to 10.70%, so
 modelling it is load-bearing.
 
 Prefill's original 12.50% was a **baseline artifact**, since fixed. Its six `requests = 1` points
 used `num-prompts: 1`, making each recorded iteration a single cold request that carried ~78 ms of
-server-side work; re-measured with `num-prompts: 8` at the same shape they went from 46.98% to 3.98%
+server-side work. Re-measured with `num-prompts: 8` at the same shape they went from 46.98% to 3.98%
 MRE with the prediction unchanged. Decode's remaining gap is a **real model error**: `requests 1-4`
-over-predicts at median ratio 1.31. Note the direction — it predicts *too much*, so it is not a
+over-predicts at median ratio 1.31. Note the direction: it predicts *too much*, so it is not a
 missing cost term. A composed step sums 253 isolated kernel latencies each carrying its own fitted
 per-call floor, and the excess at `reqs=1` is 6.5 µs per launch, essentially the 6.0 µs all-reduce
 floor that CUDA graph replay removes on the real server. See {doc}`../reference/limitations`.
@@ -131,7 +131,8 @@ is therefore not the dominant term at this degree, though it remains unquantifie
 :::{warning}
 An earlier baseline collected with `max_parallel: auto` put decode at 16.39%. One of its four
 concurrent servers degraded mid-run: at per-request depth 8,960, `reqs=16` measured 35.76 ms
-against `reqs=32`'s 19.24 ms — half the batch at half the total KV taking nearly double the time.
+against `reqs=32`'s 19.24 ms, which is half the batch at half the total KV taking nearly double
+the time.
 The serial re-measurement confirmed it, moving `reqs=16` from median ratio 0.513 to 0.993 while
 every other batch stayed put. Use `max_parallel: 1` for any baseline whose figures will be quoted.
 :::
@@ -155,8 +156,8 @@ from a clean re-run.
 ## Segment integrator
 
 A composed step cost is not `max(F, alpha + beta*k)`, so the closed-form pure-decode advance
-used by the fitted rollout models does not apply. The latency of a decode segment — a run of
-`k` steps at a fixed batch size over a growing KV history — must be integrated numerically.
+used by the fitted rollout models does not apply. The latency of a decode segment, a run of `k`
+steps at a fixed batch size over a growing KV history, must be integrated numerically.
 
 ### Why naive trapezoid fails
 
@@ -197,7 +198,7 @@ Over a shorter 2048-step segment the cold case reaches **1.31%** (batch 16) and 
 conservative bound rather than the sub-0.1% a warm segment shows.
 
 At `stride=1`, the integrator evaluates one kernel query per decode step and produces an exact
-sum. At `stride=1024` (the default), it uses at most 5 queries for a 4096-step segment — a 1024x
+sum. At `stride=1024` (the default), it uses at most 5 queries for a 4096-step segment, a 1024x
 reduction in kernel evaluations for a ~1.3% worst-case accuracy cost.
 
 A single-tangent approximation (the degenerate case of `stride >= max_steps`) measures 7.08%
@@ -234,10 +235,10 @@ graphs and will need an explicit elementwise term, and as the third op family th
 
 ## Known limitations
 
-The known limitations — mixed steps, the unusable TP=2 decode buckets below batch 32, decode
+The known limitations (mixed steps, the unusable TP=2 decode buckets below batch 32, decode
 over-predicted by 13% at small batch, no CPU overhead term, cross-node TP being unmeasured,
 cross-hardware transfer unvalidated, and
-`context_attention/flashinfer` above the 5% holdout gate — are described with their measured
+`context_attention/flashinfer` above the 5% holdout gate) are described with their measured
 magnitudes and proposed fixes in {doc}`../reference/limitations`.
 
 ## Running validation
@@ -256,7 +257,7 @@ dryrun-profile kernels validate \
 ```
 
 Pass `--min-samples 1` to score all three phases. At the default `--min-samples 20`, only
-decode accumulates enough identical iterations from a typical vLLM run; prefill and mixed are
-dropped with an explicit warning. Score against the `vllm` rows — those are the kernels the
-server actually ran. The FlashInfer rows exist to answer what a backend switch would buy; scoring
+decode accumulates enough identical iterations from a typical vLLM run, so prefill and mixed are
+dropped with an explicit warning. Score against the `vllm` rows, which are the kernels the server
+actually ran. The FlashInfer rows exist to answer what a backend switch would buy, so scoring
 against them on a vLLM server compares against a backend that never ran.

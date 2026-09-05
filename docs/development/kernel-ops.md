@@ -3,7 +3,7 @@
 Every measured kernel family is one class. That class owns its perf-table schema, its speed-of-light
 formula, its floor policy, its sweep grid specification, and how it is measured on the GPU. Adding a
 new op therefore requires touching exactly one place: the new op class and its registration. Nothing
-else in the codebase — the floor fitter, the holdout gate, the perf-table writer, the CLI — needs to
+else in the codebase (the floor fitter, the holdout gate, the perf-table writer, the CLI) needs to
 change.
 
 For measured numbers and interpolation accuracy, see {doc}`../profiling/kernels`. For the slice,
@@ -16,7 +16,7 @@ axis, SOL, utility, and floor vocabulary, see {doc}`../getting-started/concepts`
 The visible symptom of the old design was edit count: adding a kernel op used to mean touching ten
 separate sites. The actual defect was narrower and more dangerous. `dryrun/cost/kernel/database.py`
 and `dryrun/cost/kernel/holdout.py` each held their own independent implementation of the same
-binding — the function mapping `(spec, slice_key, coords, floor_s)` onto a SOL call. Utility is
+binding, the function mapping `(spec, slice_key, coords, floor_s)` onto a SOL call. Utility is
 `SOL / measured_latency`, and the holdout gate computes utility on both sides of a round trip, so
 any drift between those two copies would have silently changed the measured interpolation accuracy
 without changing anything a unit test looked at.
@@ -25,7 +25,7 @@ without changing anything a unit test looked at.
 
 Signature differences between families are absorbed cleanly without a shared `**kwargs` catch-all:
 each op unpacks what it needs from *its own* `slice_key`, whose column order that same op declares.
-`GemmKernelOp.sol` reads `(gemm_dtype, n, k)`; `AllReduceKernelOp.sol` reads `(dtype, world_size)`.
+`GemmKernelOp.sol` reads `(gemm_dtype, n, k)`, and `AllReduceKernelOp.sol` reads `(dtype, world_size)`.
 Each op knows its own coordinate space.
 
 The `KernelOp` protocol is defined in `dryrun/cost/kernel/ops/base.py`. Every op must implement:
@@ -82,7 +82,7 @@ exist.
 important than it looks and is the one most likely to be forgotten.
 
 `op_for` is called from the perf-table writer, `database.py`, and `floor.py`. None of those
-modules has any reason to know which specific ops exist — that is the registry's job. Registration
+modules has any reason to know which specific ops exist, which is the registry's job. Registration
 happens as an import side effect of the module that defines each op. If the import is omitted from
 `ops/__init__.py`, those callers see an empty registry. This failure mode is invisible to unit
 tests: each test imports the op module it exercises, so it populates the registry for itself. The
@@ -100,7 +100,7 @@ verified empirically: the commits adding `elementwise` and `all_reduce` touched 
 If the op declares `fits_floor = True`, it must also appear in `sol.FALLBACK_FLOORS_S` under at
 least one backend. `tests/test_kernel_sol.py` enforces this off the live registry. The reason the
 fallback matters is quantified: an op with a floor policy but no entry in `FALLBACK_FLOORS_S` takes
-a zero floor when `floors.json` is absent. For `elementwise` that costs 5.01% → 11.79% MRE; for
+a zero floor when `floors.json` is absent. For `elementwise` that costs 5.01% against 11.79% MRE. For
 `all_reduce` the underlying SOL error reaches 220x at 4096 bytes.
 
 ---
@@ -118,14 +118,14 @@ a zero floor when `floors.json` is absent. For `elementwise` that costs 5.01% �
 | `ops_in(version_dir)` | Ops whose `{name}_perf.parquet` exists in one version directory. |
 
 Direct indexing is avoided because it makes the caller implicitly assume it knows what is
-registered — exactly the assumption that allowed the stale-registry bug to go undetected. The four
+registered, which is exactly the assumption that allowed the stale-registry bug to go undetected. The four
 functions make that assumption explicit via `KernelCoverageError`.
 
 ---
 
 ## `measure()` is per family, not per op
 
-Both attention phases — context and generation — come from a single sweep that allocates one KV
+Both attention phases, context and generation, come from a single sweep that allocates one KV
 cache and times both phases against it. Calling `measure()` once per op would measure the attention
 grid twice and could select a different backend for each phase, producing tables that were measured
 under inconsistent conditions. The CLI therefore calls `measure()` once per family, not once per
@@ -137,7 +137,7 @@ op. An op whose family holds only itself (GEMM, elementwise, collective) simply 
 
 A dispatch floor is a property of the backend's dispatch path. It is fitted per `(gpu, family,
 backend, version)` and stored beside the tables it was fitted for. The keys in `floors.json` are op
-names — `context_attention`, `generation_attention`, `elementwise`, `all_reduce`.
+names: `context_attention`, `generation_attention`, `elementwise`, `all_reduce`.
 
 An older format keyed by phase (`context`, `generation`) is **rejected** with an explicit error
 message naming `dryrun-profile kernels fit-floor`, never read leniently. The reason leniency is
@@ -146,9 +146,9 @@ MRE of 34.89% against 6.63% at the fitted 22 µs. Silently incorrect is worse th
 broken.
 
 The floor goes inside `max(math, memory, floor)`, not added as a constant. Real H20 data shows
-decode latency staying near-constant across a 64x increase in KV work at batch 1 — the kernel is
+decode latency staying near-constant across a 64x increase in KV work at batch 1, because the kernel is
 entirely dispatch-limited. That shape is conclusive that dispatch cost is a lower bound, not an
-addend; adding it as a constant would double-count in the overhead-dominated regime. The formula is
+addend, because adding it as a constant would double-count in the overhead-dominated regime. The formula is
 documented in {doc}`../getting-started/concepts`.
 
 ---
@@ -165,7 +165,7 @@ rather than the kernel:
 | raw `vllm._custom_ops.rms_norm(...)` | 4.57 µs | 29.03 µs |
 | ratio | 13.2x | 11.8x |
 
-A 13x apparent speedup from routing the call differently is not a real kernel improvement; it is
+A 13x apparent speedup from routing the call differently is not a real kernel improvement. It is
 measuring the wrong thing entirely.
 
 **The fix is `CompilationConfig(custom_ops=["all"])`.** Without it, a `CustomOp` dispatches vLLM's
@@ -193,8 +193,8 @@ table.
 
 `dryrun/cost/kernel/ops/base.py` must stay importable without `torch`. A simulator run prices
 kernels from parquet and should not pay a 4.2-second GPU-stack import to do it. Any op that must
-measure on a GPU imports its GPU dependencies — `torch`, vLLM modules, FlashInfer — inside the
+measure on a GPU imports its GPU dependencies (`torch`, vLLM modules, FlashInfer) inside the
 `measure()` and `parse_sweep()` method bodies. The `parse_sweep` and `measure` methods are
-never called on the cost path; only `sol()`, `slice_columns`, `axis_columns`, and `fits_floor` are.
+never called on the cost path. Only `sol()`, `slice_columns`, `axis_columns`, and `fits_floor` are.
 `tests/test_kernel_ops_base.py` enforces this with a subprocess probe on a fresh interpreter.
 `tests/test_kernel_shapes_import.py` enforces the same rule for the shape-derivation module.

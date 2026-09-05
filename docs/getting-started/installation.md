@@ -2,9 +2,9 @@
 
 ## Prerequisites
 
-- Python 3.12 (enforced by `install.sh`; 3.10–3.11 work for simulation-only use)
+- Python 3.12 (enforced by `install.sh`, though 3.10 and 3.11 work for simulation-only use)
 - A conda-compatible environment manager
-- CUDA 12.8 compatible drivers (for profiling; simulation runs on CPU)
+- CUDA 12.8 compatible drivers, for profiling only. Simulation runs on CPU
 
 ---
 
@@ -35,13 +35,13 @@ export DATASET_PATH=/path/to/dapo-math-17k.parquet
 ```
 
 Profile configs read them via OmegaConf's `${oc.env:MODEL_PATH,/path/to/Qwen3-8B}`
-interpolation syntax, so exporting the variable is sufficient — no config file editing
-is required. When a variable is not exported the default after the comma is used,
+interpolation syntax, so exporting the variable is sufficient and no config file editing is
+required. When a variable is not exported the default after the comma is used,
 which is the `/path/to/…` placeholder shown in the source.
 
 ---
 
-## Step 1 — pinned third-party dependencies
+## Step 1: pinned third-party dependencies
 
 `third_party/install.sh` installs the exact dependency versions this project was
 developed against. It reads `third_party/pins.json`, which pins:
@@ -82,8 +82,8 @@ it skips the clone and proceeds to the install steps.
 
 ### A note on flash-attn and the source build
 
-The prebuilt `flash-attn` wheels on PyPI link against `GLIBC_2.32`. Some hosts —
-including the one this project was developed on — provide only `GLIBC_2.28`. The
+The prebuilt `flash-attn` wheels on PyPI link against `GLIBC_2.32`. Some hosts, including the
+one this project was developed on, provide only `GLIBC_2.28`. The
 package imports successfully on those hosts but fails to load its C extension at runtime,
 which produces a silent correctness failure rather than a clear error.
 
@@ -98,7 +98,7 @@ FLASH_ATTN_CUDA_ARCHS="${FLASH_ATTENTION_CUDA_ARCHS}"
 `MAX_JOBS` is capped at 8 by default (overridable via `FLASH_ATTENTION_MAX_JOBS`). Each
 `nvcc` invocation on flash-attn's kernels peaks near a gigabyte of RAM. A host that
 reports hundreds of cores but has only a few GiB of free memory will have the build
-killed by the OOM reaper, and the error log will be empty — the process is terminated
+killed by the OOM reaper, and the error log will be empty, because the process is terminated
 before it can write anything. Keeping `MAX_JOBS` small prevents this. If the build
 stalls on your machine and produces no output, reduce `MAX_JOBS` further:
 
@@ -118,7 +118,7 @@ glibc 2.28 the script detects this at install time, skips the locked wheel, and 
 
 ---
 
-## Step 2 — DryRun-RL itself
+## Step 2: DryRun-RL itself
 
 Install DryRun-RL in editable mode with development dependencies:
 
@@ -145,7 +145,7 @@ dryrun-profile --help
 
 ---
 
-## Step 3 — documentation toolchain (optional)
+## Step 3: documentation toolchain (optional)
 
 The docs toolchain is separate from the simulation dependencies and is only needed if
 you want to build the HTML site locally.
@@ -182,5 +182,5 @@ dryrun policy=areal rollout_cost=roofline training_cost=fixed workload=uniform \
 ```
 
 If this prints a progress bar, a summary table, and writes files under `outputs/`, the
-install is working. See {doc}`quickstart` for what the output means and where to go
-next.
+install is working. See {doc}`walkthrough/00-first-simulation` for what the output means and
+where to go next.

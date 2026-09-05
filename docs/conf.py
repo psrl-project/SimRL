@@ -71,7 +71,9 @@ html_theme_options = {
     "navigation_depth": 3,
     "show_nav_level": 1,
     "navbar_align": "left",
-    "header_links_before_dropdown": 5,
+    # Seven top-level toctree entries. Anything below that count is collapsed into a
+    # "More" dropdown, which hides half the site behind a menu.
+    "header_links_before_dropdown": 8,
     "secondary_sidebar_items": ["page-toc"],
     "pygments_light_style": "default",
     "pygments_dark_style": "monokai",

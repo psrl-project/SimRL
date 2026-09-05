@@ -1,9 +1,9 @@
 # CLI reference
 
 Five console scripts are installed into the active environment. Four of them are conventional
-argparse programmes; `dryrun` is a Hydra app and is documented separately at the end of this
-page. Cross-reference: {doc}`configuration` for every config key; {doc}`../getting-started/quickstart`
-for the end-to-end walkthrough.
+argparse programmes. `dryrun` is a Hydra app and is documented separately at the end of this
+page. See {doc}`configuration` for every config key and
+{doc}`../getting-started/walkthrough/index` for the end-to-end walkthrough.
 
 ---
 
@@ -26,9 +26,8 @@ dryrun-profile <backend> run      --config CFG   # execute them
 dryrun-profile <backend> collect  --config CFG   # normalise into JSONL
 ```
 
-`run --resume` skips candidates already marked `success`, but **re-runs every OOM candidate**
-— see {doc}`../profiling/methodology` for why OOM results are data rather than failures to
-retry.
+`run --resume` skips candidates already marked `success`, but **re-runs every OOM candidate**.
+See {doc}`../profiling/methodology` for why OOM results are data rather than failures to retry.
 
 ### `dryrun-profile vllm`
 
@@ -40,8 +39,8 @@ retry.
 
 ### `dryrun-profile kernels`
 
-The kernel pipeline does not follow the three-verb model — it has five subcommands that must
-run in order:
+The kernel pipeline does not follow the three-verb model. It has five subcommands that must run
+in order:
 
 | Subcommand | Key flags | Notes |
 |---|---|---|
@@ -52,8 +51,8 @@ run in order:
 | `verify-shapes` | `--config CFG`, `--model-path PATH` | Sanity-checks GEMM shapes |
 
 `validate` also accepts `--min-samples N`, `--gate G`, `--output PATH` (omitted above for width).
-`--min-samples 1` is required to score prefill and mixed phases; the default (`20`) drops both from
-a typical vLLM run.
+`--min-samples 1` is required to score prefill and mixed phases, since the default of `20` drops
+both from a typical vLLM run.
 
 `fit-floor` is **not optional**. Skipping it leaves the attention dispatch floor unfitted, which
 measured 20.85% and 34.89% MRE for context and generation attention respectively before the fix.
@@ -99,13 +98,13 @@ dryrun-regress rollout --model {roofline,psrl,distserve}
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--model` | — | Required. Selects the regression formula |
-| `--input` | — | Required. Path to the vLLM profiling JSONL |
-| `--output` | — | Required. Path to write the `CostArtifact` JSON |
-| `--block-size` | — | KV block size used to derive attention features |
-| `--validation-fraction` | — | Fraction of records held out for validation metrics |
-| `--hidden-size` | — | Architecture override (used by `psrl` and `distserve`) |
-| `--intermediate-size` | — | Architecture override |
+| `--model` | | Required. Selects the regression formula |
+| `--input` | | Required. Path to the vLLM profiling JSONL |
+| `--output` | | Required. Path to write the `CostArtifact` JSON |
+| `--block-size` | | KV block size used to derive attention features |
+| `--validation-fraction` | | Fraction of records held out for validation metrics |
+| `--hidden-size` | | Architecture override (used by `psrl` and `distserve`) |
+| `--intermediate-size` | | Architecture override |
 
 ### `dryrun-regress training`
 
@@ -120,14 +119,14 @@ dryrun-regress training [--latency-model {hydraulis,fsdp}]
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--latency-model` | — | Which latency formula to fit |
-| `--memory-model` | — | Which memory formula to fit |
-| `--input` | — | Required. Path to the training profiling JSONL |
-| `--output` | — | Required. Path to write the `CostArtifact` JSON |
-| `--validation-fraction` | — | Fraction held out; `0.2` produces a genuine held-out set for FSDP |
-| `--allow-rank-deficient` | — | Suppress the rank-deficiency error; use only for debugging |
+| `--latency-model` | | Which latency formula to fit |
+| `--memory-model` | | Which memory formula to fit |
+| `--input` | | Required. Path to the training profiling JSONL |
+| `--output` | | Required. Path to write the `CostArtifact` JSON |
+| `--validation-fraction` | | Fraction held out. `0.2` produces a genuine held-out set on both training models |
+| `--allow-rank-deficient` | | Suppress the rank-deficiency error. Debugging only |
 
-`--allow-rank-deficient` should never be used in production: a rank-deficient design means the
+`--allow-rank-deficient` should never be used in production. A rank-deficient design means the
 fit cannot separate two coefficients, and the resulting artifact is degenerate. See
 {doc}`../getting-started/concepts` for the design-rank discussion.
 
@@ -228,7 +227,7 @@ dryrun-plot run_dir [--logs-subdir NAME] [--plots-subdir NAME]
 
 ---
 
-## `dryrun` — the Hydra simulator
+## `dryrun`: the Hydra simulator
 
 `dryrun` is not an argparse app. It is powered by
 [Hydra](https://hydra.cc/) and accepts config-group overrides, not flags.

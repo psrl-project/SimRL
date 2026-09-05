@@ -20,9 +20,10 @@ Every family class must implement three methods:
 | `logits_shape(model, *, tensor_parallel)` | The vocabulary projection, which runs once per step. |
 | `head_counts(model, *, tensor_parallel)` | `(num_heads, num_kv_heads)` for this rank. |
 
-The input in every case is a `ModelDescriptor` — the frozen architecture snapshot read from
-`config.json` at profiling time — and the TP degree. The family raises `ProfileValidationError` if
-any dimension is missing or not divisible by `tensor_parallel`; it never silently floor-divides.
+The input in every case is a `ModelDescriptor`, the frozen architecture snapshot read from
+`config.json` at profiling time, plus the TP degree. The family raises `ProfileValidationError`
+if any dimension is missing or not divisible by `tensor_parallel`, and it never silently
+floor-divides.
 
 ---
 
@@ -55,7 +56,7 @@ step (not per layer) via `ParallelLMHead`, projecting only each sequence's last 
 ## Unsupported architectures are refused, not approximated
 
 This is the central design choice of the family system. Before it existed, a mixture-of-experts
-config was priced with the dense arithmetic — no router GEMM, no per-expert GEMMs, no error, and a
+config was priced with the dense arithmetic: no router GEMM, no per-expert GEMMs, no error, and a
 latency number plausible enough that nothing downstream would question it. A silently wrong latency
 propagates into every schedule the simulator produces. A raised error does not.
 
@@ -64,7 +65,7 @@ The dense family also refuses models carrying disqualifying config keys, even if
 string is registered:
 
 `num_experts`, `num_local_experts`, `n_routed_experts`, `num_experts_per_tok`
-: Mixture of experts. Needs a router GEMM and per-expert GEMMs — neither of which dense
+: Mixture of experts. Needs a router GEMM and per-expert GEMMs, neither of which dense
   pricing includes.
 
 `kv_lora_rank`, `q_lora_rank`
@@ -89,7 +90,7 @@ can verify that the arithmetic still matches what a real engine module graph act
 dryrun-profile kernels verify-shapes --model-path $MODEL_PATH
 ```
 
-It builds the real model on the **meta device** — no weights, no GPU memory — enumerates every 2-D
+It builds the real model on the **meta device**, with no weights and no GPU memory, enumerates every 2-D
 weight, applies vLLM's fusion rules, and compares the resulting shapes against the family's
 declared shapes. For Qwen3-8B this takes about 3 seconds and uses 0 MiB of VRAM. The current
 result on both local checkpoints is: all five shapes match, with 36 and 28 homogeneous layers
@@ -109,7 +110,7 @@ Three steps are required.
 
 **Step 1.** Create `dryrun/profiler/kernels/families_<name>.py` with a class satisfying the
 `ModelFamily` protocol. The class must implement `gemm_shapes`, `logits_shape`, and `head_counts`.
-If layers are heterogeneous, return `(shape, count)` pairs rather than one shape per layer —
+If layers are heterogeneous, return `(shape, count)` pairs rather than one shape per layer.
 `ModelOps.gemm_queries` already handles `(query, multiplier)` pairs, so this is a protocol
 widening, not a break.
 
@@ -122,6 +123,6 @@ family_instance)` at module level. Registering the same architecture twice raise
 The last step is not optional and not obvious. `family_for` is called from the cost path, which
 has no reason to know which specific family modules exist. Registration happens as a side effect of
 importing the module. If the import is omitted from `families.py`, a fresh interpreter sees an
-empty registry and `family_for` raises `Registered: none` — while every unit test passes, because
+empty registry and `family_for` raises `Registered: none`, while every unit test passes, because
 each test imports the family module it exercises. The `families.py` tail comment documents this
 trap and shows the existing pattern for the dense family.

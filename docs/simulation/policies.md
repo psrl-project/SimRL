@@ -1,6 +1,6 @@
 # Staleness policies
 
-The simulator never moves time forward on its own — the staleness policy decides when a
+The simulator never moves time forward on its own. The staleness policy decides when a
 request may be dispatched and when a training batch may be consumed. Every policy is a
 plugin: it receives a `SimState` snapshot and returns a quota or a batch. There are five
 built-in policies, each modelling a different real system. Choosing the wrong one, or
@@ -22,13 +22,13 @@ entirely.
 | `slime` | **Ignored.** The staleness bound is `policy.update_weights_interval`, always |
 
 A simulation that switches from `policy=areal` to `policy=slime` with `max_staleness=4`
-will not run `slime` with a version bound of four — it will run `slime` with a bound of
+will not run `slime` with a version bound of four. It will run `slime` with a bound of
 one (the default `update_weights_interval`) and silently ignore the four. Set
 `policy.update_weights_interval` explicitly when using `slime`.
 
 ---
 
-## `psrl` — Reserve / Occupy / Consume (default)
+## `psrl`: Reserve / Occupy / Consume (default)
 
 **`policy=psrl` is the default.** It delegates buffer management to
 `psrl.workers.ps.staleness_controller.StalenessInventory`, so the simulation
@@ -51,7 +51,7 @@ Each request passes through three states inside the inventory:
    `train_version` is in a READY or READY\_WITH\_CAPACITY state. The buffer is deleted
    only when the batch is formally taken, not when it is merely peeked.
 
-The inventory also tracks STUCK states — buffers that cannot reach READY because too
+The inventory also tracks STUCK states, meaning buffers that cannot reach READY because too
 many reserved entries have become stragglers. The optional `proactive_filter` knob lets
 the policy evict reserved entries proactively when only `proactive_threshold` or fewer
 remain, unblocking a stuck buffer at the cost of dropping those requests.
@@ -80,12 +80,12 @@ pip install --no-deps -e /path/to/psrl
 After that one-time install, the import succeeds on any machine. If the source is
 unavailable, select a different policy with `policy=areal` or `policy=roll`. Do not
 add the source directory to `PYTHONPATH` manually unless you understand the version
-the path points to — the path is machine-specific and may not match the version of
+the path points to, since the path is machine-specific and may not match the version of
 PSRL the simulation was validated against.
 
 ---
 
-## `areal` — Cumulative token bucket
+## `areal`: Cumulative token bucket
 
 `areal` reproduces the admission control from the AReaL framework. It imposes a ceiling
 on *total unconsumed work* across the whole loop, but it does not bound individual
@@ -105,7 +105,7 @@ currently in flight. The ceiling grows by one batch after each training step
 (`train_version` advances), so it does not stall as training makes progress.
 
 Because the bound is on *total unconsumed work*, a slow request that was dispatched
-many versions ago is not proactively evicted — it simply occupies part of the ceiling
+many versions ago is not proactively evicted. It simply occupies part of the ceiling
 until it completes. This means a single very slow request can hold the ceiling high and
 let many fresh requests in, which is why `areal` does not bound individual staleness.
 
@@ -120,7 +120,7 @@ which sets `ofp` in the formula above.
 
 ---
 
-## `roll` — Token bucket with GC discard
+## `roll`: Token bucket with GC discard
 
 `roll` uses the same admission formula as `areal` but adds two enforcement mechanisms
 that `areal` lacks: a consumption floor that prevents batches from being drawn from
@@ -152,7 +152,7 @@ for diagnosing a configuration where the staleness window is too tight for the w
 
 ---
 
-## `slime` — Loop barrier
+## `slime`: Loop barrier
 
 `slime` takes a fundamentally different approach: instead of a token bucket or buffer
 inventory, it relies on the training loop's barrier structure to bound staleness. The
@@ -164,7 +164,7 @@ The loop structure is: dispatch generation, then (after `update_weights_interval
 training steps) push new weights, then collect the generation results, then dispatch
 again. Because generation is dispatched *before* the weight push and consumed *after*,
 the maximum staleness any request can have when consumed is exactly
-`update_weights_interval` — determined by timing, not by a threshold parameter.
+`update_weights_interval`, determined by timing rather than by a threshold parameter.
 
 There is **no staleness parameter** in `slime`. The `job.max_staleness` key is ignored.
 
@@ -177,7 +177,7 @@ that intentionally generate redundant samples.
 
 When `partial_rollout=False` (the default), any in-flight requests at weight-push time
 are evicted rather than resumed. When `partial_rollout=True`, interrupted requests are
-retained — the staleness invariant is then the caller's responsibility.
+retained, and the staleness invariant is then the caller's responsibility.
 
 The `rollout_version_after_train` hook drives weight-push synchronisation: the rollout
 engine's visible weight version only advances every `update_weights_interval` steps,
@@ -187,12 +187,12 @@ not after every training step.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `update_weights_interval` | `1` | Push weights every N training steps; sets the staleness bound |
+| `update_weights_interval` | `1` | Push weights every N training steps. Sets the staleness bound |
 | `over_sampling_ratio` | `1.0` | Admit this many times `batch_size` per wave (must be ≥ 1.0) |
 
 ---
 
-## `verl` — Window-based admission with bounded queue
+## `verl`: Window-based admission with bounded queue
 
 `verl` models the fully asynchronous mode of the verl framework. Admission is governed
 by a sample-overage ratio rather than a version count, and completed requests are held
@@ -229,7 +229,7 @@ overproduced samples rather than blocking the rollout engine.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `staleness_threshold` | `null` | Overage ratio; null falls back to `job.max_staleness` |
+| `staleness_threshold` | `null` | Overage ratio. Null falls back to `job.max_staleness` |
 | `require_batches` | `1` | Training batches that must be queued before a step starts |
 
 When `staleness_threshold` is null, the simulator uses `job.max_staleness` as the
@@ -245,7 +245,7 @@ The choice of policy should reflect the real system you are evaluating, not just
 staleness bound you want to impose. Each policy is a simulation of a real system's
 protocol:
 
-- Use `psrl` to model a PSRL deployment (requires the `psrl` package; see above).
+- Use `psrl` to model a PSRL deployment. It requires the `psrl` package, as described above.
 - Use `areal` to model AReaL's cumulative token bucket.
 - Use `roll` to model ROLL's async admission with GC enforcement.
 - Use `slime` to model slime's loop-barrier approach. Set
@@ -275,8 +275,8 @@ The remaining hooks have do-nothing defaults and can be overridden selectively:
 | Method | When called |
 |--------|-------------|
 | `on_admit` | After a request is dispatched to the rollout engine |
-| `on_complete` | After a request finishes generation; return `KEEP` or `DROP` |
-| `take_batch` | When training actually consumes a batch; defaults to `peek_batch` |
+| `on_complete` | After a request finishes generation. Return `KEEP` or `DROP` |
+| `take_batch` | When training actually consumes a batch. Defaults to `peek_batch` |
 | `on_batch_unavailable` | Each iteration that no batch could be assembled |
 | `on_train_version_advance` | After a training step publishes a new version |
 | `will_sync_after_train` | Whether this step ends with a weight push (default: always) |

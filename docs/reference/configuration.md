@@ -30,7 +30,7 @@ Available options: `roofline`, `psrl`, `distserve`, `composed`.
 ### `roofline`
 
 Parametric roofline model fitted from vLLM profiling JSONL. No profiling needed when
-using the default hand-set constants; replace them with a fitted artifact from
+using the default hand-set constants. Replace them with a fitted artifact from
 `dryrun-regress rollout --model roofline` for a calibrated result.
 
 ```{literalinclude} ../../dryrun/config/defaults/rollout_cost/roofline.yaml
@@ -60,7 +60,7 @@ profiling records. The YAML is identical to `roofline` except `name: psrl`.
 ### `distserve`
 
 DistServe C3/C4 formula. Re-expresses the same roofline fit through architecture constants
-(`h`, `m`, `C1`–`C5`). Default constants are placeholders; replace with fitted values.
+(`h`, `m`, `C1` through `C5`). Default constants are placeholders. Replace with fitted values.
 
 ```{literalinclude} ../../dryrun/config/defaults/rollout_cost/distserve.yaml
 :language: yaml
@@ -102,7 +102,7 @@ Key fields beyond the parallelism block:
 
 `saturation_step_threshold`
 : Disabled by default (set to max int64). A finite value enables the closed-form
-  fast path for deep-KV decode segments; the measured trade-off is 1.2x speedup
+  fast path for deep-KV decode segments. The measured trade-off is 1.2x speedup
   for 4.6% additional deviation on the real DAPO trace.
 
 ---
@@ -169,8 +169,8 @@ Fitted FSDP2/HSDP training cost. Requires a `CostArtifact` from
 
 `batching_mode`
 : How real trajectory lengths become microbatches. `pad_to_max` (default) pads to the
-  longest sequence in each microbatch; `token_budget` reproduces verl's dynamic batching
-  with `max_tokens_per_rank`; `packed_no_pad` charges only true token counts.
+  longest sequence in each microbatch. `token_budget` reproduces verl's dynamic batching with
+  `max_tokens_per_rank`, and `packed_no_pad` charges only true token counts.
   See {doc}`../simulation/domain-gates` for the measured spread and when the modes differ.
 
 `extrapolate`
@@ -243,4 +243,4 @@ distribution-specific parameters in the `output` block. See {doc}`../workload/in
 
 `source: trace` reads pre-collected `(prompt, n responses)` groups from a JSONL artifact.
 `trace.path` is the merged joint trace produced by `examples/workload/collect_joint_trace.sh`.
-`n_groups: 0` reads all groups; set a positive value to cap the trace.
+`n_groups: 0` reads all groups. Set a positive value to cap the trace.

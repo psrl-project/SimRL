@@ -8,7 +8,7 @@ skipping either produces a number that looks plausible and is wrong.
 
 ## What a `tp>1` step actually costs
 
-`ModelOps.comm_queries` emits **two all-reduces per layer** — one after the attention block's
+`ModelOps.comm_queries` emits **two all-reduces per layer**, one after the attention block's
 output projection, one after the MLP's down projection. For Qwen3-8B that is 72 collectives in
 every step. They are not a correction term: measured on H20 at `tp=2`, the collective is **13.2%
 of a decode step** (up to 21.0% at small batch), and pricing it as zero moves median decode
@@ -19,8 +19,8 @@ not at predict time:
 
 | Quantity | How `tp` enters |
 |---|---|
-| GEMM shapes | `num_attention_heads`, `num_query_groups`, `intermediate_size` and `vocab_size` are divided by `tp`. `hidden_size` is **not** — it is the width of the collective-reassembled activation. |
-| Attention head counts | `rank_head_counts` divides both head counts; indivisibility is refused, not rounded. |
+| GEMM shapes | `num_attention_heads`, `num_query_groups`, `intermediate_size` and `vocab_size` are divided by `tp`. `hidden_size` is **not**, because it is the width of the collective-reassembled activation. |
+| Attention head counts | `rank_head_counts` divides both head counts, and indivisibility is refused rather than rounded. |
 | Collectives | Added by `comm_queries`, priced from the `all_reduce` table, sliced on `world_size`. |
 
 This is why a kernel tree is **per degree**. A `tp=2` prediction read against the `tp=1` tree
@@ -30,7 +30,7 @@ refuses otherwise.
 
 ## The collective measured is not NCCL
 
-The `all_reduce` table is timed through `get_tp_group().all_reduce` — vLLM's own
+The `all_reduce` table is timed through `get_tp_group().all_reduce`, vLLM's own
 `CudaCommunicator`, so the kernel timed is the kernel a server dispatches. It is deliberately
 *not* `torch.distributed.all_reduce`, which was the original choice and was wrong.
 
@@ -39,18 +39,18 @@ Measured with `examples/profile/kernel/dispatch_probe.py` on H20 (sm_90), messag
 
 | Message size | `world_size=2` | `world_size=4` | `world_size=8` |
 |---|---|---|---|
-| 8–128 KiB | `custom_all_reduce` | `custom_all_reduce` | `custom_all_reduce` |
-| 256 KiB – 4 MiB | `custom_all_reduce` | `custom_all_reduce` | `torch_symm_mem` |
-| 8–32 MiB | `torch_symm_mem` | `torch_symm_mem` | `torch_symm_mem` |
-| 64–128 MiB | `torch_symm_mem` / `pynccl` | `pynccl` | `torch_symm_mem` / `pynccl` |
+| 8-128 KiB | `custom_all_reduce` | `custom_all_reduce` | `custom_all_reduce` |
+| 256 KiB to 4 MiB | `custom_all_reduce` | `custom_all_reduce` | `torch_symm_mem` |
+| 8-32 MiB | `torch_symm_mem` | `torch_symm_mem` | `torch_symm_mem` |
+| 64-128 MiB | `torch_symm_mem` / `pynccl` | `pynccl` | `torch_symm_mem` / `pynccl` |
 
 `torch.distributed.all_reduce` never appears at any world size or message size. A Qwen3-8B decode
-step lives in 8–512 KiB, which is entirely `custom_all_reduce`: on sm_90 that path's ceiling at two
+step lives in 8-512 KiB, which is entirely `custom_all_reduce`: on sm_90 that path's ceiling at two
 ranks is 8 MiB, far above what a decode step needs. NCCL symmetric memory never fires despite
 `VLLM_ALLREDUCE_USE_SYMM_MEM` defaulting on, because `is_symmetric_memory_enabled()` also requires
 `VLLM_USE_NCCL_SYMM_MEM`, which defaults to 0.
 
-Both tables are written from one sweep. `vllm` is what the cost model reads; `nccl` is retained as
+Both tables are written from one sweep. `vllm` is what the cost model reads, and `nccl` is retained as
 a control, selectable with `CommQuery(backend="nccl")`, so the cost of the original choice stays a
 number rather than an argument:
 
@@ -61,7 +61,7 @@ number rather than an argument:
 | `tp=8` | 7.56% | 24.80% |
 
 At `tp=2` the two agree within ~6% across the decode range because both sit on the same ~18 us
-launch floor — the old table was wrong in *identity*, not badly wrong in *latency*, at that degree.
+launch floor. The old table was wrong in *identity* rather than badly wrong in *latency* at that degree.
 The penalty grows with world size: at `tp=8` the control reaches 24.80% with a utility floor of
 0.000, because its latencies increasingly describe a schedule the server does not run.
 
@@ -99,7 +99,7 @@ Check the dispatch if you changed GPU or vLLM version:
 torchrun --standalone --nproc-per-node 2 examples/profile/kernel/dispatch_probe.py
 ```
 
-### 2. Collect a real baseline at the same degree — serially
+### 2. Collect a real baseline at the same degree: serially
 
 ```bash
 CONFIG=examples/profile/vllm/qwen3_8b_tp2_serial.yaml \
@@ -109,14 +109,14 @@ CONFIG=examples/profile/vllm/qwen3_8b_tp2_serial.yaml \
 :::{warning}
 Use `max_parallel: 1` for any baseline whose figures will be quoted. The first TP=2 baseline ran
 four servers across 8 GPUs and one CephFS mount, and one degraded mid-run: at per-request depth
-8,960, `reqs=16` measured 35.76 ms against `reqs=32`'s 19.24 ms — half the batch, half the total
+8,960, `reqs=16` measured 35.76 ms against `reqs=32`'s 19.24 ms: half the batch, half the total
 KV, nearly double the time. That inflated whole-grid decode error to 16.39% while the uncontended
 buckets scored 3.18%. The serial re-measurement confirmed it: `reqs=16` moved from median ratio
 0.513 to 0.993 while every other batch stayed put, and whole-grid decode fell to 9.51%.
 
 The diagnostic is **monotonicity, not outliers**: a larger batch at deeper KV must be slower.
 Scoring against each bucket's *minimum* latency moved the error only from 16.39% to 16.51%, which
-proves sustained degradation rather than transient spikes — so filtering outliers does not fix it
+proves sustained degradation rather than transient spikes, so filtering outliers does not fix it
 and re-measurement is the only remedy.
 :::
 
@@ -141,7 +141,7 @@ python examples/profile/kernel/decompose_tp.py --config $CFG --baseline $BASE \
 `--gate 100` observes rather than fails.
 
 `decompose_tp.py` splits each bucket's prediction into GEMM, attention and collective, then prices
-the collective three ways — dispatched, NCCL control, and zero. That separates three questions
+the collective three ways: dispatched, NCCL control, and zero. That separates three questions
 that a single MRE conflates: how large the collective term is, how much the backend choice
 matters, and whether the residual looks like unmodelled overlap.
 
@@ -154,7 +154,7 @@ GPU=h20 MODEL_PATH=$MODEL_PATH \
     bash examples/simulate/simulate.sh
 ```
 
-`ROLLOUT_TP` defaults to 1. Only the composed model reads it — the fitted models were regressed at
+`ROLLOUT_TP` defaults to 1. Only the composed model reads it, since the fitted models were regressed at
 one degree and carry no notion of a second, so setting it there is silently ignored. `pp`, `dp` and
 `cp` are accepted in `rollout_cost.parallelism` but the composed model ignores them too.
 
@@ -174,7 +174,7 @@ Measured 2026-09-03 against the serial baseline, H20 / Qwen3-8B, `pchip`:
 | decode, whole grid | 204 | 9.51% |
 
 The excluded-region figures beat the 4.84% decode / 3.72% prefill published at `tp=1`, and they are
-the first end-to-end evidence that kernel composition survives tensor parallelism — at `tp=1`
+the first end-to-end evidence that kernel composition survives tensor parallelism. At `tp=1`
 `comm_queries` returns empty, so no earlier figure exercised a collective at all.
 
 Prefill needs no exclusion. Its six `requests = 1` buckets originally scored 12.50% because they
@@ -184,15 +184,15 @@ were collected with `num-prompts: 1`, so each recorded iteration was a single co
 -1.3 ms in the parallel one, absent at `requests = 3` on the same server), and it implied a 256-token
 prefill 3.8x *slower* on two GPUs than on one. Re-measured with `num-prompts: 8` at the same shape,
 `requests = 1` prefill went from 46.98% to 3.98% MRE with the prediction unchanged, and 256 tokens now
-measures 18.26 ms against 25.47 ms at `tp=1` — a sane 1.4x speedup.
+measures 18.26 ms against 25.47 ms at `tp=1`, a sane 1.4x speedup.
 
 Decode's remaining gap is a different thing and a **real model error**: `requests 1-4`
 over-predicts (median ratio 1.31, and 1.1312 at `tp=1`, so it is not a TP effect). It predicts *too
 much*, so it is not a missing overhead term. A composed step sums 253 isolated kernel latencies
-(145 GEMM, 72 all-reduce, 36 attention), each carrying its own fitted per-call floor; the excess at
+(145 GEMM, 72 all-reduce, 36 attention), each carrying its own fitted per-call floor, and the excess at
 `reqs=1` is 1.641 ms over 253 launches, or 6.5 µs each, which is essentially the 6.0 µs all-reduce
 floor. The real server replays the step inside a CUDA graph where those costs largely vanish. Since
-GEMM+comm is batch-independent (3.123 ms at one request, 3.180 ms at sixteen — a decode GEMM is
+GEMM and comm are batch-independent (3.123 ms at one request, 3.180 ms at sixteen, because a decode GEMM is
 memory-bound), that fixed excess is 31% of a 5.2 ms single-request step and under 3% of a 23 ms
 batch-64 step. See {doc}`../reference/limitations` for the fix candidates.
 
@@ -207,7 +207,7 @@ is therefore not the dominant term at this degree, though it remains unquantifie
 - **Cross-node `tp` is not measured.** The collective sweep spawns against `127.0.0.1`, so every
   world size is intra-node over NVLink, and `GpuSpec.link_bandwidth_bytes_per_s` is a single
   constant. A two-node ring and an intra-node one at the same world size would price identically.
-  Acceptable for rollout, where `tp` stays inside a node; the first thing to fix when DP or PP
+  Acceptable for rollout, where `tp` stays inside a node. It is the first thing to fix when DP or PP
   communication is modelled.
 - **`tp=4` and `tp=8` have collective tables but no end-to-end baseline.** Scoring either needs a
   vLLM sweep at that degree, and a compute sweep too, since GEMM and attention shapes are sharded.

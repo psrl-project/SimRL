@@ -4,7 +4,7 @@ Three on-disk contracts hold everything between the measurement and the simulati
 
 ---
 
-## `ProfileRecord` — the JSONL profiling boundary
+## `ProfileRecord`: the JSONL profiling boundary
 
 Defined in `dryrun/profiler/schema.py`. Every line of a profiling JSONL file is one
 `ProfileRecord` serialised with `json.dumps(record.to_dict())`.
@@ -151,9 +151,9 @@ optional `lengths` tuple. `RankMemory` holds `rank`, `allocated_bytes`, and
 
 ---
 
-## `CostArtifact` — the regression output
+## `CostArtifact`: the regression output
 
-Defined in `dryrun/cost/artifact.py`. Written by `dryrun-regress`; read by the simulator.
+Defined in `dryrun/cost/artifact.py`. Written by `dryrun-regress` and read by the simulator.
 
 ### Outer envelope
 
@@ -163,7 +163,7 @@ Defined in `dryrun/cost/artifact.py`. Written by `dryrun-regress`; read by the s
 | `created_at` | str | ISO 8601 UTC timestamp of when the artifact was written |
 | `kind` | str | `"rollout"` or `"training"` |
 | `model_type` | str | Formula name: `"roofline"`, `"psrl"`, `"distserve"`, `"hydraulis"`, `"fsdp"` |
-| `profile_digest` | str | SHA-256 of the input JSONL; re-fitting a changed input produces a new digest |
+| `profile_digest` | str | SHA-256 of the input JSONL, so re-fitting a changed input produces a new digest |
 | `hardware` | dict | Copy of the `HardwareDescriptor` from the profiling records |
 | `model` | dict | Copy of the `ModelDescriptor` |
 | `diagnostics` | dict | Fit-level diagnostics |
@@ -275,9 +275,9 @@ zero or more than one entry matches. There is no silent fallback to a neighbour 
 ## Telemetry streams
 
 The simulator writes four JSONL streams under `{output_dir}/logs/` when `log_telemetry: true`.
-The streams are the primary output of a simulation run; `dryrun-plot` reads them to produce
-figures without re-simulating. Schema details — field names, units, and the meaning of each
-event type — are documented in {doc}`../simulation/outputs`, which owns the telemetry topic.
+The streams are the primary output of a simulation run, and `dryrun-plot` reads them to produce
+figures without re-simulating. Schema details (field names, units, and the meaning of each event
+type) are documented in {doc}`../simulation/outputs`, which owns the telemetry topic.
 
 | File | One row per |
 |---|---|

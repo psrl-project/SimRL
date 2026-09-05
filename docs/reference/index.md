@@ -3,41 +3,17 @@
 Lookup material: exact commands, exact configuration keys, exact on-disk formats, and an
 honest account of what has and has not been validated.
 
-::::{grid} 1 1 2 2
-:gutter: 3
+| Page | Contents |
+|---|---|
+| {doc}`cli` | Every subcommand and flag across the five entry points |
+| {doc}`configuration` | Every Hydra config group and key, with defaults |
+| {doc}`schemas` | `ProfileRecord`, `CostArtifact`, and the telemetry streams |
+| {doc}`validation` | Every measured accuracy figure, with sample counts and caveats |
+| {doc}`limitations` | What is known not to work, and deferred work with acceptance criteria |
 
-:::{grid-item-card} {octicon}`terminal;1.5em` CLI
-:link: cli
-:link-type: doc
-
-Every subcommand and flag across the five entry points.
-:::
-
-:::{grid-item-card} {octicon}`sliders;1.5em` Configuration
-:link: configuration
-:link-type: doc
-
-Every Hydra config group and key, with defaults.
-:::
-
-:::{grid-item-card} {octicon}`file-code;1.5em` Schemas
-:link: schemas
-:link-type: doc
-
-`ProfileRecord`, `CostArtifact`, and the telemetry streams.
-:::
-
-:::{grid-item-card} {octicon}`beaker;1.5em` Validation
-:link: validation
-:link-type: doc
-
-Every measured accuracy figure, with sample counts and caveats.
-:::
-
-::::
-
-{doc}`limitations` lists what is known not to work, and the deferred work items with
-their acceptance criteria.
+If you are looking for a number to quote, {doc}`validation` is the page that owns it. Every
+figure there carries its sample count and whether it was held out, which is usually the part
+that decides whether the number means what you want it to mean.
 
 ```{toctree}
 :maxdepth: 2

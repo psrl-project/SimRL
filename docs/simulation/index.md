@@ -29,7 +29,7 @@ Every configurable key is listed in {doc}`../reference/configuration`.
 
 1. **`job.batch_size` counts responses, not prompts.** With a DAPO-style trace at eight
    responses per prompt, `batch_size=512` consumes 64 prompts.
-2. **`job.max_staleness` means something different in each policy** — a version bound
+2. **`job.max_staleness` means something different in each policy**: a version bound
    for some, a ratio fallback for others, and it is ignored outright by one. See
    {doc}`policies`.
 3. **The default policy has an external dependency.** `policy=psrl` imports the
@@ -44,11 +44,11 @@ Every configurable key is listed in {doc}`../reference/configuration`.
 Beyond rollout and training, two smaller cost models participate, each with a fixed and
 a derived variant:
 
-`sync_cost` — weight synchronisation between training and rollout
+`sync_cost`, weight synchronisation between training and rollout
 : `fixed` takes `sync_time` in seconds. `bandwidth` derives it from parameter count and
   link bandwidth.
 
-`recompute_cost` — cost of re-prefilling a preempted request
+`recompute_cost`, the cost of re-prefilling a preempted request
 : `fixed` takes `time_per_token`. `analytical` derives it from model FLOPs.
 
 Neither is fitted from measurements. If weight sync is a material fraction of your step

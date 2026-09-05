@@ -1,41 +1,33 @@
 # Getting Started
 
-Three paths lead through this documentation. Pick the one that matches what you have.
+DryRun-RL has two halves. One measures a real system and reduces the measurements to
+coefficients. The other simulates configurations you never ran, using those coefficients.
 
-::::{grid} 1 1 3 3
-:gutter: 3
+The fastest way to understand it is to walk both halves once on a real model.
+{doc}`walkthrough/index` does that with Qwen3-8B on 8x H20, from the first profiling
+command through to a simulated training job, with every input, output, and file format shown
+as it appears on disk.
 
-:::{grid-item-card} I just want to simulate
-:class-card: dryrun-feature-card
+If you only want to see the simulator run, {doc}`walkthrough/00-first-simulation` needs no
+GPU and no profiling data. It takes a few seconds.
 
-You have no profiling data and possibly no GPU. Start with
-{doc}`quickstart` — it runs an analytic cost model over a synthetic workload.
-:::
+## Reading order
 
-:::{grid-item-card} I want to model my own system
-:class-card: dryrun-feature-card
+1. {doc}`installation` sets up the environment. The pinned third-party install is only
+   needed if you intend to profile.
+2. {doc}`walkthrough/index` is the main path.
+3. {doc}`concepts` defines the vocabulary the rest of the site assumes: *cell*, *slice*,
+   *utility*, *feature range*, *version*. Several of these look like ordinary words but
+   carry a precise meaning, and guessing at them makes later pages read as harder than they
+   are. Read it before or after the walkthrough, whichever you prefer, but read it.
 
-You have GPUs and a checkpoint. Read {doc}`concepts`, then
-{doc}`../profiling/index` to measure, then {doc}`../cost-models/index` to fit.
-:::
-
-:::{grid-item-card} I want to extend it
-:class-card: dryrun-feature-card
-
-You want a new backend, kernel op, or staleness policy. Go to
-{doc}`../development/index`.
-:::
-
-::::
-
-Whichever path you take, {doc}`concepts` is worth ten minutes first: the rest of the
-site uses *cell*, *slice*, *utility*, *feature range* and *version* as terms of art,
-and guessing at them makes several pages read as more complicated than they are.
+If you want to add a backend, a kernel op, a cost model, or a staleness policy rather than
+use the existing ones, go to {doc}`../development/index`.
 
 ```{toctree}
 :maxdepth: 2
 
 installation
-quickstart
+walkthrough/index
 concepts
 ```

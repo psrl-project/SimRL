@@ -1,7 +1,7 @@
 # Kernel profiling
 
 The kernel pipeline is the only profiling path in DryRun-RL with no regression step. Instead of
-fitting a parametric model, it writes parquet *performance tables* — one per `(op, backend)` pair —
+fitting a parametric model, it writes parquet *performance tables*, one per `(op, backend)` pair,
 and {doc}`../cost-models/composed-rollout` reads those tables directly, summing measured kernel
 latencies per inference step. A simulation that uses `ComposedRollout` therefore requires this
 sweep to be run first.
@@ -42,7 +42,7 @@ dryrun-profile kernels validate  --config CFG --baseline VLLM_JSONL [--surface p
 
 Run them in that order. `fit-floor` is not optional: attention latency does not fall to zero at
 tiny shapes, and fitting the dispatch floor moved context attention from 20.85% to 5.74% MRE and
-generation attention from 34.89% to 6.63%. Those are not marginal improvements; skipping the step
+generation attention from 34.89% to 6.63%. Those are not marginal improvements. Skipping the step
 means the surface is systematically wrong in the overhead-dominated regime.
 
 ### Timing (Qwen3-8B, H20, 2026-08-25)
@@ -82,7 +82,7 @@ outputs/profile/qwen3_8b/kernel_tp1/kernel/h20/
 
 The directory path encodes GPU / family / backend / version, which is what scopes a `floors.json`
 to the backend it was fitted for. `ComposedRollout` resolves paths from `kernel_table_root` plus
-the `gpu` field in the simulation config; no other path configuration is needed.
+the `gpu` field in the simulation config, and no other path configuration is needed.
 
 Config files and their output dirs:
 
@@ -115,8 +115,8 @@ batch_size, num_heads, num_key_value_heads, head_dim,
 isl, step, attn_dtype, kv_cache_dtype, block_size, window_size, latency_s
 ```
 
-Context rows use `isl` (input sequence length) as the axis; generation rows use `step` (current
-KV depth). Each attention grid point is measured twice and produces two rows: one for the
+Context rows use `isl` (input sequence length) as the axis, and generation rows use `step`
+(current KV depth). Each attention grid point is measured twice and produces two rows: one for the
 vLLM-selected backend and one for FlashInfer.
 
 `floors.json` is written beside each attention table:
@@ -152,7 +152,8 @@ Two fields in the YAML truncate the grid to avoid OOM:
 Each attention grid point is measured twice: once on the backend vLLM's own selector picks, and
 once on FlashInfer. On H20 (SM 9.0, Hopper) with FlashInfer 0.6.14 installed, the selector picks
 `FLASH_ATTN`, which resolves to FlashAttention-3 vendored inside vLLM (`kernel_source =
-vllm_flash_attn_fa3`). It serves both prefill and decode — FA3's varlen path covers both phases.
+vllm_flash_attn_fa3`). It serves both prefill and decode, since FA3's varlen path covers both
+phases.
 
 The reason FlashInfer loses despite being installed and valid is priority ordering, not
 availability. `_get_backend_priorities` in `vllm/platforms/cuda.py` returns
@@ -187,7 +188,7 @@ Kernel latency at small shapes is dominated by a constant per-call dispatch cost
 roofline SOL does not model. Real H20 data shows decode latency flat at approximately 70 us across
 a 64x increase in KV work at batch 1, which is conclusive that the cost structure is
 `max(math_work, memory_work, floor)`, not `floor + roofline`. The floor is a lower bound, not an
-addend; adding it would double-count in the overhead-dominated regime.
+addend, because adding it would double-count in the overhead-dominated regime.
 
 `dryrun-profile kernels fit-floor` fits per-backend, per-op floor values from real measurements,
 writing them to `floors.json`. The fallback when that file is absent is `FALLBACK_FLOORS_S` in
@@ -197,15 +198,15 @@ writing them to `floors.json`. The fallback when that file is absent is `FALLBAC
 |---------|--------------------------|------------------------------|
 | vLLM | 32 us | 22 us |
 | FlashInfer | 4 us | 6 us |
-| elementwise (vLLM) | 2 us | — |
-| all_reduce (NCCL) | 2 us | — |
+| elementwise (vLLM) | 2 us | not measured |
+| all_reduce (NCCL) | 2 us | not measured |
 
 The vLLM floor is far higher because vLLM's Python dispatch path is much more expensive than
 FlashInfer's. The fitted floors eliminated the largest sources of pre-fix error: attention MRE
 went from 20.85% → 5.74% (context/vllm) and 34.89% → 6.63% (generation/vllm).
 
 `floors.json` is keyed by op name. An older format keyed by phase (`context`, `generation`) is
-rejected with an explicit error message rather than being read leniently — a leniently-read
+rejected with an explicit error message rather than being read leniently. A leniently-read
 old-format file applies a zero floor, which measures 34.89% MRE for generation attention.
 
 ## Holdout accuracy gate
@@ -213,7 +214,7 @@ old-format file applies a zero floor, which measures 34.89% MRE for generation a
 `kernels holdout` reserves a random interior fraction of grid points and evaluates how well the
 utility interpolator predicts them from the remaining data. The gate passes when the mean relative
 error (MRE) over held-out interior points is below 5% for every family. A passing gate means
-single-kernel interpolation is self-consistent on this grid and this GPU; it says nothing about
+single-kernel interpolation is self-consistent on this grid and this GPU. It says nothing about
 whether summing kernels reproduces a real vLLM engine iteration. That harder question is answered
 by `kernels validate` (see below).
 
@@ -227,22 +228,22 @@ not sound. Run holdout at `--fraction 1.0` and treat that as the authoritative n
 ### Current gate results (Qwen3-8B, H20, 2026-08-25)
 
 Measured at `--fraction 1.0 --gate 5.0`, and reproduced on 2026-08-31 to four significant
-figures. This is the canonical accuracy table for this GPU and model; three inconsistent subsets
+figures. This is the canonical accuracy table for this GPU and model. Three inconsistent subsets
 previously existed across multiple docs and this table supersedes all of them.
 
 The rows come from two sweeps. `gemm`, both attention families and `elementwise` are from the
-TP=1 config; `all_reduce` is from the TP=2 config, because a collective needs at least two ranks
+TP=1 config, while `all_reduce` is from the TP=2 config, because a collective needs at least two ranks
 and cannot be measured at world size 1.
 
 | Op | Backend | Sweep | Points | MRE | p90 | max | Utility range | Gate (5%) |
 |----|---------|-------|--------|-----|-----|-----|---------------|-----------|
-| `gemm` | vllm | TP=1 | 64 | 3.91% | 7.70% | 47.98% | 0.473–0.949 | PASS |
-| `elementwise` | vllm | TP=1 | 52 | 5.01% | 13.83% | 25.37% | 0.162–0.718 | fail |
-| `context_attention` | vllm | TP=1 | 59 | 5.74% | 17.27% | 25.92% | 0.204–0.942 | fail |
-| `generation_attention` | flashinfer | TP=1 | 72 | 6.01% | 14.61% | 39.67% | 0.203–0.497 | fail |
-| `all_reduce` | vllm | TP=2 | 13 | 6.01% | 12.29% | 21.74% | 0.283–0.632 | fail |
-| `generation_attention` | vllm | TP=1 | 72 | 6.63% | 17.57% | 28.46% | 0.213–0.465 | fail |
-| `context_attention` | flashinfer | TP=1 | 59 | 9.87% | 32.69% | 47.12% | 0.183–0.951 | fail |
+| `gemm` | vllm | TP=1 | 64 | 3.91% | 7.70% | 47.98% | 0.473-0.949 | PASS |
+| `elementwise` | vllm | TP=1 | 52 | 5.01% | 13.83% | 25.37% | 0.162-0.718 | fail |
+| `context_attention` | vllm | TP=1 | 59 | 5.74% | 17.27% | 25.92% | 0.204-0.942 | fail |
+| `generation_attention` | flashinfer | TP=1 | 72 | 6.01% | 14.61% | 39.67% | 0.203-0.497 | fail |
+| `all_reduce` | vllm | TP=2 | 13 | 6.01% | 12.29% | 21.74% | 0.283-0.632 | fail |
+| `generation_attention` | vllm | TP=1 | 72 | 6.63% | 17.57% | 28.46% | 0.213-0.465 | fail |
+| `context_attention` | flashinfer | TP=1 | 59 | 9.87% | 32.69% | 47.12% | 0.183-0.951 | fail |
 
 ### The collective is measured through vLLM's dispatcher
 
@@ -253,17 +254,17 @@ on H20 at world sizes 2, 4 and 8, that call is never what a server dispatches.
 
 Dispatch measured with `examples/profile/kernel/dispatch_probe.py` (full table in
 `examples/profile/kernel/DISPATCH.md`). For Qwen3-8B a message is `tokens * 4096 * 2` bytes, so a
-decode step at batch 1–64 lives in 8–512 KiB:
+decode step at batch 1-64 lives in 8-512 KiB:
 
 | Message size | world_size=2 | world_size=4 | world_size=8 |
 |---|---|---|---|
-| 8–128 KiB | `custom_all_reduce` | `custom_all_reduce` | `custom_all_reduce` |
-| 256 KiB – 4 MiB | `custom_all_reduce` | `custom_all_reduce` | `torch_symm_mem` |
-| 8–32 MiB | `torch_symm_mem` | `torch_symm_mem` | `torch_symm_mem` |
-| 64–128 MiB | `torch_symm_mem` / `pynccl` | `pynccl` | `torch_symm_mem` / `pynccl` |
+| 8-128 KiB | `custom_all_reduce` | `custom_all_reduce` | `custom_all_reduce` |
+| 256 KiB to 4 MiB | `custom_all_reduce` | `custom_all_reduce` | `torch_symm_mem` |
+| 8-32 MiB | `torch_symm_mem` | `torch_symm_mem` | `torch_symm_mem` |
+| 64-128 MiB | `torch_symm_mem` / `pynccl` | `pynccl` | `torch_symm_mem` / `pynccl` |
 
 The whole decode range is vLLM's custom one-shot/two-shot P2P kernel, because on sm_90 the custom
-path's ceiling at two ranks is 8 MiB — far above what a decode step needs. NCCL symmetric memory
+path's ceiling at two ranks is 8 MiB, far above what a decode step needs. NCCL symmetric memory
 never fires despite `VLLM_ALLREDUCE_USE_SYMM_MEM` defaulting on, because
 `is_symmetric_memory_enabled()` also requires `VLLM_USE_NCCL_SYMM_MEM`, which defaults to 0.
 
@@ -276,8 +277,8 @@ an argument. `nccl` is retained as a control and is selectable with `CommQuery(b
 | TP=4 | 3.76% | 7.56% |
 | TP=8 | 7.56% | 24.80% |
 
-At TP=2 the two tables agree within ~6% in the decode range — both are pinned to the same ~18 us
-launch floor, so the original table was wrong in *identity* rather than badly wrong in latency
+At TP=2 the two tables agree within about 6% in the decode range, because both are pinned to the
+same 18 us launch floor, so the original table was wrong in *identity* rather than badly wrong in latency
 there. The penalty grows with world size: at TP=8 the NCCL control reaches 24.80% MRE with a
 utility floor of 0.000, because that table's latencies increasingly describe a schedule the server
 does not run.
@@ -293,7 +294,7 @@ regenerated result, not the stale file.
 :::
 
 Only `gemm` passes the strict 5% gate. The vLLM-backend attention families sit between 5.74% and
-6.63% — close enough that the end-to-end composed model still reaches below 5% on every phase
+6.63%, close enough that the end-to-end composed model still reaches below 5% on every phase
 (see {doc}`../cost-models/composed-rollout`). `context_attention/flashinfer` at 9.87% is the
 outlier and its cause is grid density, not a floor issue: a 0-to-80 us floor sweep confirmed that
 4 us is already optimal. The fix is denser `context_seq_lens` points below seq_len=1024.
@@ -303,7 +304,7 @@ points to hold one out and still interpolate, so a high skip count means the 3.9
 the well-covered slices rather than the whole table.
 
 `all_reduce` is measured at world_size 2, 4 and 8, each in its own config
-(`qwen3_8b_h20_tp{2,4,8}.yaml`; the TP=4 and TP=8 ones sweep the collective family only). A query
+(`qwen3_8b_h20_tp{2,4,8}.yaml`, where the TP=4 and TP=8 ones sweep the collective family only). A query
 at an unmeasured world size raises a coverage error rather than extrapolating, because world_size
 is a *slice* column: a 2-rank and an 8-rank all-reduce run different schedules over different
 topologies, so interpolation between them is not meaningful. This is intended behaviour, not a gap
@@ -321,11 +322,11 @@ Before floor fitting, the numbers were considerably worse:
 | `generation_attention` | flashinfer | 20.08% | 6.01% |
 | `gemm` | vllm | 8.48% | 3.91% |
 
-The attention failures all share the same root cause — the constant dispatch cost that the pure
+The attention failures all share one root cause, the constant dispatch cost that the pure
 roofline does not model, fixed by `max(math, memory, floor)`. The GEMM improvement is unrelated:
 the as-shipped table keyed its slice only on dtype, so all four Qwen3-8B projections shared one
 grid. In log2 space the nearest neighbour to `(m=16, n=4096, k=4096)` was `(m=16, n=6144,
-k=4096)` — a different projection with utility 0.563 against the true 0.815. Slicing per `(n, k)`
+k=4096)`, a different projection with utility 0.563 against the true 0.815. Slicing per `(n, k)`
 reduced GEMM from 8.48% to 4.08% (p90 from 26.48% to 9.62%) with zero new measurements. The fix
 then shipped as 3.91% after the full `--fraction 1.0` re-run.
 
@@ -338,22 +339,22 @@ outlier.
 
 Calibrated ranges on H20 with Qwen3-8B, TP=1 (2026-08-25):
 
-- **GEMM:** 0.47–0.95, rising monotonically with token count (m=1 is ~0.62, m=8192 is ~0.94).
-- **Context attention:** 0.013–0.951. The very low end includes the overhead-limited regime at
+- **GEMM:** 0.47-0.95, rising monotonically with token count (m=1 is ~0.62, m=8192 is ~0.94).
+- **Context attention:** 0.013-0.951. The very low end includes the overhead-limited regime at
   small seq_len where dispatch cost dominates.
-- **Generation attention:** 0.014–0.436. Low utility at small batch sizes is physically real:
+- **Generation attention:** 0.014-0.436. Low utility at small batch sizes is physically real:
   roughly 70 us of constant per-call overhead inside vLLM's attention path is not modeled by the
   roofline SOL.
 
 The utility representation has a practical consequence: the interpolator learns a surface that
 spans roughly 2x, while raw latency spans about 300x across a sweep. The roofline carries every
-order of magnitude analytically; the interpolator only has to resolve the residual variation above
-it.
+order of magnitude analytically, so the interpolator only has to resolve the residual variation
+above it.
 
 ## End-to-end validation: `kernels validate`
 
 `kernels holdout` tests single-kernel self-consistency. `kernels validate` tests whether summing
-those kernels reproduces a real vLLM engine iteration — a different and harder claim. Run it after
+those kernels reproduces a real vLLM engine iteration, a different and harder claim. Run it after
 the holdout gate passes (or is accepted):
 
 ```bash
@@ -372,7 +373,7 @@ groups iterations into buckets of near-identical shape and computes the MRE of `
 predictions against the median measured latency of each bucket.
 
 **Always score against the `vllm` rows.** Those are the kernels the server actually ran. The
-FlashInfer rows answer what a backend switch would buy; scoring against them on a vLLM server
+FlashInfer rows answer what a backend switch would buy, so scoring against them on a vLLM server
 measures a backend that never ran. `AttentionQuery.backend` defaults to the vLLM table for exactly
 this reason.
 
@@ -384,8 +385,8 @@ Note: `outputs/profile/qwen3_8b/kernel_tp1/kernel/validate_report.json` currentl
 degenerate decode bucket at 68.73% MRE and should be regenerated with the command above before
 quoting any number from it.
 
-The end-to-end accuracy figures — prefill 3.72% / decode 4.84% / mixed 0.48% on H20, Qwen3-8B,
-TP=1, 2026-08-25 — belong to {doc}`../cost-models/composed-rollout`, which owns the full
+The end-to-end accuracy figures (prefill 3.72%, decode 4.84%, mixed 0.48% on H20, Qwen3-8B,
+TP=1, 2026-08-25) belong to {doc}`../cost-models/composed-rollout`, which owns the full
 discussion of segment integration, phase decomposition, and known limitations of the composition.
 
 ## Using the tables in a simulation
@@ -414,7 +415,7 @@ rollout_cost:
 
 Leave `attention_backend` empty to use the vLLM-selected backend. On H20 that resolves to
 `FLASH_ATTN` / FA3. Any end-to-end comparison against a real server must use the same backend the
-server used — overriding it breaks the comparison.
+server used, and overriding it breaks the comparison.
 
 ## What this pipeline does NOT cover
 

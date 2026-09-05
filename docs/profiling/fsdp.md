@@ -1,7 +1,7 @@
 # FSDP2 / HSDP profiling
 
 This page covers the FSDP2 / HSDP pipeline: how to configure and run a sweep, what axes
-to vary and — critically — which axis must vary or the fit will refuse the data, and where
+to vary and, critically, which axis must vary or the fit will refuse the data, and where
 the output lands. Read {doc}`index` first for the three-verb contract and the cost table,
 and {doc}`methodology` before committing to a full sweep.
 
@@ -62,18 +62,18 @@ controls what `generate` enumerates:
 | axis | values in full sweep | notes |
 |---|---|---|
 | `shard_sizes` | `[2, 4, 8]` | The HSDP shard degree. `replicate = world_size / shard`. |
-| `num_microbatches` | `[1, 2, 4]` | **Must vary — see below.** |
+| `num_microbatches` | `[1, 2, 4]` | **Must vary. See below.** |
 | `n_seqs_per_rank` | `[1, 2, 4]` | Sequences per rank per microbatch (micro-batch size). |
 | `sequence_lengths` | `[512, 2048, 8192, 16384]` | Tokens per sequence. |
-| `gradient_checkpointing` | `[true]` | Pinned true; matches the DAPO training recipe. |
-| `optimizer_offload` | `[false]` | Pinned false; see {doc}`../reference/limitations`. |
+| `gradient_checkpointing` | `[true]` | Pinned true, matching the DAPO training recipe. |
+| `optimizer_offload` | `[false]` | Pinned false. See {doc}`../reference/limitations`. |
 | `reshard_after_forward` | `[true]` | Controls whether parameters are freed after each block's forward. |
 
 `shard_size` and `replicate_size` together describe a two-dimensional HSDP mesh:
 parameters are sharded within each row of `shard_size` ranks and replicated across the
 `replicate_size` rows. A shard degree that does not divide `world_size` describes no
 runnable topology and is silently skipped during `generate`. With `world_size: 8` the
-three values `[2, 4, 8]` produce `replicate` degrees of 4, 2, and 1 respectively; `shard=8`
+three values `[2, 4, 8]` produce `replicate` degrees of 4, 2, and 1 respectively, and `shard=8`
 is pure FSDP (one mesh dimension, replicate=1).
 
 ### Why `num_microbatches` must vary
@@ -84,10 +84,10 @@ per-microbatch overhead. Its design-matrix row for one candidate is
 scalar multiple of the first column, and the design caps at rank two. The fit then cannot
 separate `per_step_overhead` from `per_microbatch_overhead` and refuses the data.
 
-Sweeping `sequence_lengths` alone does not fix this — it varies the second column but
+Sweeping `sequence_lengths` alone does not fix this, because it varies the second column but
 leaves the third degenerate against the first. **You must include at least two distinct
 values for `num_microbatches` in every sweep you intend to fit.** The smoke config uses
-`[1, 2]`; the full sweep uses `[1, 2, 4]`. The same constraint applies to the memory
+`[1, 2]`, and the full sweep uses `[1, 2, 4]`. The same constraint applies to the memory
 model: its design row is `[num_microbatches, tokens, 1]`, and a single `nmb` value leaves
 the first column collinear with the intercept.
 
@@ -100,7 +100,7 @@ real FSDP training does, so the axis costs no measurement fidelity.
 
 108 candidates total (73 `success` / 34 `oom` / 1 `failed`, counted from the collected
 JSONL), median **183 s per candidate**, total **6.9 h**. Of each candidate's 183 s,
-roughly 60 s (31%) is actual training; the remaining ~123 s is process startup —
+roughly 60 s (31%) is actual training, and the remaining 123 s is process startup:
 spawning eight ranks, importing torch and transformers, building a 36-layer model, and
 forming the NCCL group.
 
@@ -113,7 +113,7 @@ That single `failed` candidate is an artefact of an interrupted re-run, not a di
 failure mode, and it is worth understanding because it costs you data silently.
 
 `run` deletes any stale OOM marker files before launching a candidate, and `collect`
-decides OOM **from those markers** rather than by scanning the log — deliberately, since a
+decides OOM **from those markers** rather than by scanning the log. That is deliberate, since a
 false OOM adds an inequality that can only raise the fitted memory floor. If a re-run is
 killed (`SIGTERM`) after the markers are cleared but before the child writes new ones, the
 candidate's own `status.json` still reads `oom` while `collect` sees no markers and reports
@@ -164,7 +164,7 @@ outputs/profile/qwen3_8b/fsdp/
         └── run.log               ← torchrun stdout/stderr
 ```
 
-There is no `ConfigContainer.yaml`; instead each candidate's raw directory carries
+There is no `ConfigContainer.yaml`. Instead each candidate's raw directory carries
 `dryrun_metrics.json`, which includes an `observed_mesh` field that `collect` cross-checks
 before accepting the record. A record whose `observed_mesh` disagrees with its candidate
 spec is rejected with a hard error rather than silently entering the fit attributed to the
@@ -190,7 +190,7 @@ Rank zero writes this file after the timed loop completes:
 at `collect` time using `config.warmup_steps`, so the retained window can be changed
 without re-profiling. The `timers_s` entries record NCCL kernel occupancy (summed
 `self_device_time_total` per kind) from a separate profiled step run after the timed
-loop; they are not used by the regression but are preserved as ground truth for a
+loop. They are not used by the regression but are preserved as ground truth for a
 future kernel-summation model.
 
 For the full `ProfileRecord` schema see {doc}`../reference/schemas`.
@@ -216,7 +216,7 @@ For the model coefficients, fitted accuracy, the shard=2 `r²=-8.19` story, and 
 
 ## OOM classification and the NCCL calloc trap
 
-OOM candidates are wanted data — they provide lower bounds that constrain the memory
+OOM candidates are wanted data, providing lower bounds that constrain the memory
 model's intercept. Treating them as failures to skip would discard precisely the
 high-memory end of the sweep that the model relies on as a floor.
 
@@ -230,8 +230,8 @@ records at `shard_size=2, replicate_size=4`, all dying with `Failed to CUDA call
 The launcher handles this by text-matching the error message against known allocation
 phrases (`failed to cuda calloc`, `out of memory`). When the message matches, the
 candidate is classified as OOM and `oom_source` is set to `nccl_alloc` in the per-rank
-marker file. A `DistBackendError` whose message does not match — a timeout, a rendezvous
-failure, a real network fault — stays classified as `failed` and is not treated as a
+marker file. A `DistBackendError` whose message does not match, such as a timeout, a rendezvous
+failure, or a real network fault, stays classified as `failed` and is not treated as a
 memory bound. The `oom_source` field makes the classification route auditable in the raw
 artifacts.
 
@@ -241,7 +241,7 @@ artifacts.
 
 The profiler constructs a HuggingFace model from `AutoConfig` without loading weights:
 timing and memory are governed by architecture, not by trained values. Verl is absent from
-the profiling environment; the relevant FSDP2 semantics (mesh, per-block wrapping,
+the profiling environment. The relevant FSDP2 semantics (mesh, per-block wrapping,
 mixed-precision policy, offload policy) are applied directly through torch APIs. The
 profile therefore does not pin to a verl version and does not require a trained checkpoint
-at `$MODEL_PATH` — only the architecture `config.json` is read.
+at `$MODEL_PATH`, since only the architecture `config.json` is read.

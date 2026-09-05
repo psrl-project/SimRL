@@ -2,7 +2,7 @@
 
 A completed simulation writes four JSONL streams and five plots under its output
 directory. Every file is derived from the streams, so nothing is lost if the plots are
-deleted — `dryrun-plot` can regenerate them from the logs alone, without re-simulating.
+deleted, because `dryrun-plot` can regenerate them from the logs alone without re-simulating.
 
 Setting `log_telemetry: false` in the Hydra config writes nothing to disk at all.
 The simulation still runs, but the output directory will contain only `run.log`. This
@@ -38,13 +38,14 @@ rather than appending to it. Each run starts fresh.
 
 ## Stream reference
 
-### `train.jsonl` — one record per training step
+### `train.jsonl`: one record per training step
 
 This is the primary output stream. Every line records what the simulator decided about
 one training step: when it started and ended, which batch it consumed, the predicted cost,
 and how many requests were in flight at the time.
 
-**Worked example** (from cookbook section 5, Qwen3-8B on 8x H20, 2026-08-31):
+**Worked example** (Qwen3-8B on 8x H20, see
+{doc}`../getting-started/walkthrough/06-simulate`):
 
 ```javascript
 {
@@ -78,7 +79,7 @@ and how many requests were in flight at the time.
 for a permitted feature (see {doc}`domain-gates`). When present it contains one string
 per extrapolated feature, naming the feature, the queried value, and the profiled range.
 
-### `request.jsonl` — request lifecycle events
+### `request.jsonl`: request lifecycle events
 
 Each line represents one event in a request's lifecycle. The `event` field is the
 discriminator:
@@ -106,7 +107,7 @@ Key fields (all events carry `t`, `event`, `rid`, `group_id`, `instance_id`):
 | `generated` | Tokens actually generated |
 | `v_traj` | Weight version the rollout engine was serving when the request was admitted |
 | `v_min` | Oldest weight version that produced any token for this request |
-| `v_max` | Newest weight version producing any token; differs from `v_min` only if partial rollout spanned a push |
+| `v_max` | Newest weight version producing any token. Differs from `v_min` only if partial rollout spanned a push |
 | `staleness_true` | `consume_version - v_min` (null until consume) |
 | `staleness_reported` | `consume_version - v_max` (null until consume) |
 | `num_preemptions` | Times this request was paused and resumed by the scheduler |
@@ -115,7 +116,7 @@ Key fields (all events carry `t`, `event`, `rid`, `group_id`, `instance_id`):
 `staleness_true` and `staleness_reported` differ only when a request spans multiple
 weight versions due to partial rollout. In the common case they are equal.
 
-### `rollout_step.jsonl` — engine step telemetry
+### `rollout_step.jsonl`: engine step telemetry
 
 One record per rollout engine iteration (one prefill step or one decode step for one
 instance). These records drive the `rollout_step` plot.
@@ -133,7 +134,7 @@ instance). These records drive the `rollout_step` plot.
 | `saturated` | Whether the engine was at capacity during this step |
 | `saturated_steps` | Number of steps that hit the token or concurrency cap |
 
-### `instance/N.jsonl` — per-instance occupancy
+### `instance/N.jsonl`: per-instance occupancy
 
 One record per occupancy sample for instance `N`. Records are de-duplicated: if the
 instance state has not changed since the last sample, the writer skips the write.
@@ -160,7 +161,7 @@ always produce a record.
 
 Sliding-window completion rate over simulation time. The window is 5 seconds by default.
 This is the most direct measure of training data throughput: a flat line means the loop
-is running at a steady cadence; a dip means the policy is starving training of fresh
+is running at a steady cadence. A dip means the policy is starving training of fresh
 data.
 
 ### `rollout_step.png`
@@ -178,7 +179,7 @@ the whole run. Two bars appear for each staleness value: the *true* staleness
 (`consume_version - v_min`, the oldest weight any token came from) and the *reported*
 staleness (`consume_version - v_max`, the newest weight any token came from). They
 differ only when partial rollout resumed a request under a different weight version. Use
-this plot to verify that the staleness policy is holding the bound you configured — if
+this plot to verify that the staleness policy is holding the bound you configured. If
 the bars extend beyond `job.max_staleness`, the policy invariant is not being respected.
 
 ### `instance_load.png`
@@ -218,6 +219,6 @@ dryrun-plot outputs/simulate/<name> \
 ```
 
 `dryrun-plot` never touches the JSONL logs. It is safe to run on a completed simulation
-as many times as needed. If `logs/` does not exist — for example because the run used
-`log_telemetry: false` — it exits with a clear error rather than silently writing empty
+as many times as needed. If `logs/` does not exist, for example because the run used
+`log_telemetry: false`, it exits with a clear error rather than silently writing empty
 plots.

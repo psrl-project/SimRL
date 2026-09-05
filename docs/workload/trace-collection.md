@@ -2,7 +2,7 @@
 
 A joint trace records what a real model actually produced: each prompt's measured token
 length, all *n* of its response lengths, and the group boundary tying them together.
-Collecting one means running real inference, so it costs GPU time — about 49 minutes on 16
+Collecting one means running real inference, so it costs GPU time: about 49 minutes on 16
 H20s for the reference trace below.
 
 Use this path when you need fidelity to a specific model and dataset, or when your
@@ -81,13 +81,13 @@ per host.
 
 1. Expands the hosts file into workers via `list-workers`.
 2. Skips any worker whose shard is already complete, so a rerun resumes.
-3. Launches `dryrun-workload collect-groups` per worker — locally when the host matches,
+3. Launches `dryrun-workload collect-groups` per worker, locally when the host matches
    over `ssh` otherwise.
 4. Waits for all workers, reporting log paths for any that failed.
 5. Merges shards by `group_id` into one trace, then runs `verify-collection`.
 
-Prompts are assigned by strided sharding — worker *i* of *n* takes prompts
-`i, i+n, i+2n, …` — so each worker's slice is deterministic and the merge can restore the
+Prompts are assigned by strided sharding, where worker *i* of *n* takes prompts
+`i, i+n, i+2n, ...`, so each worker's slice is deterministic and the merge can restore the
 original order by sorting on `group_id`.
 
 ---
@@ -116,7 +116,7 @@ Each subsequent line is one group:
 {"group_id": 0, "prompt_len": 93, "output_lens": [7143, 7677, 7558, 6236, 7230, 7740, 7644, 6818]}
 ```
 
-`output_lens` holds exactly `group_size` entries, and every group must agree on that count —
+`output_lens` holds exactly `group_size` entries, and every group must agree on that count.
 a ragged trace is rejected rather than written.
 
 ---
@@ -143,7 +143,7 @@ than only reporting that the total is wrong.
 
 Shards are also cross-checked on merge: every shard must be present, and all must agree on
 `max_output_tokens`. Provenance fields identical across shards are copied to the merged
-header, and a disagreement is an error — two shards generated under different settings do
+header, and a disagreement is an error, because two shards generated under different settings do
 not belong in one trace.
 
 ---
@@ -157,7 +157,7 @@ dryrun workload=dapo_trace \
     job.max_prompt_length=1024 job.max_output_length=10240
 ```
 
-`workload.trace.n_groups=0` reads every group; a positive value caps how many are loaded,
+`workload.trace.n_groups=0` reads every group, while a positive value caps how many are loaded,
 which is useful for a quick smoke run.
 
 Note that `job.batch_size` counts **responses**, not prompts. With 8 responses per prompt,
@@ -177,7 +177,7 @@ GPUs in 49 minutes, `max_tokens=10240`, temperature 1.0, TP=1.
 
 **40.8% of responses hit the 10240-token cap.** That single number shapes how this workload
 behaves in simulation, and it is why a smooth two-parameter distribution cannot stand in for
-this trace — see {doc}`index` for the parametric approximation that can.
+this trace. See {doc}`index` for the parametric approximation that can.
 
 Two modelling caveats apply to traces generally and are recorded in
 {doc}`../reference/limitations`: prefill is charged once per response rather than once per

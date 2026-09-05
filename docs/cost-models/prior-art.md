@@ -1,7 +1,7 @@
 # Prior art and comparisons
 
-DryRun-RL's kernel cost model was designed by reading two existing tools — aiconfigurator
-and Frontier — before committing to a design. This page documents what was taken from
+DryRun-RL's kernel cost model was designed by reading two existing tools, aiconfigurator and
+Frontier, before committing to a design. This page documents what was taken from
 them, where the design deliberately diverges, and which systems influenced the cost model
 formulas.
 
@@ -16,7 +16,7 @@ framework versions, or if a model's `config.json` does not carry a flag that sig
 unusual architecture, the declared op list silently diverges from what the engine
 actually runs.
 
-The comparison table from `docs/kernel-ops.md`:
+The comparison, against {doc}`../development/kernel-ops`:
 
 | Feature | aiconfigurator | Frontier | DryRun-RL |
 |---|---|---|---|
@@ -43,30 +43,30 @@ This is a capability gap relative to both alternatives, and it is an honestly la
 mixture-of-experts models are common in current production deployments, and multi-head
 latent attention appears in DeepSeek-style models. Closing these gaps requires a
 checkpoint to validate the pricing against. Without one, any MoE or MLA family could
-only be tested against synthetic descriptors — which is how a previous "MoE is four
+only be tested against synthetic descriptors, which is how a previous "MoE is four
 dense GEMMs" approximation became an uncharacterised error: it passed all unit tests
 because the tests constructed their own synthetic shapes.
 
-The rule is: refusing is honest; guessing is not.
+Refusing is honest. Guessing is not.
 
 ### Learning utility rather than latency
 
 Frontier trains a `RandomForestRegressor` directly on measured latencies. Across a
-kernel sweep, those latencies span roughly 300x — from a few microseconds for a small
+kernel sweep, those latencies span roughly 300x, from a few microseconds for a small
 all-reduce to milliseconds for a large prefill attention. The regressor must carry that
 entire dynamic range.
 
-DryRun-RL instead learns *utility* — the dimensionless ratio `SOL / measured_latency` —
+DryRun-RL instead learns *utility*, the dimensionless ratio `SOL / measured_latency`,
 and lets the analytical speed-of-light formula carry every order of magnitude. Utility
 spans roughly 2x for GEMM (0.47 to 0.95 on H20), making it far easier to interpolate
 accurately with a simple surface. The measured MRE figures for this approach are in the
-3–10% range across all five ops; see `docs/kernel-ops.md` for the per-op breakdown.
+3-10% range across all five ops. See {doc}`../profiling/kernels` for the per-op breakdown.
 
 The trade-off is that the SOL formula must be correct: an error in the roofline
 propagates into every utility value and therefore into every prediction. For GEMM on
 H20 the roofline is accurate enough that this is not a practical issue. For attention
-at small batch sizes, the roofline alone understates cost by a factor of 10 or more —
-which is what motivated the fitted dispatch floor (see {doc}`../getting-started/concepts`
+at small batch sizes, the roofline alone understates cost by a factor of 10 or more, which is
+what motivated the fitted dispatch floor (see {doc}`../getting-started/concepts`
 under *SOL, utility, and floor*).
 
 ### Shape validation

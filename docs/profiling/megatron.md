@@ -3,7 +3,7 @@
 This page covers the Megatron-Bridge training sweep: what the sweep axes mean, why DryRun-RL owns the
 entry point, how to run it, what ends up on disk, and what every sidecar file contains. For the
 formulas that regression fits to that output, see {doc}`../cost-models/training-megatron`. For
-general measurement rules — warmup policy, dispersion reporting, OOM-as-data — see {doc}`methodology`.
+general measurement rules (warmup policy, dispersion reporting, OOM as data) see {doc}`methodology`.
 
 ---
 
@@ -17,7 +17,7 @@ also exclude H20 outright.
 DryRun-RL's adapter takes the library's published recipe (`megatron.bridge.recipes.<family>`) and
 applies the candidate configuration in Python, where a mistyped field raises an error rather than
 disappearing. The torchrun child is `dryrun.profiler.adapters.megatron.launch`, launched via
-`dryrun-profile megatron run`. Every setting the child needs travels in `launch_spec.json`; nothing
+`dryrun-profile megatron run`. Every setting the child needs travels in `launch_spec.json`, and nothing
 is marshalled through a CLI that could silently lose it.
 
 The official callback API (`megatron.bridge.training.callbacks`) is used to bracket steps and read
@@ -69,13 +69,13 @@ CUDA_VISIBLE_DEVICES=0 CONFIG=examples/profile/megatron/qwen3_8b_smoke.yaml \
 ```
 
 The smoke config (`examples/profile/megatron/qwen3_8b_smoke.yaml`) uses `num_layers_override: 2`
-and `gpu_count: 1`. Those records must never be mixed into a production fit — the cost-model cell
+and `gpu_count: 1`. Those records must never be mixed into a production fit, because the cost-model cell
 key includes `parameter_count`, which separates them automatically.
 
 ### Multi-node runs
 
 Multiple nodes use the same torchrun launcher path. Pass `--nnodes N --node-rank K` directly to
-`dryrun-profile megatron run`. There is no separate Slurm entry point; use a Slurm job array that
+`dryrun-profile megatron run`. There is no separate Slurm entry point. Use a Slurm job array that
 calls the same command with the appropriate `--node-rank`.
 
 ---
@@ -88,9 +88,9 @@ The default config (`examples/profile/megatron/qwen3_8b.yaml`) sweeps:
 |---|---|---|
 | `tensor_parallel_sizes` | `[1, 4, 8]` | must divide `num_attention_heads` and `num_key_value_heads` |
 | `pipeline_parallel_sizes` | `[1, 4]` | must divide `num_layers` uniformly |
-| `num_microbatches` | `[1, 4]` | local per-DP-rank depth; GBS = MBS × DP × `num_microbatches` |
-| `sequence_lengths` | `[512, 1024, 2048]` | three values for conditioning; see coverage note below |
-| `recompute` | `full` | discrete selector; "none" is a separate cell |
+| `num_microbatches` | `[1, 4]` | local per-DP-rank depth, where GBS = MBS x DP x `num_microbatches` |
+| `sequence_lengths` | `[512, 1024, 2048, 4096, 8192]` | five values, reaching what a real batch needs |
+| `recompute` | `full` | discrete selector, where "none" is a separate cell |
 | `micro_batch_size` | `1` | fixed |
 
 `hardware.gpu_count` is the fixed world size. DP is `world_size / (TP × PP)`. The same topology is
@@ -98,36 +98,38 @@ never repeated across candidates.
 
 ### Why both `num_microbatches` and `sequence_lengths` are required
 
-The Hydraulis latency design row is `[1, slots × tokens, slots]` where
-`slots = num_microbatches + PP − 1`. At a fixed `num_microbatches`, the `slots` column is constant
-and therefore collinear with the intercept, capping the design matrix at rank two where the fit
-needs rank three. Reaching full rank requires at least two distinct `num_microbatches` values and
-at least three `sequence_lengths`. Do not prune either axis below those minimums.
+The Hydraulis latency design row is `[1, slots * tokens, slots, slots * sum_squared_tokens]` where
+`slots = num_microbatches + PP - 1`. At a fixed `num_microbatches`, the `slots` column is constant
+and therefore collinear with the intercept, capping the design matrix at rank 3 where the fit needs
+rank 4. Reaching full rank requires at least two distinct `num_microbatches` values and at least
+three `sequence_lengths`. Do not prune either axis below those minimums.
 
 The fitted `feature_ranges` become hard out-of-domain gates at prediction time, so extend both axes
 to cover whatever token counts the simulator will actually request, once the sweep is green.
 
 ### Coverage note
 
-The current sweep covers `sequence_lengths` in `[512, 2048]`, which is narrower than a typical
-real-workload batch (roughly 9470 tokens for Qwen3-8B DAPO). That gap is a known limitation; see
+The sweep covers `sequence_lengths` up to 8192, widened from an earlier 2048 because a real DAPO
+batch exceeded it. The tail still sits outside: the DAPO trace's longest sequence is 11133 tokens,
+about 1.36x past the domain. That residual gap is a known limitation. See
 {doc}`../reference/limitations`.
 
 ---
 
-## Timing (Qwen3-8B / 8x H20 / 2026-08-31, 24 candidates)
+## Timing (Qwen3-8B / 8x H20 / 2026-09-03, 40 candidates)
 
 | stat | value |
 |---|---|
-| candidates | 24 |
-| median wall clock per candidate | 160 s |
-| of which is actual training | ~17 s (11%) |
-| total | 1.1 h |
+| candidates | 40 |
+| median wall clock per candidate | 169.8 s |
+| of which is actual training | ~16 s (9%) |
+| median training step | 1.34 s |
+| total | 2.23 h |
 
-Roughly 143 s of each 160 s is fixed process overhead: spawning eight processes, importing torch
+Roughly 154 s of each 170 s is fixed process overhead: spawning eight processes, importing torch
 and Megatron in every rank, building the full 36-layer model, forming the NCCL group, and tearing
 it all down. That startup cost is near-identical between Megatron and FSDP. Reducing `max_steps`
-is therefore not the meaningful lever it appears to be; see the sweep-cost discussion in
+is therefore not the meaningful lever it appears to be. See the sweep-cost discussion in
 {doc}`index`.
 
 ### Steps and warmup
@@ -195,17 +197,18 @@ producing a record attributed to the wrong configuration.
 
 Written atomically by rank 0 in `on_train_end`. Contains:
 
-- `step_times_s` — wall-clock seconds per step, all `max_steps` entries including warmup; the
+- `step_times_s`: wall-clock seconds per retained step, after the collector slices off the
+  warmup window. The
   collector applies the warmup slice
-- `rank_memory` — one entry per rank with `rank`, `allocated_bytes`, `reserved_bytes`,
+- `rank_memory`: one entry per rank with `rank`, `allocated_bytes`, `reserved_bytes`,
   `static_allocated_bytes`, and `local_parameter_count`
-- `microbatch_sequence_lengths` — the shapes actually trained (used to detect mismatches)
-- `parameter_count` — global parameter count summed across model-parallel groups
-- `static_reserved_bytes_at_train_start` — diagnostic; the allocator state just before the first
+- `microbatch_sequence_lengths`: the shapes actually trained (used to detect mismatches)
+- `parameter_count`: global parameter count summed across model-parallel groups
+- `static_reserved_bytes_at_train_start`: a diagnostic, the allocator state just before the first
   step, used to confirm that peak-reset kept the static pool
 
 The collector reads `dryrun_metrics.json` if it exists and otherwise falls back to TensorBoard
-scalars; the sidecar is always preferred.
+scalars, and the sidecar is always preferred.
 
 ### `oom_rank{N}.json`
 
@@ -217,7 +220,7 @@ message (truncated to 2000 characters).
 
 The collector reads these markers to classify the candidate as OOM, not the run log. A log that
 merely mentions "out of memory" is not used, because such a match would add an inequality constraint
-that can only raise the fitted memory floor — OOM records are wanted data, not failures to discard.
+that can only raise the fitted memory floor. OOM records are wanted data, not failures to discard.
 NCCL allocation failures and driver-level CUDA errors are distinct faults and remain classified as
 `failed`, not `oom`.
 

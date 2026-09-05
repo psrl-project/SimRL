@@ -30,7 +30,7 @@ The suite collects 946 tests. With `MODEL_PATH` set to a local checkpoint, all 9
 it, 944 pass and 2 skip. The 6 `ruff` findings are pre-existing (5 import-ordering, 1 unused
 variable in `tests/test_training_cost.py`) and are not introduced by any recent changes.
 
-Some tests additionally need measured tables on disk and skip cleanly without them —
+Some tests additionally need measured tables on disk and skip cleanly without them.
 `test_rollout_composed_tp2.py` and the `tp=2` cases in `test_rollout_composed_config.py` need the
 `tp=2` collective sweep, which `outputs/` being gitignored means a fresh clone does not have.
 
@@ -39,8 +39,8 @@ Some tests additionally need measured tables on disk and skip cleanly without th
 ## CI gates vs local instruments
 
 Not every test is a CI gate. The measured performance tables live in `outputs/`, which is
-gitignored. On a fresh clone, `outputs/` is empty. Tests that depend on those tables — or on a
-local model checkpoint — skip rather than fail. A skip is not a pass and it is not a failure; it
+gitignored. On a fresh clone, `outputs/` is empty. Tests that depend on those tables, or on a
+local model checkpoint, skip rather than fail. A skip is not a pass and it is not a failure. It
 means the test cannot be evaluated in the current environment.
 
 The distinction matters because some tests are *local instruments*: they are useful to the person
@@ -51,12 +51,12 @@ GPU and no profiling output.
 
 Two tests require `MODEL_PATH` to point at a real HuggingFace checkpoint with a `config.json`:
 
-- **`tests/test_kernel_ops_base.py`** — the `test_the_config_serves_a_sweep_per_op_name` test
+- **`tests/test_kernel_ops_base.py`**: the `test_the_config_serves_a_sweep_per_op_name` test
   loads the example kernel config, which reads the checkpoint path from `${oc.env:MODEL_PATH,...}`.
   Without a local checkpoint the config loader raises before the assertions under test can run,
   so the test skips rather than passing vacuously.
 
-- **`tests/test_kernel_validate.py`** — the `test_a_phase_dropped_by_min_samples_is_reported_not_silent`
+- **`tests/test_kernel_validate.py`**: the `test_a_phase_dropped_by_min_samples_is_reported_not_silent`
   test calls `cmd_kernels_validate`, which also resolves the checkpoint before it reaches the
   coverage-warning logic under test. Same skip condition.
 
@@ -79,7 +79,7 @@ is expected: GPU kernel timing is not bit-reproducible.
 
 The consequence for `tests/test_kernel_baseline_regression.py` is that its pinned figures shift
 between identical runs for reasons entirely unrelated to code changes. Only `latency_s` fails to
-reproduce; every other parquet column — shapes, derived utility, slice keys — reproduces
+reproduce, while every other parquet column (shapes, derived utility, slice keys) reproduces
 bit-identically. A sweep-level comparison must therefore exclude `latency_s`.
 
 **Re-pinning procedure.** Before re-measuring, back up the current parquet files if the old
@@ -90,7 +90,7 @@ pytest tests/test_kernel_baseline_regression.py --update-snapshots 2>/dev/null |
     python tests/test_kernel_baseline_regression.py --regenerate
 ```
 
-Check which flag the test accepts by reading its source; the mechanism varies. Alternatively,
+Check which flag the test accepts by reading its source, since the mechanism varies. Alternatively,
 re-run `dryrun-profile kernels holdout --fraction 1.0` and copy the resulting MRE values into the
 test's expected-values table manually. Whatever the mechanism, the numbers in the test and the
 numbers in `holdout_report.json` must come from the same sweep.
@@ -108,10 +108,10 @@ the GPU stack at import time:
 path that reads parquet and prices kernels.
 
 **`tests/test_kernel_package_imports.py`** tests four related isolation properties:
-`dryrun.profiler.kernels.config` imports without loading torch;
-`dryrun.profiler.kernels.attention` imports without loading torch;
+`dryrun.profiler.kernels.config` imports without loading torch.
+`dryrun.profiler.kernels.attention` imports without loading torch.
 `dryrun.profiler.kernels.profile_gemm` is callable and *does* load torch (confirming the lazy-load
-mechanism works in both directions);
+mechanism works in both directions).
 `dryrun.profiler.kernels.PerfTableWriter` is accessible without torch.
 
 What these tests protect: if any torch-importing module is pulled into a package `__init__` at the

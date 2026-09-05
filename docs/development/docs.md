@@ -46,7 +46,7 @@ Adding a page without placing it in a toctree causes `make strict` to fail with 
 docs/
 ├── index.md                     <- landing page toctree
 ├── getting-started/
-├── overview/
+│   └── walkthrough/             <- the staged Qwen3-8B path
 ├── profiling/
 ├── cost-models/
 ├── workload/
@@ -57,16 +57,17 @@ docs/
 
 `docs/superpowers/` and `docs/design/` hold AI scratch and design documents. Both directories are
 in `exclude_patterns` in `docs/conf.py` and are not rendered. They are kept as source material,
-and they are gitignored, so a fresh clone will not have them at all — never `{doc}`-reference
+and they are gitignored, so a fresh clone will not have them at all. Never `{doc}`-reference
 anything inside them, and do not cite a path under `.superpowers/` as evidence for a published
 number.
 
 When a page is superseded, delete it and its `exclude_patterns` entry in the same commit.
 Excluding a stale file leaves two versions of the same content on disk with only a comment
-distinguishing them, and the comment is what goes stale next. `docs/composed-rollout.md` and
-`docs/kernel-ops.md` were handled this way once their content reached
-`cost-models/composed-rollout.md`, `development/kernel-ops.md` and
-`development/model-families.md`.
+distinguishing them, and the comment is what goes stale next. `docs/composed-rollout.md` and `docs/kernel-ops.md` were handled this way once their content
+reached `cost-models/composed-rollout.md`, `development/kernel-ops.md`, and
+`development/model-families.md`. The same applies to `docs/cookbook.md`, whose content moved
+into `getting-started/walkthrough/`, and to `docs/overview/`, whose pages moved to
+`development/architecture.md` and `cost-models/prior-art.md`.
 
 ---
 
@@ -83,14 +84,15 @@ Current ownership map:
 |---|---|
 | Kernel holdout MRE, p90, and gate results | `profiling/kernels.md` |
 | `ComposedRollout` end-to-end accuracy | `cost-models/composed-rollout.md` |
-| The Hydraulis latency formula and coefficients | `cost-models/training-megatron.md` |
+| The shared four-term latency formula and Megatron coefficients | `cost-models/training-megatron.md` |
+| FSDP coefficients, memory design, and batching modes | `cost-models/training-fsdp.md` |
 | Extrapolation semantics and domain-gate behaviour | `simulation/domain-gates.md` |
 | Measurement sweep design and identifiability requirements | `profiling/methodology.md` |
 | All accuracy statuses (pass/fail per model and GPU) | `reference/validation.md` |
 | Known gaps, deferred work, and acceptance criteria | `reference/limitations.md` |
 
 When you add a number to this site, decide which page owns it and link from all others. Do not
-copy-paste the number into a second page "for convenience" — convenience turns into contradiction
+copy-paste the number into a second page "for convenience". Convenience turns into contradiction
 on the first regeneration.
 
 ---
@@ -110,7 +112,7 @@ fence containing either of those constructs fails the build. Use
 ```
 ````
 
-instead of ` ```json `. This is not a workaround; the `javascript` lexer handles JSON correctly
+instead of ` ```json `. This is not a workaround. The `javascript` lexer handles JSON correctly
 and supports comments.
 
 **Cross-references must use `` {doc}`path` ``.** Raw relative Markdown links (`[text](../foo.md)`)
@@ -130,8 +132,30 @@ strict build flags orphans as warnings-turned-errors. If you add a page, add it 
 `index.md` toctree in the same directory.
 
 **`literalinclude` paths are relative to the containing file.** A `literalinclude` that references
-`../../examples/profile/vllm/qwen3_8b_tp1.yaml` from `docs/profiling/vllm.md` works; the same
+`../../examples/profile/vllm/qwen3_8b_tp1.yaml` from `docs/profiling/vllm.md` works, while the same
 path from `docs/index.md` does not.
+
+---
+
+## Prose style
+
+`.claude/coding-style.md` governs prose on this site as well as comments in code. Two rules are
+worth repeating because they are easy to violate without noticing:
+
+- **No em dashes or en dashes.** Replace with a period and a new sentence, a comma, a colon, or
+  parentheses, whichever fits the clause. For a numeric range write `512 to 8192` or `512-8192`,
+  not `512–8192`.
+- **No semicolons.** Split into two sentences, or use a conjunction.
+
+Both are checkable:
+
+```bash
+grep -rn '—\|–' docs/ --include=*.md
+grep -rn ';' docs/ --include=*.md      # inspect hits; semicolons inside code fences are fine
+```
+
+The first should return nothing. The second needs an eye, since a semicolon in a shell command or
+a JavaScript snippet is legitimate and only prose matters.
 
 ---
 
