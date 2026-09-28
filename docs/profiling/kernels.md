@@ -346,10 +346,11 @@ Calibrated ranges on H20 with Qwen3-8B, TP=1 (2026-08-25):
   roughly 70 us of constant per-call overhead inside vLLM's attention path is not modeled by the
   roofline SOL.
 
-The utility representation has a practical consequence: the interpolator learns a surface that
-spans roughly 2x, while raw latency spans about 300x across a sweep. The roofline carries every
-order of magnitude analytically, so the interpolator only has to resolve the residual variation
-above it.
+The utility representation has a practical consequence. Across the whole GEMM table the
+interpolator learns a surface spanning 4.65x where raw latency spans 2268x, and within a single
+slice the gap is wider still (1.69x against 566x for `(n=4096, k=4096)`). Pooled across all five
+ops the measured latencies span 58,323x. The roofline carries every order of magnitude
+analytically, so the interpolator only has to resolve the residual variation above it.
 
 ## End-to-end validation: `kernels validate`
 

@@ -19,19 +19,44 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+from matplotlib.patches import Patch  # noqa: E402
 
 from ..telemetry.store import JsonlStore  # noqa: E402
 
 _INSTANCE_PREFIX = "instance/"
 
+# The training block, in the order the phases actually run. `Simulator._train`
+# only sums the three durations and never orders them, so the order here is the
+# one a real PSRL run exhibits: log-prob recomputation, then the optimizer step,
+# then the weight push. Lightest to darkest, so the block reads left to right.
+_TRAIN_PHASES = (
+    ("recompute_time", "recompute", "lightsteelblue"),
+    ("train_time", "train", "steelblue"),
+    ("sync_time", "sync", "midnightblue"),
+)
+
 
 class SimPlotter:
-    """Generates offline plots by reading a `JsonlStore`'s log streams."""
+    """Generates offline plots by reading a `JsonlStore`'s log streams.
 
-    def __init__(self, store: JsonlStore, output_dir: str | Path = "outputs/plots"):
+    Args:
+        store: The store holding the run's telemetry streams.
+        output_dir: Directory the PNGs are written to.
+        time_label: X-axis label. The default suits a simulation; a store
+            converted from a real run should say so, since its axis is
+            measured wall-clock rather than simulated time.
+    """
+
+    def __init__(
+        self,
+        store: JsonlStore,
+        output_dir: str | Path = "outputs/plots",
+        time_label: str = "Simulation Time (s)",
+    ):
         self.store = store
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.time_label = time_label
 
     def _instance_ids(self) -> list[int]:
         ids = []
@@ -49,6 +74,37 @@ class SimPlotter:
         rows.sort(key=lambda r: r["start"])
         return [(r["start"], r["end"]) for r in rows]
 
+    def _train_phase_spans(self) -> list[list[tuple[float, float, str, str]]]:
+        """Split each training block into its `(start, end, label, colour)` phases.
+
+        A phase with zero duration yields no span, which is what keeps an
+        unmodelled cost visible as an absence rather than silently widening its
+        neighbours. Any time in the block not accounted for by the three named
+        phases is attributed to `train`, so the drawn band always covers the
+        whole block.
+        """
+        rows = list(self.store.iter("train"))
+        rows.sort(key=lambda r: r["start"])
+
+        blocks = []
+        for row in rows:
+            durations = {key: float(row.get(key, 0.0) or 0.0) for key, _, _ in _TRAIN_PHASES}
+            unattributed = (row["end"] - row["start"]) - sum(durations.values())
+            durations["train_time"] += unattributed
+
+            spans, cursor = [], row["start"]
+            for key, label, colour in _TRAIN_PHASES:
+                width = durations[key]
+                if width <= 0.0:
+                    continue
+                spans.append((cursor, cursor + width, label, colour))
+                cursor += width
+            blocks.append(spans)
+        return blocks
+
+    def _gateway_rows(self) -> list[dict]:
+        return list(self.store.iter("gateway"))
+
     def _consume_rows(self) -> list[dict]:
         return [r for r in self.store.iter("request") if r.get("event") == "consume"]
 
@@ -61,34 +117,71 @@ class SimPlotter:
         return path
 
     def plot_instance_load(self) -> Path:
-        """Train interval band on top, one running/total/KV subplot per instance below."""
+        """Train phase band on top, one running/total/KV subplot per instance below.
+
+        The same figure serves a simulation and a real PSRL run: both write the
+        `instance/*` and `train` streams this reads, so there is one drawing
+        implementation rather than two that drift apart. A real run additionally
+        writes `gateway`, which adds a router queue-depth row above the band.
+        """
         path = self.output_dir / "instance_load.png"
         instance_ids = self._instance_ids()
         if not instance_ids:
             return self._empty_placeholder(path, "No instance telemetry logged")
 
         intervals = self._train_intervals()
+        phase_blocks = self._train_phase_spans()
+        gateway_rows = self._gateway_rows()
+
         n = len(instance_ids)
+        heights = ([0.5] if gateway_rows else []) + [0.35] + [1] * n
         fig, axes = plt.subplots(
-            1 + n,
+            len(heights),
             1,
-            figsize=(12, 2 + 2.6 * n),
+            figsize=(12, 2 + 2.6 * n + (1.2 if gateway_rows else 0.0)),
             sharex=True,
-            gridspec_kw={"height_ratios": [0.35] + [1] * n},
+            gridspec_kw={"height_ratios": heights},
         )
+        axes = list(axes)
+        gateway_ax = axes.pop(0) if gateway_rows else None
         train_ax = axes[0]
         inst_axes = axes[1:]
 
-        # Light shading on every row keeps train boundaries visible even on
-        # the per-instance subplots below, since all axes share the x-axis.
-        for ax in axes:
+        # Light shading spans the whole block on every row, so the training
+        # block still reads as one region on the subplots below even though the
+        # band itself is split into phases.
+        for ax in [*([gateway_ax] if gateway_ax is not None else []), *axes]:
             for start, end in intervals:
                 ax.axvspan(start, end, color="navajowhite", alpha=0.35, zorder=0)
-        for start, end in intervals:
-            train_ax.axvspan(start, end, color="steelblue", alpha=0.9, zorder=1)
+
+        if gateway_ax is not None:
+            ts = [r["t"] for r in gateway_rows]
+            queue = [r["queue_len"] for r in gateway_rows]
+            gateway_ax.step(ts, queue, where="post", color="darkorange", zorder=2)
+            gateway_ax.fill_between(ts, queue, step="post", color="darkorange", alpha=0.25, zorder=1)
+            gateway_ax.set_ylabel("router\nqueue")
+            gateway_ax.grid(True, alpha=0.3)
+
+        drawn_phases: dict[str, str] = {}
+        for spans in phase_blocks:
+            for start, end, label, colour in spans:
+                train_ax.axvspan(start, end, color=colour, alpha=0.9, zorder=1)
+                drawn_phases[label] = colour
         train_ax.set_yticks([])
         train_ax.set_ylabel("train")
-        train_ax.set_title("Instance Load")
+
+        # The phase key goes on the figure rather than inside the band, whose
+        # full width is occupied by the blocks it would otherwise cover.
+        fig.suptitle("Instance Load")
+        if drawn_phases:
+            fig.legend(
+                handles=[Patch(facecolor=c, label=name) for name, c in drawn_phases.items()],
+                loc="upper right",
+                bbox_to_anchor=(0.99, 0.995),
+                ncol=len(drawn_phases),
+                fontsize=8,
+                frameon=False,
+            )
 
         for ax, iid in zip(inst_axes, instance_ids):
             rows = list(self.store.iter(f"instance/{iid}"))
@@ -117,7 +210,7 @@ class SimPlotter:
             ax.set_title(f"instance {iid}", fontsize=10)
             ax.grid(True, alpha=0.3)
 
-        inst_axes[-1].set_xlabel("Simulation Time (s)")
+        inst_axes[-1].set_xlabel(self.time_label)
         fig.tight_layout()
         fig.savefig(path, dpi=150)
         plt.close(fig)
@@ -161,7 +254,7 @@ class SimPlotter:
             ax.legend(loc="upper left", fontsize=8)
             ax.grid(True, alpha=0.3)
 
-        axes[-1].set_xlabel("Simulation Time (s)")
+        axes[-1].set_xlabel(self.time_label)
         fig.tight_layout()
         fig.savefig(path, dpi=150)
         plt.close(fig)

@@ -123,10 +123,16 @@ dryrun/
 │   └── grouped.py           # GroupedWorkload (the simulator's request source)
 ├── buffer/
 │   └── queue.py             # CompletionBuffer, RecomputeQueue
-├── viz/
-│   └── plots.py             # SimPlotter (matplotlib offline)
+├── telemetry/
+│   ├── store.py             # JsonlStore (named JSONL stream store)
+│   ├── writer.py            # SimTelemetry (owns the instance/train/request/rollout_step schemas)
+│   └── psrl_log.py          # convert_psrl_logs, PsrlLogLayout (real PSRL run -> JsonlStore streams)
+├── visualizer/
+│   └── plots.py             # SimPlotter (matplotlib offline; one impl for simulated and real runs)
 └── cli/
     ├── main.py              # Hydra CLI entrypoint (@hydra.main); build_training_cost passes batching_mode
+    ├── plot.py              # Re-render plots from a simulation's logs
+    ├── psrl_plot.py         # Render instance_load from a real PSRL run's logs
     ├── profile.py           # Profiling CLI: vllm, kernels, megatron, fsdp subcommands
     └── regress.py           # Regression CLI: rollout, training (--latency-model hydraulis|fsdp)
 tests/
@@ -225,8 +231,13 @@ The unit of work every component handles. Import it from the engine package:
 38. `profiler.adapters.fsdp.collect` (depends on profiler.schema, profiler.io)
 39. `profiler.adapters.fsdp.__init__` (re-exports safe CLI subset)
 40. `profiler.adapters.__init__` (re-exports vllm, megatron, fsdp adapters)
-41. `viz.plots` (depends on simulator)
+41. `telemetry.store` (no internal deps)
+41a. `telemetry.writer` (depends on telemetry.store, component.rollout.engine)
+41b. `telemetry.psrl_log` (depends on telemetry.store; parses a real run's logs into the same streams)
+41c. `visualizer.plots` (depends on telemetry.store only, never on `SimResult`)
 42. `cli.main` (depends on everything except profiling)
+42a. `cli.plot` (depends on telemetry.store, visualizer.plots)
+42b. `cli.psrl_plot` (depends on telemetry.psrl_log, telemetry.store, visualizer.plots)
 43. `cli.profile` (depends on profiling, cost.kernel.*, profiler.adapters.*)
 44. `cli.regress` (depends on cost.training, cost.rollout, profiler.io)
 

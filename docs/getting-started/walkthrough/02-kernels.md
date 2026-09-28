@@ -103,6 +103,44 @@ axis distinction, and it is the same reason `all_reduce` slices on `world_size`.
 Attention tables carry sixteen columns, including `batch_size`, `num_heads`,
 `num_key_value_heads`, `head_dim`, `isl`, `step`, `block_size`, and `window_size`.
 
+### Where the swept shapes come from, and what that costs you
+
+Worth understanding before you spend the hour, because it decides when the sweep has to be
+repeated.
+
+`(n, k)` is **not** something you choose. It is computed from `config.json` by the model
+family. For Qwen3-8B at TP=1 there are exactly five pairs:
+
+| shape | n | k |
+|---|---|---|
+| `qkv_proj` | `(32 + 2*8) * 128` = 6144 | 4096 |
+| `o_proj` | 4096 | `32 * 128` = 4096 |
+| `gate_up_proj` | `2 * 12288` = 24576 | 4096 |
+| `down_proj` | 4096 | 12288 |
+| `lm_head` | 151936 | 4096 |
+
+The sweep crosses those with the `token_counts` from the config, adds the backward (wgrad)
+axis permutations and the logits row counts, and deduplicates. That is the 134 rows in 35
+slices. At simulation time `ModelOps` builds its queries from the *same* function, so a
+slice always hits.
+
+The asymmetry between the two kinds of column is what you feel in practice:
+
+```text
+slice (4096, 4096) measured, m=1500 never measured  -> 3.724e-04 s, utility 0.9131
+slice (5000, 4096) never measured, any m            -> KernelCoverageError
+slice (4096, 4096), m=99999 past the measured 24576  -> 2.419e-02 s, utility 0.9372
+```
+
+An unmeasured `(n, k)` **raises**. An `m` past the top of the sweep holds the boundary
+utility and reconstructs latency as `SOL(query)/utility`, because extrapolating an
+efficiency is defensible where extrapolating a latency is not.
+
+So `m` is the only cheap axis. A dozen token counts per slice cover any batch shape on that
+projection. Everything else means re-sweeping: **a different model changes every `(n, k)`,
+and so does a different TP degree**, since the shapes are sharded at profiling time. That is
+what the per-degree trees and the guards in `simulate.sh` are for.
+
 `floors.json` holds the fitted per-call dispatch cost:
 
 ```json
@@ -137,10 +175,10 @@ bash examples/simulate/simulate.sh
 ```
 
 What it interpolates is not latency but **utility**, the dimensionless ratio
-`SOL / measured_latency`, where SOL is the analytic roofline. Latency spans roughly 300x
-across a sweep, while utility spans about 2x for GEMM (0.47 to 0.95 on H20). Interpolating the
-narrow quantity and letting the analytic formula carry the orders of magnitude is what
-makes this generalise. {doc}`../../cost-models/composed-rollout` has the segment
+`SOL / measured_latency`, where SOL is the analytic roofline. On this GEMM table latency spans
+2268x while utility spans 4.65x, and inside the `(n=4096, k=4096)` slice it is 566x against
+1.69x. Interpolating the narrow quantity and letting the analytic formula carry the orders of
+magnitude is what makes this generalise. {doc}`../../cost-models/composed-rollout` has the segment
 integrator and its limits.
 
 ## How to tell it worked
@@ -165,10 +203,10 @@ For the tables above:
 | `generation_attention` | vllm | 6.63% | 17.57% | 72 |
 | `context_attention` | flashinfer | 9.87% | 32.69% | 59 |
 
-`utility_min` and `utility_max` in the same report are worth a glance. GEMM spans 0.47 to
-0.95, so the interpolator is working over a narrow range. Generation attention tops out at
-0.50, which says that kernel never approaches its roofline, and that is expected for a
-memory-bound decode kernel. {doc}`../../profiling/kernels` owns the full table.
+`utility_min` and `utility_max` in the same report are worth a glance. GEMM spans 0.473 to
+0.949 over the holdout points, so the interpolator is working over a narrow range. Generation
+attention tops out at 0.50, which says that kernel never approaches its roofline, and that is
+expected for a memory-bound decode kernel. {doc}`../../profiling/kernels` owns the full table.
 
 Then the end-to-end score, `validate`, which compares summed kernels against the real
 vLLM baseline from stage 1. At TP=1 that reads 3.72% prefill over 29 buckets and 4.84%

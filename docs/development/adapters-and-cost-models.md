@@ -157,7 +157,7 @@ Keeping them separate means that a sweep that produces abundant memory data but 
 can fit the memory model well while reporting that the latency fit is underdetermined. A combined
 model would average over both measurement qualities and obscure the underdetermination.
 
-### The latency form has one implementation; the fit loops deliberately do not
+### The latency form has one implementation, and the fit loops deliberately do not
 
 Both backends carry the same four-term latency row, so the arithmetic lives once in
 `dryrun/cost/training/latency.py`:
@@ -171,7 +171,7 @@ Both backends carry the same four-term latency row, so the arithmetic lives once
 | `LATENCY_TERM_COUNT` | the single place to change if a fifth term is ever added |
 
 Sharing the formula is not a tidiness preference. Before the extraction the prediction
-arithmetic was byte-identical in two files, and a formula written twice can drift; this
+arithmetic was byte-identical in two files, and a formula written twice can drift. This
 codebase has already had a fit and its predictor disagree on the same input. Each backend's
 `predict_with_notes` now ends in one shared call, and the extraction was verified neutral by
 refitting both models from the same profiles and checking that every coefficient came out

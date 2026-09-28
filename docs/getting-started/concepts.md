@@ -151,13 +151,13 @@ on its own.
 
 **Utility** is the dimensionless ratio `SOL / measured_latency`. A utility of 1.0 means
 the kernel achieved the theoretical optimum. A utility of 0.5 means it ran at half the
-roofline speed. Utility ranges across a measured sweep span roughly 2x for GEMM (0.47
-to 0.95 on H20). Measured latency spans roughly 300x across the same sweep.
+roofline speed.
 
-This is why utility, not latency, is what the kernel interpolator learns. A model that
-interpolates latency directly must carry a 300x dynamic range. A model that interpolates
-utility carries a 2x dynamic range, which generalises far better to new shapes, and the
-analytical SOL formula handles every order of magnitude from there. The trade-off is
+This is why utility, not latency, is what the kernel interpolator learns. Measured on the
+Qwen3-8B GEMM table on H20, latency spans 2268x while utility spans 4.65x, and within the
+`(n=4096, k=4096)` slice the figures are 566x against 1.69x. A model interpolating latency
+would have to carry the whole dynamic range. Interpolating utility leaves every order of
+magnitude to the analytical SOL formula and asks the surface only how efficient the kernel is. The trade-off is
 that the SOL formula must be correct: an error in the roofline propagates into every
 utility value and therefore into every prediction. On current hardware the GEMM roofline
 is accurate enough that the interpolated utility approach reaches 3.91% MRE without
@@ -292,8 +292,8 @@ SOL (speed of light)
     The analytical roofline lower bound: `max(compute_time, memory_time)`.
 
 utility
-    `SOL / measured_latency`. Spans roughly 2x across a sweep; much easier to
-    interpolate than the raw latency, which spans ~300x.
+    `SOL / measured_latency`. Spans 4.65x across the GEMM table against 2268x for the
+    raw latency, which is what makes it the easier quantity to interpolate.
 
 floor
     A per-call dispatch cost placed inside `max(compute, memory, floor)`, not added

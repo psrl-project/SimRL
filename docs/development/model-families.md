@@ -44,9 +44,15 @@ These four shapes are what the *inference engine* runs, not what the HuggingFace
 declares. HuggingFace keeps `q_proj`, `k_proj`, and `v_proj` separate and `gate_proj` / `up_proj`
 separate, giving seven 2-D weight matrices per layer. vLLM fuses them via `QKVParallelLinear` and
 `MergedColumnParallelLinear`, giving four. Using the unfused HuggingFace shapes would query GEMM
-measurements at shapes that were never profiled, and the interpolator would extrapolate rather than
-interpolate. This has been verified against both local checkpoints by `kernels verify-shapes`:
-summing HuggingFace's row counts reproduces the fused `n` values exactly.
+measurements at shapes that were never profiled, so the slice lookup would miss and raise. This has
+been verified against both local checkpoints by `kernels verify-shapes`: summing HuggingFace's row
+counts reproduces the fused `n` values exactly (4096 + 1024 + 1024 = 6144, and 12288 + 12288 =
+24576).
+
+Fusing does not change the arithmetic volume. Both groupings come to the same $\sum 2nk$ per token,
+3.8588e+08 for Qwen3-8B. What it changes is the launch count, seven against four, so pricing the
+unfused shapes would over-count per-call dispatch overhead and place each GEMM at a lower utility,
+not inflate the FLOPs.
 
 In addition, `logits_shape` returns the `lm_head` vocabulary projection, which vLLM runs once per
 step (not per layer) via `ParallelLMHead`, projecting only each sequence's last token.
@@ -91,16 +97,34 @@ dryrun-profile kernels verify-shapes --model-path $MODEL_PATH
 ```
 
 It builds the real model on the **meta device**, with no weights and no GPU memory, enumerates every 2-D
-weight, applies vLLM's fusion rules, and compares the resulting shapes against the family's
-declared shapes. For Qwen3-8B this takes about 3 seconds and uses 0 MiB of VRAM. The current
-result on both local checkpoints is: all five shapes match, with 36 and 28 homogeneous layers
-respectively.
+weight, applies the fusion rules in `_FUSION_RULES`, and compares the resulting shapes against the
+family's declared shapes. For Qwen3-8B this takes about 3 seconds and uses 0 MiB of VRAM. The
+current result on both local checkpoints is: all five shapes match, with 36 and 28 homogeneous
+layers respectively.
 
 The command also asserts that every layer fuses to the *same* shape set. No config key reliably
 signals layer heterogeneity. Because `dense_llama` multiplies one layer's shapes by the layer
 count, a heterogeneous model priced as though every layer matched the first would produce a
 systematically wrong latency with no visible error. `introspect.py` imports `torch` and
 `transformers`, so it is called only from the CLI, not from the cost path, which stays torch-free.
+
+### What the gate does not cover
+
+Three limits are worth knowing before treating a passing run as proof.
+
+**It compares against HuggingFace, not against the engine.** `_FUSION_RULES` is a hard-coded map
+(`qkv_proj` from `q_proj`/`k_proj`/`v_proj`, `gate_up_proj` from `gate_proj`/`up_proj`). The
+declared side and the observed side therefore share the same assumption about how vLLM fuses. If
+vLLM stopped fusing QKV, this gate would still pass while the pricing became wrong. What the gate
+independently verifies is that the `config.json` arithmetic matches the checkpoint's real tensors,
+and that the layers are homogeneous.
+
+**It is manual.** Nothing in `kernels run`, `collect`, or the simulator invokes it. It runs when
+you run it.
+
+**It supports `tensor_parallel=1` only.** The module graph is unsharded, so comparing it against
+sharded shapes would report a mismatch on every entry, and the function raises rather than
+pretending otherwise.
 
 ---
 

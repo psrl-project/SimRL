@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.telemetry.store import JsonlStore
 from dryrun.policy.psrl import PSRLPolicy
 from dryrun.simulator import SimConfig, Simulator
+from dryrun.telemetry.store import JsonlStore
 from dryrun.visualizer.plots import SimPlotter
 from dryrun.workload.distributions import uniform
 from dryrun.workload.grouped import GroupedWorkload
@@ -139,3 +139,76 @@ class TestEmptyStore:
         assert len(paths) == 5
         for p in paths:
             assert p.exists()
+
+
+class TestTrainPhaseBand:
+    """The band splits into recompute/train/sync, shared by simulated and real runs."""
+
+    def _store_with_train(self, tmp_path, **phase_times):
+        store = JsonlStore(tmp_path / "logs", overwrite=True)
+        store.write("train", t=10.0, start=0.0, end=10.0, dt=10.0, version=1, **phase_times)
+        store.write(
+            "instance/0", t=0.0, instance_id=0, num_running_reqs=1, num_waiting_reqs=0,
+            kv_cache_usage=0.1,
+        )
+        store.close()
+        return JsonlStore(tmp_path / "logs")
+
+    def test_all_three_phases_are_drawn_in_order(self, tmp_path):
+        store = self._store_with_train(
+            tmp_path, recompute_time=2.0, train_time=7.0, sync_time=1.0
+        )
+        spans = SimPlotter(store, tmp_path / "plots")._train_phase_spans()
+        assert [(label, start, end) for start, end, label, _ in spans[0]] == [
+            ("recompute", 0.0, 2.0),
+            ("train", 2.0, 9.0),
+            ("sync", 9.0, 10.0),
+        ]
+
+    def test_a_zero_width_phase_is_omitted_rather_than_widening_its_neighbour(self, tmp_path):
+        """The simulator does not model recompute, and that gap must stay visible."""
+        store = self._store_with_train(
+            tmp_path, recompute_time=0.0, train_time=10.0, sync_time=0.0
+        )
+        spans = SimPlotter(store, tmp_path / "plots")._train_phase_spans()
+        assert [label for _, _, label, _ in spans[0]] == ["train"]
+
+    def test_unattributed_time_is_charged_to_train(self, tmp_path):
+        """A train row predating the phase fields still covers its whole block."""
+        store = self._store_with_train(tmp_path)
+        spans = SimPlotter(store, tmp_path / "plots")._train_phase_spans()
+        assert spans[0] == [(0.0, 10.0, "train", "steelblue")]
+
+    def test_the_figure_renders_with_a_split_band(self, tmp_path):
+        store = self._store_with_train(
+            tmp_path, recompute_time=2.0, train_time=7.0, sync_time=1.0
+        )
+        path = SimPlotter(store, tmp_path / "plots").plot_instance_load()
+        assert path.exists() and path.stat().st_size > 0
+
+
+class TestGatewayRow:
+    """The router queue row appears only for a run that recorded one."""
+
+    def _store(self, tmp_path, with_gateway: bool):
+        store = JsonlStore(tmp_path / "logs", overwrite=True)
+        store.write("train", t=10.0, start=0.0, end=10.0, dt=10.0, version=1, train_time=10.0)
+        store.write(
+            "instance/0", t=0.0, instance_id=0, num_running_reqs=1, num_waiting_reqs=0,
+            kv_cache_usage=0.1,
+        )
+        if with_gateway:
+            store.write("gateway", t=0.0, queue_len=5, pending_request_num=5, running_request_num=8)
+        store.close()
+        return JsonlStore(tmp_path / "logs")
+
+    def test_absent_for_a_simulation(self, tmp_path):
+        plotter = SimPlotter(self._store(tmp_path, with_gateway=False), tmp_path / "plots")
+        assert plotter._gateway_rows() == []
+        assert plotter.plot_instance_load().exists()
+
+    def test_present_for_a_converted_real_run(self, tmp_path):
+        plotter = SimPlotter(self._store(tmp_path, with_gateway=True), tmp_path / "plots")
+        assert len(plotter._gateway_rows()) == 1
+        assert plotter.plot_instance_load().exists()
+

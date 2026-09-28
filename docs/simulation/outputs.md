@@ -184,11 +184,23 @@ the bars extend beyond `job.max_staleness`, the policy invariant is not being re
 
 ### `instance_load.png`
 
-Training interval band at the top, with one subplot per rollout instance below. Each
+Training band at the top, with one subplot per rollout instance below. Each
 subplot shows the number of running and waiting requests over time (left axis) and KV
 cache utilisation (right axis, shaded). KV utilisation is rendered with linear
 interpolation rather than step interpolation, because decode segments involve continuous
 KV growth between logged events.
+
+The band splits each training block into its three phases, drawn lightest to darkest:
+`recompute` (the log-prob forward pass), `train` (the optimizer step), and `sync` (the
+weight push). A phase with zero duration is not drawn at all, so an unmodelled cost shows
+up as an absence rather than being folded silently into its neighbour. With the default
+`recompute_cost` of `0.0`, a simulated band therefore shows `train` alone.
+
+The simulator records the three durations but never orders them. It only sums them into
+one block. The order drawn here is the one a real PSRL run exhibits.
+
+This is the one figure that renders identically for a simulation and for a real run,
+which is what makes the two directly comparable. See {ref}`plotting-a-real-psrl-run`.
 
 ### `request_timeline.png`
 
@@ -222,3 +234,110 @@ dryrun-plot outputs/simulate/<name> \
 as many times as needed. If `logs/` does not exist, for example because the run used
 `log_telemetry: false`, it exits with a clear error rather than silently writing empty
 plots.
+
+Pass `--only instance_load` to render just that one figure, and `--time-label` to match
+the axis label of a real run you intend to compare against.
+
+---
+
+## Comparing a simulation against a real run
+
+Two scripts under `examples/visualize/` produce the same figure from the two sources and
+drop it beside themselves, so the images sit side by side:
+
+```bash
+# Real PSRL run -> examples/visualize/instance_load_real.png
+PSRL_LOG_DIR=/path/to/megatron_psrl_log/<experiment> bash examples/visualize/plot_psrl_run.sh
+
+# Simulation    -> examples/visualize/instance_load_simulated.png
+SIM_RUN_DIR=outputs/simulate/<name> bash examples/visualize/plot_simulate_run.sh
+```
+
+Both go through the same `SimPlotter.plot_instance_load`, and both default to the
+`Wall-clock Time (s)` axis label, so the only difference between the two images is the
+data. Override `FIGURE` to put a figure elsewhere.
+
+For the comparison to mean anything, the simulation has to be configured to match the
+real run: same instance count, batch size, staleness, prompt and response caps, and
+enough versions to cover a similar span. A simulation with different topology produces a
+correct figure of a different experiment.
+
+---
+
+(plotting-a-real-psrl-run)=
+## Plotting a real PSRL run with `dryrun-psrl-plot`
+
+To judge whether a simulation is accurate, draw the real run the same way. The
+simulator's accuracy claim is only as good as the comparison, and two figures produced
+by two pieces of drawing code will drift apart. So there is only one plotter: a real
+PSRL log directory is converted into the same streams a simulation writes, and then
+rendered by the same `SimPlotter`.
+
+```bash
+bash examples/visualize/plot_psrl_run.sh
+```
+
+or directly:
+
+```bash
+dryrun-psrl-plot /path/to/megatron_psrl_log/<experiment> \
+    --output-dir outputs/visualize/<experiment>
+```
+
+This writes `<output_dir>/logs/` in the standard layout and
+`<output_dir>/plots/instance_load.png`. The PSRL directory is read only, never modified.
+Only `instance_load` is rendered: the other four plots need per-request and
+per-engine-step streams that a PSRL run does not record.
+
+Nothing has to be changed on the PSRL side. Everything needed is already written to the
+log directory.
+
+### What is read from where
+
+| Stream | Source in the PSRL log directory |
+|---|---|
+| `instance/{id}` | `stats_r{id}_dp0.jsonl`, the per-engine vLLM scheduler stats, sampled at 1 Hz |
+| `train` | `MainRayTrainer.log` (recompute start) and `TrainWorker_R*.log` (train and sync) |
+| `gateway` | `smg_routing_status.jsonl`, the router's queue depth |
+
+The engine stats already use the same field names the simulator writes
+(`num_running_reqs`, `num_waiting_reqs`, `kv_cache_usage`), so the conversion is close to
+a rename. Three things genuinely differ:
+
+**Rollout replicas versus validation replicas.** Validation replicas write the same stats
+files as rollout ones, and the rows carry no role field. The role lives only in the
+`DPLBStatCollector_{role}_I{n}.log` filenames, which is what `--role` selects on. Filtering
+by "all rows are zero" instead would silently drop a genuinely idle rollout replica, so
+that heuristic is deliberately not used. Override the selection with `--instances 0,2`.
+
+**Two clocks.** The JSONL sinks stamp UTC while the Python text logs stamp naive local
+time. The offset is recovered by differencing the two clocks at the *end* of the run,
+where the last text-log line and the last stats sample are within seconds of each other,
+and rounding onto the quarter-hour grid real UTC offsets live on. Anchoring at the start
+would not work, because the controller begins logging minutes before the engines come up
+and that gap is genuine rather than clock skew. Override with `--utc-offset-hours`.
+
+**Training phases.** The simulator logs the block as one record with three durations, while
+PSRL scatters the same three across a controller log and the per-rank train worker logs
+as begin/end markers. Ranks are unioned (earliest begin, latest end) rather than sampled,
+since the block is claiming the interval during which the trainer was busy.
+
+Every filename and marker above is a field on `PsrlLogLayout` with a matching command-line
+flag, so a run that names things differently is retargeted without editing the converter.
+
+### Reading the resulting figure
+
+**The orange and green lines coincide.** In a real run the engine's `num_waiting_reqs` is
+always 0, because queuing happens in the router, not in the engine. This is real behaviour,
+not a wiring bug. The simulator models waiting inside the engine queue, so its two lines do
+separate. The router queue row above the band is where the real run's queuing is visible.
+That queue is global and is deliberately not attributed to individual instances.
+
+**Instance numbers are replica indices, not a dense range.** A run whose rollout replicas
+are 0 and 2 produces subplots titled `instance 0` and `instance 2`.
+
+**The simulated band has no `recompute` segment.** The default `recompute_cost` is `0.0`,
+whereas a real run spends roughly a quarter of its training block on the log-prob forward
+pass. That difference is the point of drawing both: it is left visible rather than
+modelled away.
+
