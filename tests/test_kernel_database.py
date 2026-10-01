@@ -252,7 +252,7 @@ def test_sol_closure_cache_keeps_its_table_alive(tmp_path):
     Pin the observable correctness property of the (table, slice_key) cache key.
 
     `self._tables` holds every loaded table alive unconditionally, so a weakref test
-    cannot distinguish between `id(table)` and `table` as the cache key — the table is
+    cannot distinguish between `id(table)` and `table` as the cache key: the table is
     never freed either way.  The property that actually matters is behavioral: two
     DIFFERENT tables loaded for different backends must each get their OWN closure, and
     therefore correctly different SOL-derived utilities, even when the tables share the
@@ -328,7 +328,7 @@ def step_zero_root(tmp_path):
         "vllm",
         "vllm_flash_attn_fa3",
         [
-            (16, 0, 5.0e-5),      # step=0 — non-interpolatable, must be silently skipped
+            (16, 0, 5.0e-5),      # step=0: non-interpolatable, must be silently skipped
             (16, 128, 6.0e-5),
             (16, 512, 8.0e-5),
             (16, 1024, 1.0e-4),

@@ -8,8 +8,8 @@
 The training side of DryRun-RL only models Megatron. Megatron is powerful but has a
 large hyperparameter surface and many parallelism modes, which makes both profiling
 sweeps and cost-model cells expensive. FSDP2 (and its hybrid-shard form, HSDP) is the
-other backend real RL systems use — psrl drives it through verl with
-`actor.strategy=fsdp2` — and it has a far smaller knob count: no pipeline schedule, no
+other backend real RL systems use: psrl drives it through verl with
+`actor.strategy=fsdp2`, and it has a far smaller knob count: no pipeline schedule, no
 tensor parallelism in the common configuration, and a device mesh described by two
 integers.
 
@@ -121,8 +121,8 @@ profile (uniform shapes)          cost model                 simulate (real leng
 
 Profiling measures `step_time` and `peak_memory` over a clean grid of
 `(sequence_length, n_seqs_per_rank, n_microbatches)`. The planner's only job at simulate
-time is turning real rollout lengths into a *microbatch plan* — a list of
-`SequenceStats` per microbatch, exactly what `latency_features` already consumes — which
+time is turning real rollout lengths into a *microbatch plan*: a list of
+`SequenceStats` per microbatch, exactly what `latency_features` already consumes, which
 the fitted model then prices. `SequenceStats` carries `sum_tokens` and
 `sum_squared_tokens`, so the plan stays agnostic about which features a model uses.
 
@@ -131,7 +131,7 @@ Three consequences:
 1. **No measured record ever violates the existing schema invariants.** Because profile
    shapes are uniform, `TrainingPayload`'s "every microbatch holds `micro_batch_size`
    sequences" and `global_batch_size == mbs * dp * nmb` both hold. What must change is
-   the schedule check, which rejects anything but `"1f1b"` in **four** places — FSDP has
+   the schedule check, which rejects anything but `"1f1b"` in **four** places: FSDP has
    no pipeline schedule, so its value becomes `"fsdp"`:
 
    | site | role |
@@ -156,16 +156,16 @@ Three consequences:
 
 ### 1. Shared training-adapter layer (new)
 
-`dryrun/profiler/adapters/training/` — genuinely backend-agnostic code, extracted from
+`dryrun/profiler/adapters/training/`: genuinely backend-agnostic code, extracted from
 the Megatron adapter and consumed by both. Sibling to `megatron/`, `vllm/`, `fsdp/`.
 
 **`run.py`** (~85 lines)
 - `OOM_EXIT_CODE`, `oom_marker_paths(run_dir)`
-- `run_candidate(config, candidate, prepare, *, dry_run, resume) -> Path` — subprocess
+- `run_candidate(config, candidate, prepare, *, dry_run, resume) -> Path`: subprocess
   orchestration, stale-marker cleanup, `run.log`, status classification,
   `status.json`. The single backend-specific step, building the command, is injected as
   the `prepare` callable.
-- `read_status(run_dir) -> (status, duration_s, error)` — carries the invariant that
+- `read_status(run_dir) -> (status, duration_s, error)`: carries the invariant that
   OOM is decided by marker files and **never** by scanning the log for a phrase. A
   false OOM adds an inequality constraint that can only raise the fitted memory floor,
   so it must be wrong in exactly one place, not two.
@@ -174,17 +174,17 @@ the Megatron adapter and consumed by both. Sibling to `megatron/`, `vllm/`, `fsd
 - `load_sidecar_metrics(run_dir)`
 - `slice_warmup(step_times, warmup_steps)`
 - `rank_memory_peaks(rank_memory) -> (peak_allocated, peak_reserved)`
-- `iter_candidate_dirs(raw_root, candidates, allow_incomplete)` — the manifest-presence
+- `iter_candidate_dirs(raw_root, candidates, allow_incomplete)`: the manifest-presence
   loop shared by both `collect_*_records`.
 
 Deliberately **not** extracted, because the mechanism differs even though the purpose
 matches:
-- resolved-config validation — Megatron reads `ConfigContainer.yaml` through OmegaConf;
+- resolved-config validation: Megatron reads `ConfigContainer.yaml` through OmegaConf;
   FSDP validates the observed device mesh. One signature would be a parameter bag
   neither backend fills.
-- `config.py` — `bridge_dir`, `model_family_name`, `model_recipe_name`, and the pinned
+- `config.py`: `bridge_dir`, `model_family_name`, `model_recipe_name`, and the pinned
   bridge version are Megatron-only.
-- `measure.py` — Megatron subclasses `megatron.bridge.training.callbacks.Callback`;
+- `measure.py`: Megatron subclasses `megatron.bridge.training.callbacks.Callback`;
   FSDP owns its own loop. Only the sidecar payload *shape* is shared, and that is a
   schema concern.
 
@@ -192,7 +192,7 @@ matches:
 
 `dryrun/profiler/adapters/fsdp/`, mirroring Megatron's stage boundaries.
 
-**`config.py`** — `FsdpProfileConfig`, frozen, `from_dict` for YAML. Fields: `model`
+**`config.py`**: `FsdpProfileConfig`, frozen, `from_dict` for YAML. Fields: `model`
 (via `model_descriptor_from_yaml`), `hardware`, `output_dir`, `compute_dtype`,
 `optimizer`, `parameter_dtype`, `gradient_dtype`, `optimizer_state_dtype`,
 `max_steps`, `warmup_steps`, `num_layers_override`, `environment`,
@@ -200,17 +200,17 @@ matches:
 `reshard_after_forward`, `param_offload`, `optimizer_offload`,
 `gradient_checkpointing`, `attn_implementation`.
 
-**`search_space.py`** — `FsdpCandidate` and `enumerate_fsdp_candidates`. A candidate is
+**`search_space.py`**: `FsdpCandidate` and `enumerate_fsdp_candidates`. A candidate is
 `(shard_size, replicate_size, n_seqs_per_rank, sequence_length, gradient_checkpointing,
 optimizer_offload, repeat)`, with `world_size == shard_size * replicate_size`. Its
 `candidate_id` is a SHA-256 prefix, as `TrainingCandidate` does. `sp` is recorded and
 pinned to `1`; a value greater than 1 fails fast with an explicit not-implemented
 message.
 
-**`prepare.py`** — writes `launch_spec.json` (schema-versioned) and `manifest.json`,
+**`prepare.py`**: writes `launch_spec.json` (schema-versioned) and `manifest.json`,
 builds the `torchrun ... -m dryrun.profiler.adapters.fsdp.launch --spec ...` command.
 
-**`launch.py`** — the torchrun child; imports torch only at call time, never from the
+**`launch.py`**: the torchrun child; imports torch only at call time, never from the
 package namespace. Responsibilities:
 1. build the HSDP mesh from `(replicate_size, shard_size)`;
 2. construct the model from the HF config (`num_layers_override` honoured) with
@@ -222,32 +222,32 @@ package namespace. Responsibilities:
 6. write the sidecar, or per-rank `oom_rank{N}.json` on a caught
    `torch.OutOfMemoryError`.
 
-**`execute.py`** — thin: delegates to `training.run.run_candidate` with its `prepare`.
+**`execute.py`**: thin: delegates to `training.run.run_candidate` with its `prepare`.
 
-**`measure.py`** — plain hooks (no framework base class). Records per-step wall time
+**`measure.py`**: plain hooks (no framework base class). Records per-step wall time
 around a synchronized bracket, per-rank `allocated`/`reserved` peaks gathered with
 `all_gather_object`, `static_allocated_bytes_at_train_start`, measured
 `parameter_count`, and the **comm/compute decomposition** (see below). No barrier on
 the timing path: a barrier would charge every rank for the slowest one.
 
-**`collect.py`** — raw directories into `ProfileRecord` with `TrainingPayload`
+**`collect.py`**: raw directories into `ProfileRecord` with `TrainingPayload`
 (`schedule="fsdp"`). Validates the observed mesh and parameter count against the
 candidate, so a silently-wrong mesh fails loudly instead of yielding plausible numbers.
 
 ### 3. Cost model (new)
 
-**`dryrun/cost/training/fsdp_inventory.py`** — `fsdp_inventory(...)`, the FSDP static
+**`dryrun/cost/training/fsdp_inventory.py`**: `fsdp_inventory(...)`, the FSDP static
 layout (`16p/ws`, everything sharded), separate from `parameter_inventory` because the
 sharding rule genuinely differs. It accounts for `optimizer_offload` moving the fp32
 master and Adam moments off device.
 
-**`dryrun/cost/training/microbatch.py`** — `MicrobatchPlanner` and `MicrobatchPlan`.
+**`dryrun/cost/training/microbatch.py`**: `MicrobatchPlanner` and `MicrobatchPlan`.
 Three modes:
-- `pad_to_max` — every microbatch padded to its longest sequence; costed tokens are
+- `pad_to_max`: every microbatch padded to its longest sequence; costed tokens are
   `n_seqs * max_L`.
-- `token_budget` — Karmarkar-Karp balancing on verl's `24576 * L + L^2` workload
+- `token_budget`: Karmarkar-Karp balancing on verl's `24576 * L + L^2` workload
   proxy, capped by `max_tokens_per_rank`; still padded within a microbatch.
-- `packed_no_pad` — concatenated, zero pad tokens; costed tokens are the true `sum_L`.
+- `packed_no_pad`: concatenated, zero pad tokens; costed tokens are the true `sum_L`.
 
 `packed_no_pad` requires flash-attn, which is now present; the planner asserts this at
 construction rather than silently mispricing.
@@ -277,8 +277,8 @@ parameter_count)`.
 both are fitted, and both sets of `r^2`/MRE go into artifact diagnostics. The fit
 selects automatically: **the target with the higher validation `r^2` wins**, and the
 winner is named in `diagnostics["memory_metric"]` alongside both candidates' scores, so
-the choice is auditable rather than implicit. The prior Megatron result — fitting
-`reserved` gave `r^2 = 0.196` while `allocated` gave `r^2 = 1.0` — makes `allocated` the
+the choice is auditable rather than implicit. The prior Megatron result: fitting
+`reserved` gave `r^2 = 0.196` while `allocated` gave `r^2 = 1.0`: makes `allocated` the
 expected winner, but it is recorded as a measurement, not assumed.
 
 Because `allocated` underestimates the true out-of-memory threshold (it excludes
@@ -351,7 +351,7 @@ at rank 2.
 ## Error handling
 
 - Out of memory: per-rank marker files, caught by exact `torch.OutOfMemoryError` type.
-  A driver or NCCL fault stays classified `failed`. OOM records are retained — they
+  A driver or NCCL fault stays classified `failed`. OOM records are retained: they
   bound the memory model from below.
 - Mesh mismatch: `collect` compares the observed mesh and parameter count against the
   candidate and raises rather than emitting a record attributed to the wrong topology.
@@ -360,20 +360,20 @@ at rank 2.
 
 ## Testing
 
-- `tests/test_fsdp_search_space.py` — enumeration, mesh validity, `candidate_id`
+- `tests/test_fsdp_search_space.py`: enumeration, mesh validity, `candidate_id`
   stability, `sp > 1` rejection.
-- `tests/test_fsdp_launch.py` — `build_config`-equivalent spec application without a
+- `tests/test_fsdp_launch.py`: `build_config`-equivalent spec application without a
   process group; JSON round-trip; OOM sidecar shape. Fixtures under
   `tests/fixtures/fsdp/` mirroring `tests/fixtures/megatron_bridge/`.
-- `tests/test_fsdp_collect.py` — sidecar to `TrainingPayload`, warmup slicing, peak
+- `tests/test_fsdp_collect.py`: sidecar to `TrainingPayload`, warmup slicing, peak
   aggregation, mesh-mismatch rejection, OOM classification.
-- `tests/test_microbatch_planner.py` — the three modes; `pad_to_max` costed tokens
+- `tests/test_microbatch_planner.py`: the three modes; `pad_to_max` costed tokens
   equal `n_seqs * max_L`; `token_budget` respects the cap and reproduces KK balancing
   deterministically; `packed_no_pad` costed tokens equal true `sum_L`.
-- `tests/test_fsdp_cost.py` — artifact round-trip, known-coefficient latency,
+- `tests/test_fsdp_cost.py`: artifact round-trip, known-coefficient latency,
   rank-deficiency rejection, OOM-as-inequality, `fsdp_inventory` against the measured
   `16p/ws` layout, simulator integration.
-- `tests/test_training_shared.py` — the extracted `run.py`/`sidecar.py` behave
+- `tests/test_training_shared.py`: the extracted `run.py`/`sidecar.py` behave
   identically for both backends; Megatron's existing tests must still pass unchanged.
 - A two-layer smoke profile on 8x H20 is the end-to-end gate before any full sweep.
 

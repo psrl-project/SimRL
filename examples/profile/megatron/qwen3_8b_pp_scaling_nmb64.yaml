@@ -1,0 +1,61 @@
+# Extends qwen3_8b_pp_scaling.yaml to the microbatch count the real run uses.
+#
+# The PP sweep next door establishes that PP is derivable, but it profiles
+# num_microbatches in {1, 4}, which tops out at 6 pipeline slots. The PSRL
+# baseline runs 64 microbatches at PP=3, which is 66 slots: an 11x
+# extrapolation on exactly the axis whose coefficient is multiplied the most.
+# Fitted on {1, 4} alone the model predicts 105 s against a measured 74 s on the
+# real batch shape.
+#
+# `microbatch_overhead` is the per-slot fixed cost, so an error in it is
+# amplified by the slot count. Two microbatch counts are enough to identify it
+# but only over the range they span; reaching 64 is what makes the real batch
+# interpolation rather than extrapolation.
+#
+# Collected into the same output tree as qwen3_8b_pp_scaling.yaml so the fit sees
+# num_microbatches {1, 4, 64} across PP {1, 2, 3} as one design.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 6
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen3_8b/megatron_pp_scaling
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  max_steps: 12
+  warmup_steps: 4
+
+profiling:
+  allow_incomplete: false
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+# PP 1 and 3 only, not 2. The point here is to extend the slot range, and the
+# neighbouring sweep already proved the per-layer form transfers across PP; two
+# PP values at nmb=64 are enough to confirm it still holds at 64 while keeping
+# this run to 6 candidates rather than 9.
+#
+# Sequence lengths stop at 4096 deliberately. At nmb=64 a candidate runs 64
+# microbatches per step for 12 steps, so 8192 tokens would cost roughly 15
+# minutes per candidate; the token axis is already covered to 8192 by the
+# {1, 4} sweep, and what this config is buying is the SLOT range.
+search_space:
+  tensor_parallel_sizes: [2]
+  pipeline_parallel_sizes: [1, 3]
+  data_parallel_sizes: [1]
+  micro_batch_size: 1
+  num_microbatches: [64]
+  sequence_lengths: [1024, 2048, 4096]
+  recompute: full

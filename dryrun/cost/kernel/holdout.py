@@ -88,7 +88,7 @@ def bracketing_indices(coords: Sequence[tuple[float, ...]]) -> tuple[int, ...]:
             values = [r[axis] for r in remaining]
             lo, hi = min(values), max(values)
             if lo == hi:
-                # Degenerate axis after removal — vacuously satisfied.
+                # Degenerate axis after removal: vacuously satisfied.
                 continue
             if c[axis] < lo or c[axis] > hi:
                 bracketed = False
@@ -162,7 +162,7 @@ def evaluate_holdout(
     all_utilities: list[float] = []
 
     # Resolve the floor once for this (op, backend) pair so grid construction and the
-    # predicted-SOL call use identical values -- the round trip must be consistent.
+    # predicted-SOL call use identical values: the round trip must be consistent.
     op = op_for(op_name)
     if not op.fits_floor:
         floor_s = 0.0

@@ -3,7 +3,7 @@ Numeric integration of a decode segment whose per-step cost has no closed form.
 
 `advance.py` sums a segment analytically, which requires step cost to be exactly
 `max(F, alpha + beta*k)`. A cost composed from measured kernel latencies is not that shape, so
-it needs a numeric integrator -- and the obvious one is wrong in a way that matters.
+it needs a numeric integrator, and the obvious one is wrong in a way that matters.
 
 Sampling the cost curve at a stride and trapezoid-summing *per query* is not monotone in `k`:
 on a spiked cost curve it produces 429 values of `k` in [1, 4096] where `total(k) <
@@ -12,8 +12,8 @@ returned step count against its budget by integer identity, so an inexact invers
 changes which branch the simulator takes.
 
 The construction here is monotone by design. Lattice nodes at `0, stride, 2*stride, ...` are
-sampled once at construction. Node `i` carries a fixed rate -- the trapezoid average of the
-per-step cost at nodes `i` and `i+1` -- and a cumulative total. A query interpolates linearly
+sampled once at construction. Node `i` carries a fixed rate: the trapezoid average of the
+per-step cost at nodes `i` and `i+1`, and a cumulative total. A query interpolates linearly
 inside one node interval at that fixed rate:
 
     total(k) = cumulative[i] + rates[i] * (k - node[i]),   i = k // stride
@@ -59,7 +59,7 @@ class LatticeIntegrator:
             step_cost (Callable[[int], float]): Seconds of the step `offset` steps into the
                 segment. Called at most once per lattice node, never per query. It must
                 answer for any `offset` that is a multiple of `stride`, including the node
-                just past the segment end -- integrating `k` steps needs the node bracketing
+                just past the segment end: integrating `k` steps needs the node bracketing
                 them from above, so a 300-step segment at stride 1024 evaluates offsets 0
                 and 1024. It must therefore extrapolate rather than raise past `k_max`.
             k_max (int): Hard ceiling on segment length. `total` clamps there.

@@ -108,7 +108,7 @@ Cutting `max_steps` is not the lever it appears to be: reducing from 12 to 8 sav
 2 s out of 196 s (1%) while halving the retained samples the median and outlier rejection
 depend on. See {doc}`index` for the full startup-cost analysis.
 
-:::{warning}
+::{warning}
 That single `failed` candidate is an artefact of an interrupted re-run, not a distinct
 failure mode, and it is worth understanding because it costs you data silently.
 
@@ -122,7 +122,7 @@ candidate's own `status.json` still reads `oom` while `collect` sees no markers 
 Its `status.json` and its collected record disagreeing is the signature. If you see it,
 re-run that candidate to completion with `--candidate-id` rather than accepting the
 `failed` classification.
-:::
+::
 
 ---
 

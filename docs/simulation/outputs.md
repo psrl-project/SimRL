@@ -71,7 +71,7 @@ and how many requests were in flight at the time.
   "n_inflight": 64,        // requests still generating when this step began
   "n_ready": 128,          // requests in the ready queue
   "n_dropped_step": 0      // requests discarded by the policy at this step
-  // "extrapolation_notes": [...] -- present only when a cost query extrapolated
+  // "extrapolation_notes": [...]: present only when a cost query extrapolated
 }
 ```
 
@@ -324,6 +324,37 @@ since the block is claiming the interval during which the trainer was busy.
 
 Every filename and marker above is a field on `PsrlLogLayout` with a matching command-line
 flag, so a run that names things differently is retargeted without editing the converter.
+
+### Quantifying the error with `dryrun-compare`
+
+Two figures side by side show that a simulation is wrong, not by how much or where,
+and eyeballing a KV curve cannot separate a cost-model error from a workload
+mismatch. `dryrun-compare` reports the scalars that localise the disagreement:
+
+```bash
+dryrun-compare outputs/simulate/<name> outputs/visualize/<experiment>
+```
+
+```
+metric                    simulated         real      error
+------------------------------------------------------------
+train / step (s)             116.61       110.95      +5.1%
+recompute / step (s)          31.37        31.57      -0.6%
+peak running reqs                64           64      +0.0%
+peak KV util                  0.892        1.000     -10.8%
+idle fraction                 0.067        0.257     -0.190
+```
+
+Occupancy metrics are **time-weighted, never sample-counted**. The two sides log on
+different triggers: a real run samples at a fixed 1 Hz while the simulator writes
+only on a committed state change, so an idle stretch yields one simulated record
+against a hundred real ones. A sample-counted idle fraction reported 21% against 59%
+for two runs whose instances both drained to exactly zero for every training block.
+
+`examples/simulate/psrl_baseline_aligned.sh` is a worked example: every knob
+transcribed from the run being matched, plus the three things no script reveals --
+the workload lengths, the KV capacity, and the training cost for that exact mesh.
+`outputs/simulate/ALIGNMENT_LOG.md` records what each fix bought.
 
 ### Reading the resulting figure
 

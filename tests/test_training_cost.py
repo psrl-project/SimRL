@@ -8,8 +8,6 @@ import pytest
 
 from dryrun.cost.artifact import CostArtifact
 from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.cost.training.activation import ActivationGeometry, activation_bytes
-from dryrun.cost.training.inventory import heaviest_stage_parameters
 from dryrun.cost.training import (
     AnalyticalTrainingCost,
     HydraulisTrainingCost,
@@ -19,7 +17,8 @@ from dryrun.cost.training import (
     TrainingWorkload,
     parameter_inventory,
 )
-from dryrun.telemetry.store import JsonlStore
+from dryrun.cost.training.activation import ActivationGeometry, activation_bytes
+from dryrun.cost.training.inventory import heaviest_stage_parameters
 from dryrun.policy.psrl import PSRLPolicy
 from dryrun.profiler.schema import (
     BYTES_PER_MIB,
@@ -34,6 +33,7 @@ from dryrun.profiler.schema import (
     TrainingPayload,
 )
 from dryrun.simulator import SimConfig, Simulator
+from dryrun.telemetry.store import JsonlStore
 from dryrun.workload.distributions import uniform
 from dryrun.workload.grouped import GroupedWorkload
 
@@ -410,3 +410,115 @@ def test_analytical_roofline_uses_compute_and_shards_memory():
     assert one_gpu.latency_s == pytest.approx(expected_compute)
     assert two_gpu.latency_s == pytest.approx(expected_compute / 2)
     assert two_gpu.peak_memory_bytes == one_gpu.peak_memory_bytes // 2
+
+
+class TestDynamicBatching:
+    """Grouping microbatches by token budget rather than by sequence count."""
+
+    def test_packs_to_the_budget_instead_of_a_fixed_count(self):
+        from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
+
+        # Four sequences, budget fits two of them per microbatch.
+        workload = TrainingWorkload(
+            sequence_lengths=(1000, 1000, 1000, 1000),
+            micro_batch_size=1,
+            max_tokens_per_microbatch=2000,
+        )
+        microbatches = workload.critical_rank_microbatches(
+            TrainingParallelism(tp=1, pp=1, dp=1, cp=1)
+        )
+        assert len(microbatches) == 2
+        assert [m.sum_tokens for m in microbatches] == [2000, 2000]
+
+    def test_count_based_grouping_is_unchanged_when_no_budget_is_set(self):
+        from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
+
+        workload = TrainingWorkload(
+            sequence_lengths=(1000, 1000, 1000, 1000),
+            micro_batch_size=1,
+        )
+        microbatches = workload.critical_rank_microbatches(
+            TrainingParallelism(tp=1, pp=1, dp=1, cp=1)
+        )
+        assert len(microbatches) == 4
+
+    def test_ragged_batch_packs_greedily(self):
+        from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
+
+        # First-fit on the descending order 900, 600, 500, 400 under a 1000 budget:
+        # 900 alone (600 would overflow), then 600 alone (500 would overflow), then
+        # 500 + 400. Greedy and order-dependent, not optimal bin packing.
+        workload = TrainingWorkload(
+            sequence_lengths=(500, 900, 400, 600),
+            micro_batch_size=1,
+            max_tokens_per_microbatch=1000,
+        )
+        microbatches = workload.critical_rank_microbatches(
+            TrainingParallelism(tp=1, pp=1, dp=1, cp=1)
+        )
+        assert [m.sum_tokens for m in microbatches] == [900, 600, 900]
+
+    def test_attention_does_not_cross_sequences_inside_a_pack(self):
+        """A packed microbatch sums each sequence's square, not the square of the total."""
+        from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
+
+        workload = TrainingWorkload(
+            sequence_lengths=(1000, 1000),
+            micro_batch_size=1,
+            max_tokens_per_microbatch=2000,
+        )
+        (packed,) = workload.critical_rank_microbatches(
+            TrainingParallelism(tp=1, pp=1, dp=1, cp=1)
+        )
+        assert packed.sum_squared_tokens == 2 * 1000**2
+        assert packed.sum_squared_tokens != 2000**2
+
+    def test_budget_sets_the_count_and_is_not_a_hard_cap(self):
+        """verl fixes the microbatch count from the budget, then balances.
+
+        A single sequence longer than the budget is not an error: the count
+        formula floors at one group, and that group holds the sequence. Treating
+        the budget as a hard per-group cap was wrong, and it also produced the
+        wrong count: greedy first-fit gave 60 microbatches on the measured
+        PSRL batch where the real trainer produced 44.
+        """
+        from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
+
+        workload = TrainingWorkload(
+            sequence_lengths=(5000,),
+            micro_batch_size=1,
+            max_tokens_per_microbatch=1000,
+        )
+        microbatches = workload.critical_rank_microbatches(
+            TrainingParallelism(tp=1, pp=1, dp=1, cp=1)
+        )
+        assert len(microbatches) == 1
+        assert microbatches[0].sum_tokens == 5000
+
+    def test_microbatch_count_follows_verls_formula(self):
+        """count = min(batch_size, ceil(total_tokens / budget)).
+
+        Checked against the real run: instrumenting PSRL measured 44
+        microbatches, and ceil(563200 / 12800) is 44.
+        """
+        from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
+
+        one_rank = TrainingParallelism(tp=1, pp=1, dp=1, cp=1)
+        # 64 sequences summing to 563_200 at a 12_800 budget -> 44 groups.
+        lengths = tuple([8800] * 64)
+        workload = TrainingWorkload(
+            sequence_lengths=lengths,
+            micro_batch_size=1,
+            max_tokens_per_microbatch=12_800,
+        )
+        assert sum(lengths) == 563_200
+        assert len(workload.critical_rank_microbatches(one_rank)) == 44
+
+        # The count is capped by the sequence count: a budget larger than the
+        # whole batch still cannot produce fewer than one group.
+        single = TrainingWorkload(
+            sequence_lengths=(100, 100),
+            micro_batch_size=1,
+            max_tokens_per_microbatch=1_000_000,
+        )
+        assert len(single.critical_rank_microbatches(one_rank)) == 1

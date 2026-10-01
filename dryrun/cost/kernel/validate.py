@@ -9,7 +9,7 @@ Bucketing is the part worth being careful about. A baseline holds tens of thousa
 iterations at nearly-repeating shapes, so they must be grouped before scoring or the report is
 dominated by measurement noise. An earlier version of this grouping snapped each bucket's mean
 context to a power of two, which floored a true mean of 7300 tokens to 4096 and produced a
-19.1% error that did not exist -- the real figure was 4.4%. Buckets here therefore round the
+19.1% error that did not exist: the real figure was 4.4%. Buckets here therefore round the
 mean context to a linear multiple, never to a power of two, and the bucket's latency is the
 median so one slow iteration cannot move it.
 

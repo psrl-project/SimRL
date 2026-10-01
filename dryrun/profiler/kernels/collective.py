@@ -9,7 +9,7 @@ Two tables come out of one sweep, because **which kernel a real server runs is n
 `CudaCommunicator.all_reduce` dispatches through NCCL symmetric memory, then vLLM's custom
 one-shot/two-shot P2P kernel, and only reaches `torch.distributed.all_reduce` as a last resort.
 On H20 (sm_90) at two ranks the custom path covers everything under 8 MiB, while a Qwen3-8B
-decode step's message is 8 KiB to 512 KiB -- so every collective a `tp=2` server issues is the
+decode step's message is 8 KiB to 512 KiB, so every collective a `tp=2` server issues is the
 custom kernel and none of them is NCCL. Symmetric memory needs four ranks, so it cannot fire at
 two. A table measured with `torch.distributed.all_reduce` therefore describes a kernel the
 server never invokes.
@@ -21,7 +21,7 @@ bias of that choice be stated as a number rather than argued. `CommQuery.backend
 between them, defaulting to `vllm`.
 
 Which backend actually fired is recorded per row in `kernel_source`, read back off the live
-communicator rather than re-derived from vLLM's size thresholds -- a reimplementation of those
+communicator rather than re-derived from vLLM's size thresholds: a reimplementation of those
 thresholds would drift silently the next time vLLM retunes them.
 
 Measurements land in the same parquet perf-table tree as every other op, so an all-reduce is
@@ -133,7 +133,7 @@ def _collective_worker(
     dtype = torch_dtype(measurement.dtype)
 
     # vLLM's parallel state is what builds the CudaCommunicator, and without it there is no
-    # dispatcher to time -- only the bare NCCL call that measures the wrong kernel.
+    # dispatcher to time: only the bare NCCL call that measures the wrong kernel.
     # `initialize_model_parallel` reads `parallel_config` off the ambient VllmConfig, so the
     # setup has to run inside `set_current_vllm_config`, the same way the elementwise profiler
     # needs a live CompilationConfig to reach vLLM's fused kernels instead of native fallbacks.

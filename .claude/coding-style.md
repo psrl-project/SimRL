@@ -13,8 +13,8 @@ When writing a string, ask: **"Is this string a name the program looks up, or a 
 | **Identifier string** (hasattr, getattr, ==, dict key, Ray method name, enum value) | No change | **NEVER** | N/A | N/A |
 | **Assertion message** | Uppercase | Yes `.` | No (plain text) | Yes |
 | **Log message** | Uppercase | Yes `.` / `...` / `!` | No (plain text) | Yes |
-| **Comment — sentence** | Uppercase | Yes `.` | Yes `` `id` `` | N/A |
-| **Comment — fragment** | lowercase OK | No | Yes `` `id` `` | N/A |
+| **Comment: sentence** | Uppercase | Yes `.` | Yes `` `id` `` | N/A |
+| **Comment: fragment** | lowercase OK | No | Yes `` `id` `` | N/A |
 | **Annotation marker** | Uppercase | Yes `.` | Yes `` `id` `` | N/A |
 | **Docstring prose** | Uppercase | Yes `.` | Yes `` `id` `` | N/A |
 | **Docstring arg desc** | Uppercase | `.` optional | Yes for *other* identifiers | N/A |
@@ -24,19 +24,19 @@ When writing a string, ask: **"Is this string a name the program looks up, or a 
 ## §1. Identifier Strings vs. Human-Readable Messages ⚠️
 
 > **This is the single most dangerous mistake in this codebase.
-> Adding a period to an identifier string causes silent runtime failures —
+> Adding a period to an identifier string causes silent runtime failures : 
 > no exception, no warning, just broken behavior.**
 
 Strings fall into exactly two categories:
 
-- **Identifier strings** — looked up or compared by the program:
+- **Identifier strings**: looked up or compared by the program:
   `hasattr(obj, "attr")`, `getattr`, `setattr`, `delattr`,
   `mode == "nixl_cpu"`, `unit in ("GB", "MB")`,
   Ray calls (`execute_all_async("method_name")`),
   dict keys, config keys, enum values.
   → **Never** add a period. **Never** change casing. Copy the name exactly.
 
-- **Human-readable messages** — shown in logs, assertion failures, comments, docstrings.
+- **Human-readable messages**: shown in logs, assertion failures, comments, docstrings.
   → Capitalize and punctuate per §2.
 
 **Decision test**: if the string is passed to `==`, `in`, `hasattr`, `getattr`,
@@ -44,7 +44,7 @@ Strings fall into exactly two categories:
 it is an identifier. Everything else is a message.
 
 ```python
-# GOOD — identifier strings are exact; message strings have period
+# GOOD: identifier strings are exact; message strings have period
 assert hasattr(self, "device_mesh"), "device_mesh is not initialized."
 assert self.dryrun_config.ps_mode in ("nixl_cpu", "nixl_gpu"), (
     f"Expected nixl_cpu or nixl_gpu, got {self.dryrun_config.ps_mode!r}."
@@ -53,7 +53,7 @@ self.ps_wg.execute_all_async("get_nixl_train_storage_client_name")
 if config.routing_strategy.method == "throughput_balance":
     ...
 
-# BAD — period leaked into identifier (silently broken!)
+# BAD: period leaked into identifier (silently broken!)
 assert hasattr(self, "device_mesh."), "device_mesh is not initialized."
 self.ps_wg.execute_all_async("get_nixl_train_storage_client_name.")
 if config.routing_strategy.method == "throughput_balance.":
@@ -74,15 +74,15 @@ Three rules govern all human-readable text:
 
 | Context | First letter | Ending | Example |
 |---------|-------------|--------|---------|
-| Comment — sentence | Uppercase | `.` | `# Set the rollout number based on batch size.` |
-| Comment — fragment | lowercase OK | — | `# worker-side attributes` |
+| Comment: sentence | Uppercase | `.` | `# Set the rollout number based on batch size.` |
+| Comment (fragment | lowercase OK |) | `# worker-side attributes` |
 | Annotation marker | Uppercase | `.` | `# TODO(lhy): Add timeout handling.` |
 | Docstring summary | Uppercase | `.` | `"""Wait for the NIXL push to complete."""` |
 | Docstring arg desc | Uppercase | `.` optional | `timeout (float): Max wait time in seconds` |
 | Assertion message | Uppercase | `.` | `"nixl_storage_client is not initialized."` |
-| Log — normal | Uppercase | `.` | `"Initialized PS successfully."` |
-| Log — ongoing | Uppercase | `...` | `"Getting the current PS model version..."` |
-| Log — milestone | Uppercase | `!` | `"All configuration checks passed!"` |
+| Log: normal | Uppercase | `.` | `"Initialized PS successfully."` |
+| Log: ongoing | Uppercase | `...` | `"Getting the current PS model version..."` |
+| Log: milestone | Uppercase | `!` | `"All configuration checks passed!"` |
 
 ### 2.2 After Colons
 
@@ -109,13 +109,13 @@ or **seen at runtime** (terminal output):
 - **Log messages & assertion messages** (shown at runtime) → plain text, no backticks
 
 ```python
-# GOOD — backticks in comments
+# GOOD: backticks in comments
 # The `rollout_coordinator` dispatches requests to `GenWorker` instances.
 
-# BAD — identifier blends into prose
+# BAD: identifier blends into prose
 # The rollout_coordinator dispatches requests to GenWorker instances.
 
-# GOOD — plain text in logs and assertions
+# GOOD: plain text in logs and assertions
 dryrun_logger.debug("Calling pull_model_state_dict_nixl for model update.")
 assert self.nixl_storage_client is not None, "nixl_storage_client is not initialized."
 ```
@@ -151,7 +151,7 @@ assert self.dryrun_config.ps_mode in ("nixl_cpu", "nixl_gpu"), (
 ## §3. Line Length & Line Breaking
 
 **Hard limit: 119 characters** (enforced by Ruff).
-**Never** use `\` for line continuation — always use parentheses.
+**Never** use `\` for line continuation: always use parentheses.
 
 ### 3.1 Function Signatures
 
@@ -177,14 +177,14 @@ def push_model_state_dict_nixl(self, key: str, shards_to_transfer: list[int], ta
 Same pattern. Grouping on fewer lines is acceptable when only slightly over the limit.
 
 ```python
-# GOOD — one per line
+# GOOD: one per line
 result = some_function(
     first_arg,
     second_arg,
     third_arg=value,
 )
 
-# GOOD — grouped, still under limit per line
+# GOOD: grouped, still under limit per line
 result = some_function(
     first_arg, second_arg, third_arg=value,
 )
@@ -201,7 +201,7 @@ dryrun_logger.info(
     f"for version {next_ps_model_version} with {len(shards_to_transfer)} shards."
 )
 
-# BAD — backslash continuation
+# BAD: backslash continuation
 dryrun_logger.info(
     f"Pushing key {key} shards {shards_to_transfer} to {target_client_name} " \
     f"for version {next_ps_model_version} with {len(shards_to_transfer)} shards."
@@ -221,7 +221,7 @@ if (
 ):
     ...
 
-# BAD — breaks after operator
+# BAD: breaks after operator
 if (self.dryrun_config.ps_mode in ("nixl_cpu", "nixl_gpu") and
     self.nixl_storage_client is not None and
     version > self.current_version):
@@ -231,7 +231,7 @@ if (self.dryrun_config.ps_mode in ("nixl_cpu", "nixl_gpu") and
 ### 3.5 Collections & Comprehensions
 
 ```python
-# Collection — one element per line, trailing comma
+# Collection: one element per line, trailing comma
 supported_modes = [
     "nixl_cpu",
     "nixl_gpu",
@@ -239,10 +239,10 @@ supported_modes = [
     "cpu_ref",
 ]
 
-# Comprehension — one-liner if it fits
+# Comprehension: one-liner if it fits
 names = [w.name for w in workers if w.is_active]
 
-# Comprehension — multi-line if long
+# Comprehension: multi-line if long
 names = [
     worker.name
     for worker in workers
@@ -300,7 +300,7 @@ self.worker_rank = worker_rank
 - Blank line above when starting a new logical section.
 - **No dashes inside comment text.** Use plain prose instead (e.g., `# worker-side` → `# worker side`).
 - **No semicolons in comments or documentation.** Break into separate sentences instead.
-- **No em dashes or en dashes in comments or documentation** (`—`, `–`). Replace with a period and a new sentence, or restructure the phrase.
+- **No em dashes or en dashes in comments or documentation** (`: `, `–`). Replace with a period and a new sentence, or restructure the phrase.
 - **One space after a period**, not two. Never write `. ` + extra space mid-sentence.
 
 ### 5.2 Inline Comments
@@ -347,7 +347,7 @@ Format: `# MARKER(author): Uppercase message ending with period.`
 # This is more efficient than calling `transfer_train_to_gen` for each key/shard,
 # which would cause excessive remote calls and may crash the Ray actor.
 
-# BAD — no period, lowercase start
+# BAD: no period, lowercase start
 # NOTE(claude): we use a dict to store the PS handle and merge on the PS side
 ```
 
@@ -362,7 +362,7 @@ Plain text for identifiers (§2.4). Include actual value with `!r` (§2.5).
 # Single-line
 assert self.nixl_storage_client is not None, "nixl_storage_client is not initialized."
 
-# Multi-line — parenthesized, 4-space indent
+# Multi-line: parenthesized, 4-space indent
 assert self.dryrun_config.ps_mode in ("nixl_cpu", "nixl_gpu"), (
     "push_model_state_dict_nixl should only be used in nixl_cpu or nixl_gpu mode, "
     f"got: {self.dryrun_config.ps_mode!r}."
@@ -385,7 +385,7 @@ dryrun_logger = logging.getLogger(__file__)
 ### 7.2 Message Format
 
 - Follow §2 for capitalization and punctuation.
-- **f-strings only** — never `%`-style or `.format()`.
+- **f-strings only**: never `%`-style or `.format()`.
 - `!r` for ambiguous dynamic values (§2.5).
 - Plain text for identifiers, no backticks (§2.4).
 

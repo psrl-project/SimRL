@@ -115,8 +115,8 @@ def test_plan_rejects_empty_lengths():
 def test_critical_rank_selected_by_workload_not_token_count():
     """Workload, not token count, picks the critical rank.
 
-    Rank A: 505 sequences of length 1 — token count 505, workload 505*(24577) = 12,411,385.
-    Rank B: 1 sequence of length 500 — token count 500, workload 24576*500+500^2 = 12,538,000.
+    Rank A: 505 sequences of length 1: token count 505, workload 505*(24577) = 12,411,385.
+    Rank B: 1 sequence of length 500: token count 500, workload 24576*500+500^2 = 12,538,000.
     Token count picks rank A; workload picks rank B.  The plan must reflect rank B.
     """
     planner = MicrobatchPlanner(BatchingMode.PACKED_NO_PAD)

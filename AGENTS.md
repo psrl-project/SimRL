@@ -13,8 +13,8 @@
 
 Two reference files live under `.claude/`:
 
-- **`.claude/coding-style.md`** — formatting rules, naming conventions, docstrings, logging, and annotation markers. Ordered by risk (silent-bug rules first).
-- **`.claude/codebase-map.md`** — system architecture, directory tree, configuration hierarchy, quick-lookup indices, and import dependency graphs.
+- **`.claude/coding-style.md`**: formatting rules, naming conventions, docstrings, logging, and annotation markers. Ordered by risk (silent-bug rules first).
+- **`.claude/codebase-map.md`**: system architecture, directory tree, configuration hierarchy, quick-lookup indices, and import dependency graphs.
 
 Claude must read and apply these guides when writing or modifying code.
 

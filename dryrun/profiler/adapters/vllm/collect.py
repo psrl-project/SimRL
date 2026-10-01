@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from ...._logging import dryrun_logger
 from ...schema import (
     Parallelism,
     ProfileRecord,
@@ -16,7 +17,6 @@ from ...schema import (
     RunDescriptor,
     SoftwareDescriptor,
 )
-from ...._logging import dryrun_logger
 from .config import VLLMSweepConfig
 from .parse import parse_sweep_log, payload_from_iteration, trusted_iterations
 

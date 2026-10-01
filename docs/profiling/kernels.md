@@ -286,12 +286,12 @@ does not run.
 Because the dispatch splits by message size at every world size, `kernel_source` reads `mixed` on
 these tables and the per-size backend is recoverable from `DISPATCH.md` and the profiler's log.
 
-:::{note}
+::{note}
 The committed `holdout_report.json` under the TP=1 tree holds only five of these rows. It was
 written before `elementwise` and `all_reduce` were swept and never regenerated, so re-running
 `kernels holdout` produces six rows for TP=1 where the file has five. The table above is the
 regenerated result, not the stale file.
-:::
+::
 
 Only `gemm` passes the strict 5% gate. The vLLM-backend attention families sit between 5.74% and
 6.63%, close enough that the end-to-end composed model still reaches below 5% on every phase

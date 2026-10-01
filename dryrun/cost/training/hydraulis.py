@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -114,11 +114,38 @@ def _training_records(records: list[ProfileRecord]) -> tuple[dict[_CellKey, list
 
 
 def _latency_features(payload: TrainingPayload, pp: int) -> LatencyFeatures:
-    """Build the structured latency design row for one payload."""
+    """Build the structured latency design row for one payload.
+
+    `pp` is the record's own pipeline degree, not the cell's, because a latency
+    cell now pools several. The features are per-layer, so each record must be
+    normalised by the pipeline it actually ran on.
+    """
     return latency_features(
         payload.microbatches,
         TrainingParallelism(tp=1, pp=pp, dp=1, cp=1),
     )
+
+
+def _pool_latency_cells(
+    groups: dict[_CellKey, list[ProfileRecord]],
+) -> dict[_CellKey, list[ProfileRecord]]:
+    """Merge cells that differ only in `pp` into one latency cell per TP group.
+
+    The latency form charges `nmb + pp - 1` slots at `1/pp` of the model's cost
+    per slot, both known from the topology, so measuring one PP per TP is enough
+    to predict the rest. Pooling makes that concrete: the fit sees every PP at
+    once and has to satisfy all of them with one set of coefficients.
+
+    The surviving key carries `pp=1` so the entry is addressed by TP alone. That
+    pairs with `CostArtifact.entry_for(..., ignore_pp=True)`, which is how the
+    predictor finds it for any requested PP.
+    """
+    pooled: dict[_CellKey, list[ProfileRecord]] = defaultdict(list)
+    for key, records in groups.items():
+        # `pp=1` is a label meaning "any pipeline degree", not a claim that these
+        # records ran without pipelining.
+        pooled[replace(key, pp=1)].extend(records)
+    return dict(pooled)
 
 
 def _activation_feature(
@@ -141,19 +168,19 @@ def _activation_feature(
     )
 
 
-def _latency_arrays(
-    records: list[ProfileRecord],
-    pp: int,
-) -> tuple[np.ndarray, np.ndarray]:
+def _latency_arrays(records: list[ProfileRecord]) -> tuple[np.ndarray, np.ndarray]:
     """
     Build one design row per candidate, not per step.
 
     Every retained step used to be its own row, so a candidate whose steps were noisy
     outvoted a clean one. Each profiled configuration should carry equal weight, and its
-    steps are repeat measurements of one quantity -- reduced by a median, which is
+    steps are repeat measurements of one quantity: reduced by a median, which is
     unbiased against the right-skew that stragglers produce.
+
+    Each row is normalised by its own record's `pp`, since a latency cell pools
+    several pipeline degrees.
     """
-    rows: list[tuple[float, float, float]] = []
+    rows: list[tuple[float, float, float, float]] = []
     targets: list[float] = []
     for record in records:
         payload = record.payload
@@ -161,7 +188,7 @@ def _latency_arrays(
             continue
         if not payload.step_times_s:
             continue
-        rows.append(_latency_features(payload, pp).design_row())
+        rows.append(_latency_features(payload, record.parallelism.pp).design_row())
         targets.append(robust_step_time(payload.step_times_s))
     return np.asarray(rows, dtype=np.float64), np.asarray(targets, dtype=np.float64)
 
@@ -186,8 +213,8 @@ def _fit_latency_entry(
         successful,
         validation_fraction=validation_fraction,
     )
-    train_x, train_y = _latency_arrays(train_records, key.pp)
-    validation_x, validation_y = _latency_arrays(validation_records, key.pp)
+    train_x, train_y = _latency_arrays(train_records)
+    validation_x, validation_y = _latency_arrays(validation_records)
     if len(train_y) < LATENCY_TERM_COUNT:
         raise ValueError(
             f"Hydraulis latency needs at least {LATENCY_TERM_COUNT} candidates for {key!r}."
@@ -199,7 +226,9 @@ def _fit_latency_entry(
         )
     train_predicted = train_x @ parameters
     validation_predicted = validation_x @ parameters
-    all_features = [_latency_features(record.payload, key.pp) for record in successful]
+    all_features = [
+        _latency_features(record.payload, record.parallelism.pp) for record in successful
+    ]
     dispersions = [
         step_time_dispersion(record.payload.step_times_s) for record in successful
     ]
@@ -231,9 +260,13 @@ def _fit_latency_entry(
         feature_ranges=feature_ranges,
         diagnostics={
             "formula": (
-                "per_step_overhead + (num_microbatches + PP - 1) * (token_cost * "
+                "per_step_overhead + ((num_microbatches + PP - 1) / PP) * (token_cost * "
                 "max_microbatch_tokens + token_quadratic_cost * "
                 "max_microbatch_sum_squared_tokens + microbatch_overhead)"
+            ),
+            "pipeline_latency": "derived-per-layer-1f1b",
+            "profiled_pipeline_degrees": sorted(
+                {record.parallelism.pp for record in successful}
             ),
             "dp_latency": "ideal-local-workload-scaling",
             "step_aggregation": "median-per-candidate",
@@ -529,6 +562,8 @@ class HydraulisLatencyModel(TrainingLatencyModel):
                 optimizer_state_dtype=self.optimizer_state_dtype,
                 distributed_optimizer=self.distributed_optimizer,
             ),
+            # One TP entry serves every PP; see `_pool_latency_cells`.
+            ignore_pp=True,
         )
         microbatches = workload.critical_rank_microbatches(parallelism)
         features = latency_features(microbatches, parallelism)
@@ -536,6 +571,9 @@ class HydraulisLatencyModel(TrainingLatencyModel):
         for name, value in (
             ("tokens", features.tokens),
             ("pipeline_slots", features.slots),
+            # Gated because it is a batch total, not a per-microbatch maximum.
+            # See `latency_feature_ranges`.
+            ("sum_squared_tokens", features.weighted_sum_squared_tokens),
             ("micro_batch_size", float(workload.micro_batch_size)),
         ):
             note = check_feature_range(entry, name, value, extrapolate=self.extrapolate)
@@ -648,21 +686,29 @@ class HydraulisTrainingCost(TrainingCostModel):
         hardware = asdict(first.hardware)
         hardware["gpu_count"] = sorted({record.hardware.gpu_count for record in materialized})
         entries: list[ArtifactEntry] = []
-        for key, cell_records in groups.items():
+
+        # Latency pools every PP in a TP group into one fit, because the features
+        # are per-layer and the slot count is analytic, so PP is arithmetic rather
+        # than a cell to measure. Memory does not pool: the 1F1B peak depends on
+        # which stage is in flight and how many microbatches it is holding, which
+        # is not a per-stage division of one number.
+        for latency_key, latency_records in _pool_latency_cells(groups).items():
             latency_entry = _fit_latency_entry(
-                key,
-                cell_records,
+                latency_key,
+                latency_records,
                 validation_fraction=validation_fraction,
                 require_full_rank=require_full_rank,
             )
+            if latency_entry is not None:
+                entries.append(latency_entry)
+
+        for key, cell_records in groups.items():
             memory_entry = _fit_memory_entry(
                 key,
                 cell_records,
                 validation_fraction=validation_fraction,
                 require_full_rank=require_full_rank,
             )
-            if latency_entry is not None:
-                entries.append(latency_entry)
             if memory_entry is not None:
                 entries.append(memory_entry)
         if not entries:

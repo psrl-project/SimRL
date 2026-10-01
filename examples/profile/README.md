@@ -36,7 +36,7 @@ Collection also truncates a run at its first preemption. Once the KV cache fills
 evicts requests and later re-prefills each one's prompt *plus* the tokens it already
 generated; from then on the running requests no longer share one age, so `ctxsum` cannot
 describe any later step. Keep `max-concurrency * (input + output)` inside the KV cache to
-avoid losing the tail of a decode point — the warning names the run and the step count it
+avoid losing the tail of a decode point: the warning names the run and the step count it
 dropped.
 
 Preview commands without starting a server:

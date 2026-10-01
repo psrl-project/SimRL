@@ -152,7 +152,7 @@ def enumerate_fsdp_candidates(
             "FSDP profiling V1 requires sequence_parallel=1. Ulysses needs an "
             "all-to-all attention wrapper that is not implemented."
         )
-    # A non-positive shard_size is never a valid topology — surface it immediately
+    # A non-positive shard_size is never a valid topology: surface it immediately
     # instead of silently filtering it out and masking the caller's mistake.
     if any(s <= 0 for s in shard_sizes):
         raise ProfileValidationError("shard_size must be positive.")

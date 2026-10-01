@@ -71,8 +71,11 @@ class TestEnabledWritesRichRecords:
         assert row["kv_cache_usage"] == 0.0
         assert row["total_ctx"] == 0
         assert row["running_len"] == {}
+        # `num_aborts` is part of the snapshot because a weight update discards
+        # generated tokens, leaving an interrupted waiter otherwise identical to
+        # a freshly admitted one.
         assert row["waiting_len"] == {
-            "0": {"generated": 0, "target_len": 50, "ctx": 512, "prefilled": 0}
+            "0": {"generated": 0, "target_len": 50, "ctx": 512, "prefilled": 0, "num_aborts": 0}
         }
 
     def test_emit_instance_deduplicates_identical_samples(self, tmp_path):

@@ -28,7 +28,7 @@ training:
   optimizer_state_dtype: fp32
   distributed_optimizer: true
   # Twelve steps with four discarded. The first profiled step was the slowest in 18 of
-  # 24 runs under a single warmup step -- chance alone would give about 8 -- so one step
+  # 24 runs under a single warmup step (chance alone would give about 8) so one step
   # is not enough to reach steady state. Dropping the second step as well cut the median
   # spread across a candidate from 16.4% to 0.5%. Eight retained samples then allow a
   # median and outlier rejection, which two samples cannot. The extra steps are nearly

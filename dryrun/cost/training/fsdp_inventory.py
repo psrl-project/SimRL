@@ -21,7 +21,7 @@ Physical layout under FSDP2
 ----------------------------
 The FSDP launcher builds the module in the **master dtype** (`optimizer_state_dtype`)
 so that AdamW's `exp_avg`/`exp_avg_sq` buffers inherit the same dtype as the
-parameters they track — a bf16 module cannot carry fp32 optimizer state.  That means
+parameters they track: a bf16 module cannot carry fp32 optimizer state.  That means
 there is exactly **one** resident parameter copy on device, sized by the master dtype.
 
 `MixedPrecisionPolicy(param_dtype=compute_dtype)` creates a narrow compute copy used
@@ -58,7 +58,7 @@ class FsdpInventory:
 
     The resident parameter shard is sized by the master dtype (`optimizer_state_dtype`),
     not by `parameter_dtype`.  There is no separate master-weight tensor because the
-    module is built in the master dtype from the start — see module docstring for the
+    module is built in the master dtype from the start: see module docstring for the
     physical reasoning.
 
     `compute_element_bytes` records the per-element byte width of the transient
@@ -121,7 +121,8 @@ def fsdp_inventory(
     ~~~~~~~~~~~~~~~
     The launcher builds the module in `optimizer_state_dtype` (the master dtype) because
     AdamW moments must share dtype with the tensors they track.  There is therefore one
-    resident parameter copy, sized by the master dtype — not by `parameter_dtype`.
+    resident parameter copy, sized by the master dtype rather than by
+    `parameter_dtype`.
 
     There is no second, separate master-weight tensor.  Megatron keeps one because its
     module resides in the narrow dtype and the master is a separate fp32 buffer.  FSDP2
@@ -132,7 +133,7 @@ def fsdp_inventory(
     is freed after each layer.  It is NOT counted here; `compute_element_bytes` is exposed
     for downstream activation accounting only.
 
-    Consequently `total_bytes` is invariant to `parameter_dtype` — changing the compute
+    Consequently `total_bytes` is invariant to `parameter_dtype`: changing the compute
     dtype does not touch any resident tensor.
 
     Contrast with Megatron

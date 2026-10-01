@@ -48,6 +48,56 @@ class TrainingParallelism:
         return cls(tp=value.tp, pp=value.pp, dp=value.dp, cp=value.cp)
 
 
+def _attention_workload(length: int) -> int:
+    """Return the per-sequence cost proxy the balancer sorts on, `24576 * s + s^2`.
+
+    This is `12 * hidden^2 * s + 2 * hidden * s^2` at hidden=4096, divided through.
+    It matches the linear-plus-quadratic shape of this module's own latency form,
+    which is why balancing on it yields microbatches of roughly equal cost.
+    """
+    return 24576 * length + length * length
+
+
+def _pack_to_token_budget(lengths: list[int], budget: int) -> list[list[int]]:
+    """Partition `lengths` the way `rearrange_micro_batches` does.
+
+    Not greedy bin packing. The microbatch *count* is fixed first from the token
+    total,
+
+        n = min(batch_size, ceil(sum(lengths) / budget))
+
+    and the sequences are then split into exactly `n` groups balanced on
+    `_attention_workload`, rather than filling one group at a time until it
+    overflows. The distinction matters because greedy first-fit produces
+    noticeably more groups on a ragged batch, and the count sets the pipeline slot
+    count that every per-slot cost is multiplied by.
+
+    Padding is not modelled: a packed microbatch costs the tokens actually present,
+    and attention stays inside each `cu_seqlens` boundary, which is why
+    `SequenceStats` keeps the per-sequence squares rather than squaring the total.
+
+    Args:
+        lengths: Sequence lengths for one DP rank, in any order.
+        budget: `ppo_max_token_len_per_gpu * sp_size`. Sets the count, and is not
+            a hard per-group cap once the count is fixed.
+
+    Returns:
+        One list of lengths per microbatch.
+    """
+    if not lengths:
+        return []
+    count = min(len(lengths), max(1, -(-sum(lengths) // budget)))
+    groups: list[list[int]] = [[] for _ in range(count)]
+    loads = [0] * count
+    # Longest-processing-time first, the standard approximation to the balanced
+    # partition the real balancer solves, and close enough that the slot count matches.
+    for length in sorted(lengths, reverse=True):
+        target = loads.index(min(loads))
+        groups[target].append(length)
+        loads[target] += _attention_workload(length)
+    return [group for group in groups if group]
+
+
 @dataclass(frozen=True)
 class TrainingWorkload:
     """Represent one global RL training batch using its actual trajectory lengths."""
@@ -57,12 +107,25 @@ class TrainingWorkload:
     schedule: str = "1f1b"
     recompute: str = "none"
     optimizer: str = "adam"
+    max_tokens_per_microbatch: int | None = None
+    """Token budget per microbatch, which replaces `micro_batch_size` when set.
+
+    A real RL trainer does not group a ragged batch by sequence *count*: with dynamic
+    batching the microbatch count falls out of the lengths instead. The difference is
+    large, because a ragged batch packs into far fewer microbatches than it has
+    sequences and every per-slot cost is charged once per slot.
+
+    The budget is the per-GPU token limit times the ulysses degree, which is not
+    Megatron's `sequence_parallel` flag. The caller passes the product.
+    """
 
     def __post_init__(self) -> None:
         if not self.sequence_lengths or any(length <= 0 for length in self.sequence_lengths):
             raise ValueError("Training sequence lengths must be non-empty and positive.")
         if self.micro_batch_size <= 0:
             raise ValueError("micro_batch_size must be positive.")
+        if self.max_tokens_per_microbatch is not None and self.max_tokens_per_microbatch <= 0:
+            raise ValueError("max_tokens_per_microbatch must be positive when set.")
         if self.schedule.lower() not in TRAINING_SCHEDULES:
             raise TrainingOutOfDomainError(
                 f"Training schedule must be one of {sorted(TRAINING_SCHEDULES)}, "
@@ -81,22 +144,31 @@ class TrainingWorkload:
         self,
         parallelism: TrainingParallelism,
     ) -> tuple[tuple[SequenceStats, ...], ...]:
-        """Balance lengths across DP ranks and split each rank into microbatches."""
-        divisor = parallelism.dp * self.micro_batch_size
-        if self.global_batch_size % divisor != 0:
-            raise TrainingOutOfDomainError(
-                "global_batch_size must be divisible by dp * micro_batch_size, "
-                f"got {self.global_batch_size} % {divisor}."
-            )
+        """Balance lengths across DP ranks and split each rank into microbatches.
+
+        Grouping is by token budget when `max_tokens_per_microbatch` is set, and
+        by sequence count otherwise. See that field for why the distinction
+        changes the prediction by a factor, not a few percent.
+        """
+        if self.max_tokens_per_microbatch is None:
+            divisor = parallelism.dp * self.micro_batch_size
+            if self.global_batch_size % divisor != 0:
+                raise TrainingOutOfDomainError(
+                    "global_batch_size must be divisible by dp * micro_batch_size, "
+                    f"got {self.global_batch_size} % {divisor}."
+                )
         ordered = sorted(self.sequence_lengths, reverse=True)
-        rank_lengths = [ordered[index:: parallelism.dp] for index in range(parallelism.dp)]
+        rank_lengths = [ordered[index :: parallelism.dp] for index in range(parallelism.dp)]
         ranks: list[tuple[SequenceStats, ...]] = []
         for lengths in rank_lengths:
-            microbatches = tuple(
-                SequenceStats.from_lengths(lengths[start : start + self.micro_batch_size])
-                for start in range(0, len(lengths), self.micro_batch_size)
-            )
-            ranks.append(microbatches)
+            if self.max_tokens_per_microbatch is None:
+                groups = [
+                    lengths[start : start + self.micro_batch_size]
+                    for start in range(0, len(lengths), self.micro_batch_size)
+                ]
+            else:
+                groups = _pack_to_token_budget(lengths, self.max_tokens_per_microbatch)
+            ranks.append(tuple(SequenceStats.from_lengths(group) for group in groups))
         return tuple(ranks)
 
     def critical_rank_microbatches(

@@ -52,7 +52,7 @@ reqs=48/64.
 
 Re-scoring against each bucket's *minimum* latency (a contended step is slower, never faster)
 moves decode only from 16.39% to 16.51%, so this is a sustained degradation over that server's
-run rather than transient spikes -- which is why the fix is to re-measure, not to filter outliers.
+run rather than transient spikes, which is why the fix is to re-measure, not to filter outliers.
 
 **The reqs 1-4 group is the small-batch defect already documented at TP=1**, where the ratio is
 1.1312. It worsens to 1.3009 at TP=2. `docs/reference/limitations.md` already records this with
@@ -65,7 +65,7 @@ new.
 
 The plan predicted that if the collective is timed in isolation and the server overlaps it, the
 model would *over*-predict at TP=2 by roughly the collective term. Measured, every phase's median
-ratio is **below** 1.0 (0.9648 / 0.9720 / 0.9766) -- the model slightly *under*-predicts. At
+ratio is **below** 1.0 (0.9648 / 0.9720 / 0.9766): the model slightly *under*-predicts. At
 reqs >= 32 the ratio is 0.9707 with the collective contributing 13.1% of the step, so an
 unmodelled overlap saving of that size would have shown up as a ratio near 1.13, not 0.97.
 
@@ -83,7 +83,7 @@ From `examples/profile/kernel/decompose_tp.py` (median over buckets):
 | mixed | 3.9% | 5.0% | 2.34% | 2.08% | 6.13% |
 
 (These are *median* absolute errors, which is why decode reads 3.98% here against the 16.39% mean
-above -- the median bucket is accurate and a minority are far off, exactly as the group table
+above: the median bucket is accurate and a minority are far off, exactly as the group table
 shows.)
 
 Two things follow:
@@ -91,7 +91,7 @@ Two things follow:
 1. **Modelling the collective at all matters.** Dropping it degrades decode from 3.98% to 10.41%
    and prefill from 3.52% to 8.24%. A comm-free TP>1 model would be visibly wrong.
 2. **At TP=2 the choice between the dispatched kernel and the NCCL control barely matters for
-   accuracy** -- 3.98% vs 2.90% at decode, with the NCCL table 1.12x slower on the comm term.
+   accuracy**: 3.98% vs 2.90% at decode, with the NCCL table 1.12x slower on the comm term.
    Both are pinned to the same ~18 us launch floor in the 8-512 KiB decode range. The original
    table was wrong in *identity*, not badly wrong in *latency*, at this degree.
 
@@ -151,7 +151,7 @@ rather than to anything about the model.
 | mixed | 7 | 3.64% |
 
 Decode improved from 16.39% to 9.51% on the whole grid, and the usable-region figure improved from
-3.18% over 103 buckets to **2.96% over 137** -- more buckets *and* lower error, because the
+3.18% over 103 buckets to **2.96% over 137**: more buckets *and* lower error, because the
 reqs=16 group rejoined the usable set instead of being excluded.
 
 ### The prefill regression is a 68 ms offset in six buckets, not a model gap
@@ -178,10 +178,10 @@ the serial run carries a fixed offset, and only at `reqs=1`. On that same serial
 Two direct comparisons make it concrete. Same server, same total token count, different request
 count: `reqs=1 / 2048 tokens` measures 197.26 ms while `reqs=8 / 2048 tokens` measures 118.54 ms.
 And in execution order, a `reqs=3 / 768-token` step (56.54 ms) sits between two `reqs=1 / 256-token`
-steps (95.99 and 90.01 ms) — fewer tokens taking more time, seconds apart on one server.
+steps (95.99 and 90.01 ms): fewer tokens taking more time, seconds apart on one server.
 
 The decisive sanity check is against tp=1. A 256-token prefill measures 25.47 ms at tp=1 on one GPU
-and **96.72 ms** at tp=2 serial on two — 3.8x *slower* on twice the hardware, which no real compute
+and **96.72 ms** at tp=2 serial on two: 3.8x *slower* on twice the hardware, which no real compute
 does. At 4096 tokens and above both tp=2 runs agree closely (0.718 and 0.713 of tp=1) and show the
 expected 1.4-1.6x speedup. So the offset is confined to the small-token, single-request corner.
 
@@ -189,7 +189,7 @@ expected 1.4-1.6x speedup. So the offset is confined to the small-token, single-
 per-step cost would appear at every request count and in both tp=2 runs; it appears in neither.
 The likely mechanism is that `reqs=1` points set `num-prompts: 1`, so the recorded iteration is a
 single isolated request whose measured span picks up server-side work that a steady stream amortises
-— and the serial run, having booted a fresh server for the whole phase, is the configuration where
+:  and the serial run, having booted a fresh server for the whole phase, is the configuration where
 that shows up unmasked. It was not diagnosed further because the fix is the same either way: those
 six buckets need re-measuring with more prompts per point before prefill `reqs=1` can be scored.
 
@@ -199,14 +199,14 @@ absent at `reqs=3` on the same server, absent in the parallel run, and absent at
 
 ### What to quote
 
-**decode 2.96% at `requests >= 5`, prefill 3.50% at `requests > 1`, mixed 3.64%** -- with the
+**decode 2.96% at `requests >= 5`, prefill 3.50% at `requests > 1`, mixed 3.64%**: with the
 exclusion stated. The two exclusions are *different* problems and should not be described as one:
 
 - prefill `reqs=1` (6 buckets) is a measurement artifact, per above. Re-measure.
 - decode `reqs 1-4` (66 buckets) is a real model error, over-predicting at median ratio 1.31
   against 1.1312 at tp=1. It is the pre-existing small-batch limitation, already documented with
   three causes tested and ruled out, and tp=2 amplifies it. Note the direction: the model predicts
-  *more* than measured, so it is not a missing cost term at all -- if anything the model is
+  *more* than measured, so it is not a missing cost term at all: if anything the model is
   double-counting something the server overlaps.
 
 Collective decomposition on the serial baseline, median over buckets:
@@ -244,7 +244,7 @@ excluding the two known-bad *batch groups* takes decode to 2.96% and prefill to 
 lives in which shapes were measured, not in stray iterations within a shape.
 
 The reason is visible in the raw data. Prefill `reqs=1 / 256 tokens` holds four iterations at
-90.0, 96.0, 97.5 and 104.0 ms -- there is no minority to drop, the whole bucket sits at that level.
+90.0, 96.0, 97.5 and 104.0 ms: there is no minority to drop, the whole bucket sits at that level.
 Across all 205 buckets with 4+ iterations, trimming the slow half moves the bucket median by 1.1%
 at the median bucket and 5.7% at the very worst.
 
@@ -254,7 +254,7 @@ and an unmeasured shape both produce a consistently wrong bucket, and neither is
 robust statistics.
 
 **So the rule is: use the median (already the default), and spend the effort on coverage instead.**
-Outlier rejection is worth adding only where a bucket genuinely holds a stray minority -- and on
+Outlier rejection is worth adding only where a bucket genuinely holds a stray minority, and on
 this grid, at 4 iterations per bucket, the median already handles that. Adding a trimming step would
 buy tenths of a percentage point while making every published figure depend on a new tunable
 threshold.
@@ -267,10 +267,10 @@ threshold.
 Every MRE on this page is already a comparison between two things, and it is worth naming them
 explicitly because they are not symmetric:
 
-- **vLLM end-to-end** — a real `vllm serve` process, `elapsed_ms` read per scheduler iteration from
+- **vLLM end-to-end**: a real `vllm serve` process, `elapsed_ms` read per scheduler iteration from
   its own log. This is the *measurement*, and it can itself be wrong (see the two contamination
   findings above).
-- **kernel-composed** — 5 GEMM lookups + 1-2 attention lookups + 1 collective lookup, summed. This
+- **kernel-composed**: 5 GEMM lookups + 1-2 attention lookups + 1 collective lookup, summed. This
   is the *prediction*.
 
 `dryrun-profile kernels validate` buckets the former and scores the latter against it.
@@ -331,7 +331,7 @@ so they cannot share a mechanism:
   re-measurement addresses.
 - **decode -1.7 ms** exists at tp=1 too (-1.2 ms). It is a real, TP-independent property of the
   model: at `reqs=1` the composed sum slightly *exceeds* what vLLM measures. Note what vLLM measures
-  there -- 8.4x more KV changes the step by only 1.09x (tp=1: 1.11x), against 3.27x at `reqs=64`. A
+  there: 8.4x more KV changes the step by only 1.09x (tp=1: 1.11x), against 3.27x at `reqs=64`. A
   single-request decode step is dominated by per-step overhead and the GPU work is nearly invisible,
   so summing kernels over-counts. Re-measuring will not change this; it is the known small-batch
   limitation, and the fix would be a model term, not a better baseline.
@@ -345,7 +345,7 @@ The practical consequence: `reqs=1` prefill is worth re-measuring and `reqs=1` d
 
 Ran the six `max-concurrency: 1` prefill points again with `num-prompts: 8` instead of `1`
 (`examples/profile/vllm/qwen3_8b_tp2_reqs1.yaml`, ~7 minutes, 2 GPUs). The measured *shape* is
-unchanged -- concurrency is still 1, so each iteration is still a single-request batch -- but the
+unchanged: concurrency is still 1, so each iteration is still a single-request batch, but the
 server runs eight requests in sequence, so the recorded iterations are steady-state rather than a
 single cold one.
 
@@ -364,7 +364,7 @@ is gone at every token count. The +78 ms was `num-prompts: 1` server-side work t
 iteration pays, and it was in the *measurement*, exactly as the fit predicted.
 
 The sanity check that failed before now passes: a 256-token prefill at tp=2 measures 18.26 ms
-against 25.47 ms at tp=1 on one GPU -- a 1.4x speedup on twice the hardware, where the old number
+against 25.47 ms at tp=1 on one GPU: a 1.4x speedup on twice the hardware, where the old number
 implied 3.8x *slower*.
 
 ### Final tp=2 accuracy, splicing the re-measured buckets in
@@ -375,7 +375,7 @@ implied 3.8x *slower*.
 | decode | 204 | 9.51% | 9.51% |
 | mixed | 7 | 3.64% | 3.64% |
 
-Prefill now needs **no exclusion at all** -- 3.60% over the whole grid, comparable to the 3.72%
+Prefill now needs **no exclusion at all**: 3.60% over the whole grid, comparable to the 3.72%
 published at tp=1. Decode is untouched, as expected: its `reqs=1` gap is -1.7 ms of *over*-prediction
 and is a model property present at tp=1 too, not a baseline artifact. Re-measuring decode would not
 have moved it, which is why it was not re-measured.
@@ -415,7 +415,7 @@ Decomposing the predicted step at depth 5120:
 | 16 | 3.180 | 4.685 | 1.527 | 9.391 | 9.400 |
 | 64 | 4.745 | 16.716 | 1.183 | 22.643 | 23.290 |
 
-GEMM is **3.123 ms at one request and 3.180 ms at sixteen** -- essentially flat, and comm likewise.
+GEMM is **3.123 ms at one request and 3.180 ms at sixteen**: essentially flat, and comm likewise.
 That is not a table error: a decode GEMM is memory-bound, reading the whole weight matrix to compute
 one token's worth of output, so `m=1` and `m=16` genuinely cost the same. The per-shape numbers
 confirm it (`m=1, n=12288, k=4096` = 38.71 us against 41.14 us at `m=16`).
@@ -433,7 +433,7 @@ own launch and dispatch cost. The fitted floors say how much: `all_reduce` 6.0 u
 
 The excess at `reqs=1` is 1.641 ms over 253 launches = **6.5 us per launch**, which is the
 all-reduce floor almost exactly. The real server replays this whole step inside a **CUDA graph**,
-where those per-call costs are largely eliminated -- which is the same trap the elementwise table
+where those per-call costs are largely eliminated, which is the same trap the elementwise table
 already documents from the other side (timing the `CustomOp` module instead of the raw op cost
 13.2x, because the server replays it in a graph).
 
@@ -446,8 +446,8 @@ under 3% of a 23 ms step and is swamped by real attention work. That is exactly 
 Not an additive overhead term. The candidates, in order of how well they match the evidence:
 
 1. **A per-call floor discount for graph replay.** The model already knows each op's fitted floor.
-   Charging the floor once per step rather than once per kernel -- or scaling it by a measured
-   graph-replay factor -- attacks the term the evidence points at. It needs one new measurement:
+   Charging the floor once per step rather than once per kernel: or scaling it by a measured
+   graph-replay factor: attacks the term the evidence points at. It needs one new measurement:
    the same kernel sequence timed inside a captured graph versus as isolated calls.
 2. **Model the overlap explicitly.** The collective is timed in isolation and the server can overlap
    it with compute. This is already a documented unquantified approximation, and at `reqs=1` comm is

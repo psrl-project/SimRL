@@ -22,7 +22,7 @@ Adding one kernel op to the cost model today requires editing **ten** sites:
 
 The count is the visible symptom. The real defect is that `database._sol()` (line 298) and
 `holdout._make_sol_fn()` (line 154) are **two independent implementations of the same
-binding** — both map `(spec, slice_key, coords, floor_s)` onto a SOL call. They can drift,
+binding**: both map `(spec, slice_key, coords, floor_s)` onto a SOL call. They can drift,
 and drift there silently changes utility on one side of the holdout round trip, which is
 the exact quantity the accuracy gate measures. That is a correctness risk, not verbosity.
 
@@ -34,7 +34,7 @@ between the two.
 
 Make one class per op the single source of truth for that op's schema, SOL formula,
 coordinate mapping, floor policy, sweep config, and measurement routine. Then add two new
-ops — `elementwise` and `collective` — through that abstraction, which is the only real
+ops (`elementwise` and `collective`) through that abstraction, which is the only real
 proof it generalizes beyond the two families that shaped it.
 
 ## Non-goals
@@ -59,7 +59,7 @@ behaviour-neutral, and that proof is only possible while the op set is unchanged
 |---|---|---|
 | **0** | Capture the ten baseline numbers below into a committed file | the file exists before any source edit |
 | **1** | The refactor: `ops/` package, `sol()` unification, floor re-keying, writer collapse, sweep-on-op, CLI derivation | every stage-0 number reproduces **identically** |
-| **2** | `elementwise` op: schema, SOL, sweep, measurement, floor fit — **not** wired into `predict()` | holdout MRE with `point_count > 0`; a test asserts `predict()` has no elementwise term |
+| **2** | `elementwise` op: schema, SOL, sweep, measurement, floor fit: **not** wired into `predict()` | holdout MRE with `point_count > 0`; a test asserts `predict()` has no elementwise term |
 | **3** | `all_reduce` op: same, plus `ModelOps.comm_queries` and lifting the `tp=1` restriction | holdout MRE reported; `tp=2` constructs and predicts; tp=1 validate numbers **unchanged** |
 | **4** | Docs: `docs/composed-rollout.md`, `.claude/codebase-map.md`, kernel README | every figure traces to a stage-2/3 command |
 
@@ -138,12 +138,12 @@ def write(self, op_name: str, rows: Sequence[Mapping[str, Any]]) -> Path:
     expected = set(op.slice_columns + op.axis_columns) | {"latency_s"}
     # Reject a missing or extra column here. write_attention currently trusts its caller
     # to populate eleven columns by hand, and a typo only surfaces when someone reads the
-    # table -- possibly hours after the sweep that produced it.
+    # table: possibly hours after the sweep that produced it.
 ```
 
 This is strictly safer than today, not merely shorter.
 
-**`measure()` is deliberately coarse** — `(model, config, writer_factory) -> paths` rather
+**`measure()` is deliberately coarse**: `(model, config, writer_factory) -> paths` rather
 than a per-shape `measure_one(shape) -> latency`. The reason is collective: it spawns
 `world_size` processes with `torch.multiprocessing` and only rank 0 retains timings, so
 there is no per-shape call to hook. A fine-grained interface would leak that. The coarse one
@@ -189,7 +189,7 @@ fail.
 **This is a breaking format change,** which the project contract permits (no backward
 compatibility; remove obsolete paths rather than adding migrations). A `floors.json`
 carrying the old phase keys is **rejected with a message naming
-`dryrun-profile kernels fit-floor`**, never silently misread — a lenient reader would apply
+`dryrun-profile kernels fit-floor`**, never silently misread: a lenient reader would apply
 a zero floor and quietly degrade the gate by more than 20 percentage points (measured: floor
 0 scores 34.89% MRE against 6.63% at the fitted 22 us).
 
@@ -220,7 +220,7 @@ utility surface, and the same holdout gate as every other op. The `CollectivePro
 
 `ModelOps` gains `comm_queries(token_count)`: **two all-reduces per layer** (after
 `o_proj`, after `down_proj`), multiplier `num_layers`. It is declared as data with an
-explicit multiplier, for the same reason `logits_op` carries `×1` — an inline multiplier is
+explicit multiplier, for the same reason `logits_op` carries `×1`: an inline multiplier is
 one indentation level away from a plausible-looking 36× error.
 
 `ComposedRollout`'s `tensor_parallel != 1` rejection is removed, and `predict()` adds the
@@ -245,7 +245,7 @@ Qwen3-8B, tp=1, `--fraction 1.0`:
 | fitted floors, vllm | context 32 us, generation 22 us | identical |
 | fitted floors, flashinfer | context 4 us, generation 6 us | identical |
 
-Not "close" — identical. `sol()` performs the same arithmetic on the same inputs, so any
+Not "close": identical. `sol()` performs the same arithmetic on the same inputs, so any
 drift means the binding changed. This mirrors the golden-trace diff that gated the
 `instance.py` rewrite in the previous phase.
 
@@ -277,7 +277,7 @@ silently dispatches vLLM's **native PyTorch fallback** rather than the fused CUD
 (it logs `Priority not set for op rms_norm, using native implementation`), which is a
 different kernel from the one the server runs.
 
-**2. Qwen3 runs six elementwise kernels per layer, not four** — two `rms_norm` (input and
+**2. Qwen3 runs six elementwise kernels per layer, not four**: two `rms_norm` (input and
 post-attention), one `rotary_embedding`, one `silu_and_mul`, and `q_norm`/`k_norm` over
 `head_dim` (Qwen3 has `qk_norm`). Measured per-layer total: **27.3 us** at decode token
 counts, **356 us** at 4096 tokens.
@@ -306,8 +306,8 @@ as partial; the measurement shows it is essentially complete.
 
 ### Decision
 
-`elementwise` is implemented as a full op — schema, SOL, sweep, measurement, fitted floor,
-holdout gate — and **is not added to `ComposedRollout.predict()`**. Concretely:
+`elementwise` is implemented as a full op: schema, SOL, sweep, measurement, fitted floor,
+holdout gate, and **is not added to `ComposedRollout.predict()`**. Concretely:
 
 - The abstraction gets its third op family, which is the structural proof it generalizes
   beyond the two families that shaped the current code.
@@ -315,7 +315,7 @@ holdout gate — and **is not added to `ComposedRollout.predict()`**. Concretely
   need an explicit term. See
   `docs/superpowers/specs/2026-08-26-fsdp-training-backend-design.md`.
 - The `4.84% → 11.18%` figure is recorded in `docs/composed-rollout.md` as the evidence
-  that utility absorbs elementwise completely — replacing the current vaguer "partly
+  that utility absorbs elementwise completely: replacing the current vaguer "partly
   absorbed" wording.
 - Wiring it into `predict()` requires first refitting GEMM and attention utility against
   *kernel-only* latency so the terms stop overlapping. That is a separate piece of work
@@ -342,7 +342,7 @@ Small-batch decode is over-predicted by **13%**. Three candidate causes were tes
 - **CUDA graph capture.** Eager and graph-replayed GEMM agree within 1–12% on the real
   shapes (`m=1, n=24576, k=4096`: 61.23 us eager, 60.73 us graph).
 - **Summing kernels being invalid.** Four individually timed GEMMs × 36 layers = 4.644 ms;
-  one fused 36-layer graph replay = 4.721 ms — agreement to **1.7%**.
+  one fused 36-layer graph replay = 4.721 ms: agreement to **1.7%**.
 - **Bad interpolation at `m=1`.** `m=1` is a *measured* point, not interpolated: the table
   value and the query result are bit-identical (62.28 us).
 
@@ -367,7 +367,7 @@ Also carried forward unchanged from the previous phase, and not addressed here:
   batch size, scored on only six real mixed iterations. Still the model's largest
   uncharacterised approximation.
 - **`context_attention/flashinfer` remains at 9.87%**, above the 5% gate. The cause is grid
-  density below `seq_len` 1024, not a floor misfit — a 0–80 us floor sweep confirmed 4 us is
+  density below `seq_len` 1024, not a floor misfit: a 0–80 us floor sweep confirmed 4 us is
   already optimal.
 - **Cross-hardware transfer remains unvalidated**; only one GPU type is available.
 
@@ -400,7 +400,7 @@ Additionally:
 **New-op tasks** are gated by:
 
 - `PerfTableWriter.write` rejecting a missing or extra column, per op, on synthetic rows.
-- The holdout gate reporting a real MRE for `elementwise` and `all_reduce` — with the
+- The holdout gate reporting a real MRE for `elementwise` and `all_reduce`: with the
   explicit check that `point_count > 0`, since a zero-point result is a coverage failure
   that currently only logs a warning.
 - Floors being fitted for both new ops with no edit to `floor.py`, asserted by a test that

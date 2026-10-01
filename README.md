@@ -2,7 +2,7 @@
 
 DryRun-RL is a discrete-event simulator for asynchronous, disaggregated RL post-training of large language
 models. You profile a real system once, fit cost models from those measurements, then simulate configurations
-you never ran — different parallelism, staleness policies, or rollout-to-training ratios — in seconds rather
+you never ran (different parallelism, staleness policies, or rollout-to-training ratios) in seconds rather
 than GPU-hours.
 
 Its design premise is that a simulator is only useful if it knows what it does not know. Every cost model

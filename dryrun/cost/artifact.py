@@ -151,21 +151,46 @@ class CostArtifact:
         parallelism: Parallelism,
         *,
         selector: dict[str, Any] | None = None,
+        ignore_pp: bool = False,
     ) -> ArtifactEntry:
-        """Return an exact discrete entry and reject silent extrapolation."""
+        """Return an exact discrete entry and reject silent extrapolation.
+
+        Args:
+            parallelism: The mesh to look up.
+            selector: Discrete keys the entry must also carry.
+            ignore_pp: Match on TP and CP only, leaving the pipeline degree to the
+                cost model's own arithmetic. The training latency form divides its
+                workload terms by `pp` and multiplies the slot count by
+                `nmb + pp - 1`, both from the topology alone, so a PP cell is
+                derived rather than looked up. Leave False for memory, which is not
+                a simple per-stage division: the 1F1B peak depends on which stage
+                is in flight.
+        """
         requested = selector or {}
         matches = [
             entry
             for entry in self.entries
-            if entry.parallelism == parallelism
+            if self._parallelism_matches(entry.parallelism, parallelism, ignore_pp=ignore_pp)
             and all(entry.selector.get(key) == value for key, value in requested.items())
         ]
         if len(matches) != 1:
+            mesh = f"tp={parallelism.tp} cp={parallelism.cp}" if ignore_pp else repr(parallelism)
             raise KeyError(
-                f"Expected exactly one artifact entry for parallelism {parallelism!r} "
+                f"Expected exactly one artifact entry for parallelism {mesh} "
                 f"and selector {requested!r}, found {len(matches)}."
             )
         return matches[0]
+
+    @staticmethod
+    def _parallelism_matches(
+        entry: Parallelism,
+        requested: Parallelism,
+        *,
+        ignore_pp: bool,
+    ) -> bool:
+        if not ignore_pp:
+            return entry == requested
+        return entry.tp == requested.tp and entry.cp == requested.cp
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> CostArtifact:

@@ -12,8 +12,8 @@ Measured on Qwen3-8B: 3.09 seconds and 0 MiB of VRAM for all 254 GEMM modules. T
 this cheap enough to run as a gate rather than a research exercise.
 
 HuggingFace and an inference engine do not agree on how many GEMMs a layer has. HF keeps
-`q_proj`, `k_proj`, `v_proj` separate and `gate_proj`/`up_proj` separate -- seven 2-D weights per
-layer -- while vLLM fuses them into `QKVParallelLinear` and `MergedColumnParallelLinear`, giving
+`q_proj`, `k_proj`, `v_proj` separate and `gate_proj`/`up_proj` separate: seven 2-D weights per
+layer, while vLLM fuses them into `QKVParallelLinear` and `MergedColumnParallelLinear`, giving
 four. We model the engine, so the real modules are fused here before comparing. Summing HF's row
 counts reproduces the declared `n` values exactly on both local checkpoints, which is the evidence
 that the four fused shapes are the engine's truth rather than an approximation.

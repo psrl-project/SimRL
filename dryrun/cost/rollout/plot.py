@@ -111,7 +111,7 @@ def _plot_topology(
 
     topology = entry.parallelism
     fig.suptitle(
-        f"vLLM {artifact.model_type} rollout regression — "
+        f"vLLM {artifact.model_type} rollout regression: "
         f"tp={topology.tp}, pp={topology.pp}, dp={topology.dp}, cp={topology.cp}",
         fontsize=15,
     )

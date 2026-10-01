@@ -1,7 +1,7 @@
 """Convert a PSRL run's log directory into the simulator's own telemetry streams.
 
-A real PSRL run and a DryRun-RL simulation describe the same thing -- rollout
-instances filling up and draining while training blocks the loop -- but they
+A real PSRL run and a DryRun-RL simulation describe the same thing: rollout
+instances filling up and draining while training blocks the loop, but they
 record it in different places and different formats. This module bridges the
 two by rewriting a PSRL log directory into the exact `JsonlStore` streams that
 `dryrun.telemetry.writer.SimTelemetry` emits, so that
@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .._logging import dryrun_logger
+from ..workload.trace import RequestGroup, write_group_trace
 from .store import JsonlStore
 
 # Text-log lines start with the `ray_logger` timestamp, e.g.
@@ -86,6 +87,8 @@ class PsrlLogLayout:
     train_begin_marker: str = r"\[Begin Event\] TRAIN"
     train_end_marker: str = r"\[End Event\] TRAIN"
     sync_end_marker: str = r"\[End Event\] PUSH"
+    trajectory_glob: str = "trajectories/v*/*.txt"
+    route_trace: str = "route_trace.log"
 
 
 @dataclass
@@ -475,6 +478,112 @@ def convert_psrl_logs(
         mean_recompute_s=recompute_total / n_steps if n_steps else 0.0,
         mean_train_s=train_total / n_steps if n_steps else 0.0,
         mean_sync_s=sync_total / n_steps if n_steps else 0.0,
+    )
+
+
+def extract_workload_trace(
+    log_dir: str | Path,
+    output_path: str | Path,
+    group_size: int,
+    layout: PsrlLogLayout | None = None,
+    max_output_tokens: int = 0,
+) -> Path:
+    """Write the lengths the engine actually generated as a joint group trace.
+
+    Simulating a synthetic length distribution leaves workload mismatch
+    entangled with cost-model error: a divergent KV curve could be either.
+    Replaying the run's own lengths removes that ambiguity and leaves the cost
+    models as the only thing under test.
+
+    The lengths come from `route_trace.log`'s `pop` events, **not** from the
+    trajectory dumps. The dumps record the final training sample, which is
+    truncated to the response cap, so their longest entry is exactly 10240 on
+    the DAPO baseline. The engine generated more than that: 242 of 398
+    never-interrupted requests emitted over 10240 tokens, each landing exactly
+    on `max_prompt_length + max_output_length - prompt_len` (a 90-token prompt
+    produced 11174). Sourcing from the dumps therefore understated generation
+    by roughly 900 tokens per request and made the simulated first batch finish
+    at 342.6 s against a measured 386.6 s.
+
+    A request interrupted by a weight update pops twice, and its
+    `response_tokens` is cumulative across iterations, so the final pop already
+    carries the whole generation. Only `status="completed"` pops are read.
+
+    Grouping is not recorded in the trace, so requests are chunked in id order
+    into groups of `group_size`. That reproduces the length *distribution* and
+    the group *arity* exactly, which is what the simulator consumes; it does not
+    reproduce which prompt each response belonged to.
+
+    Args:
+        log_dir: A PSRL run's log directory. Opened read-only.
+        output_path: Destination JSONL trace.
+        group_size: Responses per prompt (the recipe's `rollout_n`).
+        layout: Which files to read.
+        max_output_tokens: Generation cap the run used, for truncation stats.
+            Defaults to the longest observed response.
+
+    Returns:
+        The path written.
+
+    Raises:
+        ValueError: If no completed pop events are found, or if the count is
+            not a whole number of groups.
+    """
+    log_dir = Path(log_dir)
+    layout = layout or PsrlLogLayout()
+    route_trace = log_dir / layout.route_trace
+    if not route_trace.is_file():
+        raise ValueError(f"No route trace at {route_trace!s}, so real generated lengths are unavailable.")
+
+    fields = re.compile(r'(\w+)=("[^"]*"|\S+)')
+    parsed: list[tuple[int, int, int]] = []
+    for line in route_trace.read_text(encoding="utf-8", errors="replace").splitlines():
+        if 'event="pop"' not in line or 'status="completed"' not in line:
+            continue
+        row = dict(fields.findall(line))
+        try:
+            request_id = int(row["request_id"])
+        except (KeyError, ValueError):
+            continue
+        parsed.append((request_id, int(row["prompt_tokens"]), int(row["response_tokens"])))
+
+    if not parsed:
+        raise ValueError(
+            f"No completed 'pop' events in {route_trace!s}, so no generated lengths could be read. "
+            f"Check that the gateway's route_trace target was enabled for this run."
+        )
+    if len(parsed) % group_size != 0:
+        raise ValueError(
+            f"Found {len(parsed)} completed requests, which is not a whole number of groups of "
+            f"{group_size}. Pass the group_size this run was launched with."
+        )
+
+    parsed.sort()
+    groups = [
+        RequestGroup(
+            group_id=index,
+            prompt_len=parsed[index * group_size][1],
+            output_lens=tuple(row[2] for row in parsed[index * group_size : (index + 1) * group_size]),
+        )
+        for index in range(len(parsed) // group_size)
+    ]
+    cap = max_output_tokens or max(row[2] for row in parsed)
+    dryrun_logger.info(
+        "Extracted %d trajectories into %d groups of %d from %s.",
+        len(parsed),
+        len(groups),
+        group_size,
+        str(log_dir),
+    )
+    return write_group_trace(
+        groups,
+        output_path,
+        metadata={
+            "source": str(log_dir),
+            "max_output_tokens": cap,
+            "group_size": group_size,
+            "provenance": "psrl-trajectory-dump",
+        },
     )
 
 

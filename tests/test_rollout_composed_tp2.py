@@ -2,8 +2,8 @@
 
 Every other composed-rollout test at `tp>1` covers construction only, because until the tp=2
 GEMM and attention sweeps existed no table could answer a sharded query. So the path
-`predict -> comm_queries -> query_comm -> table -> SOL/utility` -- the entire reason the
-`all_reduce` op exists -- had never executed. This file closes that gap.
+`predict -> comm_queries -> query_comm -> table -> SOL/utility`: the entire reason the
+`all_reduce` op exists: had never executed. This file closes that gap.
 
 What is asserted here is that the comm term is present, positive, and exactly what
 `comm_queries` prices. It is NOT a claim about end-to-end accuracy: no vLLM tp=2 profiling

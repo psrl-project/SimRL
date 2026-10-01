@@ -7,8 +7,8 @@ kernel perf table instead, which is what makes those refits unnecessary.
 
 Two things make that harder than adding the numbers up.
 
-A composed step costs about 48 us to predict -- five GEMM lookups and one attention lookup
-against interpolated surfaces -- against a handful of float operations for a fitted formula. A
+A composed step costs about 48 us to predict: five GEMM lookups and one attention lookup
+against interpolated surfaces: against a handful of float operations for a fitted formula. A
 1000-step decode segment across 100 instances would be 100k predictions, roughly 5 seconds of
 pure cost-model time.
 
@@ -23,14 +23,14 @@ depth the utility surface is steep and the closed form is inaccurate, so a
 On the real DAPO trace (16 instances, 16 versions), against an all-lattice baseline:
 
     configuration            sim.run()   predict calls   simulated total   speedup   deviation
-    all lattice (default)       6.055s           16310         2828.57s         --          --
+    all lattice (default)       6.055s           16310         2828.57s          1.00x      0.00%
     hybrid, threshold 1024      5.056s           15644         2698.03s      1.20x       4.62%
     closed form everywhere      5.161s           15732         2702.60s      1.17x       4.45%
 
 The predict count barely moves (16310 to 15644, 4%) because a real workload spends most of its
 predictions on prefill, which segment integration never touches. The saving of a few calls per
 decode segment is invisible against that total. Meanwhile the deviation reaches 4.6%, which is
-the same magnitude as this model's error against a real vLLM server (decode 4.84%) -- so the
+the same magnitude as this model's error against a real vLLM server (decode 4.84%), so the
 approximation stops being a second-order term and starts polluting the result.
 
 Earlier figures of 300x and above came from a single instance running one artificially long
@@ -39,7 +39,7 @@ looks like. Set ``saturation_step_threshold`` to a finite value only if a worklo
 dominated by long deep-KV decode runs, and re-measure end to end before trusting the speedup.
 
 The threshold is a per-request KV depth (``ctxsum / n_d``), and it is a deliberately crude
-proxy. Measured, the >2% single-segment errors do not spread evenly with depth -- they sit
+proxy. Measured, the >2% single-segment errors do not spread evenly with depth: they sit
 entirely at ``n_d=16`` with depth 512 or 1024, because the generation-attention utility is
 non-monotone there (0.3154 at step 512, 0.2970 at 2048, 0.3363 at 4096) and a linear secant
 cannot express that dip. Depth alone therefore does not identify the bad region: at ``n_d=1``
@@ -51,7 +51,7 @@ That non-linearity correlates with the real error at 0.838, where a depth thresh
 at essentially zero. It costs 3 predict calls to make the routing decision. If the fast path is
 ever turned back on, that is the criterion to use rather than a depth cutoff.
 
-Known limitation. A mixed step -- prefill and decode tokens in the same batch -- is
+Known limitation. A mixed step (prefill and decode tokens in the same batch) is
 approximated as context attention plus generation attention at the step's batch size, because
 only the two pure phases were measured. Against the five buckets the six real mixed iterations
 form, it deviates by 0.48%. But those are all near-uniform batches, which is exactly the regime
@@ -63,20 +63,20 @@ fix and is out of scope here.
 
 Tensor parallelism above 1 is validated at `tp=2` above batch 32, and the collective term is
 real: `ModelOps.comm_queries` adds two all-reduces per layer, priced from a table measured
-through `get_tp_group().all_reduce` -- vLLM's own dispatcher, so the kernel timed is the kernel a
+through `get_tp_group().all_reduce`: vLLM's own dispatcher, so the kernel timed is the kernel a
 server runs. That distinction was measured, not assumed: on H20 at world sizes 2, 4 and 8,
 `torch.distributed.all_reduce` is never what the dispatcher selects, because the custom P2P
 kernel covers the entire 8-512 KiB range a decode step lives in.
 
 Against a real `tp=2` vLLM baseline on the same grid as the `tp=1` one, decode scores 3.18% over
-the 103 buckets at `requests >= 32` -- better than the 4.84% above -- and prefill 6.95%. The
+the 103 buckets at `requests >= 32` (better than the 4.84% above) and prefill 6.95%. The
 whole-grid decode mean is 16.39%, which is not a model error at face value: the `requests 5-16`
 buckets measure half the batch as slower than twice the batch at twice the KV depth, a
 self-contradiction produced by four servers sharing one machine. The `requests 1-4` buckets carry
 the same small-batch over-prediction documented at `tp=1`, worsened from 1.1312 to 1.3009.
 
 Two approximations remain. The all-reduce is timed in isolation, so overlap with compute is not
-represented -- though it is not the dominant term here, since every phase under-predicts
+represented, though it is not the dominant term here, since every phase under-predicts
 (median ratio 0.9648-0.9766) where an unmodelled overlap saving worth the collective's 13.1%
 share would have shown a ratio near 1.13. And every world size is measured intra-node over
 NVLink, so a cross-node `tp` would be priced with the wrong interconnect. `tp=4` and `tp=8` have
@@ -101,7 +101,7 @@ if TYPE_CHECKING:
 
 # Disables the closed-form fast path: no per-request KV depth can reach it, so every decode
 # segment integrates on the lattice. Measured end to end, the fast path bought 1.2x while
-# costing 4.6% deviation -- see the module docstring. Set a finite threshold to opt back in.
+# costing 4.6% deviation: see the module docstring. Set a finite threshold to opt back in.
 CLOSED_FORM_DISABLED = 1 << 62
 
 # Hard ceiling on decode-segment length. No decode segment can reach this under any configured
@@ -200,7 +200,7 @@ class ComposedRollout(RolloutCostModel):
         # Bounded memo on `predict`. Two sources of duplication arise in `advance_to`:
         # (1) `decode_steps_within` and `decode_segment_time` each build a fresh integrator
         #     for the same `(n_d, ctxsum)`, so identical `(n_d, ctxsum, offset)` triples
-        #     are evaluated twice -- a 1.75x measured redundancy on a real run_until.
+        #     are evaluated twice: a 1.75x measured redundancy on a real run_until.
         #     Not memoizing at the integrator level is intentional: each event sees a fresh
         #     ctxsum, so an integrator cache would grow unbounded with near-zero hit rate.
         # (2) `_step_time_estimate` and `_prefill_budget_step` both call `step_time` on
@@ -212,7 +212,7 @@ class ComposedRollout(RolloutCostModel):
         # the deduplication this exists for. A segment spans at most `_SEGMENT_CAP // stride + 2`
         # nodes: 1026 at the default stride, but 2^20 at `stride=1`, which the docs offer as the
         # exact-sum option. At ~172 bytes per entry an unbounded sizing would reach 180 MB, so
-        # it is clamped -- a stride that fine is inherently expensive, and paying it in repeated
+        # it is clamped: a stride that fine is inherently expensive, and paying it in repeated
         # table lookups is preferable to paying it in resident memory.
         self._predict_cache_cap = min(max(4096, _SEGMENT_CAP // stride + 2), _MAX_CACHE_ENTRIES)
 
@@ -332,7 +332,7 @@ class ComposedRollout(RolloutCostModel):
         """Return whether the workload is above a fitted low-load floor."""
         # Same reasoning as `decode_saturated_steps`. The base class returns False, which would
         # have this model report a step as unsaturated while simultaneously reporting all of its
-        # steps saturated -- telemetry reads both fields, so they must agree.
+        # steps saturated: telemetry reads both fields, so they must agree.
         return True
 
     def _use_closed_form(self, n_d: int, ctxsum: float) -> bool:

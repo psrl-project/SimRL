@@ -1,6 +1,6 @@
 """Simulation driver module."""
 
-from .config import SimConfig, SimResult, clip_length
+from .config import SimConfig, SimResult, clip_length, clip_total_length
 from .simulator import Simulator
 
 __all__ = [
@@ -8,4 +8,5 @@ __all__ = [
     "SimResult",
     "Simulator",
     "clip_length",
+    "clip_total_length",
 ]

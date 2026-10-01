@@ -4,7 +4,7 @@ One place configures the ``"dryrun"`` logger. The formatter follows the
 timestamp + source-location convention used by most mature logging setups
 (psrl/verl included): one line per record with a millisecond timestamp,
 level, logger name, PID, and ``file:line``, so any `dryrun_logger.info(...)`
-call can be traced back to its call site without a debugger, e.g.:
+call can be traced back to its call site without a debugger, e.g.
 
     2026-08-16 13:42:07.123 [INFO] dryrun (pid=12345) simulator.py:214 - ...
 
@@ -54,7 +54,7 @@ def setup_logging(
         level: Log level name (e.g. `"DEBUG"`) or numeric level. Defaults to
             the `DRYRUN_LOG_LEVEL` environment variable, then `"INFO"`.
         log_file: If given, also write logs to this file (in addition to
-            stderr) — e.g. alongside a run's JSONL telemetry under
+            stderr): e.g. alongside a run's JSONL telemetry under
             `output_dir/run.log`. Parent directories are created as needed.
         force: Reconfigure even if `setup_logging` already ran once.
 

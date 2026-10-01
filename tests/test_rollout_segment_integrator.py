@@ -41,7 +41,7 @@ def test_stride_one_reproduces_the_exact_sum():
 def test_a_linear_cost_integrates_exactly_at_any_stride():
     """On an affine cost the lattice is exact to floating point, whatever the stride."""
     # The lattice trapezoid-integrates over [0, k] while a segment sums the steps
-    # {0, ..., k-1}, and on an affine cost those differ by exactly (f(k) - f(0)) / 2 -- a
+    # {0, ..., k-1}, and on an affine cost those differ by exactly (f(k) - f(0)) / 2: a
     # structural offset, not an approximation error. Folding it into the reference is what
     # makes "exact" testable at 1e-12. Comparing against the bare sum would only confirm
     # that 1.96e-4 offset, and a loose tolerance there would still pass a broken lattice.

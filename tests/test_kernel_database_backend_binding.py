@@ -136,7 +136,7 @@ def test_a_floor_taking_query_takes_its_floor_from_the_query_backend(tmp_path, p
 
     At a measured point the round trip `SOL / (SOL / latency)` returns the stored latency
     exactly. That identity holds only when both halves resolve the same backend, so a query
-    method that dropped the resolved backend would price 10x high here -- the ratio of the two
+    method that dropped the resolved backend would price 10x high here: the ratio of the two
     fitted floors. The three public methods are parametrized because they are three entry points
     into one implementation, and the bug this pins was a method that omitted the argument.
     """

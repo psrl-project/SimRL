@@ -17,6 +17,64 @@ def clip_length(length: int, max_length: int | None) -> int:
     return min(length, max_length)
 
 
+def clip_total_length(
+    prompt_len: int,
+    output_len: int,
+    max_prompt_length: int | None,
+    max_output_length: int | None,
+) -> tuple[int, int]:
+    """Cap a `(prompt, output)` pair the way the serving stack really caps it.
+
+    The prompt is capped on its own, because truncation happens before the
+    request is ever dispatched. The output is then capped on the **total**:
+
+        output <= (max_prompt_length + max_output_length) - prompt_len
+
+    which is what PSRL computes (`vllm_async_server.py`, the `max_tokens`
+    fallback `min(response_length, response_length + prompt_length - len(prompt_ids))`).
+    A short prompt therefore buys extra output budget, and the measured run
+    shows it: 242 of 398 never-interrupted requests generated more than the
+    10240 response cap, every one of them landing exactly on
+    `11264 - prompt_len` (e.g. prompt 90 -> 11174 tokens).
+
+    Capping the two dimensions independently understates a short-prompt
+    request by up to `max_prompt_length` tokens of generation. On the DAPO
+    trace, whose prompts are 90-200 tokens against a 1024 cap, that is ~900
+    tokens per request, which made the simulated first batch finish at 342.6 s
+    against a measured 386.6 s.
+
+    Args:
+        prompt_len: Sampled prompt length.
+        output_len: Sampled output length.
+        max_prompt_length: Prompt cap. None means uncapped.
+        max_output_length: Output cap, and with the prompt cap it sets the
+            total budget. None means uncapped.
+
+    Returns:
+        The capped `(prompt_len, output_len)` pair.
+
+    TODO(lhy): Enrich what the trace records and make the sampling assumption
+    selectable. A trace currently stores one `(prompt_len, output_lens)` tuple
+    per group, which is the total-length distribution and nothing more. An
+    agentic or interrupted trajectory is really a *sequence* of segments, so
+    worth recording: per-segment lengths, the summed response length, and the
+    turn count. Then expose switches at simulate time for which distribution to
+    draw from: total length (today's behaviour), per-segment, or summed
+    response, so the effect of each assumption can be measured instead of
+    being baked in here.
+    """
+    prompt = clip_length(prompt_len, max_prompt_length)
+    if max_output_length is None:
+        return prompt, output_len
+    if max_prompt_length is None:
+        return prompt, clip_length(output_len, max_output_length)
+    # The budget is the full context the stack is willing to hold, so a prompt
+    # shorter than its cap leaves the remainder available for generation.
+    budget = max_prompt_length + max_output_length - prompt
+    # At least one token, so a prompt pinned at its cap still generates.
+    return prompt, max(1, min(output_len, budget))
+
+
 @dataclass
 class SimConfig:
     """Configuration for a single simulation run."""
@@ -25,12 +83,18 @@ class SimConfig:
     max_staleness: int = 1
     n_versions: int = 20
     sync_time: float = 0.0
-    recompute_time: float = 0.0
     training_tp: int = 1
     training_pp: int = 1
     training_dp: int = 1
     training_cp: int = 1
     training_micro_batch_size: int = 1
+    training_max_tokens_per_microbatch: int | None = None
+    """Token budget per training microbatch; None groups by `training_micro_batch_size`.
+
+    Pass the already-multiplied budget: verl computes
+    `max_token_len = ppo_max_token_len_per_gpu * sp_size`, and `sp_size` equals TP
+    under Megatron sequence parallelism. See `TrainingWorkload`.
+    """
     training_schedule: str = "1f1b"
     activation_recompute: str = "none"
     training_optimizer: str = "adam"

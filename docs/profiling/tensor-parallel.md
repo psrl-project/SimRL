@@ -106,7 +106,7 @@ CONFIG=examples/profile/vllm/qwen3_8b_tp2_serial.yaml \
     bash examples/profile/vllm/profile_qwen3_8b.sh all
 ```
 
-:::{warning}
+::{warning}
 Use `max_parallel: 1` for any baseline whose figures will be quoted. The first TP=2 baseline ran
 four servers across 8 GPUs and one CephFS mount, and one degraded mid-run: at per-request depth
 8,960, `reqs=16` measured 35.76 ms against `reqs=32`'s 19.24 ms: half the batch, half the total
@@ -118,7 +118,7 @@ The diagnostic is **monotonicity, not outliers**: a larger batch at deeper KV mu
 Scoring against each bucket's *minimum* latency moved the error only from 16.39% to 16.51%, which
 proves sustained degradation rather than transient spikes, so filtering outliers does not fix it
 and re-measurement is the only remedy.
-:::
+::
 
 The grid must match the `tp=1` grid if you want the two comparable bucket for bucket.
 `qwen3_8b_tp2.yaml` and `qwen3_8b_tp2_serial.yaml` both hold a `phases:` block byte-identical to

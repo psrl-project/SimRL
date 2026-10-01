@@ -54,6 +54,14 @@ class DryRunMeasurementCallback(Callback):
         self._seq_length = int(spec["seq_length"])
         self._micro_batch_size = int(spec["micro_batch_size"])
         self._expected_microbatches = int(spec["num_microbatches"])
+        self._packing = str(spec.get("packing", "bshd"))
+        # TP-aligned exactly as the launcher's THD iterator aligns them; recording
+        # the unaligned lengths would describe a buffer that never ran.
+        _tp = max(1, int(spec.get("parallelism", {}).get("tp", 1)))
+        self._sequence_lengths = [
+            length + (-length % _tp)
+            for length in (int(item) for item in spec.get("sequence_lengths", ()))
+        ]
         self._step_times: list[float] = []
         self._shapes: list[list[int]] = []
         self._parameter_count: int | None = None
@@ -62,7 +70,7 @@ class DryRunMeasurementCallback(Callback):
         self._static_reserved_bytes: int | None = None
         self._started_at: float | None = None
 
-    # -- training loop hooks ------------------------------------------------
+    # --- training loop hooks ------------------------------------------------
 
     def on_train_start(self, context: CallbackContext) -> None:
         """
@@ -111,7 +119,7 @@ class DryRunMeasurementCallback(Callback):
         if _rank() == 0:
             _write_json_atomic(self._run_dir / SIDECAR_NAME, self.sidecar(gathered))
 
-    # -- measurement accessors ---------------------------------------------
+    # --- measurement accessors ---------------------------------------------
 
     def local_memory(self) -> dict[str, int]:
         """Return this rank's peak allocated and reserved bytes."""
@@ -153,7 +161,7 @@ class DryRunMeasurementCallback(Callback):
             payload["static_reserved_bytes_at_train_start"] = self._static_reserved_bytes
         return payload
 
-    # -- internals ---------------------------------------------------------
+    # --- internals ---------------------------------------------------------
 
     def _record_microbatch_shape(self) -> None:
         """
@@ -163,6 +171,12 @@ class DryRunMeasurementCallback(Callback):
         data-parallel size; it cannot be set directly. This is where a mismatch
         against the candidate becomes a hard error instead of a fit silently
         attributed to the wrong pipeline depth.
+
+        The recorded shape has to be what the attention kernel saw: the collector
+        turns it into `SequenceStats` and the quadratic latency term is fitted
+        against `sum_squared_tokens`. BSHD pads to the longest sequence, so the
+        shape is `[seq_length] * micro_batch_size`; THD keeps the per-sequence
+        lengths, whose individual squares are what the pack actually costs.
         """
         from megatron.core.num_microbatches_calculator import get_num_microbatches
 
@@ -173,7 +187,16 @@ class DryRunMeasurementCallback(Callback):
                 f"requested {self._expected_microbatches}. Check global_batch_size, "
                 "micro_batch_size, and the data-parallel size."
             )
-        self._shapes = [[self._seq_length] * self._micro_batch_size] * observed
+        if self._packing == "thd":
+            if not self._sequence_lengths:
+                raise RuntimeError(
+                    "THD packing requires sequence_lengths in the launch spec so the "
+                    "per-sequence squares can be recorded."
+                )
+            shape = list(self._sequence_lengths)
+        else:
+            shape = [self._seq_length] * self._micro_batch_size
+        self._shapes = [shape] * observed
 
 
 def _global_parameter_count(context: CallbackContext) -> int | None:

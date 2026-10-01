@@ -15,7 +15,7 @@
 - Hosts: `29.162.247.148` (local), `28.49.16.220` (remote, passwordless SSH). 8 H20 each.
 - **No backward compatibility.** Remove obsolete paths rather than adding fallbacks (AGENTS.md).
 - **Per-response lengths MUST come from `len(choice["token_ids"])`.** `usage.completion_tokens` is the sum over all `n` choices.
-- **Dedup dataset prompts on `extra_info.index`** before subsampling — only 17,917 of 1,791,700 rows are unique.
+- **Dedup dataset prompts on `extra_info.index`** before subsampling: only 17,917 of 1,791,700 rows are unique.
 - Style: `.claude/coding-style.md`. Identifier strings never take a trailing period; log/assert messages do. Docstrings use `Args:`/`Returns:`.
 - Every task ends `pytest` green and `ruff check` clean.
 
@@ -29,7 +29,7 @@
 
 **Interfaces:**
 - Produces:
-  - `RequestGroup(group_id: int, prompt_len: int, output_lens: tuple[int, ...])` — frozen dataclass in `dryrun/workload/trace.py`
+  - `RequestGroup(group_id: int, prompt_len: int, output_lens: tuple[int, ...])`: frozen dataclass in `dryrun/workload/trace.py`
   - `write_group_trace(groups: list[RequestGroup], output_path: str | Path, metadata: dict[str, Any], n_bins: int = 20) -> Path`
   - `read_group_trace(path: str | Path, n_groups: int = 0) -> list[RequestGroup]`
   - `compute_group_stats(groups: list[RequestGroup], max_output_tokens: int, n_bins: int = 20) -> dict[str, Any]`
@@ -118,7 +118,7 @@ cd /apdcephfs_zwfy/share_303760348/lhy/DryRun-RL
 pytest tests/test_workload_trace_groups.py -q
 ```
 
-Expected: FAIL — `ImportError: cannot import name 'RequestGroup'`.
+Expected: FAIL: `ImportError: cannot import name 'RequestGroup'`.
 
 - [ ] **Step 3: Implement**
 
@@ -294,7 +294,7 @@ git commit -m "feat: add joint group trace artifact I/O"
 - Produces:
   - `GroupedWorkload` with `from_groups(groups)`, `from_lengths(prompt_lengths, output_lengths)`, `from_trace(path, n_groups=0)`, `n_requests` / `n_groups` properties, `mean_prompt_len` property, and `request(index: int) -> tuple[int, int, int]` returning `(group_id, prompt_len, output_len)`.
   - `SimConfig.workload: GroupedWorkload` replaces `SimConfig.prompt_lengths`.
-  - `Simulator.__init__(rollout_cost, policy, cfg, ...)` — the `lengths` parameter is gone; the workload comes from `cfg.workload`.
+  - `Simulator.__init__(rollout_cost, policy, cfg, ...)`: the `lengths` parameter is gone; the workload comes from `cfg.workload`.
   - `Request.group_id: int = 0`.
 
 An ungrouped workload is genuinely a workload of groups of size 1, so `from_lengths` is the universal representation rather than a compatibility shim.
@@ -386,7 +386,7 @@ class TestFromTrace:
 pytest tests/test_workload_grouped.py -q
 ```
 
-Expected: FAIL — `ModuleNotFoundError: No module named 'dryrun.workload.grouped'`.
+Expected: FAIL: `ModuleNotFoundError: No module named 'dryrun.workload.grouped'`.
 
 - [ ] **Step 3: Create `dryrun/workload/grouped.py`**
 
@@ -514,7 +514,7 @@ In `dryrun/component/rollout/engine/request.py`, add the field directly after `v
 
 - [ ] **Step 6: Replace `prompt_lengths` in `SimConfig`**
 
-In `dryrun/simulator/config.py`, add the import and swap the field. Delete the `prompt_lengths` line entirely — no alias.
+In `dryrun/simulator/config.py`, add the import and swap the field. Delete the `prompt_lengths` line entirely: no alias.
 
 ```python
 from ..workload.grouped import GroupedWorkload
@@ -658,7 +658,7 @@ and pass `None` for `lengths` in that `_run_sim` call.
 - [ ] **Step 9b: Update the `build_workload` test for the new return type**
 
 `build_workload` now returns one `GroupedWorkload` instead of a tuple, so
-`tests/test_config.py::test_build_workload_prompt_and_output` (line ~189) no
+`tests/test_config.py:test_build_workload_prompt_and_output` (line ~189) no
 longer unpacks. Replace it with:
 
 ```python
@@ -678,7 +678,7 @@ longer unpacks. Replace it with:
 pytest tests/test_workload_grouped.py tests/test_e2e.py tests/test_config.py -q
 ```
 
-Expected: all pass. Fix any other `SimConfig(prompt_lengths=...)` or `Simulator(lengths=...)` call site the failures reveal — `grep -rn "prompt_lengths\|lengths=" tests/ dryrun/` should return no stale uses.
+Expected: all pass. Fix any other `SimConfig(prompt_lengths=...)` or `Simulator(lengths=...)` call site the failures reveal: `grep -rn "prompt_lengths\|lengths=" tests/ dryrun/` should return no stale uses.
 
 - [ ] **Step 11: Commit**
 
@@ -777,7 +777,7 @@ class TestBuildCompletionPayload:
 pytest tests/test_workload_group_collection.py -q
 ```
 
-Expected: FAIL — `ImportError: cannot import name 'build_completion_payload'`.
+Expected: FAIL: `ImportError: cannot import name 'build_completion_payload'`.
 
 - [ ] **Step 3: Add the deduplicating loader**
 
@@ -1023,7 +1023,7 @@ class TestMergeShards:
 pytest tests/test_workload_sharding.py -q
 ```
 
-Expected: FAIL — `ModuleNotFoundError: No module named 'dryrun.workload.sharding'`.
+Expected: FAIL: `ModuleNotFoundError: No module named 'dryrun.workload.sharding'`.
 
 - [ ] **Step 3: Create `dryrun/workload/sharding.py`**
 
@@ -1031,7 +1031,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'dryrun.workload.shardi
 """Sharding for distributed workload collection.
 
 A worker is one `(host, gpu)` pair addressed by a flat index. Prompts are split
-as `prompts[index::n_workers]`, so a worker's shard is a function of its index
+as `prompts[index:n_workers]`, so a worker's shard is a function of its index
 alone: rerunning worker 7 reproduces exactly worker 7's prompts, and one failed
 shard retries without disturbing the others.
 """
@@ -1252,7 +1252,7 @@ class TestMergeShardsCLI:
 pytest tests/test_workload_group_driver.py -q
 ```
 
-Expected: FAIL — `argument command: invalid choice: 'collect-groups'`.
+Expected: FAIL: `argument command: invalid choice: 'collect-groups'`.
 
 - [ ] **Step 3: Add the driver**
 
@@ -1632,7 +1632,7 @@ with `from pathlib import Path` and `import dryrun.config` added to the imports.
 pytest tests/test_config.py -k WorkloadSource -q
 ```
 
-Expected: FAIL — `dapo_trace` config group not found.
+Expected: FAIL: `dapo_trace` config group not found.
 
 - [ ] **Step 3: Extend the schema**
 
@@ -1749,8 +1749,8 @@ git commit -m "feat: select the workload source explicitly in config"
 # dapo-math-17k across every GPU listed in hosts.txt.
 set -euo pipefail
 
-ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd ("$(dirname) "${BASH_SOURCE[0]}")/../../.." && pwd)"
+SCRIPT_DIR="$(cd ("$(dirname) "${BASH_SOURCE[0]}")" && pwd)"
 
 HOSTS_FILE="${HOSTS_FILE:-${SCRIPT_DIR}/hosts.txt}"
 DATASET="${DATASET:-/apdcephfs_zwfy/share_303760348/lhy/data/dapo/dapo-math-17k.parquet}"
@@ -1872,8 +1872,8 @@ and delete the earlier standalone `if [[ ! -f "${DIST_FILE}" ]]` check. Because 
 # Simulate the DAPO Qwen3-8B tp=1 workload from a collected joint group trace.
 set -euo pipefail
 
-ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd ("$(dirname) "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR="$(cd ("$(dirname) "${BASH_SOURCE[0]}")" && pwd)"
 
 TRACE="${TRACE:-${ROOT_DIR}/outputs/workload/qwen3_8b_dapo_tp1/joint.jsonl}"
 if [[ ! -f "${TRACE}" ]]; then
@@ -1975,7 +1975,7 @@ cd /apdcephfs_zwfy/share_303760348/lhy/DryRun-RL
 bash examples/workload/dapo_qwen3_8b/collect_joint_trace.sh
 ```
 
-Expected: 16 workers launch (staggered), roughly 35-40 minutes, ending with `Joint trace: .../joint.jsonl`. If a worker fails, read its log under `outputs/workload/qwen3_8b_dapo_tp1/shards/` and rerun the same script — finished shards are skipped.
+Expected: 16 workers launch (staggered), roughly 35-40 minutes, ending with `Joint trace: .../joint.jsonl`. If a worker fails, read its log under `outputs/workload/qwen3_8b_dapo_tp1/shards/` and rerun the same script: finished shards are skipped.
 
 - [ ] **Step 2: Check the collected distribution against the probe**
 
@@ -1992,7 +1992,7 @@ print('truncated', s['output']['truncated_fraction'])
 "
 ```
 
-Expected: 1024 groups, group_size 8, prompt mean near 154, output mean near 8200, truncated fraction near 0.31. A large deviation means the sampling or the cap differs from the probe — investigate before simulating rather than reporting numbers built on a bad trace.
+Expected: 1024 groups, group_size 8, prompt mean near 154, output mean near 8200, truncated fraction near 0.31. A large deviation means the sampling or the cap differs from the probe: investigate before simulating rather than reporting numbers built on a bad trace.
 
 - [ ] **Step 3: Run the full simulation**
 

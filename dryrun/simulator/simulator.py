@@ -25,7 +25,7 @@ from ..cost.training import (
 from ..policy.base import CompleteAction, SimState, StalenessPolicy
 from ..telemetry.store import JsonlStore
 from ..telemetry.writer import SimTelemetry
-from .config import SimConfig, SimResult, clip_length
+from .config import SimConfig, SimResult, clip_total_length
 
 
 class Simulator:
@@ -61,10 +61,9 @@ class Simulator:
             cp=cfg.training_cp,
         )
         self.sync_cost = sync_cost or FixedSyncCost(cfg.sync_time)
-        mean_prompt_len = self.workload.mean_prompt_len
-        self.recompute_cost = recompute_cost or FixedRecomputeCost(
-            cfg.recompute_time / max(1, cfg.batch_size * mean_prompt_len) if cfg.recompute_time > 0 else 0.0
-        )
+        # No recompute model means no log-prob pass is charged. A real PPO/GRPO
+        # loop always has one, so an aligned run must pass one explicitly.
+        self.recompute_cost = recompute_cost or FixedRecomputeCost(0.0)
 
         self.instances: list[NativeInstance] = []
         for i in range(cfg.n_instances):
@@ -124,15 +123,44 @@ class Simulator:
         pairing is the one that was observed rather than a product of two
         independent modulo lookups.
 
+        The pair is capped on its **total**, not per dimension: the serving
+        stack budgets `max_prompt_length + max_output_length` of context, so a
+        short prompt leaves the remainder available for generation. See
+        `clip_total_length`.
+
         Returns:
             tuple[int, int, int]: The group id and the system-capped lengths.
         """
         group_id, prompt_len, output_len = self.workload.request(self.next_rid)
-        return (
-            group_id,
-            clip_length(prompt_len, self.cfg.max_prompt_length),
-            clip_length(output_len, self.cfg.max_output_length),
+        prompt, target = clip_total_length(
+            prompt_len,
+            output_len,
+            self.cfg.max_prompt_length,
+            self.cfg.max_output_length,
         )
+        return group_id, prompt, target
+
+    def _training_sequence_length(self, req: Request) -> int:
+        """Return the length the trainer sees, which is not the length generated.
+
+        Rollout and training cap differently:
+
+        - Generation gets a *shared* budget, `response_length + prompt_length` less the
+          prompt actually consumed, so a short prompt buys extra output room and the
+          engine can emit well past the nominal response cap.
+        - Training gets *per-dimension* caps: the sample handed to the trainer holds at
+          most `max_output_length` response tokens whatever the prompt length was.
+
+        So the trained length is `min(prompt, max_prompt) + min(response, max_output)`,
+        and the tokens past the cap are charged to rollout but not to training.
+
+        Returns:
+            The context length the trainer would see, floored at one token.
+        """
+        if self.cfg.max_output_length is None:
+            return req.ctx
+        prompt = min(req.prompt_len, self.cfg.max_prompt_length or req.prompt_len)
+        return max(1, prompt + min(req.generated, self.cfg.max_output_length))
 
     def _select_instance(self, req: Request) -> int:
         loads = [inst.n_active for inst in self.instances]
@@ -437,11 +465,12 @@ class Simulator:
             self._discard(expired)
             self.telemetry.emit_instance_all(self.instances)
 
-        sequence_lengths = tuple(req.ctx for req in batch)
+        sequence_lengths = tuple(self._training_sequence_length(req) for req in batch)
         total_tokens = sum(sequence_lengths)
         training_workload = TrainingWorkload(
             sequence_lengths=sequence_lengths,
             micro_batch_size=self.cfg.training_micro_batch_size,
+            max_tokens_per_microbatch=self.cfg.training_max_tokens_per_microbatch,
             schedule=self.cfg.training_schedule,
             recompute=self.cfg.activation_recompute,
             optimizer=self.cfg.training_optimizer,
@@ -463,9 +492,8 @@ class Simulator:
         weight_sync = self.policy.will_sync_after_train(self._state())
         sync_time = self.sync_cost.sync_time(0, self.cfg.n_instances, 0) if weight_sync else 0.0
         recompute_time = self.recompute_cost.recompute_time(
-            len(batch),
-            total_tokens,
-            self.training_parallelism.dp,
+            training_workload,
+            self.training_parallelism,
         )
 
         total_duration = train_time + sync_time + recompute_time

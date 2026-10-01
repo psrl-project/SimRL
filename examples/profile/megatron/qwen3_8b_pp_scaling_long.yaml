@@ -1,0 +1,54 @@
+# Extends the PP sweep's token range to cover the real run's longest sequence.
+#
+# The {1, 4} sweep tops out at 8192 tokens per microbatch, but the PSRL baseline
+# caps a trajectory at prompt 1024 + response 10240 = 11264, and the `tokens`
+# feature is gated on the LARGEST microbatch rather than the mean. Simulating the
+# baseline against the {1, 4} + {64} fit therefore raises
+# `TrainingOutOfDomainError: 'tokens'=11264 outside [1024, 8192]`.
+#
+# Only num_microbatches=1 is needed. `token_cost` and `token_quadratic_cost` are
+# per-microbatch quantities, so extending the token axis does not require
+# re-measuring the slot axis (which the nmb=64 config already covers to 66
+# slots). One microbatch at 12288 tokens is also the cheapest way to buy the
+# range: a nmb=64 candidate at that length would run 64 microbatches per step.
+#
+# Two PP values so the per-layer form is checked at the long end too, not just
+# assumed to keep holding there.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 6
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen3_8b/megatron_pp_scaling
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  max_steps: 12
+  warmup_steps: 4
+
+profiling:
+  allow_incomplete: false
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+# 12288 rather than exactly 11264, so the real cap is interior to the fitted
+# domain instead of sitting on its boundary.
+search_space:
+  tensor_parallel_sizes: [2]
+  pipeline_parallel_sizes: [1, 3]
+  data_parallel_sizes: [1]
+  micro_batch_size: 1
+  num_microbatches: [1]
+  sequence_lengths: [12288]
+  recompute: full

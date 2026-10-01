@@ -48,7 +48,7 @@ were wrong in detail:
   `kernel_source` column reads `mixed` for every world size, and the per-row dispatch is only
   recoverable from this file and the profiler's log.
 - **tp=8 splits at 256 KiB**, not at the 256 KiB custom-AR ceiling the plan cited from
-  `CUSTOM_ALL_REDUCE_MAX_SIZES` -- the observed boundary agrees with that ceiling, but via
+  `CUSTOM_ALL_REDUCE_MAX_SIZES`: the observed boundary agrees with that ceiling, but via
   `should_custom_ar` rather than the table lookup the plan reasoned from.
 
 Neither changes the conclusion for the composed model: a Qwen3-8B rollout step never leaves the
@@ -66,5 +66,5 @@ Neither changes the conclusion for the composed model: a Qwen3-8B rollout step n
 | 131072 | 476.11 | 473.70 | 0.99 |
 
 In the decode range the two agree within ~6%, both pinned to a ~18 us launch floor. The old
-table was therefore not badly wrong *in latency* for decode -- it was wrong in *identity*, and
+table was therefore not badly wrong *in latency* for decode: it was wrong in *identity*, and
 the gap opens to 1.5-1.9x in the low-MiB prefill range where the custom kernel wins.

@@ -42,13 +42,19 @@ class SimTelemetry:
 
     @staticmethod
     def _req_len_snapshot(reqs: Iterable[Request]) -> dict[str, dict[str, int]]:
-        """`rid -> {generated, target_len, ctx, prefilled}` for one queue."""
+        """`rid -> {generated, target_len, ctx, prefilled, num_aborts}` for one queue.
+
+        `num_aborts` is here because `generated` alone can no longer identify an
+        interrupted request: a weight update discards the generated tokens, so a
+        just-aborted waiter looks exactly like a freshly admitted one.
+        """
         return {
             str(r.rid): {
                 "generated": r.generated,
                 "target_len": r.target_len,
                 "ctx": r.ctx,
                 "prefilled": r.prefilled,
+                "num_aborts": r.num_aborts,
             }
             for r in reqs
         }

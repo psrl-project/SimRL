@@ -15,7 +15,7 @@ from dryrun.policy.psrl import PSRLPolicy
 from dryrun.policy.roll import RollPolicy
 from dryrun.policy.slime import SlimePolicy
 from dryrun.policy.verl import VerlPolicy
-from dryrun.simulator import SimConfig, Simulator, clip_length
+from dryrun.simulator import SimConfig, Simulator, clip_length, clip_total_length
 from dryrun.telemetry.store import JsonlStore
 from dryrun.workload.distributions import bimodal, uniform
 from dryrun.workload.grouped import GroupedWorkload
@@ -225,15 +225,20 @@ class TestVariablePromptLengths:
 
 
 def _is_partial_abort(row: dict) -> bool:
-    """True when running is empty and interrupted waiters still need a re-prefill."""
+    """True when a weight update has just emptied the running queue.
+
+    Keyed on `num_aborts > 0` rather than on `generated > 0`. A weight update
+    discards the generated tokens (smg re-dispatches from the original prompt
+    instead of continuing the sequence), so a just-aborted waiter is otherwise
+    indistinguishable from a freshly admitted one.
+    """
     if row["num_running_reqs"] != 0:
         return False
     waiting = row.get("waiting_len") or {}
     if not waiting:
         return False
-    infos = list(waiting.values())
-    return all(info["prefilled"] == 0 for info in infos) and any(
-        info["generated"] > 0 for info in infos
+    return all(info["prefilled"] == 0 for info in waiting.values()) and any(
+        info.get("num_aborts", 0) > 0 for info in waiting.values()
     )
 
 
@@ -381,6 +386,36 @@ class TestLengthCaps:
         with pytest.raises(ValueError, match="Expected max_length >= 1"):
             clip_length(10, 0)
 
+    def test_clip_total_length_gives_short_prompts_extra_budget(self):
+        """The cap is on the total, so a short prompt can generate past the output cap.
+
+        This is what the serving stack does: PSRL's `max_tokens` fallback is
+        `min(response_length, response_length + prompt_length - len(prompt_ids))`.
+        The measured run confirms it: a 90-token prompt generated 11174
+        tokens against a 10240 "output cap", landing exactly on the 11264 total.
+        """
+        prompt, output = clip_total_length(90, 20_000, 1024, 10_240)
+        assert (prompt, output) == (90, 11_174)
+        assert prompt + output == 1024 + 10_240
+
+    def test_clip_total_length_prompt_at_cap_gets_only_the_output_cap(self):
+        prompt, output = clip_total_length(2_000, 20_000, 1024, 10_240)
+        assert (prompt, output) == (1024, 10_240)
+
+    def test_clip_total_length_leaves_short_samples_alone(self):
+        assert clip_total_length(90, 5_000, 1024, 10_240) == (90, 5_000)
+
+    def test_clip_total_length_uncapped_dimensions_pass_through(self):
+        assert clip_total_length(9_000, 20_000, None, None) == (9_000, 20_000)
+        # Without a prompt cap there is no total to budget against, so the
+        # output cap applies on its own.
+        assert clip_total_length(90, 20_000, None, 10_240) == (90, 10_240)
+
+    def test_clip_total_length_always_leaves_one_token(self):
+        """A prompt filling the whole budget must still generate something."""
+        _, output = clip_total_length(1024, 20_000, 1024, 0 + 1)
+        assert output >= 1
+
     def test_simulator_truncates_prompt_and_output(self):
         cfg = SimConfig(
             batch_size=4,
@@ -395,7 +430,8 @@ class TestLengthCaps:
         requests = result.consumed + result.dropped
         assert requests, "Expected at least one admitted request."
         assert all(r.prompt_len <= 256 for r in requests)
-        assert all(r.target_len <= 80 for r in requests)
+        # Capped on the total, so the output allowance is 256 + 80 - prompt_len.
+        assert all(r.prompt_len + r.target_len <= 256 + 80 for r in requests)
         assert any(r.target_len == 10 for r in requests)
 
 

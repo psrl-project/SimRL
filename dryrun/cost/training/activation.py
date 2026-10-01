@@ -16,7 +16,7 @@ Measured on 8x H20, Qwen3-8B (36 layers, hidden 4096, vocab 151936), micro-batch
 sequence lengths 512/1024/2048, across four topologies. Per-token slopes of peak
 allocated bytes: 624202 at TP1/PP1, 402054 at TP1/PP4, 398009 at TP4/PP1, 354868 at
 TP8/PP1. Fitting all four recovers a layer coefficient of 1.0012 and a logit
-coefficient of 1.0580 with at most 1.3% error -- coefficients that also match what the
+coefficient of 1.0580 with at most 1.3% error: coefficients that also match what the
 two-layer and thirty-six-layer slopes give independently, which is why they are treated
 as analytic rather than fitted.
 
@@ -38,8 +38,8 @@ from .base import TrainingOutOfDomainError, TrainingParallelism
 # Empirical multiplier on the logit term, covering loss-computation temporaries that
 # live alongside the logits and are not separately modelled.
 #
-# Solving the two measured per-token slopes jointly -- 345721 bytes at 2 layers and
-# 624403 bytes at 36 layers, same hidden size and vocabulary -- separates the two
+# Solving the two measured per-token slopes jointly: 345721 bytes at 2 layers and
+# 624403 bytes at 36 layers, same hidden size and vocabulary: separates the two
 # terms exactly: the layer coefficient comes out at 1.0006, i.e. `hidden * 2` bytes
 # per layer per token to within 5 bytes, while the logit coefficient comes out at
 # 1.0568. So the layer term is analytic and this residual belongs to the loss path.
@@ -123,8 +123,8 @@ class ActivationGeometry:
         bytes at TP=1, 398009 at TP=4, 354868 at TP=8, where dividing both terms would
         predict 156059 and 78029. Fitting the four profiled topologies with the logit
         term left replicated recovers a layer coefficient of 1.0012 and a logit
-        coefficient of 1.0580 -- both matching the values obtained independently from
-        the two-layer and thirty-six-layer slopes -- with at most 1.3% error. Dividing
+        coefficient of 1.0580: both matching the values obtained independently from
+        the two-layer and thirty-six-layer slopes: with at most 1.3% error. Dividing
         it instead forced the fitted scale to 2.53 at TP=4 and 4.59 at TP=8, which is
         the signature of a wrong term rather than a machine-specific correction.
 
@@ -164,7 +164,7 @@ def activation_bytes(
       each microbatch immediately after receiving it.
 
     That asymmetry is why the measured peak rank at PP=4 was identical for one and four
-    microbatches -- 27.81 GiB in both cases. Scaling checkpoints by
+    microbatches: 27.81 GiB in both cases. Scaling checkpoints by
     `min(num_microbatches, pp)` on the peak stage would have predicted 0.56 GiB of
     difference. Modelling both ends and taking the larger reproduces it, and it is also
     why the *non*-peak ranks did move slightly with the microbatch count.

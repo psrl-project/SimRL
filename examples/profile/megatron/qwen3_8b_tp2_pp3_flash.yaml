@@ -1,0 +1,45 @@
+# Same mesh and candidates as qwen3_8b_tp2_pp3.yaml, but writes to a fresh
+# output tree so the old cuDNN-measured data (profiled 2026-09-28, before the
+# launch.py attention_backend fix) is not mixed with the corrected flash-attn
+# measurements.
+#
+# All profiler runs now set cfg.model.attention_backend = AttnBackend.flash,
+# matching verl's Megatron engine. The qwen3_8b recipe defaulted to None, which
+# on H20 resolves to cuDNN SDPA (~1.5x slower than FA2 varlen for packed batches).
+# That single difference was the dominant source of the 1.84x gap between profiled
+# step times and live PSRL step times.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 6
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen3_8b/megatron_tp2_pp3_flash
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  max_steps: 12
+  warmup_steps: 4
+
+profiling:
+  allow_incomplete: false
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+search_space:
+  tensor_parallel_sizes: [2]
+  pipeline_parallel_sizes: [3]
+  micro_batch_size: 1
+  num_microbatches: [1, 4]
+  sequence_lengths: [1024, 2048, 4096, 8192, 12288]
+  recompute: full

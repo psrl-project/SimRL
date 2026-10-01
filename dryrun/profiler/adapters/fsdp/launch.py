@@ -98,7 +98,7 @@ def build_model(spec: dict[str, Any]) -> torch.nn.Module:
     config.use_cache = False
     # The module dtype is the master-weight dtype: the storage the optimizer operates on
     # and from which the static inventory is sized. AdamW inherits its moment dtype from
-    # the parameter dtype it is handed -- verified experimentally: a bf16 module produces
+    # the parameter dtype it is handed: verified experimentally: a bf16 module produces
     # bf16 moments, an fp32 module produces fp32 moments. `MixedPrecisionPolicy.param_dtype`
     # (`compute_dtype`) governs only the all-gathered parameters used during forward/backward;
     # those are transient and freed per block when `reshard_after_forward=True`, so they are
@@ -209,8 +209,8 @@ def check_optimizer_state_dtype(optimizer, spec: dict[str, Any]) -> None:
     """
     Fail loudly when AdamW's moments disagree with the declared `optimizer_state_dtype`.
 
-    The launcher does not yet honour the declared dtype -- torch allocates the moments
-    to match the parameters it was handed -- but the analytic inventory sizes optimizer
+    The launcher does not yet honour the declared dtype: torch allocates the moments
+    to match the parameters it was handed, but the analytic inventory sizes optimizer
     state *from that declaration*. A spec claiming fp32 while the moments are bf16 is a
     plausible-but-wrong measurement that nothing downstream can detect, so the mismatch
     is raised at profile time instead of becoming a wrong coefficient at fit time.
@@ -329,7 +329,7 @@ def main() -> None:
                 check_optimizer_state_dtype(optimizer, spec)
         # Collectives are profiled after the timed loop, never inside it. torch.profiler
         # inflates its own step by roughly an order of magnitude and leaves a ~2x tail on
-        # the next one or two steps, and MAD dispersion is blind to a single outlier -- so
+        # the next one or two steps, and MAD dispersion is blind to a single outlier, so
         # an in-loop profiled step passes the smoke gate while poisoning retained[0].
         # Measured 2.73x against a 1.35x control on 8 ranks. Out of the loop the profiled
         # step needs no warmup of its own and can contaminate no retained sample.

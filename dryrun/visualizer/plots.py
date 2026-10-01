@@ -4,7 +4,7 @@
 every plot streams the records it needs straight out of the store's JSONL
 files. This means visualization can run standalone against a previous run's
 logs (see `dryrun.cli.plot`) without re-simulating, and adding a new plot is
-just a new `plot_*` method plus `store.iter("some_stream")` -- no changes to
+just a new `plot_*` method plus `store.iter("some_stream")`: no changes to
 the simulator or the store are required.
 """
 

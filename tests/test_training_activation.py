@@ -39,7 +39,7 @@ def _microbatches(seq_length: int, count: int) -> tuple[SequenceStats, ...]:
     return tuple(SequenceStats.from_lengths([seq_length]) for _ in range(count))
 
 
-# -- static inventory -------------------------------------------------------
+# --- static inventory -------------------------------------------------------
 
 
 def test_gradient_buffer_is_not_sharded_by_data_parallelism():
@@ -47,8 +47,8 @@ def test_gradient_buffer_is_not_sharded_by_data_parallelism():
     The gradient buffer is the reduce-scatter source, so it is full size on every rank.
 
     Probing the live tensors at TP1/PP1/DP8 reported `param_data` at 15.256 GiB and
-    `grad_data` at 30.513 GiB -- exactly 2 and 4 bytes per parameter with no division
-    -- while the fp32 master shard was 3.814 GiB, exactly 4 bytes per parameter over
+    `grad_data` at 30.513 GiB: exactly 2 and 4 bytes per parameter with no division
+   , while the fp32 master shard was 3.814 GiB, exactly 4 bytes per parameter over
     eight ranks. Dividing gradients by the data-parallel degree understated the true
     footprint roughly twofold.
     """
@@ -103,7 +103,7 @@ def test_optimizer_sharding_only_affects_optimizer_state():
     assert replicated.total_bytes > sharded.total_bytes
 
 
-# -- activation geometry ----------------------------------------------------
+# --- activation geometry ----------------------------------------------------
 
 
 def test_per_token_slope_matches_the_measured_thirty_six_layer_slope():
@@ -168,7 +168,7 @@ def test_geometry_requires_vocab_size():
         ActivationGeometry.from_model(model)
 
 
-# -- in-flight microbatches -------------------------------------------------
+# --- in-flight microbatches -------------------------------------------------
 
 
 def test_microbatch_count_does_not_change_activation_without_pipelining():
@@ -245,7 +245,7 @@ def test_full_prediction_reproduces_the_measured_peak():
     assert predicted == pytest.approx(58.766, abs=1.5)
 
 
-# -- pipeline stage imbalance ----------------------------------------------
+# --- pipeline stage imbalance ----------------------------------------------
 
 
 def test_pipeline_stages_are_not_uniform():

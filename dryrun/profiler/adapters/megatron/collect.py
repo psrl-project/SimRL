@@ -46,11 +46,17 @@ def _validate_resolved_config(
     from omegaconf import OmegaConf
 
     resolved = OmegaConf.load(path)
+    # Derived the same way as `prepare.build_launch_spec`.
+    expected_seq_length = (
+        sum(candidate.sequence_shape)
+        if candidate.packing == "thd"
+        else max(candidate.sequence_shape)
+    )
     expected: dict[str, Any] = {
         "model.tensor_model_parallel_size": candidate.parallelism.tp,
         "model.pipeline_model_parallel_size": candidate.parallelism.pp,
         "model.context_parallel_size": candidate.parallelism.cp,
-        "model.seq_length": max(candidate.sequence_shape),
+        "model.seq_length": expected_seq_length,
         "train.micro_batch_size": candidate.micro_batch_size,
         "train.global_batch_size": candidate.global_batch_size,
     }
@@ -183,6 +189,7 @@ def collect_bridge_record(
             int(metrics.get("parameter_count", config.model.parameter_count or 0)) or None
         ),
         warmup_steps=config.warmup_steps,
+        packing=candidate.packing,
     )
     software = SoftwareDescriptor(
         backend="megatron_bridge",

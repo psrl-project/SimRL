@@ -4,7 +4,7 @@ Time vLLM's elementwise kernels: rmsnorm, rope, activation, and qk_norm.
 Two traps make this module's shape non-obvious, both measured on H20 rather than assumed.
 
 **The raw fused op must be timed, not the module that wraps it.** Calling `RMSNorm(...)` as a
-module costs 60.33 us at 16 tokens against 4.57 us for `vllm._custom_ops.rms_norm` -- 13.2x.
+module costs 60.33 us at 16 tokens against 4.57 us for `vllm._custom_ops.rms_norm`: 13.2x.
 The gap is Python dispatch through `CustomOp.__call__`, which the server never pays because it
 replays these kernels inside a CUDA graph. Timing the module would inflate the table by an
 order of magnitude and the utility surface would absorb the error silently.

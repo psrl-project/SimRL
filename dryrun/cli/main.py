@@ -11,7 +11,12 @@ import hydra
 from omegaconf import DictConfig
 
 from .._logging import dryrun_logger, setup_logging
-from ..component.recompute.cost import AnalyticalRecomputeCost, FixedRecomputeCost, RecomputeCostModel
+from ..component.recompute.cost import (
+    AnalyticalRecomputeCost,
+    FixedRecomputeCost,
+    RecomputeCostModel,
+    TrainingForwardRecomputeCost,
+)
 from ..component.sync.cost import BandwidthSyncCost, FixedSyncCost, SyncCostModel
 from ..config import register_configs
 from ..cost.rollout import (
@@ -20,6 +25,7 @@ from ..cost.rollout import (
     RolloutCostModel,
     UnifiedRoofline,
 )
+from ..cost.rollout.kv_cache import KvCacheGeometry, kv_blocks_from_memory
 from ..cost.training import (
     TRAINING_MODEL_REGISTRY,
     AnalyticalTrainingCost,
@@ -284,8 +290,18 @@ def build_sync_cost(cfg: DictConfig) -> SyncCostModel:
     raise ValueError(f"Unknown sync cost model: {name!r}.")
 
 
-def build_recompute_cost(cfg: DictConfig) -> RecomputeCostModel:
-    """Instantiate a recompute cost model from config."""
+def build_recompute_cost(
+    cfg: DictConfig,
+    training_cost: TrainingCostModel,
+) -> RecomputeCostModel:
+    """Instantiate a recompute cost model from config.
+
+    Args:
+        cfg: The `recompute_cost` config block.
+        training_cost: The model pricing the optimizer step. The
+            `training_forward` model prices the log-prob pass as a fraction of
+            it, so the two cannot disagree about topology or sequence lengths.
+    """
     name = cfg.get("name", "fixed")
     if name == "fixed":
         return FixedRecomputeCost(time_per_token=cfg.get("time_per_token", 0.0))
@@ -295,6 +311,19 @@ def build_recompute_cost(cfg: DictConfig) -> RecomputeCostModel:
             peak_flops=cfg.get("peak_flops", 312e12),
             overhead_factor=cfg.get("overhead_factor", 1.1),
         )
+    if name == "training_forward":
+        for required in ("hidden_size", "vocab_size", "parameter_count"):
+            if not cfg.get(required, 0):
+                raise ValueError(
+                    f"recompute_cost.{required} is required for the training_forward model, "
+                    f"which corrects the forward share for the unembedding."
+                )
+        return TrainingForwardRecomputeCost(
+            training_cost=training_cost,
+            hidden_size=int(cfg.hidden_size),
+            vocab_size=int(cfg.vocab_size),
+            parameter_count=int(cfg.parameter_count),
+        )
     raise ValueError(f"Unknown recompute cost model: {name!r}.")
 
 
@@ -302,6 +331,40 @@ def _length_cap(value) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def resolve_kv_blocks(rollout: DictConfig) -> int:
+    """Return the KV capacity in blocks, computed from the model when configured.
+
+    `rollout.kv_blocks` is a literal placeholder by default. Naming a
+    `kv_cache_sizing.model_path` derives the capacity the way vLLM would, from
+    the model's KV geometry and the memory budget, which is what lets a
+    configuration be simulated before anyone has run it.
+    """
+    sizing = rollout.get("kv_cache_sizing", None)
+    if sizing is None:
+        return int(rollout.kv_blocks)
+
+    model_path = sizing.get("model_path", None)
+    if not model_path:
+        return int(rollout.kv_blocks)
+
+    geometry = KvCacheGeometry.from_hf_config(model_path)
+    parameter_count = sizing.get("parameter_count", None)
+    if not parameter_count:
+        raise ValueError(
+            "rollout.kv_cache_sizing.model_path needs parameter_count as well, since the weight "
+            "footprint cannot be derived from the architecture fields alone."
+        )
+    return kv_blocks_from_memory(
+        geometry,
+        gpu_memory_mib=int(sizing.get("gpu_memory_mib", 97_871)),
+        gpu_memory_utilization=float(sizing.get("gpu_memory_utilization", 0.9)),
+        parameter_count=int(parameter_count),
+        block_size=int(rollout.block_size),
+        tp_size=int(sizing.get("tp_size", 1)),
+        non_kv_overhead_bytes=int(sizing.get("non_kv_overhead_bytes", 0)),
+    )
 
 
 def run_simulate(cfg: DictConfig) -> None:
@@ -324,19 +387,22 @@ def run_simulate(cfg: DictConfig) -> None:
         max_staleness=job.max_staleness,
         n_versions=job.n_versions,
         sync_time=cfg.sync_cost.get("sync_time", 0.0),
-        recompute_time=0.0,
+
         training_tp=training_parallelism.tp,
         training_pp=training_parallelism.pp,
         training_dp=training_parallelism.dp,
         training_cp=training_parallelism.cp,
         training_micro_batch_size=training.get("micro_batch_size", 1),
+        # None keeps count-based grouping. Set it to the real trainer's
+        # `ppo_max_token_len_per_gpu * sp_size` to reproduce dynamic batching.
+        training_max_tokens_per_microbatch=training.get("max_tokens_per_microbatch"),
         training_schedule=training.get("schedule", "1f1b"),
         activation_recompute=training.get("activation_recompute", "none"),
         training_optimizer=training.get("optimizer", "adam"),
         training_gpu_memory_bytes=None if memory_mib is None else mib_to_bytes(int(memory_mib)),
         partial_rollout=rollout.partial_rollout,
         token_budget=rollout.token_budget,
-        kv_blocks=rollout.kv_blocks,
+        kv_blocks=resolve_kv_blocks(rollout),
         block_size=rollout.block_size,
         max_concurrency=rollout.get("max_concurrency", None),
         reject_if_kv_full=admit.get("reject_if_kv_full", True),
@@ -355,7 +421,7 @@ def run_simulate(cfg: DictConfig) -> None:
     policy = build_policy(cfg.policy, job.max_staleness)
     training_cost = build_training_cost(cfg.training_cost)
     sync_cost = build_sync_cost(cfg.sync_cost)
-    recompute_cost = build_recompute_cost(cfg.recompute_cost)
+    recompute_cost = build_recompute_cost(cfg.recompute_cost, training_cost)
 
     dryrun_logger.info(
         f"Starting simulation: policy={policy.name}, n_versions={sim_cfg.n_versions}, "

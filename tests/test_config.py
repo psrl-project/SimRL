@@ -18,7 +18,7 @@ from dryrun.cli.main import (
     build_training_parallelism,
     build_workload,
 )
-from dryrun.component.recompute.cost import FixedRecomputeCost
+from dryrun.component.recompute.cost import FixedRecomputeCost, TrainingForwardRecomputeCost
 from dryrun.component.sync.cost import FixedSyncCost
 from dryrun.config.schema import (
     DistributionConfig,
@@ -30,6 +30,7 @@ from dryrun.config.schema import (
 from dryrun.cost.rollout import DistServe, UnifiedRoofline
 from dryrun.cost.training import (
     AnalyticalTrainingLatency,
+    FixedTrainingCost,
     FixedTrainingLatency,
     LinearTrainingCost,
     LinearTrainingLatency,
@@ -247,8 +248,37 @@ class TestFactoryFunctions:
 
     def test_build_recompute_cost(self):
         cfg = OmegaConf.create({"name": "fixed", "time_per_token": 0.001})
-        model = build_recompute_cost(cfg)
+        model = build_recompute_cost(cfg, FixedTrainingCost(latency_s=1.0, peak_memory_bytes=0))
         assert isinstance(model, FixedRecomputeCost)
+
+    def test_build_training_forward_recompute_cost(self):
+        """The log-prob pass priced off the same training model as the optimizer step."""
+        training = FixedTrainingCost(latency_s=100.0, peak_memory_bytes=0)
+        cfg = OmegaConf.create(
+            {
+                "name": "training_forward",
+                "hidden_size": 4096,
+                "vocab_size": 151936,
+                "parameter_count": 8_190_735_360,
+            }
+        )
+        model = build_recompute_cost(cfg, training)
+        assert isinstance(model, TrainingForwardRecomputeCost)
+        # Full activation recompute makes a step 8 FLOPs per param per token and
+        # the forward pass 2, so a quarter, plus the unembedding correction.
+        assert model.forward_fraction("full") == pytest.approx(0.269, abs=0.002)
+        # Without checkpointing a step is only 6, so the forward share is larger.
+        assert model.forward_fraction("none") > model.forward_fraction("full")
+
+    def test_training_forward_recompute_needs_the_geometry(self):
+        cfg = OmegaConf.create({"name": "training_forward"})
+        with pytest.raises(ValueError, match="hidden_size"):
+            build_recompute_cost(cfg, FixedTrainingCost(latency_s=1.0, peak_memory_bytes=0))
+
+    def test_unknown_recompute_model_raises(self):
+        cfg = OmegaConf.create({"name": "nonesuch"})
+        with pytest.raises(ValueError, match="Unknown recompute cost model"):
+            build_recompute_cost(cfg, FixedTrainingCost(latency_s=1.0, peak_memory_bytes=0))
 
 
 class TestOmegaConfIntegration:

@@ -325,7 +325,7 @@ def _records_discriminating(*, noisy_target: str, seed: int = 42) -> list[Profil
     The existing `_records()` fixture sets `reserved = allocated + 1`.  That constant
     shift is an affine transform, so both linear regressions absorb it perfectly and both
     candidates reach r²=1.0.  `test_memory_target_selection_is_recorded` therefore
-    passes even if the selection always returns a hardcoded answer -- a tie makes the
+    passes even if the selection always returns a hardcoded answer: a tie makes the
     winner irrelevant.
 
     This helper breaks the tie by injecting large deterministic noise into one target
@@ -867,7 +867,7 @@ def test_listed_feature_permits_that_feature_and_rejects_others():
         batching_mode="pad_to_max",
         extrapolate=["num_microbatches"],
     )
-    # num_microbatches=8 out of [1,4], tokens in-range — must succeed because nmb is listed.
+    # num_microbatches=8 out of [1,4], tokens in-range: must succeed because nmb is listed.
     workload_nmb_oor = TrainingWorkload(
         sequence_lengths=(512,) * 8 * 8,  # 8 seqs/rank * 8 ranks, tokens=512 in range
         micro_batch_size=1,  # micro_batch_size=1 → 8 microbatches per rank (out of [1,4])
@@ -878,7 +878,7 @@ def test_listed_feature_permits_that_feature_and_rejects_others():
     # This must NOT raise (num_microbatches is permitted):
     estimate = cost_nmb_only.estimate(workload_nmb_oor, TrainingParallelism(dp=8))
     assert estimate.latency_s > 0
-    # tokens way out of range — must still raise because tokens is not listed:
+    # tokens way out of range: must still raise because tokens is not listed:
     cost_tokens_unlisted = FsdpTrainingCost.from_artifact(
         artifact,
         batching_mode="pad_to_max",

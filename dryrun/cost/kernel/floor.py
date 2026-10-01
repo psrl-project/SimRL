@@ -16,8 +16,8 @@ Which ops get a floor is the op's own decision, read from `op.fits_floor`, so a
 new floor-taking op is fitted here with no edit to this module.  GEMM declares
 `fits_floor = False` and is skipped.
 
-Results are written to `floors.json` **inside the version directory** —
-`{root}/{gpu}/{family}/{backend}/{version}/floors.json` — which is already
+Results are written to `floors.json` **inside the version directory**
+(`{root}/{gpu}/{family}/{backend}/{version}/floors.json`), which is already
 scoped to the exact (backend, version) pair the floor is valid for, and keyed by
 op name so no site has to translate between a phase and an op.
 
@@ -197,7 +197,7 @@ def load_floors(
     Raises:
         KernelCoverageError: If the file carries the retired phase keys. Reading it leniently
             would apply a zero floor, which measures 34.89% MRE against 6.63% at the fitted
-            22 us -- a silent five-fold accuracy loss.
+            22 us: a silent five-fold accuracy loss.
     """
     floors_path = version_dir / "floors.json"
     if not floors_path.is_file():

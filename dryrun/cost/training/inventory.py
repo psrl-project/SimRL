@@ -2,8 +2,8 @@
 
 Sizing follows Megatron's distributed-optimizer layout, which was measured directly
 rather than assumed. For Qwen3-8B at TP1/PP1/DP8 the allocator reported
-`param_data` at 15.256 GiB and `grad_data` at 30.513 GiB -- exactly `2p` and `4p`
-with no data-parallel division -- while the fp32 master shard was 3.814 GiB, exactly
+`param_data` at 15.256 GiB and `grad_data` at 30.513 GiB: exactly `2p` and `4p`
+with no data-parallel division, while the fp32 master shard was 3.814 GiB, exactly
 `4p/DP`. The gradient buffer is the reduce-scatter *source*, so every rank holds it
 at full local size; only optimizer state is sharded.
 """

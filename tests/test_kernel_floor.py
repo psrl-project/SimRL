@@ -1,4 +1,4 @@
-"""Tests for `dryrun.cost.kernel.floor` — fitting, persistence, and loading."""
+"""Tests for `dryrun.cost.kernel.floor`: fitting, persistence, and loading."""
 
 from __future__ import annotations
 
@@ -210,7 +210,7 @@ def test_floor_override_is_used_instead_of_the_fallback_map(tmp_path):
 
 
 def test_floor_override_is_ignored_for_gemm(tmp_path):
-    """floor_override must not affect GEMM — it has no dispatch floor."""
+    """floor_override must not affect GEMM: it has no dispatch floor."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 

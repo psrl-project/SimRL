@@ -1,7 +1,7 @@
 # Collective-only config. The tp=4 and tp=8 sweeps exist to complete the all_reduce
 # `world_size` slices, which cannot be interpolated: a 2-rank all-reduce and an 8-rank one run
 # different schedules over different link topologies, so `world_size` is a slice column and each
-# degree needs its own measurement. GEMM and attention are deliberately absent -- no composed
+# degree needs its own measurement. GEMM and attention are deliberately absent: no composed
 # rollout is scored at tp=4 here, so sweeping them would cost hours and write tables nothing
 # reads. Run with FAMILY=collective.
 model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}

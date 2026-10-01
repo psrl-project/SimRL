@@ -1,6 +1,6 @@
 # Qwen3-8B kernel profiling
 
-This is a direct-kernel profiling path — no vLLM server, no KV cache manager, and no scheduler.
+This is a direct-kernel profiling path: no vLLM server, no KV cache manager, and no scheduler.
 Attention and GEMM kernels are profiled with synthetic tensors sized from the checkpoint architecture,
 so none of the KV-cache-overflow, preemption, or startup-serialization constraints of the server
 sweep apply. The grid can be as dense as GPU time allows.
@@ -26,7 +26,7 @@ TP=2 bash examples/profile/kernel/profile_qwen3_8b.sh all   # qwen3_8b_h20_tp2.y
 ```
 
 `FAMILY` restricts `run` to one family. The tp=4 and tp=8 configs exist only to complete the
-`all_reduce` world_size slices, so they sweep the collective alone -- seconds rather than hours:
+`all_reduce` world_size slices, so they sweep the collective alone: seconds rather than hours:
 
 ```bash
 TP=4 FAMILY=collective bash examples/profile/kernel/profile_qwen3_8b.sh all
@@ -87,7 +87,7 @@ and once on FlashInfer.
 
 On this hardware the selector picks **`FLASH_ATTN`**, which resolves to FlashAttention-3
 vendored inside vLLM (`kernel_source = vllm_flash_attn_fa3`). It serves **both prefill and
-decode** — FA3's varlen path covers the two phases, so there is no separate prefill kernel.
+decode**: FA3's varlen path covers the two phases, so there is no separate prefill kernel.
 
 **Installing FlashInfer does not change that, and the reason is hardware-dependent.**
 Selection is priority-ordered, not availability-ordered: `_get_backend_priorities` in
@@ -114,7 +114,7 @@ scoring against the FlashInfer rows would be measuring a backend that never ran.
 `AttentionQuery.backend` defaults to the vLLM table for exactly this reason, and the
 end-to-end scripts assert the default resolves there rather than trusting it to stay put.
 
-The FlashInfer rows answer a different question — what a backend switch would buy — and they
+The FlashInfer rows answer a different question (what a backend switch would buy) and they
 show it is shape-dependent rather than a uniform win. Measured ratios of FlashInfer to vLLM
 latency on the context grid span 0.210 to 1.053: at batch 1 / seq 128 FlashInfer is 4.8x
 faster (14.4 us against 68.7 us), and by seq 2048 it has crossed over to marginally slower
@@ -134,7 +134,7 @@ the utility interpolator predicts them from the remaining data. The gate passes 
 mean relative error (MRE) over held-out interior points is below 5% for every family.
 
 A passing gate means single-kernel interpolation is accurate **on this grid and this GPU**.
-It says nothing about whether summing kernels reproduces vLLM end-to-end — that comparison is
+It says nothing about whether summing kernels reproduces vLLM end-to-end: that comparison is
 `kernels validate` (see below), measured at 3.72% prefill / 4.84% decode / 0.48% mixed on H20
 with Qwen3-8B TP=1 (2026-08-25). See `docs/composed-rollout.md` for the full accuracy table,
 the segment integrator design, and the known limitations. `kernels validate` also says nothing
@@ -171,7 +171,7 @@ optimal. The fix is denser `context_seq_lens` points below 1024.
 unmeasured degree raises a coverage error rather than extrapolating. That is intended:
 `world_size` is a slice column, because a 2-rank and an 8-rank all-reduce run different schedules.
 
-The collective is timed through `get_tp_group().all_reduce` -- vLLM's own dispatcher -- and **not**
+The collective is timed through `get_tp_group().all_reduce` (vLLM's own dispatcher) and **not**
 `torch.distributed.all_reduce`. Measured on H20 at all three degrees, that call is never what a
 server selects: the custom P2P kernel covers the whole 8-512 KiB range a decode step lives in.
 Both tables are written; `vllm` is what the cost model reads and `nccl` is kept as a control.
@@ -227,8 +227,8 @@ Error is concentrated at small token counts (m ≤ 256: MRE 12.7%; m > 256: MRE 
 tile-cliff observation is directionally real but names the wrong fix. The actual mechanism is
 neighbour identity: the unified GEMM table keys its slice only on dtype, so all four
 Qwen3-8B projections share one grid. In log2 space the nearest neighbour to
-`(m=16, n=4096, k=4096)` is `(m=16, n=6144, k=4096)` — a different projection with utility
-0.563 against the true 0.815 — closer than the same-projection neighbour. Slicing per
+`(m=16, n=4096, k=4096)` is `(m=16, n=6144, k=4096)`: a different projection with utility
+0.563 against the true 0.815: closer than the same-projection neighbour. Slicing per
 `(n, k)`, i.e. pure 1-D interpolation in m with zero new measurement, takes GEMM from
 8.48% MRE to 4.08% MRE (p90 from 26.48% to 9.62%), through the 5% gate. Raising the
 neighbour count barely helps (8 neighbours gives 7.16%), which confirms the problem is
@@ -237,7 +237,7 @@ neighbour identity, not neighbour count.
 ## End-to-end validation: `kernels validate`
 
 `kernels holdout` tests whether single-kernel interpolation is self-consistent.
-`kernels validate` tests whether summing those kernels reproduces a real vLLM engine iteration —
+`kernels validate` tests whether summing those kernels reproduces a real vLLM engine iteration : 
 a different and harder claim.
 
 ```bash
@@ -278,7 +278,7 @@ Measured with `--min-samples 1 --gate 100` against `outputs/profile/qwen3_8b/vll
 
 All three phases are inside the 5% gate. The mixed result (0.48%) is encouraging but rests on
 only six real baseline records. The baseline is 0.01% mixed; a simulator with chunked prefill
-produces them constantly. Six samples is not a validation — see `docs/composed-rollout.md` for
+produces them constantly. Six samples is not a validation: see `docs/composed-rollout.md` for
 the full discussion of limitations.
 
 ## Config files

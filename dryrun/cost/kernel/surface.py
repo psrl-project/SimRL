@@ -18,7 +18,7 @@ array overhead makes the same code 7x slower than plain floats at these lengths.
 Queries outside the measured range clamp to the boundary value rather than extrapolating.
 PCHIP extrapolation is actively wrong for this data: on a rising curve it curls back down and
 returns a value *below* the first measurement far past the frontier. Clamping matches
-`UtilityGrid`'s frontier-hold semantics, which exist for the same reason -- extrapolating an
+`UtilityGrid`'s frontier-hold semantics, which exist for the same reason: extrapolating an
 efficiency is defensible, inventing one is not.
 
 Above two varying axes the tensor construction is not defined, so `PchipSurface` defers to

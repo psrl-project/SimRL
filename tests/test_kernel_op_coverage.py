@@ -24,7 +24,7 @@ def test_the_registry_covers_every_op_module_in_a_fresh_interpreter():
     `ops/__init__.py`, so an op whose import was dropped from that file still appears in
     `OP_REGISTRY` whenever any sibling test file imported the module itself. Under
     `pytest-randomly` that makes an in-process assertion pass or fail at random. This is
-    exactly the production bug `PerfTableWriter.table_path("gemm")` hit -- it raised
+    exactly the production bug `PerfTableWriter.table_path("gemm")` hit: it raised
     `Registered ops: none` in a fresh interpreter while every unit test passed. The subprocess
     reproduces the fresh interpreter, following `tests/test_kernel_ops_base.py`'s torch probe.
     """

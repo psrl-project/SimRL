@@ -1,0 +1,37 @@
+# Same as qwen3_8b_tp2_pp3_nmb64.yaml but writes to the flash output tree.
+# See qwen3_8b_tp2_pp3_flash.yaml for context on the attention_backend fix.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 6
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen3_8b/megatron_tp2_pp3_flash
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  max_steps: 6
+  warmup_steps: 2
+
+profiling:
+  allow_incomplete: true
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+search_space:
+  tensor_parallel_sizes: [2]
+  pipeline_parallel_sizes: [3]
+  micro_batch_size: 1
+  num_microbatches: [64]
+  sequence_lengths: [1024, 2048, 4096, 8192, 12288]
+  recompute: full

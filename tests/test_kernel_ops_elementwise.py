@@ -175,7 +175,7 @@ def test_the_composed_model_does_not_add_an_elementwise_term():
 
     The assertion is behavioural: a spy records the `op_name` of every query one `predict()`
     call issues, and the multiset must be exactly the GEMM and attention ops. Checking the
-    source for the word "elementwise" guards a spelling, not the behaviour -- a real
+    source for the word "elementwise" guards a spelling, not the behaviour: a real
     `_pointwise_seconds` term passed the whole file.
     """
     from dryrun.cost.kernel.database import GemmQuery

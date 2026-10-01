@@ -105,7 +105,7 @@ def test_query_comm_no_longer_raises_unconditionally(tmp_path):
 
     Asserted behaviourally rather than by greping the method body: `query_comm` delegates to the
     shared `_price`, so the names `_grid` and `_sol` no longer appear in it. What proves it
-    reaches the tables is the failure mode -- a missing collective table produces a coverage
+    reaches the tables is the failure mode: a missing collective table produces a coverage
     error naming the sweep to run, which a placeholder raise could not.
     """
     from dryrun.cost.kernel.database import CommQuery, KernelDatabase
@@ -123,7 +123,7 @@ def test_a_comm_query_reads_the_vllm_table_by_default():
     Measured on H20 at world sizes 2, 4 and 8, `torch.distributed.all_reduce` is never what
     `CudaCommunicator.all_reduce` selects: the custom P2P kernel covers the whole decode range.
     A silent revert of this default to `nccl` would price a kernel no server invokes, and would
-    be invisible -- both tables exist, so the wrong one still resolves and still interpolates.
+    be invisible: both tables exist, so the wrong one still resolves and still interpolates.
     """
     from dryrun.cost.kernel.database import CommQuery
 

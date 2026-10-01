@@ -106,11 +106,12 @@ class NativeInstance:
         if self.reject_if_running_full and not self._can_schedule_new():
             return False
         if self.reject_if_kv_full:
-            committed = sum(
-                blocks_for(r.prompt_len + r.target_len, self.block_size)
-                for r in self.waiting + self.running
-            )
-            if committed + need > self.kv_blocks:
+            # vLLM's admission gate reserves `request.num_tokens`: the tokens it
+            # knows about so far, not the sampling cap. Reserving
+            # `prompt + target_len` instead charges every request its worst case up
+            # front, which admits materially fewer requests than the real engine.
+            committed = sum(r.ctx for r in self.waiting + self.running)
+            if blocks_for(committed + req.prompt_len, self.block_size) > self.kv_blocks:
                 return False
         req.status = ReqStatus.WAITING
         req.dispatch_time = t
@@ -262,7 +263,7 @@ class NativeInstance:
         #     blocks(s + 1) - blocks(s) == residues[(B - s) % B]
         # So for each phase s in [0, B) the overflow point is the first term of an
         # arithmetic progression above the budget, which is one division. Taking the
-        # min over the B phases is the exact answer -- no search, and cost depends on
+        # min over the B phases is the exact answer: no search, and cost depends on
         # block_size alone, not on cap or the batch size.
         n_run = len(self.running)
         target = self.kv_blocks + 1
@@ -555,6 +556,31 @@ class NativeInstance:
         req.prefilled = 0
 
     def abort_all(self) -> list[Request]:
+        """Interrupt every request for a weight update, keeping its tokens but not its KV.
+
+        The request resumes rather than restarting: it keeps `generated` and the
+        segments recording which weight version produced what. What it loses is
+        the KV cache, and it has to: those tensors were produced by the old
+        weights, so reusing them would mix two policies inside one sequence.
+        PSRL makes that explicit: `pause_for_sync` calls
+        `pause_generation(mode="abort")`, whose default mode reaches
+        `scheduler.finish_requests(None, RequestStatus.FINISHED_ABORTED)` and
+        frees every block, and `pull_model` then calls `reset_prefix_cache`,
+        which empties the block hash map so nothing can hit on resume.
+
+        Setting `prefilled = 0` is therefore the whole model of a weight update:
+        the accumulated context must be re-prefilled before generation can
+        continue, and `reprefill_tokens` accumulates how much that cost.
+
+        Verified against a real run of the fixed gateway. Before the smg fix the
+        loopback re-dispatched with the *original* prompt and regenerated from
+        scratch, which made `prefill_tokens` track the prompt sum (58,280 tokens,
+        1.71 s over 10 steps) and wasted 1.7M decode tokens. With the prompt now
+        carrying the accumulated output, prefill jumps to 197,097 tokens / 24.4 s
+        in two steps and the prefix-cache hit rate collapses from 75% to 9%,
+        because `reset_prefix_cache` leaves a long continued prompt with nothing
+        to hit against. See `outputs/simulate/SMG_LOOPBACK_FIX.md`.
+        """
         aborted = list(self.running) + list(self.waiting)
         for r in aborted:
             self._release(r, keep_tokens=True)

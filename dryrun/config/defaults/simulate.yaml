@@ -38,11 +38,27 @@ rollout:
   # Per-step token budget of one instance (max tokens per engine step).
   token_budget: 8192
 
-  # KV cache capacity in blocks.
+  # KV cache capacity in blocks, the denominator of every reported kv_cache_usage.
+  # Leaving it at this placeholder makes the simulated KV curve incomparable with a
+  # measured one; prefer kv_cache_sizing below.
   kv_blocks: 100000
 
   # Tokens per KV block.
   block_size: 16
+
+  # Where kv_blocks should come from instead of the literal above. Leaving
+  # model_path null keeps the literal.
+  kv_cache_sizing:
+    # A HuggingFace checkpoint dir, used to derive capacity the way vLLM does from
+    # the model's KV geometry and the budget below. Overestimates by ~3%, because
+    # vLLM also subtracts a measured non-KV peak no config file reveals; set
+    # non_kv_overhead_bytes to fold that in once known.
+    model_path: null
+    gpu_memory_mib: 97871
+    gpu_memory_utilization: 0.9
+    tp_size: 1
+    parameter_count: null
+    non_kv_overhead_bytes: 0
 
   # Max sequences in the running batch (vLLM max_num_seqs). null = unlimited.
   max_concurrency: null
@@ -57,6 +73,7 @@ rollout:
 
     # Reject new requests when the running batch is already at max_concurrency.
     reject_if_running_full: false
+
 
   # Idle rounds before the simulator declares livelock.
   livelock_rounds: 50
@@ -84,10 +101,25 @@ sync_cost:
   # Fixed weight-sync time in seconds (used when name=fixed).
   sync_time: 0.0
 
-# Partial-rollout recompute cost model.
+# Log-prob recomputation cost model, the training-side forward pass. It is roughly
+# a quarter of a real training block, so the 0.0 default understates every block.
 recompute_cost:
-  # Cost model name: fixed or analytical.
+  # fixed | analytical | training_forward.
+  # training_forward prices it as a FLOP-derived fraction of the fitted training
+  # step (1/4 under full activation recompute, plus an unembedding correction), so
+  # it needs no coefficient of its own.
   name: fixed
 
-  # Time per recomputed token in seconds (used when name=fixed).
+  # Time per recomputed token in seconds (name=fixed).
   time_per_token: 0.0
+
+  # name=analytical. peak_flops must be the ACHIEVED rate, not the datasheet
+  # peak, which makes it a fitted coefficient in disguise.
+  model_params: 0
+  peak_flops: 312e12
+  overhead_factor: 1.1
+
+  # name=training_forward.
+  hidden_size: 0
+  vocab_size: 0
+  parameter_count: 0

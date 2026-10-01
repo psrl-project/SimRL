@@ -154,6 +154,18 @@ def _generate_bridge_candidates(
         recompute_modes=recompute_modes,
         constraints=constraints,
         repeats=1,
+        # THD packs sequences behind cu_seqlens the way verl's Megatron engine does
+        # with use_remove_padding=True. A cost model meant to predict verl steps has
+        # to be fitted on THD measurements: BSHD charges attention at the padded
+        # length, so its quadratic term is a different quantity.
+        packing=str(search.get("packing", "bshd")),
+        # Absent, DP absorbs the GPUs TP and PP leave over, which confounds any
+        # sweep meant to isolate one of them. See `enumerate_training_candidates`.
+        data_parallel_sizes=(
+            _as_int_list(search["data_parallel_sizes"])
+            if "data_parallel_sizes" in search
+            else None
+        ),
     )
 
 

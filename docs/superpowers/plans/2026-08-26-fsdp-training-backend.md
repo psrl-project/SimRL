@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Spec: `docs/superpowers/specs/2026-08-26-fsdp-training-backend-design.md`. Read it before starting.
-- Coding style: `.claude/coding-style.md`. §1 is critical — **identifier strings never get a trailing period or case change**; human-readable messages are capitalized and end in `.`. Line length 119 (`[tool.ruff] line-length = 119`).
+- Coding style: `.claude/coding-style.md`. §1 is critical: **identifier strings never get a trailing period or case change**; human-readable messages are capitalized and end in `.`. Line length 119 (`[tool.ruff] line-length = 119`).
 - Project contract: `AGENTS.md`. **No backward compatibility layers.** Remove obsolete paths rather than adding fallbacks or migrations.
 - Activate the environment before running anything: `source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh`.
 - Test baseline before any change: **602 passed**. It must never regress. Run `python -m pytest tests/ -q` to confirm.
@@ -861,7 +861,7 @@ Replace lines 66-67:
 
 Leave `dryrun/profiler/search_space.py:44` alone: `TrainingCandidate` is Megatron's
 own type and FSDP uses `FsdpCandidate`. Leave `dryrun/cost/training/hydraulis.py:78`
-alone as well — that filter is what keeps FSDP records out of the Megatron fit.
+alone as well: that filter is what keeps FSDP records out of the Megatron fit.
 
 - [ ] **Step 5: Create `fsdp_search_space.py`**
 
@@ -2500,7 +2500,7 @@ git commit -m "feat: add the FSDP torchrun launcher and its measurement
 The launcher owns its training loop rather than delegating to a framework.
 verl is absent from this environment, and depending on it would pull Ray and
 its worker tree into a simulator repository while pinning the measurement to a
-verl version. The four things that matter for cost modelling -- the mesh, the
+verl version. The four things that matter for cost modelling: the mesh, the
 wrapping granularity, the mixed-precision policy, and the offload policy --
 are torch APIs applied directly.
 
@@ -2568,7 +2568,7 @@ PY
 ```
 
 Expected: dispersion below 5%. If it is higher, raise `warmup_steps` before
-proceeding — fitting a model to a noisy measurement makes the fit error
+proceeding: fitting a model to a noisy measurement makes the fit error
 unattributable, which is the failure the Megatron work had to undo.
 
 - [ ] **Step 9: Record the smoke result**
@@ -3365,11 +3365,11 @@ python -m pytest tests/test_microbatch_planner.py -q
 ```
 
 Expected: PASS, 13 tests. If `test_token_budget_balances_rather_than_filling_greedily`
-fails, the partitioner is filling greedily — check that the heap is keyed on
+fails, the partitioner is filling greedily: check that the heap is keyed on
 accumulated workload, not on group index.
 
 - [ ] **Step 5: Write the failing inventory test**
-> **SUPERSEDED — do not transcribe.** The code and tests below encode a `master_parameters`
+> **SUPERSEDED: do not transcribe.** The code and tests below encode a `master_parameters`
 > field and a narrow-params-plus-master layout. That is Megatron's mixed-precision shape, not
 > FSDP2's. AdamW's moments inherit the module's dtype, so the launcher builds the module in
 > the master dtype and there is exactly one resident parameter copy. Task 6 shipped the
@@ -3655,8 +3655,8 @@ partition differently and skew every predicted microbatch count.
 The inventory is separate from Megatron's because the sharding rule differs by
 a factor of two. Megatron's distributed optimizer shards state only, holding a
 full-size fp32 gradient buffer as the reduce-scatter source. FSDP2 shards
-parameters, gradients, and optimizer state alike -- measured at 16p over the
-world size, 6.078 GiB against 6.000 GiB predicted -- so reusing the Megatron
+parameters, gradients, and optimizer state alike: measured at 16p over the
+world size, 6.078 GiB against 6.000 GiB predicted, so reusing the Megatron
 term would overstate FSDP memory twofold and a fitted residual would hide it."
 ```
 
@@ -4043,15 +4043,15 @@ differences to implement:
    `token_cost`, `microbatch_overhead`. Set
    `diagnostics["slots"] = "num_microbatches"`.
 3. **Memory design.** Fit `target - fsdp_inventory(...).total_bytes` against
-   `[activation_feature, 1]` where `activation_feature = max(sum_tokens)` — there is no
+   `[activation_feature, 1]` where `activation_feature = max(sum_tokens)`: there is no
    `min(nmb, pp)` factor because there is no pipeline, so only one microbatch is in
    flight. Do this **twice**, once against `peak_allocated_bytes` and once against
    `peak_reserved_bytes`. Compute each fit's validation `r^2` via
    `FitMetrics.from_predictions`. Select the higher, and record:
-   - `diagnostics["memory_metric"]` — the winner's identifier string
-   - `diagnostics["candidate_r_squared"]` — a dict mapping both identifier strings to
+   - `diagnostics["memory_metric"]`: the winner's identifier string
+   - `diagnostics["candidate_r_squared"]`: a dict mapping both identifier strings to
      their `r^2`
-   - `diagnostics["reserved_over_allocated"]` — `max(1.0, mean(reserved / allocated))`
+   - `diagnostics["reserved_over_allocated"]`: `max(1.0, mean(reserved / allocated))`
      across successful records
    Store the winner's coefficients as `activation_slope` and `residual_constant`, plus
    `parameter_count` and `world_size`.
@@ -4243,7 +4243,7 @@ def test_build_training_cost_resolves_the_fsdp_name(tmp_path: Path, monkeypatch)
 python -m pytest tests/test_fsdp_cli.py -q
 ```
 
-Expected: multiple failures — the `fsdp` subparser does not exist and
+Expected: multiple failures: the `fsdp` subparser does not exist and
 `TrainingCostConfig` has no `batching_mode`.
 
 - [ ] **Step 3: Add the CLI handlers**
@@ -4510,6 +4510,6 @@ profiling plus a simulate-side planner gives one implementation and no schema ch
 **What to do if `fsdp_inventory` disagrees with the measurement.** The launcher writes
 `static_allocated_bytes_at_train_start` for exactly this comparison. If the analytic
 `16p/world_size` is off by more than a few percent, report the discrepancy rather than
-adjusting the fitted residual to absorb it — that is how the Megatron static term stayed
+adjusting the fitted residual to absorb it: that is how the Megatron static term stayed
 wrong by a factor of two while its predictions still looked reasonable inside the
 profiled range.

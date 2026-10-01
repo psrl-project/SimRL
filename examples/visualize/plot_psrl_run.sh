@@ -13,8 +13,10 @@ RUN_NAME="${RUN_NAME:-$(basename "${PSRL_LOG_DIR}")}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/outputs/visualize/${RUN_NAME}}"
 
 # The converted logs stay under outputs/, but the figure is also dropped beside
-# this script so the real and simulated versions sit side by side.
-FIGURE="${FIGURE:-${SCRIPT_DIR}/instance_load_real.png}"
+# this script so the real and simulated versions sit side by side. The filename
+# carries RUN_NAME so plotting a second experiment cannot silently overwrite the
+# first one's figure.
+FIGURE="${FIGURE:-${SCRIPT_DIR}/instance_load_${RUN_NAME}.png}"
 
 # Which replica role to plot. Validation replicas write the same stats files as
 # rollout ones and are told apart only by their collector log's filename.

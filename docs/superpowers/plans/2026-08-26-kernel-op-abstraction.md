@@ -24,24 +24,24 @@
 - **Do not touch `dryrun/cost/training/`, `dryrun/profiler/adapters/`, or `tests/test_fsdp_*`.**
   Those belong to the concurrent FSDP/Megatron plan and are orthogonal to this one.
 - **Run the baseline capture and the Stage 1 gate on idle GPUs.** `nvidia-smi` must show no
-  concurrent load. `tests/test_kernel_attention_vllm.py::test_generation_latency_grows_with_kv_history`
+  concurrent load. `tests/test_kernel_attention_vllm.py:test_generation_latency_grows_with_kv_history`
   asserts a measured latency ratio above 1.20x and was observed failing under contention from
   the other session while passing in isolation. A timing failure is not a regression until you
   have checked for concurrent GPU work.
 - Exactly **7 pre-existing ruff findings** exist, none in files this plan touches: `I001` in `dryrun/cost/training/hydraulis.py`, `dryrun/profiler/adapters/vllm/collect.py`, `tests/test_plots.py`, `tests/test_profile_adapters.py`, `tests/test_telemetry.py`, `tests/test_training_cost.py`; plus `F841` at `tests/test_training_cost.py:109`. Leave them. Everything you touch must be clean.
-- Coding style per `.claude/coding-style.md`: identifier strings (dict keys, `==` comparands, argparse `choices`) never take a trailing period and never change casing; human-readable messages are capitalized and end with `.`; **one-line docstrings are the established convention — do not expand them**; type hints use `X | None` and lowercase builtins.
+- Coding style per `.claude/coding-style.md`: identifier strings (dict keys, `==` comparands, argparse `choices`) never take a trailing period and never change casing; human-readable messages are capitalized and end with `.`; **one-line docstrings are the established convention: do not expand them**; type hints use `X | None` and lowercase builtins.
 - Latency is in **seconds** everywhere, never milliseconds.
 - No backward compatibility. Remove obsolete paths rather than adding fallbacks or migrations.
 - Do not modify `dryrun/cost/kernel/{hardware,interp,surface}.py` or `dryrun/cost/rollout/{psrl,roofline,distserve,segment,advance}.py` behaviour.
-- **Never run `git stash`, `git stash pop`, `git checkout -- <path>`, `git restore`, `git reset`, `git clean`, `git add -A`, or `git add .`** The repository owner has extensive uncommitted work in `dryrun/workload/`, `dryrun/cli/workload.py`, `examples/`, and `tests/test_workload_*.py`. Stage only the explicit paths each task names.
+- **Never run `git stash`, `git stash pop`, `git checkout: <path>`, `git restore`, `git reset`, `git clean`, `git add -A`, or `git add .`** The repository owner has extensive uncommitted work in `dryrun/workload/`, `dryrun/cli/workload.py`, `examples/`, and `tests/test_workload_*.py`. Stage only the explicit paths each task names.
 - `.claude/settings.local.json` must stay gitignored and must never be committed.
 
-### Verified facts — do not re-derive these
+### Verified facts: do not re-derive these
 
 Every number below was measured on this machine at commit `72f00f5`.
 
 **Naming collision, must be resolved in Task 2.** `dryrun/cost/kernel/model_ops.py:30` already
-defines a frozen dataclass named `GemmOp`, meaning "one GEMM in the per-step op list" — a
+defines a frozen dataclass named `GemmOp`, meaning "one GEMM in the per-step op list": a
 different concept from this plan's `GemmOp` (a kernel *family*). The existing name is read by
 `tests/test_kernel_model_ops.py` (`.name`, `.n`, `.k`, `.per_layer`) and
 `tests/test_rollout_composed.py` (`projection_ops`, `logits_op`). **This plan renames the
@@ -56,14 +56,14 @@ an interpolation artifact.
 
 **Summing per-kernel latencies is valid.** Four individually timed GEMMs at `m=1` sum to
 129.00 us; one CUDA-graph replay of 36 layers of the same four is 4.721 ms against the summed
-4.644 ms — agreement to **1.7%**. Do not "fix" the composition method.
+4.644 ms: agreement to **1.7%**. Do not "fix" the composition method.
 
 **CUDA graphs do not explain any error.** Eager vs graph-replayed GEMM agree within 1-12%
 (`m=1, n=24576, k=4096`: 61.23 us eager, 60.73 us graph).
 
 **Elementwise must be timed through `vllm._custom_ops`, not the module.** `RMSNorm(...)`
 called as a module costs 60.33 us at 16 tokens against 4.57 us for
-`vllm._custom_ops.rms_norm(...)` — **13.2x**. The server replays the fused op inside a CUDA
+`vllm._custom_ops.rms_norm(...)`: **13.2x**. The server replays the fused op inside a CUDA
 graph, so the raw op is the honest measurement.
 
 **A `CustomOp` needs `CompilationConfig(custom_ops=["all"])`.** Without it vLLM logs
@@ -106,11 +106,11 @@ meaningless, because its error could not be distinguished from refactor drift.
 
 | stage | tasks | gate |
 |---|---|---|
-| **0** — baseline | Task 1 | The ten numbers are captured and committed before any source edit. |
-| **1** — refactor | Tasks 2-9 | Every stage-0 number reproduces **identically** (the "Stage 1 gate" section after Task 9). |
-| **2** — elementwise | Task 10 | Holdout MRE with `point_count > 0`; a test asserts `predict()` has no elementwise term. |
-| **3** — all_reduce | Task 11 | Holdout MRE reported; `tp=2` constructs and predicts; tp=1 validate numbers unchanged. |
-| **4** — docs | Task 12 | Every figure traces to a command run in that task's Step 1. |
+| **0**: baseline | Task 1 | The ten numbers are captured and committed before any source edit. |
+| **1**: refactor | Tasks 2-9 | Every stage-0 number reproduces **identically** (the "Stage 1 gate" section after Task 9). |
+| **2**: elementwise | Task 10 | Holdout MRE with `point_count > 0`; a test asserts `predict()` has no elementwise term. |
+| **3**: all_reduce | Task 11 | Holdout MRE reported; `tp=2` constructs and predicts; tp=1 validate numbers unchanged. |
+| **4**: docs | Task 12 | Every figure traces to a command run in that task's Step 1. |
 
 Tasks 10 and 11 are independent of each other and both depend only on the stage-1 gate. Within
 stage 1, the order is dependency-driven: Task 5 must precede Tasks 6-8 (they consume
@@ -218,7 +218,7 @@ print("BASELINE MATCHES EXPECTED")
 PY
 ```
 
-Expected: `BASELINE MATCHES EXPECTED`. If any assertion fires, STOP and report — the plan's
+Expected: `BASELINE MATCHES EXPECTED`. If any assertion fires, STOP and report: the plan's
 baseline table is wrong and every later gate depends on it.
 
 - [ ] **Step 3: Write the regression test**
@@ -326,7 +326,7 @@ python -m pytest tests/test_kernel_baseline_regression.py -q \
 ```
 
 Expected: **2 passed**. These two assert current behaviour, so they must pass now. If either
-fails, the plan's baseline is wrong — STOP and report.
+fails, the plan's baseline is wrong: STOP and report.
 
 - [ ] **Step 5: Write the summary and commit**
 
@@ -375,13 +375,13 @@ local as the raw evidence.
 **Interfaces:**
 - Consumes: `dryrun.cost.kernel.hardware.GpuSpec`, `dryrun.cost.kernel.interp.KernelCoverageError`, `dryrun.cost.kernel.sol.SolComponents`.
 - Produces:
-  - `KernelOp` — a `typing.Protocol` with attributes `name: str`, `family: str`, `slice_columns: tuple[str, ...]`, `axis_columns: tuple[str, ...]`, `fits_floor: bool`, and methods `sol(spec, *, slice_key, coords, floor_s) -> SolComponents`, `parse_sweep(value: dict) -> object`, `table_columns() -> tuple[str, ...]`.
-  - `OP_REGISTRY: dict[str, KernelOp]` — empty in this task; populated by Tasks 3-4 and 10-11.
+  - `KernelOp`: a `typing.Protocol` with attributes `name: str`, `family: str`, `slice_columns: tuple[str, ...]`, `axis_columns: tuple[str, ...]`, `fits_floor: bool`, and methods `sol(spec, *, slice_key, coords, floor_s) -> SolComponents`, `parse_sweep(value: dict) -> object`, `table_columns() -> tuple[str, ...]`.
+  - `OP_REGISTRY: dict[str, KernelOp]`: empty in this task; populated by Tasks 3-4 and 10-11.
   - `register_op(op: KernelOp) -> None`
-  - `op_for(name: str) -> KernelOp` — raises `KernelCoverageError` naming known ops.
-  - `ops_for_family(family: str) -> tuple[KernelOp, ...]` — sorted by `name`.
-  - `families() -> tuple[str, ...]` — sorted distinct family names.
-  - `ops_in(version_dir: Path) -> tuple[KernelOp, ...]` — ops whose `{name}_perf.parquet` exists, sorted by `name`.
+  - `op_for(name: str) -> KernelOp`: raises `KernelCoverageError` naming known ops.
+  - `ops_for_family(family: str) -> tuple[KernelOp, ...]`: sorted by `name`.
+  - `families() -> tuple[str, ...]`: sorted distinct family names.
+  - `ops_in(version_dir: Path) -> tuple[KernelOp, ...]`: ops whose `{name}_perf.parquet` exists, sorted by `name`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -549,7 +549,7 @@ second SOL binding in `holdout.py`, a phase map in `floor.py`, a writer method i
 `measurements.py`, a sweep field in `config.py`, a profiler entry point, and a CLI branch.
 The count was the visible symptom; the defect was that `database._sol` and
 `holdout._make_sol_fn` were two independent implementations of the same binding, and drift
-between them would silently change utility on one side of the holdout round trip -- the exact
+between them would silently change utility on one side of the holdout round trip: the exact
 quantity the accuracy gate measures.
 
 `sol()` on the op is that binding, once. Signature differences between families are absorbed
@@ -701,7 +701,7 @@ git commit -m "feat: add the KernelOp protocol and its registry
 Op-specific knowledge is spread across ten sites, but the count is only the
 symptom. database._sol and holdout._make_sol_fn are two independent
 implementations of the same SOL binding, and drift between them would silently
-change utility on one side of the holdout round trip -- the quantity the
+change utility on one side of the holdout round trip: the quantity the
 accuracy gate measures. sol() on the op is that binding, once.
 
 Signature differences between families are absorbed by each op unpacking its
@@ -734,7 +734,7 @@ files. Do not rename that one.
 - Produces: `GemmKernelOp` with `name = "gemm"`, `family = "gemm"`,
   `slice_columns = ("gemm_dtype", "n", "k")`, `axis_columns = ("m",)`, `fits_floor = False`,
   and `GEMM_OP: GemmKernelOp` registered at import. Also `GemmSweep` re-exported from
-  `dryrun.profiler.kernels.config` is NOT used here — `parse_sweep` imports it lazily so the
+  `dryrun.profiler.kernels.config` is NOT used here: `parse_sweep` imports it lazily so the
   cost path stays free of the profiler package.
 
 - [ ] **Step 1: Write the failing test**
@@ -934,7 +934,7 @@ print('torch imported:', 'torch' in sys.modules)"
 ```
 
 Expected: **10 passed**, base still **11 passed**, the suite grows by exactly the new file's test count and stays green, no new ruff findings,
-and the last command prints **False** — `parse_sweep`'s import is lazy, so merely importing the
+and the last command prints **False**: `parse_sweep`'s import is lazy, so merely importing the
 op must not reach the profiler package.
 
 - [ ] **Step 5: Commit**
@@ -1135,8 +1135,8 @@ Create `dryrun/cost/kernel/ops/attention.py`:
 """
 The two attention phases, which share a table directory but not an axis.
 
-Prefill and decode are different regimes -- prefill attention is quadratic in sequence length
-while decode is linear in KV history -- so they are separate ops with separate tables. They
+Prefill and decode are different regimes: prefill attention is quadratic in sequence length
+while decode is linear in KV history, so they are separate ops with separate tables. They
 share one family directory, one set of slice columns, and one `floors.json`, because they run
 through the same backend and pay the same dispatch path.
 
@@ -1294,8 +1294,8 @@ Expected: **12 passed**, the suite grows by exactly the new file's test count an
 git add dryrun/cost/kernel/ops/attention.py tests/test_kernel_ops_attention.py
 git commit -m "feat: add the two attention kernel ops
 
-Prefill and decode are different regimes -- one quadratic in sequence length,
-one linear in KV history -- so they stay separate ops with separate tables. They
+Prefill and decode are different regimes: one quadratic in sequence length,
+one linear in KV history, so they stay separate ops with separate tables. They
 share a family directory, slice columns, and floors.json, because they run
 through one backend and pay one dispatch path, so they live in one module with
 a shared slice unpacker.
@@ -1326,9 +1326,9 @@ be weakened or deleted**.
 **Interfaces:**
 - Consumes: `op_for`, `KernelOp` (Task 2); `GEMM_OP` (Task 3); the attention ops (Task 4).
 - Produces:
-  - `KernelTable.load(path, op: KernelOp) -> KernelTable` — second parameter is now an op.
-  - `KernelTable.op -> KernelOp` — replaces the `schema` property.
-  - `KernelTable.grid(slice_key, sol_fn, *, surface="shepard")` — unchanged signature.
+  - `KernelTable.load(path, op: KernelOp) -> KernelTable`: second parameter is now an op.
+  - `KernelTable.op -> KernelOp`: replaces the `schema` property.
+  - `KernelTable.grid(slice_key, sol_fn, *, surface="shepard")`: unchanged signature.
   - `dryrun.cost.kernel.table` no longer exports `TableSchema`, `schema_for`, `GEMM_SCHEMA`, `CONTEXT_ATTENTION_SCHEMA`, or `GENERATION_ATTENTION_SCHEMA`.
 
 - [ ] **Step 1: Record the exact rename sites before editing**
@@ -1402,7 +1402,7 @@ python -m pytest tests/test_kernel_ops_base.py -q \
     -k "no_longer_exports_a_schema_type or loads_against_an_op"
 ```
 
-Expected: FAIL — the first because `TableSchema` still exists, the second with
+Expected: FAIL: the first because `TableSchema` still exists, the second with
 `AttributeError: 'GemmKernelOp' object has no attribute 'required_columns'` or a `TypeError`
 from `load`.
 
@@ -1570,7 +1570,7 @@ ruff check dryrun/ tests/
 git diff --stat tests/
 ```
 
-Expected: the targeted files pass, the **2 baseline tests still pass** (this is the gate — the
+Expected: the targeted files pass, the **2 baseline tests still pass** (this is the gate: the
 accuracy numbers must not have moved), the suite grows by exactly the new file's test count and stays green, no new ruff findings. The
 `git diff --stat tests/` output must show only the eight files this task names; a ninth means
 something behavioural changed.
@@ -1586,7 +1586,7 @@ git add dryrun/cost/kernel/table.py dryrun/profiler/kernels/measurements.py \
         tests/test_kernel_attention_flashinfer.py tests/test_kernel_gemm.py
 git commit -m "refactor: replace TableSchema with the op it duplicated
 
-TableSchema carried op_name, family, slice_columns, and axis_columns -- exactly
+TableSchema carried op_name, family, slice_columns, and axis_columns: exactly
 what a KernelOp already declares. Keeping both would have left two sources of
 truth for a table's shape, so KernelTable now takes an op and the schema type,
 its three constants, and schema_for are deleted rather than aliased.
@@ -1718,7 +1718,7 @@ In `dryrun/cost/kernel/database.py`, replace the whole `_sol` method with:
         """Return the speed-of-light latency of one query, in seconds."""
         # The op owns the formula. Before this, database and holdout each held their own copy
         # of this binding, and drift between them would have changed utility on one side of the
-        # holdout round trip -- silently, since both sides would still look self-consistent.
+        # holdout round trip: silently, since both sides would still look self-consistent.
         op = op_for(query.op_name)
         floor_s = 0.0
         if op.fits_floor:
@@ -1747,7 +1747,7 @@ ruff check dryrun/cost/kernel/database.py
 
 Expected: **3 passed** in the new file, the two existing files pass untouched, the composed
 baseline test passes (the accuracy gate), no ruff findings. The attention binding test stays
-red until Task 7 — note that in the commit message rather than weakening it.
+red until Task 7: note that in the commit message rather than weakening it.
 
 - [ ] **Step 5: Commit**
 
@@ -1785,9 +1785,9 @@ receive a fitted floor with no edit to `floor.py`.
 **Interfaces:**
 - Consumes: `op_for`, `ops_in` (Task 2), `op.fits_floor` (Tasks 3-4).
 - Produces:
-  - `dryrun.cost.kernel.sol.FALLBACK_FLOORS_S: dict[str, dict[str, float]]` — keyed `{backend: {op_name: floor_s}}`. `ATTENTION_FLOOR_S` is deleted.
-  - `load_floors(version_dir, *, backend, warn_missing=True) -> dict[str, float] | None` — returns `{op_name: floor_s}`; raises `KernelCoverageError` on an old-format file.
-  - `fit_floors(version_dir, *, backend, gpu, gpu_spec=None, candidates_us=CANDIDATE_FLOORS_US, seed=0) -> dict[str, Any]` — writes op-name keys.
+  - `dryrun.cost.kernel.sol.FALLBACK_FLOORS_S: dict[str, dict[str, float]]`: keyed `{backend: {op_name: floor_s}}`. `ATTENTION_FLOOR_S` is deleted.
+  - `load_floors(version_dir, *, backend, warn_missing=True) -> dict[str, float] | None`: returns `{op_name: floor_s}`; raises `KernelCoverageError` on an old-format file.
+  - `fit_floors(version_dir, *, backend, gpu, gpu_spec=None, candidates_us=CANDIDATE_FLOORS_US, seed=0) -> dict[str, Any]`: writes op-name keys.
   - `evaluate_holdout(...)`'s `floor_override` keeps its meaning.
 
 - [ ] **Step 1: Write the failing test**
@@ -1890,7 +1890,7 @@ def test_an_unregistered_op_key_in_floors_json_is_ignored(tmp_path):
 python -m pytest tests/test_kernel_floor_op_keys.py -q
 ```
 
-Expected: FAIL — `ImportError: cannot import name 'FALLBACK_FLOORS_S'`.
+Expected: FAIL: `ImportError: cannot import name 'FALLBACK_FLOORS_S'`.
 
 - [ ] **Step 3: Re-key the fallback map in `sol.py`**
 
@@ -1993,7 +1993,7 @@ def load_floors(
     Raises:
         KernelCoverageError: If the file carries the retired phase keys. Reading it leniently
             would apply a zero floor, which measures 34.89% MRE against 6.63% at the fitted
-            22 us -- a silent five-fold accuracy loss.
+            22 us: a silent five-fold accuracy loss.
     """
     floors_path = version_dir / "floors.json"
     if not floors_path.is_file():
@@ -2086,7 +2086,7 @@ Replace lines 218-229 (the `floor_override` / `ATTENTION_FLOOR_S` block) with:
 
 ```python
     # Resolve the floor once for this (op, backend) pair so grid construction and the
-    # predicted-SOL call use identical values -- the round trip must be consistent.
+    # predicted-SOL call use identical values: the round trip must be consistent.
     op = op_for(op_name)
     if not op.fits_floor:
         floor_s = 0.0
@@ -2163,7 +2163,7 @@ PY
 ```
 
 Expected: vllm reports **context_attention=32 us, generation_attention=22 us**; flashinfer
-reports **4 us and 6 us**. Any other value means the fitting changed behaviour — STOP and
+reports **4 us and 6 us**. Any other value means the fitting changed behaviour: STOP and
 report rather than accepting the new number.
 
 - [ ] **Step 7: Run the tests and the full baseline gate**
@@ -2178,7 +2178,7 @@ ruff check dryrun/ tests/
 
 Expected: **8 passed** in the new file, the existing floor tests pass, all **4 database binding
 tests now pass** (including the attention one that Task 6 left red), and **all 3 baseline tests
-pass** — including `test_fitted_floors_have_not_moved`, which was red since Task 1 and is what
+pass**: including `test_fitted_floors_have_not_moved`, which was red since Task 1 and is what
 proves the re-keying preserved the values. Suite **680 passed**, no new ruff findings.
 
 - [ ] **Step 8: Commit**
@@ -2193,7 +2193,7 @@ names, so four sites translated between the two: the fitting loop's
 _ATTENTION_OPS map, two branches in holdout, and the database. Each was a place
 a new floor-taking op had to be threaded through.
 
-Keyed by op, floor fitting becomes op-agnostic -- it loops over ops_in() and
+Keyed by op, floor fitting becomes op-agnostic: it loops over ops_in() and
 skips those declaring fits_floor = False, so GEMM is excluded by policy rather
 than by absence from a map, and a new op gets a fitted floor with no edit here.
 holdout's three per-op SOL closures collapse into one that asks the op, removing
@@ -2203,8 +2203,8 @@ This is a breaking format change. An old phase-keyed file raises and names the
 fit-floor command rather than being read leniently: a silent zero floor measures
 34.89% MRE against 6.63% at the fitted 22 us.
 
-Regenerated floors reproduce every fitted value exactly -- vllm 32/22 us,
-flashinfer 4/6 us -- which the baseline test now pins.
+Regenerated floors reproduce every fitted value exactly: vllm 32/22 us,
+flashinfer 4/6 us, which the baseline test now pins.
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -2226,8 +2226,8 @@ new config field.
 **Interfaces:**
 - Consumes: `op_for` (Task 2), `op.table_columns()` (Tasks 3-4).
 - Produces:
-  - `PerfTableWriter.write(op_name: str, rows: Sequence[Mapping[str, Any]]) -> Path` — validates columns against the op and raises `ValueError` on a missing or extra one.
-  - `KernelProfileConfig.sweep(op_name: str) -> Any` — the parsed sweep for one op, raising `ProfileValidationError` when the config has no subtree for its family.
+  - `PerfTableWriter.write(op_name: str, rows: Sequence[Mapping[str, Any]]) -> Path`: validates columns against the op and raises `ValueError` on a missing or extra one.
+  - `KernelProfileConfig.sweep(op_name: str) -> Any`: the parsed sweep for one op, raising `ProfileValidationError` when the config has no subtree for its family.
   - `KernelProfileConfig.gemm` and `.attention` are deleted.
 
 - [ ] **Step 1: Write the failing test**
@@ -2398,7 +2398,7 @@ dataclasses and both `write_*` methods, and replace them with one `write`:
         expected = set(op.table_columns())
         # Validate here rather than trusting the caller. The per-family methods this replaces
         # populated up to eleven columns by hand, so a misspelled key produced a table that
-        # only failed when something later tried to read it -- possibly hours after the sweep.
+        # only failed when something later tried to read it: possibly hours after the sweep.
         for index, row in enumerate(rows):
             keys = set(row)
             missing = sorted(expected - keys)
@@ -2489,7 +2489,7 @@ and build `sweeps` in `from_dict` by asking each registered op to parse its fami
         parallelism = value.get("parallelism", {})
         # Each op parses its own family's subtree, so adding an op adds no field here. A family
         # absent from the config yields no entry, and `sweep()` raises naming the missing block
-        # only if something actually asks for it -- profiling one family must not require
+        # only if something actually asks for it: profiling one family must not require
         # configuring them all.
         sweeps: dict[str, Any] = {}
         for op in OP_REGISTRY.values():
@@ -2519,11 +2519,11 @@ from ...cost.kernel.ops.base import OP_REGISTRY, op_for
 `database.py`, `floor.py`, and the perf-table writer, none of which should depend on the
 profiler package having been imported first. Importing `ops.base` pulls in `ops/__init__.py`
 and therefore every op. An earlier draft of this plan deferred registration to this file, which
-was both too late and the wrong direction — verified by reproducing
+was both too late and the wrong direction: verified by reproducing
 `PerfTableWriter.table_path("gemm")` raising `Registered ops: none` while every unit test
 passed, because each test imports its own op module.
 
-Keep `GemmSweep` and `AttentionSweep` defined in this module — the ops import them lazily, so
+Keep `GemmSweep` and `AttentionSweep` defined in this module: the ops import them lazily, so
 moving them would create a cycle.
 
 - [ ] **Step 5: Repoint the three profiler call sites**
@@ -2559,7 +2559,7 @@ names; the ten keys are `batch_size`, `num_heads`, `num_key_value_heads`, `head_
 `config.sweep(op_name)` and every `config.gemm` with `config.sweep("gemm")`.
 
 Note the context and generation tables have **different** axis columns, so a context row must
-not carry `step` and a generation row must not carry `isl` — the writer's extra-column check
+not carry `step` and a generation row must not carry `isl`: the writer's extra-column check
 now enforces that, where the old shared `AttentionRow` carried both.
 
 - [ ] **Step 6: Run the tests and the baseline gate**
@@ -2916,8 +2916,8 @@ print("HOLDOUT IDENTICAL AFTER RE-SWEEP")
 PY
 ```
 
-**This check as written is INVALID and must not be used.** Its premise -- that re-measuring
-GEMM reproduces the same table -- is false. `latency_s` is a wall-clock GPU measurement: two
+**This check as written is INVALID and must not be used.** Its premise: that re-measuring
+GEMM reproduces the same table: is false. `latency_s` is a wall-clock GPU measurement: two
 runs of *identical* code produced holdout MREs of 3.896% and 3.828%, 0.068 percentage points
 apart, about seven times the 0.01pp tolerance this step demands. Measured directly, six repeats
 of one GEMM kernel span 0.351% of their median. No byte-identical re-sweep gate is
@@ -3020,7 +3020,7 @@ PY
 ```
 
 Expected: suite green, 7 pre-existing ruff findings only, and **STAGE 1 GATE PASSED**. If any
-line reports FAIL, the refactor changed behaviour — find the cause and fix the code. Do not
+line reports FAIL, the refactor changed behaviour: find the cause and fix the code. Do not
 update the baseline.
 
 ---
@@ -3029,7 +3029,7 @@ update the baseline.
 
 The third op family, which is what proves the abstraction generalizes rather than merely
 accommodating the two families that shaped it. **It is deliberately not wired into
-`ComposedRollout.predict()`** — see the spec's elementwise section and the test in Step 6.
+`ComposedRollout.predict()`**: see the spec's elementwise section and the test in Step 6.
 
 **Files:**
 - Create: `dryrun/cost/kernel/ops/elementwise.py`
@@ -3041,7 +3041,7 @@ accommodating the two families that shaped it. **It is deliberately not wired in
 **Interfaces:**
 - Consumes: `KernelOp`, `register_op` (Task 2); `PerfTableWriter.write` (Task 8); `MeasurementConfig` from `dryrun.profiler.kernels.config`.
 - Produces:
-  - `ElementwiseSweep(token_counts: tuple[int, ...])` — frozen, in `dryrun/profiler/kernels/config.py`.
+  - `ElementwiseSweep(token_counts: tuple[int, ...])`: frozen, in `dryrun/profiler/kernels/config.py`.
   - `ElementwiseKernelOp` with `name = "elementwise"`, `family = "elementwise"`, `slice_columns = ("dtype", "op_kind")`, `axis_columns = ("n_elements",)`, `fits_floor = True`, registered as `ELEMENTWISE_OP`.
   - `ELEMENTWISE_KINDS: tuple[str, ...] = ("rms_norm", "rotary_embedding", "silu_and_mul", "qk_norm")`.
   - `dryrun.profiler.kernels.elementwise.profile_elementwise(model, config, *, writer_factory) -> tuple[Path, ...]`.
@@ -3200,7 +3200,7 @@ Create `dryrun/cost/kernel/ops/elementwise.py`:
 """
 Elementwise kernels: rmsnorm, rope, activation, and Qwen3's qk_norm.
 
-All four are pure bandwidth -- they read a tensor, write a tensor, and do no matmul -- so they
+All four are pure bandwidth (they read a tensor, write a tensor, and do no matmul) so they
 share one schema and one roofline shape. Only the bytes touched differ, and `n_elements`
 carries that, which is why `op_kind` is a slice column rather than a separate op per kernel:
 one utility surface per kind, but one formula for all of them.
@@ -3258,7 +3258,7 @@ class ElementwiseKernelOp:
         `n_elements` counts the elements *read*; the write is assumed equal, so the byte
         traffic is `2 * n_elements * dtype_bytes`. That holds for all four kinds: rmsnorm and
         qk_norm read and write one tensor, rope reads and writes q and k, and silu_and_mul
-        reads `2n` and writes `n` for a total of `3n` against the assumed `2n` -- a 1.5x
+        reads `2n` and writes `n` for a total of `3n` against the assumed `2n`: a 1.5x
         underestimate that the fitted utility absorbs, in the same way it absorbs every other
         SOL simplification.
 
@@ -3319,7 +3319,7 @@ Time vLLM's elementwise kernels: rmsnorm, rope, activation, and qk_norm.
 Two traps make this module's shape non-obvious, both measured on H20 rather than assumed.
 
 **The raw fused op must be timed, not the module that wraps it.** Calling `RMSNorm(...)` as a
-module costs 60.33 us at 16 tokens against 4.57 us for `vllm._custom_ops.rms_norm` -- 13.2x.
+module costs 60.33 us at 16 tokens against 4.57 us for `vllm._custom_ops.rms_norm`: 13.2x.
 The gap is Python dispatch through `CustomOp.__call__`, which the server never pays because it
 replays these kernels inside a CUDA graph. Timing the module would inflate the table by an
 order of magnitude and the utility surface would absorb the error silently.
@@ -3548,7 +3548,7 @@ PY
 ```
 
 Expected: a real MRE with `point_count > 0`, and `EXISTING OPS UNCHANGED`. Record the measured
-MRE and the fitted elementwise floor — Task 12 documents them. A very high MRE here is a finding
+MRE and the fitted elementwise floor: Task 12 documents them. A very high MRE here is a finding
 to report, not to hide: the utility of a dispatch-bound kernel is small and the surface may be
 poorly conditioned.
 
@@ -3602,10 +3602,10 @@ spawn rather than a single kernel call. That is what `measure()`'s coarse signat
 **Interfaces:**
 - Consumes: `KernelOp`, `register_op` (Task 2); `PerfTableWriter.write` (Task 8).
 - Produces:
-  - `CollectiveSweep(token_counts: tuple[int, ...])` — frozen, in `dryrun/profiler/kernels/config.py`.
+  - `CollectiveSweep(token_counts: tuple[int, ...])`: frozen, in `dryrun/profiler/kernels/config.py`.
   - `AllReduceKernelOp` with `name = "all_reduce"`, `family = "collective"`, `slice_columns = ("dtype", "world_size")`, `axis_columns = ("message_bytes",)`, `fits_floor = True`, registered as `ALL_REDUCE_OP`.
-  - `CommQuery(world_size: int, message_bytes: int, dtype: str = "bfloat16")` — frozen, in `dryrun/cost/kernel/database.py`, with `op_name`, `slice_key`, `coords` matching the other queries.
-  - `KernelDatabase.query_comm(query: CommQuery) -> float` — replaces the raising stub.
+  - `CommQuery(world_size: int, message_bytes: int, dtype: str = "bfloat16")`: frozen, in `dryrun/cost/kernel/database.py`, with `op_name`, `slice_key`, `coords` matching the other queries.
+  - `KernelDatabase.query_comm(query: CommQuery) -> float`: replaces the raising stub.
   - `dryrun.profiler.kernels.collective.profile_collective(model, config, *, writer_factory) -> tuple[Path, ...]`; `CollectiveProfile` and `CollectiveMeasurement` are deleted.
 
 - [ ] **Step 1: Write the failing test**
@@ -4098,7 +4098,7 @@ Expected: **13 passed** in the new file, all 3 baseline tests pass (tp=1 numbers
 untouched, since `comm_queries` returns empty there), the suite grows by exactly the new file's test count and stays green, no new ruff findings,
 and `RETIRED APIS GONE`. `tests/test_rollout_composed.py`'s
 `test_tensor_parallel_above_one_is_rejected_naming_the_missing_tables` now contradicts the
-feature — replace it with a test that `tp=2` constructs, and say so in the commit message.
+feature: replace it with a test that `tp=2` constructs, and say so in the commit message.
 
 - [ ] **Step 8: Measure at tp=2 and gate it**
 
@@ -4121,7 +4121,7 @@ PY
 
 Expected: a real MRE with `point_count > 0`. Record it for Task 12. Note this measures **one**
 world size, so the slice has a single `world_size` value and interpolation happens only along
-`message_bytes` — that is correct and is why `world_size` is categorical.
+`message_bytes`: that is correct and is why `world_size` is categorical.
 
 - [ ] **Step 9: Commit**
 
@@ -4140,8 +4140,8 @@ fine-grained interface to hook.
 
 query_comm stops raising and prices through the same SOL/utility split as every
 other op, so ComposedRollout's tensor_parallel != 1 rejection is removed.
-ModelOps.comm_queries returns two all-reduces per layer -- after o_proj and
-after down_proj -- with the multiplier as data for the same reason logits_op
+ModelOps.comm_queries returns two all-reduces per layer: after o_proj and
+after down_proj: with the multiplier as data for the same reason logits_op
 carries one.
 
 world_size is a slice column rather than an axis: a 2-rank and an 8-rank
@@ -4227,7 +4227,7 @@ Cover, in this order:
 3. **The four lookups** and the rule that nothing indexes `OP_REGISTRY` directly.
 4. **The registered ops**, as a table: name, family, slice columns, axis columns, `fits_floor`,
    and the Step-1 holdout MRE for each.
-5. **Why `measure()` is per-family, not per-op** — one attention sweep allocates one KV cache and
+5. **Why `measure()` is per-family, not per-op**: one attention sweep allocates one KV cache and
    times both phases against it.
 6. **The `floors.json` format**, keyed by op name, with the note that an old phase-keyed file is
    rejected and the measured reason (floor 0 scores 34.89% MRE against 6.63% fitted).
@@ -4244,7 +4244,7 @@ Three changes:
    holdout MRE from Step 1, and **end-to-end unvalidated** because no vLLM tp=2 baseline exists.
 3. Add the small-batch finding: decode `median_ratio` is 1.1312 over 66 buckets at reqs 1-4
    against ~1.007-1.014 elsewhere, so the aggregate 1.19% is an averaging artifact. List the
-   three ruled-out causes with their numbers — CUDA graph capture (eager/graph agree 1-12%),
+   three ruled-out causes with their numbers: CUDA graph capture (eager/graph agree 1-12%),
    invalid kernel summation (4.644 ms summed vs 4.721 ms as one 36-layer graph replay, 1.7%), and
    `m=1` interpolation (`m=1` is measured; table equals query bit-for-bit). State that kernel
    overlap in the real server is the remaining candidate and that diagnosing it is future work.
@@ -4274,7 +4274,7 @@ grep -rn "0.03%" docs/ || echo "NO STALE ESTIMATE"
 ```
 
 Expected: suite green, 7 pre-existing ruff findings only, `STALE CLAIMS REMOVED`, and
-`NO STALE ESTIMATE`. Every figure in the new docs must trace to a Step 1 command's output — if
+`NO STALE ESTIMATE`. Every figure in the new docs must trace to a Step 1 command's output: if
 you cannot point at the run that produced a number, remove the number.
 
 - [ ] **Step 7: Commit**
@@ -4325,7 +4325,7 @@ reading them leniently, because a silent zero floor costs five-fold accuracy.
 **Three plan claims were corrected by measurement while writing**, and the corrections are
 load-bearing. Elementwise is **1.20% of a decode step, not 0.03%**, because these kernels are
 flat at 4-5 us rather than bandwidth-scaling. Wiring it in makes decode **2.3x worse**, so it is
-built but not consumed — an executor who "finishes the job" by adding it to `predict()` will
+built but not consumed: an executor who "finishes the job" by adding it to `predict()` will
 regress the model. And timing the vLLM module instead of the raw op inflates the measurement
 **13.2x**, which would have poisoned the table invisibly.
 
@@ -4337,7 +4337,7 @@ new op class therefore carries the `KernelOp` suffix.
 635 at commit `72f00f5` and the plan adds 90 collected tests, ending at 725. Each task asserts
 only that the suite is green and grew by its own new-test count, because a chain of hardcoded
 intermediate totals silently goes wrong the moment one task's count is off by one, and then
-every later task appears to fail. Reconcile a mismatched delta rather than ignoring it — too
+every later task appears to fail. Reconcile a mismatched delta rather than ignoring it: too
 small usually means a parametrization was dropped.
 
 **Deliberately out of scope**, each a real gap rather than an oversight: diagnosing the 13%

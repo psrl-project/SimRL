@@ -295,7 +295,7 @@ def test_grid_skips_non_positive_coordinate_rows_and_counts_the_rest(tmp_path):
     path = _write_generation_attn(
         tmp_path / "generation_attention_perf.parquet",
         [
-            {"batch_size": 16, "step": 0, "latency_s": 5.0e-5},   # non-positive — skipped
+            {"batch_size": 16, "step": 0, "latency_s": 5.0e-5},   # non-positive: skipped
             {"batch_size": 16, "step": 128, "latency_s": 6.0e-5},
             {"batch_size": 16, "step": 512, "latency_s": 8.0e-5},
             {"batch_size": 16, "step": 1024, "latency_s": 1.0e-4},

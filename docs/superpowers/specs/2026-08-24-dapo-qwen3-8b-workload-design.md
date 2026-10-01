@@ -35,7 +35,7 @@ A group is therefore a real structural unit of the workload, not a detail:
 the 8 responses share one prompt, and their lengths vary widely within the group
 (measured: one prompt produced 6300..10240 tokens across its 8 responses).
 
-The naive fix — derive `group_id` from `rid // 8` — is a silent correctness trap.
+The naive fix (derive `group_id` from `rid // 8`) is a silent correctness trap.
 When `len(trace)` is not a multiple of the group size, the `rid % len` wraparound
 splits a group across the boundary. Both follow-up tasks (B: whole-group batch
 consumption, C: shared-prefix prefill) depend on group boundaries being exact, so
@@ -49,7 +49,7 @@ All verified on this cluster on 2026-08-24 before writing this spec.
 prompts**, each repeated ~58-59× per row group (2 row groups). Unique identity is
 `extra_info.index`. `prompt` is a single-message `[{content, role: "user"}]` list.
 Prompt tokens over unique prompts with the Qwen3-8B chat template: mean 154,
-median 141, p95 254, max 1273, min 72 — only 0.1% exceed the recipe's
+median 141, p95 254, max 1273, min 72: only 0.1% exceed the recipe's
 `max_prompt_length=1024`.
 
 Consequence: `load_prompt_messages` random-samples *rows*, so sampling without
@@ -95,19 +95,19 @@ observed rather than fabricated, and the group boundary is explicit in the data.
 
 The existing single-dimension trace format and `from_trace` stay as they are:
 synthetic and single-dimension workflows keep working unchanged. This is not a
-compatibility shim — the joint trace is a genuinely different artifact (a joint
+compatibility shim: the joint trace is a genuinely different artifact (a joint
 distribution rather than a marginal one), so both formats have a reason to exist.
 
 ### 2. Distributed collection
 
 A worker is a `(host, gpu_index)` pair addressed by a flat worker index.
-Prompts are split deterministically as `prompts[worker_index::n_workers]`.
+Prompts are split deterministically as `prompts[worker_index:n_workers]`.
 
 ```
 hosts.txt                    1024 deduped unique prompts
     │                                │
     ▼                                ▼
-16 workers = (host, gpu)  →  prompts[i::16]  (deterministic from index i)
+16 workers = (host, gpu)  →  prompts[i:16]  (deterministic from index i)
     │
     ▼
 each worker: CUDA_VISIBLE_DEVICES=<gpu> vllm serve <model> --port <base+gpu> (tp=1)
@@ -128,7 +128,7 @@ merge → joint.jsonl   (validates every expected shard is present)
 - **Merge validates completeness** and names any missing shard rather than
   silently emitting a short trace.
 - **Startup is staggered** per host. Concurrent loads of an 8-shard checkpoint
-  from a shared filesystem are slow enough to trip readiness timeouts — the same
+  from a shared filesystem are slow enough to trip readiness timeouts: the same
   hazard already documented in `examples/profile/README.md`.
 
 `hosts.txt` is one host per line with an optional GPU count:
@@ -140,7 +140,7 @@ merge → joint.jsonl   (validates every expected shard is present)
 ```
 
 Prompt sampling deduplicates on `extra_info.index` before subsampling, so each
-group is a distinct problem — matching a real DAPO step of 64 different problems.
+group is a distinct problem: matching a real DAPO step of 64 different problems.
 
 ### 3. Config surface
 
@@ -160,7 +160,7 @@ Existing groups (`normal`, `uniform`, ...) gain `source: distributions`.
 
 ### 4. Simulator changes
 
-- `Request.group_id: int = 0` — a new field on the request data model.
+- `Request.group_id: int = 0`: a new field on the request data model.
 - A `GroupedWorkload` source in `dryrun/workload/` that owns the group list and
   yields `(group_id, prompt_len, output_len)` per request, wrapping at group
   boundaries.
@@ -193,7 +193,7 @@ instances, `max_prompt_length=1024`, `max_output_length=10240`,
 Rollout cost uses the existing tp=1 artifact
 `outputs/cost/qwen3_8b/rollout_psrl.json`.
 
-`n_versions=16`, chosen so the run nominally consumes 16 × 512 = 8192 responses —
+`n_versions=16`, chosen so the run nominally consumes 16 × 512 = 8192 responses : 
 the exact length of the collected trace. However, the simulator admits ahead of
 consumption, so `next_rid` reaches 9728 (1536 past the trace boundary), meaning
 wraparound **does** occur. It is safe: wraparound lands on a group boundary by
@@ -215,11 +215,11 @@ handling stays for the synthetic path.
 
 ## Out of scope
 
-- **Task B — whole-group batch consumption.** `job.batch_size` should mean
+- **Task B: whole-group batch consumption.** `job.batch_size` should mean
   prompts per step, and a batch should consume all 8 responses of a group or
   none. Touches all five policies plus the PSRL `StalenessInventory` bridge
   (which keys buffer entries by `prompt_id = rid`).
-- **Task C — shared prefix / prefix caching.** The 8 responses share a prompt
+- **Task C: shared prefix / prefix caching.** The 8 responses share a prompt
   prefix, so prefill should be paid once per group. Touches engine KV
   accounting (`blocks_for(r.prefilled)`) and the chunked-prefill loop.
 - **DAPO dynamic-sampling filter** (dropping all-correct/all-wrong groups):

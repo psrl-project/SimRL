@@ -79,7 +79,7 @@ def _candidate(
     )
 
 
-# -- launch spec and command -------------------------------------------------
+# --- launch spec and command -------------------------------------------------
 
 
 def test_launch_spec_carries_every_candidate_setting(tmp_path: Path):
@@ -176,7 +176,7 @@ def test_config_rejects_a_warmup_that_consumes_every_step(tmp_path: Path):
         _config(tmp_path, max_steps=2, warmup_steps=2)
 
 
-# -- build_config -----------------------------------------------------------
+# --- build_config -----------------------------------------------------------
 
 megatron = pytest.importorskip(
     "megatron.bridge",
@@ -204,8 +204,10 @@ def test_build_config_applies_parallelism(applied_config):
     assert cfg.model.pipeline_model_parallel_size == 2
     assert cfg.model.context_parallel_size == 1
     assert cfg.model.virtual_pipeline_model_parallel_size is None
-    # Not part of the cost-model cell key, so it must stay pinned.
-    assert cfg.model.sequence_parallel is False
+    # Follows TP, matching what Megatron and verl do by default, so the profile
+    # measures the configuration people actually run. Still a function of TP, so
+    # one cell per TP describes one configuration.
+    assert cfg.model.sequence_parallel is True
 
 
 def test_build_config_applies_batch_and_sequence(applied_config):

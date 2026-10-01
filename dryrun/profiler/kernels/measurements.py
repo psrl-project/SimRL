@@ -81,7 +81,7 @@ class PerfTableWriter:
         expected = set(op.table_columns())
         # Validate here rather than trusting the caller. The per-family methods this replaces
         # populated up to eleven columns by hand, so a misspelled key produced a table that
-        # only failed when something later tried to read it -- possibly hours after the sweep.
+        # only failed when something later tried to read it: possibly hours after the sweep.
         for index, row in enumerate(rows):
             keys = set(row)
             missing = sorted(expected - keys)

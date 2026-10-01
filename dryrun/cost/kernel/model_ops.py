@@ -8,7 +8,7 @@ plausible-looking 36x that no unit test on a single kernel would catch.
 
 Sharding reuses `dryrun.profiler.kernels`' own functions rather than reimplementing the same
 divisions. If the composition sharded differently from the sweep, it would query shapes that
-were never measured -- or worse, query a measured shape corresponding to different work. The
+were never measured: or worse, query a measured shape corresponding to different work. The
 profiler raises rather than floor-dividing an indivisible degree, and that behaviour is
 inherited here for the same reason.
 """

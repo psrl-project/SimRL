@@ -32,20 +32,17 @@ coefficients are non-negative and separately identifiable: sequence length at fi
 microbatch count moves only `token_cost`, microbatch count at fixed sequence length
 separates `microbatch_overhead` from `per_step_overhead`.
 
-A quadratic token term was tried and rejected. Adding `slots * tokens^2` improves the
-in-sample error on clean data (6.60% to 4.65% at TP1/PP1) but not leave-one-out error
-(10.24% to 10.38%), so it buys no generalization. It is also not physically attention:
-the fitted coefficient implies roughly 18000% of the H20's bf16 throughput, and directly
-measured attention kernels account for only 10 to 45 ms of a 515 to 1297 ms step, about
-2 to 3%. Attention is not the bottleneck at these sequence lengths under full recompute,
-so a quadratic term absorbs residual rather than representing a mechanism. Do not re-add
-it without sequence lengths long enough for attention to dominate, and check the implied
-utilization when doing so.
+A quadratic token term was tried, rejected, and later restored. On short sequences it
+improves in-sample error without improving leave-one-out error, and attention accounts
+for only a few percent of a step under full recompute, so there it absorbs residual
+rather than representing a mechanism. Past roughly 2048 tokens attention does dominate
+and the term earns its place; `design_row` carries the reasoning. If it is ever dropped
+again, check the implied utilization against the device's throughput before trusting it.
 
 The residual that remains is structured: the shortest sequence is over-predicted by
 about 6 to 7% in every cell, the regime where small GEMMs underutilize the device so the
 effective per-token rate is worse than at longer sequences. Capturing that needs a
-throughput curve rather than a constant `token_cost` -- a kernel-level concern that the
+throughput curve rather than a constant `token_cost`: a kernel-level concern that the
 rollout cost model already solves by interpolating measured utility, so feeding training
 GEMMs through the same kernel tables is the principled next step rather than another
 fitted polynomial term.
@@ -70,6 +67,14 @@ class LatencyFeatures:
     slots: float
     sum_squared_tokens: float
 
+    # Totals over the real microbatch sequence, plus the bubble charged at the
+    # largest microbatch. On a uniform sequence these equal `slots * tokens` and
+    # `slots * sum_squared_tokens` exactly, so a fit built before they existed
+    # stays valid; they only differ once the microbatches are ragged.
+    weighted_tokens: float = 0.0
+    weighted_sum_squared_tokens: float = 0.0
+    weighted_slots: float = 0.0
+
     def design_row(self) -> tuple[float, float, float, float]:
         """
         Return the row for
@@ -78,23 +83,34 @@ class LatencyFeatures:
         The intercept is first so a rank check reads naturally against the four physical
         terms.
 
-        The quadratic term is `slots * sum_squared_tokens`, not `slots * tokens ** 2`.
-        Attention does not cross sequence boundaries, so a packed microbatch costs the sum
-        of each sequence's square; squaring the packed total would overcharge it by the
-        sequence count, an 8x error for eight packed sequences.
+        The token terms are totals over the actual microbatch sequence rather than the
+        largest microbatch times the slot count. A pipeline stage runs every microbatch
+        it is given, so a step costs the sum of their costs; only the `pp - 1` bubble
+        slots it cannot fill are charged at the largest, since that is what sets the
+        drain rate. Charging every slot the maximum treats a ragged batch as though
+        every sequence were the longest, which both overpredicts it and flattens the
+        prediction to near-constant, because the longest sequence barely moves between
+        steps while the token total varies widely.
 
-        Both backends carry the term because both need it once the profiled sequence length
-        is long enough for attention to matter. Measured by leave-one-out on real Megatron
-        candidates: at seq <= 2048 the linear form wins (14.17% against 16.29% at TP1/PP1),
-        but at seq <= 8192 the quadratic form wins decisively (60.48% against 5.52%). The
-        earlier decision to reject this term was correct for the domain it was tested in and
-        wrong for the domain the simulator actually needs.
+        Profiling measures uniform microbatches, where the two forms coincide, which is
+        why every fitted artifact remains valid without a refit.
+
+        The quadratic term sums each sequence's square rather than squaring a total.
+        Attention does not cross sequence boundaries, so a packed microbatch costs the
+        sum of each sequence's square; squaring the packed total would overcharge it by
+        the sequence count.
+
+        Both backends carry the term because both need it once the profiled sequence
+        length is long enough for attention to matter. Leave-one-out on measured
+        candidates favours the linear form below roughly 2048 tokens and the quadratic
+        form decisively above it, so the earlier decision to drop this term was right
+        for the domain it was tested in and wrong for the one the simulator needs.
         """
         return (
             1.0,
-            self.slots * self.tokens,
-            self.slots,
-            self.slots * self.sum_squared_tokens,
+            self.weighted_tokens,
+            self.weighted_slots,
+            self.weighted_sum_squared_tokens,
         )
 
 
@@ -117,15 +133,48 @@ def latency_features(
     """
     Build the design row for one rank's microbatch sequence.
 
-    The critical path is set by the largest microbatch, since the pipeline advances at
-    the speed of its slowest stage occupant.
+    A stage runs every microbatch it is handed, so the step costs their total. The
+    `pp - 1` bubble slots it cannot fill are charged at the largest microbatch, which
+    is what sets the rate at which the pipeline fills and drains.
+
+    `tokens` and `sum_squared_tokens` stay as the per-microbatch maxima, because they
+    are what the fitted `feature_ranges` gate on: exceeding the profiled range is a
+    property of one microbatch, not of the batch total.
+
+    All three workload terms are divided by `pp`, which is what makes pipeline
+    parallelism derivable rather than something to profile. A 1F1B stage owns
+    `num_layers / pp` of the layers, so its cost per slot falls by `pp` while the
+    slot count rises to `nmb + pp - 1`; both factors are known from the topology
+    alone. On a sweep holding TP and DP fixed, predicting an unprofiled PP costs a
+    few percent, against an order of magnitude more when the terms are left
+    unscaled. Point-to-point activation sends between stages are folded into the
+    fitted per-microbatch cost rather than modelled, which the same sweep shows is
+    good enough at these shapes.
+
+    Establishing this needs a sweep that pins DP. Letting DP absorb whatever TP and
+    PP leave over makes every PP comparison a DP comparison as well, which is why
+    `enumerate_training_candidates` accepts an explicit `data_parallel_sizes`.
     """
     if not microbatches:
         raise ValueError("Latency features need at least one microbatch.")
+    max_tokens = float(max(item.sum_tokens for item in microbatches))
+    max_squared = float(max(item.sum_squared_tokens for item in microbatches))
+    bubble = float(parallelism.pp - 1)
+    # Per-layer normalisation: one stage's share of the model.
+    stage_share = 1.0 / float(parallelism.pp)
     return LatencyFeatures(
-        tokens=float(max(item.sum_tokens for item in microbatches)),
+        tokens=max_tokens,
         slots=pipeline_slots(len(microbatches), parallelism.pp),
-        sum_squared_tokens=float(max(item.sum_squared_tokens for item in microbatches)),
+        sum_squared_tokens=max_squared,
+        weighted_tokens=(
+            float(sum(item.sum_tokens for item in microbatches)) + bubble * max_tokens
+        )
+        * stage_share,
+        weighted_sum_squared_tokens=(
+            float(sum(item.sum_squared_tokens for item in microbatches)) + bubble * max_squared
+        )
+        * stage_share,
+        weighted_slots=(float(len(microbatches)) + bubble) * stage_share,
     )
 
 
@@ -135,8 +184,8 @@ def robust_step_time(step_times: tuple[float, ...]) -> float:
 
     The median, not the mean. Step times are right-skewed: an interfering process or a
     straggling collective inflates individual steps but nothing makes a step faster than
-    the hardware allows, so the mean is biased upward while the median is not. One run
-    showed a 107.7% spread across three retained steps from a single outlier.
+    the hardware allows, so the mean is biased upward while the median is not. A single
+    outlier has been seen to double the spread across a candidate's retained steps.
 
     Every step also used to enter the fit as its own row, which let a candidate with an
     outlier outvote a clean one. Collapsing to one row per candidate weights each
@@ -259,10 +308,13 @@ def latency_from_coefficients(
     Raises:
         ValueError: If the prediction is not positive.
     """
-    latency = coefficients["per_step_overhead"] + features.slots * (
-        coefficients["token_cost"] * features.tokens
-        + coefficients["token_quadratic_cost"] * features.sum_squared_tokens
-        + coefficients["microbatch_overhead"]
+    # Kept in lockstep with `LatencyFeatures.design_row`, so the fit and the
+    # predictor cannot disagree about what the coefficients multiply.
+    latency = (
+        coefficients["per_step_overhead"]
+        + coefficients["token_cost"] * features.weighted_tokens
+        + coefficients["token_quadratic_cost"] * features.weighted_sum_squared_tokens
+        + coefficients["microbatch_overhead"] * features.weighted_slots
     )
     if latency <= 0:
         raise ValueError("Training latency prediction must be positive.")
@@ -295,6 +347,15 @@ def latency_feature_ranges(
         slots_feature: (
             min(item.slots for item in all_features),
             max(item.slots for item in all_features),
+        ),
+        # The quadratic feature needs its own gate: `tokens` is a per-microbatch
+        # maximum, so it passes whatever the batch size, while this is a batch total
+        # that grows with both. Ungated, a grid that never co-varies the two lets the
+        # fit park long-sequence cost here, and the real batch then multiplies it by
+        # the sequence count.
+        "sum_squared_tokens": (
+            min(item.weighted_sum_squared_tokens for item in all_features),
+            max(item.weighted_sum_squared_tokens for item in all_features),
         ),
     }
     ranges.update(extra or {})

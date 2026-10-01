@@ -7,7 +7,7 @@ column-contract dataclass in `table.py`, a query dataclass and an `isinstance` b
 in `measurements.py`, a sweep field in `config.py`, a profiler entry point, and a CLI branch.
 The count was the visible symptom; the defect was that `database._sol` and
 `holdout._make_sol_fn` were two independent implementations of the same binding, and drift
-between them would silently change utility on one side of the holdout round trip -- the exact
+between them would silently change utility on one side of the holdout round trip: the exact
 quantity the accuracy gate measures.
 
 `sol()` on the op is that binding, once. Signature differences between families are absorbed

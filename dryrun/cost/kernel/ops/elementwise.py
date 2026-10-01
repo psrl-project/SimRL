@@ -1,7 +1,7 @@
 """
 Elementwise kernels: rmsnorm, rope, activation, and Qwen3's qk_norm.
 
-All four are pure bandwidth -- they read a tensor, write a tensor, and do no matmul -- so they
+All four are pure bandwidth (they read a tensor, write a tensor, and do no matmul) so they
 share one schema and one roofline shape. Only the bytes touched differ, and `n_elements`
 carries that, which is why `op_kind` is a slice column rather than a separate op per kernel:
 one utility surface per kind, but one formula for all of them.
@@ -65,7 +65,7 @@ class ElementwiseKernelOp:
         `n_elements` counts the elements *read*; the write is assumed equal, so the byte
         traffic is `2 * n_elements * dtype_bytes`. That holds for all four kinds: rmsnorm and
         qk_norm read and write one tensor, rope reads and writes q and k, and silu_and_mul
-        reads `2n` and writes `n` for a total of `3n` against the assumed `2n` -- a 1.5x
+        reads `2n` and writes `n` for a total of `3n` against the assumed `2n`: a 1.5x
         underestimate that the fitted utility absorbs, in the same way it absorbs every other
         SOL simplification.
 

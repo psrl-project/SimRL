@@ -22,7 +22,7 @@ _CHECKPOINT = "/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B"
 # is a local instrument rather than a CI gate, and it skips cleanly on a fresh clone.
 #
 # The consequence to know about: re-running `dryrun-profile kernels run` overwrites those
-# tables, and `latency_s` is a wall-clock measurement -- two runs of identical code moved the
+# tables, and `latency_s` is a wall-clock measurement: two runs of identical code moved the
 # GEMM holdout MRE from 3.896% to 3.828%, and six repeats of one kernel span 0.351% of their
 # median. So a re-sweep will fail these assertions for reasons that have nothing to do with the
 # code. Back the tables up first if you need to re-measure, or accept that these numbers must be

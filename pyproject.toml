@@ -26,6 +26,7 @@ dryrun-profile = "dryrun.cli.profile:main"
 dryrun-regress = "dryrun.cli.regress:main"
 dryrun-plot = "dryrun.cli.plot:main"
 dryrun-psrl-plot = "dryrun.cli.psrl_plot:main"
+dryrun-compare = "dryrun.cli.compare:main"
 dryrun-workload = "dryrun.cli.workload:main"
 
 [build-system]

@@ -234,7 +234,7 @@ def _qwen3_gemm_rows(utility: float) -> list[tuple[int, int, int, float]]:
 def test_real_gemm_structure_scores_all_60_points(tmp_path):
     # With per-(n,k) slicing the 60 rows split into 4 separate slices of 15 m-values
     # each.  In each 1-D slice the two endpoint m-values (smallest and largest) are not
-    # bracketed — removing the minimum leaves the query below the remaining range, and
+    # bracketed: removing the minimum leaves the query below the remaining range, and
     # vice versa for the maximum.  The remaining 13 per slice are all bracketed.
     # Total scorable: 4 slices × 13 interior points = 52.
     rows = _qwen3_gemm_rows(0.7)
@@ -273,12 +273,12 @@ def test_zero_step_rows_contribute_to_utility_range_but_not_to_scoring(tmp_path)
     # Using GEMM (the only table fixture available here) with m=0 to simulate the
     # non-positive coordinate case.
     spec = load_gpu_spec("h20")
-    # Build rows with m in [0, 512, 1024, 2048, 4096, 8192] — m=0 is non-positive.
+    # Build rows with m in [0, 512, 1024, 2048, 4096, 8192]: m=0 is non-positive.
     rows = []
     for m in [512, 1024, 2048, 4096, 8192]:
         lat = gemm_sol(spec, m=m, n=4096, k=4096, dtype="bfloat16").latency_s / 0.5
         rows.append((m, 4096, 4096, lat))
-    # The GEMM table schema rejects latency<=0 but not m=0 on load — however,
+    # The GEMM table schema rejects latency<=0 but not m=0 on load: however,
     # _log2_compatible will filter m=0 out of the scoring set.  Instead, directly
     # verify the behaviour by checking that adding a near-zero m (m=1) does not
     # break scoring (m=1 IS log2-compatible: log2(1)=0 is valid as a coordinate).

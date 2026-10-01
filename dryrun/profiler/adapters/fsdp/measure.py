@@ -70,7 +70,7 @@ class FsdpMeasurement:
         already-allocated parameter and gradient state is immediately re-counted. The
         memory model fits the peak *including* that inventory.
 
-        The static pool itself is not read here -- see `record_static_pool`.
+        The static pool itself is not read here: see `record_static_pool`.
         """
         if torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -203,7 +203,7 @@ class FsdpMeasurement:
             # Diagnostic only, and the key name predates the capture point: this is read
             # after the first optimizer step, not at train start, because the moments are
             # allocated lazily. It is parameters plus master weights plus optimizer
-            # moments at whatever dtype the optimizer actually produced -- that dtype
+            # moments at whatever dtype the optimizer actually produced: that dtype
             # follows configuration, so no fixed bytes-per-parameter formula describes it.
             # Compare it against the analytic FSDP inventory; it does not predict one.
             payload["static_allocated_bytes_at_train_start"] = self._static_allocated_bytes
@@ -226,9 +226,9 @@ def is_nccl_memory_exhaustion(error: BaseException) -> bool:
     `failed`, so it is not sufficient on its own.
 
     Phrases matched against the lower-cased message:
-    - ``failed to cuda calloc`` — the NCCL buffer allocation that appears in the
+    - ``failed to cuda calloc``: the NCCL buffer allocation that appears in the
       actual sweep failure (``Failed to CUDA calloc 10485760 bytes``).
-    - ``out of memory`` — the common CUDA allocator phrasing.
+    - ``out of memory``: the common CUDA allocator phrasing.
     """
     text = str(error).lower()
     return any(phrase in text for phrase in _NCCL_MEMORY_PHRASES)

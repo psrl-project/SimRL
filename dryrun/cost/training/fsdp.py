@@ -11,7 +11,7 @@ measured and rejected there cannot reappear here under a different name.
 
 Memory differs from Megatron in two ways that both matter more than a fitted residual
 can absorb. The static pool comes from `fsdp_inventory`, which shards parameters,
-gradients, and optimizer moments -- roughly half of what Megatron's inventory would
+gradients, and optimizer moments: roughly half of what Megatron's inventory would
 report for the same model.
 
 Memory feature design
@@ -48,7 +48,7 @@ Choosing the memory target
 --------------------------
 `peak_allocated_bytes` is the live-tensor high-water mark and `peak_reserved_bytes` is
 the caching allocator's segment pool. Allocated responds to load and reserved is
-quantized and sticky, so allocated is the better regression target -- but that is a
+quantized and sticky, so allocated is the better regression target, but that is a
 measurement, not an assumption, so both are fitted and the winner is selected on
 validation coefficient of determination with both scores recorded in the entry.
 
@@ -842,8 +842,8 @@ class FsdpLatencyModel(_FsdpCellModel, TrainingLatencyModel):
                 notes.append(note)
         coefficients = entry.coefficients
         # Shared with hydraulis so the formula exists once. It raises on a non-positive
-        # result, and it reads `features.sum_squared_tokens` -- the same LatencyFeatures the
-        # fit was built from -- so predict and fit cannot disagree on the same input.
+        # result, and it reads `features.sum_squared_tokens`: the same LatencyFeatures the
+        # fit was built from, so predict and fit cannot disagree on the same input.
         return latency_from_coefficients(coefficients, features), notes
 
 

@@ -142,7 +142,7 @@ class TestMergeShards:
         cap = 1024
         self._write_shard(tmp_path, 0, [RequestGroup(0, 10, (cap, cap))], cap=cap)
         self._write_shard(tmp_path, 1, [RequestGroup(1, 20, (cap, cap))], cap=cap)
-        # Pass no caller cap — shards are authoritative.
+        # Pass no caller cap: shards are authoritative.
         out = merge_shards(tmp_path, 2, tmp_path / "joint.jsonl", {})
         with out.open(encoding="utf-8") as fh:
             header = json.loads(fh.readline())

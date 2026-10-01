@@ -100,6 +100,6 @@ def family_for(model: ModelDescriptor) -> ModelFamily:
 # Registration happens here, at the bottom of the protocol module, so that importing `families`
 # is sufficient to populate the registry. Leaving it to each caller to import the right
 # families_*.py made `family_for` fail in a fresh interpreter while every test passed, because
-# each test imported the family module itself -- the same trap the cost layer's ops/__init__.py
+# each test imported the family module itself: the same trap the cost layer's ops/__init__.py
 # documents. The import is at the end to avoid a cycle: families_dense imports this module.
 from . import families_dense as _families_dense  # noqa: E402,F401  (registers dense architectures)

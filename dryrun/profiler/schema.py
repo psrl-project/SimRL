@@ -373,6 +373,13 @@ class TrainingPayload:
     distributed_optimizer: bool = True
     parameter_count: int | None = None
     warmup_steps: int = 0
+    packing: str = "bshd"
+    """Sequence layout the measurement was taken under.
+
+    Recorded because the two layouts price attention differently: BSHD charges the
+    padded length per sequence, THD the sum of per-sequence squares. A fit cannot
+    mix them.
+    """
 
     def __post_init__(self) -> None:
         for name in ("micro_batch_size", "global_batch_size", "num_microbatches"):
@@ -384,7 +391,10 @@ class TrainingPayload:
             )
         if len(self.microbatches) != self.num_microbatches:
             raise ProfileValidationError("microbatches must have num_microbatches entries.")
-        if any(item.count != self.micro_batch_size for item in self.microbatches):
+        # A THD pack is a single sample whatever its sequence count.
+        if self.packing != "thd" and any(
+            item.count != self.micro_batch_size for item in self.microbatches
+        ):
             raise ProfileValidationError("Every microbatch count must equal micro_batch_size.")
         if any(value <= 0 for value in self.step_times_s):
             raise ProfileValidationError("step_times_s values must be positive.")
@@ -423,6 +433,7 @@ class TrainingPayload:
             distributed_optimizer=bool(value.get("distributed_optimizer", True)),
             parameter_count=value.get("parameter_count"),
             warmup_steps=int(value.get("warmup_steps", 0)),
+            packing=str(value.get("packing", "bshd")),
         )
 
 

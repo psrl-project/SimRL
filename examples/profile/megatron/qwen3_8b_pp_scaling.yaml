@@ -1,0 +1,70 @@
+# Tests whether pipeline parallelism needs profiling at all, or whether a PP
+# cell can be derived from a PP=1 cell analytically.
+#
+# The claim to test: a pipeline stage holds `num_layers / pp` layers and 1F1B
+# serializes `num_microbatches + pp - 1` slots, so the per-microbatch cost
+# should fall by `pp` while the slot count rises, and both are known without
+# measuring. If that holds, the sweep only needs TP cells and PP comes free.
+#
+# The existing production sweep (qwen3_8b.yaml) CANNOT answer this. It fixes
+# world_size at 8 and varies TP/PP, so DP absorbs the remainder:
+#
+#     tp1/pp1 -> dp8     tp1/pp4 -> dp2     tp4/pp1 -> dp2     tp8/pp1 -> dp1
+#
+# Every TP or PP comparison there is also a DP comparison, and DP changes the
+# gradient all-reduce volume and the per-rank token count at once. A measured
+# per-layer cost of 5.2e-5 s at tp1/pp1 against 1.2e-4 s at tp1/pp4 could be
+# the pipeline's doing or dp8-vs-dp2's; the design cannot separate them.
+#
+# This config holds TP=2 and DP=1 fixed and moves ONLY pp, so world_size varies
+# (2, 4, 6 GPUs) instead of DP. That is the whole point: a varying world size
+# with fixed DP is a clean PP experiment, whereas a fixed world size with
+# varying DP is not.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}
+
+# gpu_count is the largest mesh in the sweep (TP2 x PP3 x DP1 = 6). Smaller
+# meshes leave GPUs idle, which is intended: an idle GPU costs nothing, whereas
+# folding it into DP would reintroduce the confound this config exists to remove.
+hardware:
+  gpu_name: H20
+  gpu_count: 6
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen3_8b/megatron_pp_scaling
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  max_steps: 12
+  warmup_steps: 4
+
+profiling:
+  allow_incomplete: false
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+# Two microbatch counts are mandatory even here: the slot column is
+# `num_microbatches + pp - 1`, and a single count leaves it collinear with the
+# intercept. {1, 4} also makes the bubble term visible: at pp3 those are 3 and
+# 6 slots, so the bubble is 67% of the critical path at nmb=1 and 33% at nmb=4.
+# If the analytic slot count is right, both must be predicted by one fit.
+search_space:
+  tensor_parallel_sizes: [2]
+  pipeline_parallel_sizes: [1, 2, 3]
+  # Pinned, not residual. Without this DP takes the leftover GPUs (tp2/pp1 would
+  # become dp3 while tp2/pp3 stays dp1) and the sweep measures DP as much as PP.
+  # Pinning also admits pp2: as a residual it was rejected because the mesh
+  # product 4 does not divide the world size 6.
+  data_parallel_sizes: [1]
+  micro_batch_size: 1
+  num_microbatches: [1, 4]
+  sequence_lengths: [1024, 4096, 8192]
+  recompute: full

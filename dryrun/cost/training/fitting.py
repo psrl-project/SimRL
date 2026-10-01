@@ -90,15 +90,28 @@ def scaled_nonnegative_fit(
     straggling step from dominating, and the second pass drops rows beyond 4.5 robust
     standard deviations only when enough rows remain to keep the design determined.
 
+    Residuals are **relative**, not absolute. A training sweep spans orders of
+    magnitude in step time, so minimising absolute error optimises the largest
+    candidates while letting the smallest absorb almost any relative error. An
+    absolute fit has been seen to drive `token_cost` to near zero, absorbing the
+    linear term into the quadratic one, and still leave large error on mid-sized
+    candidates. What the simulator needs is a percentage, since a one-second error
+    matters on a two-second step and not on a two-hundred-second one.
+
     Returns the coefficients in unscaled units, the inlier mask, and the rank of the
     original design so the caller can reject an unidentifiable cell.
     """
     scales = np.maximum(np.max(np.abs(design), axis=0), 1.0)
     scaled = design / scales
-    initial = np.maximum(np.linalg.lstsq(scaled, target, rcond=None)[0], 0)
+    # Guard against a zero or negative target, which a latency measurement
+    # should never be but which would invert the weighting if it occurred.
+    weights = 1.0 / np.maximum(np.abs(target), np.finfo(np.float64).eps)
+    initial = np.maximum(
+        np.linalg.lstsq(scaled * weights[:, None], target * weights, rcond=None)[0], 0
+    )
 
     def residual(parameters: np.ndarray) -> np.ndarray:
-        return scaled @ parameters - target
+        return (scaled @ parameters - target) * weights
 
     first = least_squares(
         residual,
@@ -140,14 +153,21 @@ def check_feature_range(
 
     When the value is in range the call returns None. When it is out of range and the
     feature name is in `extrapolate`, the call succeeds and returns a diagnostic string
-    describing the exceedance — the caller must record it so extrapolations are never
+    describing the exceedance: the caller must record it so extrapolations are never
     silent. When it is out of range and the feature name is not in `extrapolate`, the call
     raises `TrainingOutOfDomainError` naming the feature, its value, and the range.
 
     `extrapolate` is validated at model construction time (see
     `validate_extrapolate_names`), so an unrecognised name here is an implementation
     error, not a user error.
+
+    A feature the artifact does not record is not checked. Ranges are written at
+    fit time, so an artifact produced before a gate was added simply has no entry
+    for it, and refusing to predict would make every older artifact unusable for a
+    check it was never able to record. Refitting restores the gate.
     """
+    if name not in entry.feature_ranges:
+        return None
     lower, upper = entry.feature_ranges[name]
     if lower <= value <= upper:
         return None

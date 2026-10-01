@@ -51,7 +51,7 @@ def _validate_observed_mesh(
     - If ``observed_mesh`` is missing and the run succeeded and ``allow_incomplete`` is
       false, a ``ProfileValidationError`` is raised.  Without the key there is no way to
       verify the topology, so the record must not silently enter the fit as though it were
-      verified — that is the exact failure this function exists to prevent.
+      verified: that is the exact failure this function exists to prevent.
     - If ``allow_incomplete`` is true, a missing key is tolerated: the caller is
       deliberately collecting a partial sweep where the launcher may not have reached
       mesh-recording yet.
@@ -142,7 +142,7 @@ def collect_fsdp_record(
     # An out-of-memory candidate has no sidecar: the launcher died before writing one. Its
     # shape comes from the candidate instead, repeated once per microbatch, because
     # `num_microbatches` is a swept axis and a single entry would only ever match nmb=1.
-    # These records are wanted data -- they bound the memory model from below -- so a
+    # These records are wanted data (they bound the memory model from below) so a
     # fallback that mismatched would discard exactly the high-memory end of the sweep.
     shapes = metrics.get("microbatch_sequence_lengths") or [
         list(candidate.sequence_shape) for _ in range(candidate.num_microbatches)

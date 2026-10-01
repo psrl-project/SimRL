@@ -1,7 +1,7 @@
 """Profile attention through FlashInfer's paged wrappers (`BatchPrefillWithPagedKVCacheWrapper`
 and `BatchDecodeWithPagedKVCacheWrapper`), using the KV layout vLLM would allocate.
 
-**Critical measurement decision — plan() is called OUTSIDE the timed region.**
+**Critical measurement decision: plan() is called OUTSIDE the timed region.**
 
 FlashInfer's `plan()` performs host-side scheduling (indptr construction, tile splitting,
 work-item generation) that vLLM amortizes once per decode step across all attention layers
@@ -132,7 +132,7 @@ def time_flashinfer_context_point(
     query = torch.randn(num_tokens, num_heads, head_dim, dtype=dtype, device=device)
     output = torch.zeros(num_tokens, num_heads, head_dim, dtype=dtype, device=device)
 
-    # plan() is called OUTSIDE the timed region — see module docstring.
+    # plan() is called OUTSIDE the timed region: see module docstring.
     prefill_wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(workspace_buffer, kv_layout=kv_layout)
     prefill_wrapper.plan(
         qo_indptr=qo_indptr,
@@ -260,7 +260,7 @@ def time_flashinfer_generation_point(
     query = torch.randn(batch_size, num_heads, head_dim, dtype=dtype, device=device)
     output = torch.zeros(batch_size, num_heads, head_dim, dtype=dtype, device=device)
 
-    # plan() is called OUTSIDE the timed region — see module docstring.
+    # plan() is called OUTSIDE the timed region: see module docstring.
     decode_wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(workspace_buffer, kv_layout=kv_layout)
     decode_wrapper.plan(
         indptr=paged_kv_indptr,
@@ -427,8 +427,8 @@ def profile_flashinfer_attention(
             kv_layout=kv_layout,
         )
 
-    # The two phases interpolate over different third axes -- `isl` for context, `step` for
-    # generation -- so each row carries only the axis its own op declares.
+    # The two phases interpolate over different third axes: `isl` for context, `step` for
+    # generation, so each row carries only the axis its own op declares.
     shared = dict(
         num_heads=num_heads,
         num_key_value_heads=num_kv_heads,

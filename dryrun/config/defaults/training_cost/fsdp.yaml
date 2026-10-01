@@ -51,28 +51,28 @@ reshard_after_forward: true
 # Feature names for which out-of-domain queries are permitted instead of rejected.
 # Empty (the default) means strict: any query outside the fitted range raises immediately.
 # When a name is listed the prediction proceeds and the exceedance is recorded in the
-# estimate's diagnostics under 'extrapolation_notes' -- a permitted extrapolation is never
+# estimate's diagnostics under 'extrapolation_notes': a permitted extrapolation is never
 # silent.  An unknown name (e.g. a typo) raises at construction rather than silently
 # enabling nothing.
 #
 # Selectable names for FSDP:
-#   num_microbatches       -- LATENCY and MEMORY: the number of gradient-accumulation steps
+#   num_microbatches      : LATENCY and MEMORY: the number of gradient-accumulation steps
 #                             per rank. The latency form is exactly linear in this term
 #                             (per_step + nmb*(token_cost*tokens + microbatch_overhead)), so
 #                             fitting on nmb in {1,2} and predicting nmb=4 measured a median
 #                             absolute error of 7.7%, on par with the model's own in-domain
 #                             MRE of 9-11%. Upward extrapolation is defensible.
-#   sequences_per_microbatch -- LATENCY only: sequences packed into one microbatch. Enters
+#   sequences_per_microbatch: LATENCY only: sequences packed into one microbatch. Enters
 #                             only as a guard; the linear form does not use it directly.
 #                             Extrapolating upward increases the effective batch size beyond
 #                             what was profiled; treat with caution.
-#   tokens                 -- LATENCY: total tokens on the critical rank per microbatch.
+#   tokens                : LATENCY: total tokens on the critical rank per microbatch.
 #                             Beyond 16384 tokens/rank the hardware cannot run: of the
 #                             profiled candidates, 32768 had 0 successes and 18 OOMs, 65536
 #                             had 0 successes and 9 OOMs. A prediction there looks plausible
 #                             while describing a configuration that physically cannot run.
 #                             Do NOT list this name unless you have profiled beyond 16384.
-#   activation_tokens      -- MEMORY: max tokens/rank used for the activation residual term.
+#   activation_tokens     : MEMORY: max tokens/rank used for the activation residual term.
 #                             The same OOM evidence applies: do not extrapolate without data.
 #
 # Example Hydra override to permit only the safe dimension:

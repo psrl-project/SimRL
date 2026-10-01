@@ -36,7 +36,9 @@ dryrun/
 │   ├── sync/
 │   │   └── cost.py          # SyncCostModel, FixedSyncCost, BandwidthSyncCost
 │   └── recompute/
-│       └── cost.py          # RecomputeCostModel, FixedRecomputeCost, AnalyticalRecomputeCost
+│       └── cost.py          # RecomputeCostModel, Fixed/Analytical/TrainingForwardRecomputeCost
+│                            #   (training_forward prices the log-prob pass as a
+│                            #    FLOP-derived fraction of the fitted train step)
 ├── simulator/
 │   ├── config.py            # SimConfig, SimResult
 │   └── simulator.py         # Simulator (main driver)
@@ -63,6 +65,7 @@ dryrun/
 │   │   ├── model_ops.py     # ModelOps (per-step op list, sharded for one TP degree)
 │   │   └── validate.py      # load_baseline, score_model (ComposedRollout vs vLLM JSONL)
 │   ├── rollout/
+│   │   ├── kv_cache.py      # KvCacheGeometry, kv_blocks_from_memory/engine_log (vLLM's own arithmetic)
 │   │   ├── base.py          # RolloutCostModel ABC, RolloutWorkload
 │   │   ├── advance.py       # Closed-form decode advance (moved from component/rollout/engine/)
 │   │   ├── segment.py       # LatticeIntegrator (monotone numeric decode segment)
@@ -126,13 +129,14 @@ dryrun/
 ├── telemetry/
 │   ├── store.py             # JsonlStore (named JSONL stream store)
 │   ├── writer.py            # SimTelemetry (owns the instance/train/request/rollout_step schemas)
-│   └── psrl_log.py          # convert_psrl_logs, PsrlLogLayout (real PSRL run -> JsonlStore streams)
+│   └── psrl_log.py          # convert_psrl_logs, extract_workload_trace, measured_kv_blocks
 ├── visualizer/
 │   └── plots.py             # SimPlotter (matplotlib offline; one impl for simulated and real runs)
 └── cli/
     ├── main.py              # Hydra CLI entrypoint (@hydra.main); build_training_cost passes batching_mode
     ├── plot.py              # Re-render plots from a simulation's logs
     ├── psrl_plot.py         # Render instance_load from a real PSRL run's logs
+    ├── compare.py           # dryrun-compare: quantify simulated-vs-real error
     ├── profile.py           # Profiling CLI: vllm, kernels, megatron, fsdp subcommands
     └── regress.py           # Regression CLI: rollout, training (--latency-model hydraulis|fsdp)
 tests/

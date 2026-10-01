@@ -46,8 +46,8 @@ MODEL_PATH="${MODEL_PATH:-}"
 GPU="${GPU:-h20}"
 # Tensor parallelism of the inference engine being simulated. Only the composed model reads it;
 # the fitted models were regressed at one degree and carry no notion of a second. A tp>1 step
-# prices two all-reduces per layer, so KERNEL_ROOT must point at a tree swept at the same degree
-# -- the collective table is sliced on world_size and cannot be interpolated across degrees.
+# prices two all-reduces per layer, so KERNEL_ROOT must point at a tree swept at the same
+# degree: the collective table is sliced on world_size and cannot be interpolated.
 ROLLOUT_TP="${ROLLOUT_TP:-1}"
 
 if [[ "${ROLLOUT_MODEL}" == "composed" ]]; then
@@ -139,15 +139,28 @@ if backend == "fsdp":
         print(f"SHARD_SIZE={shard} is not fitted. Available shard sizes: {available}.", file=sys.stderr)
         raise SystemExit(1)
 else:
-    available = sorted({(int(e["parallelism"]["tp"]), int(e["parallelism"]["pp"])) for e in entries})
-    if (int(tp), int(pp)) not in available:
-        pairs = ", ".join(f"tp={t} pp={p}" for t, p in available)
+    # Only TP is a measured cell; PP is derived, since the latency features are
+    # per-layer and the slot count is analytic. Predicting an unprofiled PP costs
+    # 2.2-4.6%.
+    available = sorted({int(e["parallelism"]["tp"]) for e in entries})
+    if int(tp) not in available:
+        degrees = ", ".join(f"tp={t}" for t in available)
         print(
-            f"TRAINING_TP={tp} TRAINING_PP={pp} is not a fitted cell. Available: {pairs}. "
-            f"A cell is a measurement of one topology, so it cannot be interpolated.",
+            f"TRAINING_TP={tp} is not a fitted cell. Available: {degrees}. "
+            f"TP changes how each layer is sharded, so it has to be measured; "
+            f"PP is derived and needs no cell of its own.",
             file=sys.stderr,
         )
         raise SystemExit(1)
+    profiled = sorted(
+        {int(d) for e in entries for d in e.get("diagnostics", {}).get("profiled_pipeline_degrees", [])}
+    )
+    if profiled and int(pp) not in profiled:
+        print(
+            f"note: PP={pp} was not profiled (measured: {profiled}); "
+            f"its latency is derived from the per-layer form.",
+            file=sys.stderr,
+        )
 # The fitted latency domain is a hard gate at prediction time, so report it up front.
 ranges = [e.get("feature_ranges", {}).get("tokens") for e in entries]
 spans = [r for r in ranges if r]
@@ -221,10 +234,62 @@ PYDP
             training_cost.micro_batch_size="${MICRO_BATCH_SIZE:-1}"
             training_cost.activation_recompute="${ACTIVATION_RECOMPUTE:-full}"
         )
+        # Dynamic batching, when the real trainer uses it. Unset keeps count-based
+        # grouping by MICRO_BATCH_SIZE.
+        if [[ -n "${MAX_TOKENS_PER_MICROBATCH:-}" ]]; then
+            TRAINING_OVERRIDES+=(
+                "training_cost.max_tokens_per_microbatch=${MAX_TOKENS_PER_MICROBATCH}"
+            )
+        fi
         if [[ -n "${EXTRAPOLATE}" ]]; then
             TRAINING_OVERRIDES+=( "training_cost.extrapolate=${EXTRAPOLATE}" )
         fi
     fi
+fi
+
+# KV capacity is the denominator of every reported kv_cache_usage, so the 100000
+# placeholder makes the simulated curve incomparable with a measured one. Computed
+# from model geometry the way vLLM sizes it, which is what lets an unexecuted
+# configuration be simulated. Overestimates by ~3%; KV_NON_KV_OVERHEAD_BYTES folds
+# the rest in.
+KV_MODEL_PATH="${KV_MODEL_PATH:-}"
+KV_OVERRIDES=()
+if [[ -n "${KV_MODEL_PATH}" ]]; then
+    KV_OVERRIDES=(
+        "rollout.kv_cache_sizing.model_path=${KV_MODEL_PATH}"
+        "rollout.kv_cache_sizing.parameter_count=${KV_PARAMETER_COUNT:-8190735360}"
+        "rollout.kv_cache_sizing.gpu_memory_utilization=${KV_GPU_MEMORY_UTILIZATION:-0.9}"
+        "rollout.kv_cache_sizing.gpu_memory_mib=${KV_GPU_MEMORY_MIB:-97871}"
+        "rollout.kv_cache_sizing.non_kv_overhead_bytes=${KV_NON_KV_OVERHEAD_BYTES:-0}"
+        "rollout.kv_cache_sizing.tp_size=${ROLLOUT_TP}"
+    )
+fi
+
+# Log-prob recomputation, the training-side forward pass. Roughly a quarter of a
+# real training block, so the default 0.0 understates every block.
+RECOMPUTE_MODEL="${RECOMPUTE_MODEL:-}"
+RECOMPUTE_OVERRIDES=()
+if [[ "${RECOMPUTE_MODEL}" == "training_forward" ]]; then
+    # Priced as a FLOP-derived fraction of the fitted training step, so the model
+    # geometry is all it needs. Defaults are Qwen3-8B.
+    RECOMPUTE_OVERRIDES=(
+        recompute_cost.name=training_forward
+        "recompute_cost.hidden_size=${RECOMPUTE_HIDDEN_SIZE:-4096}"
+        "recompute_cost.vocab_size=${RECOMPUTE_VOCAB_SIZE:-151936}"
+        "recompute_cost.parameter_count=${RECOMPUTE_PARAMETER_COUNT:-8190735360}"
+    )
+elif [[ "${RECOMPUTE_MODEL}" == "analytical" ]]; then
+    RECOMPUTE_OVERRIDES=(
+        recompute_cost.name=analytical
+        "recompute_cost.model_params=${RECOMPUTE_MODEL_PARAMS:-8190735360}"
+        "recompute_cost.peak_flops=${RECOMPUTE_PEAK_FLOPS:-148000000000000}"
+        "recompute_cost.overhead_factor=${RECOMPUTE_OVERHEAD_FACTOR:-1.1}"
+    )
+elif [[ -n "${RECOMPUTE_TIME_PER_TOKEN:-}" ]]; then
+    RECOMPUTE_OVERRIDES=(
+        recompute_cost.name=fixed
+        "recompute_cost.time_per_token=${RECOMPUTE_TIME_PER_TOKEN}"
+    )
 fi
 
 cd "${ROOT_DIR}"
@@ -247,5 +312,7 @@ python -m dryrun.cli.main \
     job.max_output_length="${MAX_OUTPUT_LENGTH}" \
     rollout.n_instances="${N_INSTANCES}" \
     rollout.token_budget="${TOKEN_BUDGET}" \
+    "${KV_OVERRIDES[@]+"${KV_OVERRIDES[@]}"}" \
+    "${RECOMPUTE_OVERRIDES[@]+"${RECOMPUTE_OVERRIDES[@]}"}" \
     output_dir="${OUTPUT_DIR}" \
     ${EXTRA_OVERRIDES:+${EXTRA_OVERRIDES}}

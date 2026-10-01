@@ -24,7 +24,7 @@ def _microbatches(seq_length: int, count: int) -> tuple[SequenceStats, ...]:
     return tuple(SequenceStats.from_lengths([seq_length]) for _ in range(count))
 
 
-# -- pipeline slots ---------------------------------------------------------
+# --- pipeline slots ---------------------------------------------------------
 
 
 def test_slots_reduce_to_the_microbatch_count_without_pipelining():
@@ -46,7 +46,7 @@ def test_slots_reject_nonpositive_input():
         pipeline_slots(1, 0)
 
 
-# -- design row -------------------------------------------------------------
+# --- design row -------------------------------------------------------------
 
 
 def test_design_row_separates_the_three_costs():
@@ -116,7 +116,7 @@ def test_features_reject_an_empty_batch():
         latency_features((), TrainingParallelism())
 
 
-# -- robust aggregation -----------------------------------------------------
+# --- robust aggregation -----------------------------------------------------
 
 
 def test_step_time_uses_the_median_not_the_mean():

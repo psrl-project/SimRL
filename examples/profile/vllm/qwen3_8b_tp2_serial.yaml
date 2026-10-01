@@ -23,7 +23,7 @@ server_ready_timeout: 900
 
 # Serial by construction, which is the whole point of this config. The parallel TP=2 run put four
 # servers on 8 GPUs and one CephFS mount and one degraded mid-run: at per-request depth 8,960,
-# reqs=16 measured 35.76 ms against reqs=32's 19.24 ms -- half the batch at half the total KV
+# reqs=16 measured 35.76 ms against reqs=32's 19.24 ms: half the batch at half the total KV
 # taking nearly double the time. No cost model should reproduce that. Scoring against each
 # bucket's minimum latency barely moved the error (16.39% -> 16.51%), so it was sustained
 # degradation, not transient spikes. One server at a time costs wall clock and buys a usable

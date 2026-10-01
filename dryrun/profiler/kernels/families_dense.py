@@ -7,7 +7,7 @@ weights per layer; vLLM fuses them into `QKVParallelLinear` and `MergedColumnPar
 giving four. Verified against both local checkpoints: summing HF's row counts reproduces these
 `n` values exactly, so this is the engine's shape rather than an approximation of HF's.
 
-`dryrun/profiler/kernels/introspect.py` is the gate that keeps that claim true -- it enumerates
+`dryrun/profiler/kernels/introspect.py` is the gate that keeps that claim true: it enumerates
 a real module graph on the meta device and compares. This module is the fast path and never
 loads a model.
 """

@@ -189,7 +189,7 @@ def test_sol_components_has_three_fields():
 
 
 def test_floor_zero_reproduces_original_latency_s(spec):
-    # Default floor_s=0.0 must leave latency_s unchanged — the default path is provably unaffected.
+    # Default floor_s=0.0 must leave latency_s unchanged: the default path is provably unaffected.
     result_no_floor = generation_attention_sol(
         spec,
         batch_size=16,

@@ -23,7 +23,7 @@ case "${ACTION}" in
     all)
         # fit-floor must follow run and precede holdout: it reads the tables that run
         # writes, and holdout scores the surface using the floors it fits. Skipping it
-        # leaves every query falling back to floors fitted for H20 -- correct here, wrong
+        # leaves every query falling back to floors fitted for H20: correct here, wrong
         # on any other GPU or backend version, and only a log warning says so.
         dryrun-profile kernels run --config "${CONFIG}" --family "${FAMILY}"
         dryrun-profile kernels fit-floor --config "${CONFIG}"

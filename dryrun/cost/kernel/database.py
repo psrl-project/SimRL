@@ -194,7 +194,7 @@ class KernelDatabase:
         self._tables: dict[tuple[str, str], KernelTable] = {}
         # Cache sol_fn closures so KernelTable.grid() memoization can match on identity.
         # Keyed on the table object itself (not id(table)) so the cache holds a strong
-        # reference — same pattern as KernelTable.grid() keying on the callable object.
+        # reference: same pattern as KernelTable.grid() keying on the callable object.
         self._sol_fns: dict[tuple[KernelTable, tuple[Any, ...]], Callable[[tuple[float, ...]], float]] = {}
         # Resolved floors keyed by `(family, backend)`. Keying on the backend rather than the
         # version directory matters: resolving the version scans that directory, so a
@@ -330,7 +330,7 @@ class KernelDatabase:
         identically on both sides of the division. `_grid` bakes `query.backend or
         self._default_backend` into the closure it derives utility from, so a numerator that
         resolved the backend differently would take its floor from one backend's floors.json
-        while the denominator's utility came from another -- a wrong latency that still looks
+        while the denominator's utility came from another: a wrong latency that still looks
         self-consistent from either side.
         """
         resolved_backend = query.backend or self._default_backend
@@ -347,7 +347,7 @@ class KernelDatabase:
         """Return the speed-of-light latency of one query, in seconds."""
         # The op owns the formula. Before this, database and holdout each held their own copy
         # of this binding, and drift between them would have changed utility on one side of the
-        # holdout round trip -- silently, since both sides would still look self-consistent.
+        # holdout round trip: silently, since both sides would still look self-consistent.
         op = op_for(query.op_name)
         floor_s = 0.0
         if op.fits_floor:

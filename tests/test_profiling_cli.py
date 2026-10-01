@@ -425,7 +425,7 @@ def test_holdout_zero_scorable_points_is_a_coverage_failure(
 
     spec = load_gpu_spec("h20")
     target_utility = 0.6
-    # Two rows only — the single slice has fewer than _MIN_SLICE_POINTS (4) rows, so it is skipped.
+    # Two rows only: the single slice has fewer than _MIN_SLICE_POINTS (4) rows, so it is skipped.
     sparse_rows = [
         {
             "m": m,
@@ -486,7 +486,7 @@ def test_holdout_accuracy_failure_names_mre_clause_not_coverage_clause(
 
     spec = load_gpu_spec("h20")
     target_utility = 0.6
-    # Ten rows — enough to produce scorable interior points.
+    # Ten rows: enough to produce scorable interior points.
     ms = [64, 128, 256, 512, 1024]
     nks = [(4096, 4096), (8192, 4096)]
     rows = [
@@ -535,7 +535,7 @@ def test_holdout_healthy_table_passes_and_writes_report(tmp_path: Path, monkeypa
 
     spec = load_gpu_spec("h20")
     target_utility = 0.6
-    # Ten rows across two (n, k) pairs and five m values — produces bracketed interior points.
+    # Ten rows across two (n, k) pairs and five m values: produces bracketed interior points.
     ms = [64, 128, 256, 512, 1024]
     nks = [(4096, 4096), (8192, 4096)]
     rows = [

@@ -487,8 +487,8 @@ def profile_vllm_attention(
             vllm_config=vllm_config,
         )
 
-    # The two phases interpolate over different third axes -- `isl` for context, `step` for
-    # generation -- so each row carries only the axis its own op declares.
+    # The two phases interpolate over different third axes: `isl` for context, `step` for
+    # generation, so each row carries only the axis its own op declares.
     shared = dict(
         num_heads=num_heads,
         num_key_value_heads=num_kv_heads,

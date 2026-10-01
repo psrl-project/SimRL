@@ -255,8 +255,8 @@ def test_collectives_are_recorded_after_the_loop_ran_to_completion(tmp_path: Pat
     The profiled step lives after the timed loop, so it adds no timing sample.
 
     torch.profiler inflates its own step by roughly an order of magnitude and leaves a
-    ~2x tail on the next one or two steps -- measured as 2.73x on retained[0] against a
-    1.35x control on 8 ranks -- and MAD dispersion is blind to a single outlier, so an
+    ~2x tail on the next one or two steps: measured as 2.73x on retained[0] against a
+    1.35x control on 8 ranks, and MAD dispersion is blind to a single outlier, so an
     in-loop profiled step passes the 5% smoke gate while the mean is inflated. Out of the
     loop the breakdown is still recorded and every retained sample stays clean.
     """

@@ -267,7 +267,7 @@ def test_collect_round_trips_the_measured_smoke_sidecar(tmp_path: Path):
     assert len(record.payload.step_times_s) == 8
     assert record.payload.schedule == "fsdp"
     assert record.parallelism.dp == 8
-    # Both memory peaks must be populated — the fixture records all eight ranks.
+    # Both memory peaks must be populated: the fixture records all eight ranks.
     assert record.payload.peak_allocated_bytes is not None
     assert record.payload.peak_reserved_bytes is not None
 

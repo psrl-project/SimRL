@@ -128,14 +128,14 @@ other way: the collective is timed in isolation, so an unmodelled compute/commun
 should have produced over-prediction by roughly the collective's 13.2% share. It did not. Overlap
 is therefore not the dominant term at this degree, though it remains unquantified.
 
-:::{warning}
+::{warning}
 An earlier baseline collected with `max_parallel: auto` put decode at 16.39%. One of its four
 concurrent servers degraded mid-run: at per-request depth 8,960, `reqs=16` measured 35.76 ms
 against `reqs=32`'s 19.24 ms, which is half the batch at half the total KV taking nearly double
 the time.
 The serial re-measurement confirmed it, moving `reqs=16` from median ratio 0.513 to 0.993 while
 every other batch stayed put. Use `max_parallel: 1` for any baseline whose figures will be quoted.
-:::
+::
 
 Full analysis: `examples/profile/kernel/TP2_VALIDATION.md`.
 
@@ -225,7 +225,7 @@ and attention latencies were collected from a real server whose elementwise kern
 between them. That wall-clock time is already absorbed into the fitted utility values. Adding a
 separate elementwise term double-counts it.
 
-`tests/test_kernel_ops_elementwise.py::test_the_composed_model_does_not_add_an_elementwise_term`
+`tests/test_kernel_ops_elementwise.py:test_the_composed_model_does_not_add_an_elementwise_term`
 pins this behaviour so a future change that wires the term in has to confront the reasoning
 rather than silently double-count.
 

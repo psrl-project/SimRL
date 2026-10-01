@@ -235,7 +235,7 @@ class KernelProfileConfig:
         parallelism = value.get("parallelism", {})
         # Each op parses its own family's subtree, so adding an op adds no field here. A family
         # absent from the config yields no entry, and `sweep()` raises naming the missing block
-        # only if something actually asks for it -- profiling one family must not require
+        # only if something actually asks for it: profiling one family must not require
         # configuring them all.
         sweeps: dict[str, Any] = {}
         for family in families():

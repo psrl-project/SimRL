@@ -47,7 +47,13 @@ def read_candidate_manifest(path: str | Path) -> list[TrainingCandidate]:
 
 
 def effective_sequence_shape(candidate: TrainingCandidate) -> tuple[int, ...]:
-    """Return the padded shape the launcher actually trains on."""
+    """Return the shape the launcher actually trains on.
+
+    BSHD pads every sequence to the longest, giving ``(max_len,) * mbs``. THD
+    concatenates them, giving the single total ``(sum(sequence_shape),)``.
+    """
+    if candidate.packing == "thd":
+        return (sum(candidate.sequence_shape),)
     padded_length = max(candidate.sequence_shape)
     return (padded_length,) * candidate.micro_batch_size
 
@@ -71,6 +77,10 @@ def build_launch_spec(
             "the embedding and LM head shapes faithful to the real model."
         )
     parallelism = candidate.parallelism
+    packing = candidate.packing
+    seq_length = (
+        sum(candidate.sequence_shape) if packing == "thd" else max(candidate.sequence_shape)
+    )
     return {
         "schema_version": LAUNCH_SPEC_VERSION,
         "run_dir": str(run_dir),
@@ -89,7 +99,11 @@ def build_launch_spec(
         "micro_batch_size": candidate.micro_batch_size,
         "global_batch_size": candidate.global_batch_size,
         "num_microbatches": candidate.num_microbatches,
-        "seq_length": max(candidate.sequence_shape),
+        "seq_length": seq_length,
+        "packing": packing,
+        # The launcher builds `cu_seqlens` from these and the sidecar records them,
+        # so the measured buffer and the fitted shape cannot drift apart.
+        "sequence_lengths": list(candidate.sequence_shape),
         "recompute": candidate.recompute,
         "recompute_method": RECOMPUTE_METHOD,
         "recompute_num_layers": RECOMPUTE_NUM_LAYERS,

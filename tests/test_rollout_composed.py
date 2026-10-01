@@ -183,7 +183,7 @@ def test_step_cost_memo_deduplicates_across_integrators(model):
 
     `advance_to` builds two integrators with the same (n_d, ctxsum): one for
     `decode_steps_within` and one for `decode_segment_time`. Without the memo,
-    identical (n_d, ctxsum, offset) triples are evaluated twice -- a 1.75x
+    identical (n_d, ctxsum, offset) triples are evaluated twice: a 1.75x
     measured redundancy. The bounded dict cache on `_step_seconds` must collapse
     that to 1.00x.
     """

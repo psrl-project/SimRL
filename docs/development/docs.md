@@ -150,7 +150,7 @@ worth repeating because they are easy to violate without noticing:
 Both are checkable:
 
 ```bash
-grep -rn '—\|–' docs/ --include=*.md
+grep -rn ': \|–' docs/ --include=*.md
 grep -rn ';' docs/ --include=*.md      # inspect hits; semicolons inside code fences are fine
 ```
 

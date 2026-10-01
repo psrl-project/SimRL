@@ -1,0 +1,78 @@
+# Breaks the collinearity between token count and attention cost.
+#
+# Every other Megatron config in this directory fixes micro_batch_size=1, so a
+# microbatch is one sequence and `sum_squared_tokens` equals `sum_tokens^2`
+# exactly, for every candidate. The two design columns are then perfectly
+# collinear and the fit cannot attribute cost between them: it can only learn
+# their sum. Verified across all 29 candidates of the PP sweep.
+#
+# That is invisible until a packed batch arrives. The real trainer runs
+# `use_dynamic_bsz=True` and packs several sequences per microbatch, where
+# `sum_tokens` grows linearly with the pack while `sum_squared_tokens` grows
+# with the individual squares: attention does not cross sequence boundaries.
+# Applying the collinear fit there charges the quadratic coefficient against a
+# pack-sized token count and overpredicts the measured step by 1.8x.
+#
+# Holding the token count fixed while varying how it is split is what separates
+# the two. At 8192 tokens per microbatch:
+#
+#     mbs=1: one 8192 sequence   -> sum_sq = 67.1e6
+#     mbs=2: two 4096 sequences  -> sum_sq = 33.6e6   (half)
+#     mbs=4: four 2048 sequences -> sum_sq = 16.8e6   (a quarter)
+#
+# Same tokens, same GEMMs, four-fold difference in attention. Measured directly
+# on the kernel, 9216 tokens as 1x9216 costs 4.473 ms against 0.602 ms as
+# 9x1024, a 7.4x spread, so the column carries real signal once it is free to
+# move independently.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 6
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen3_8b/megatron_pp_scaling
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  max_steps: 6
+  warmup_steps: 2
+
+profiling:
+  allow_incomplete: false
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+# PP=3, the mesh the baseline runs, and the one whose fit is being corrected.
+#
+# The sequence lengths below are per-sequence, and the profiler pads each
+# microbatch to `micro_batch_size` copies of the longest, so a row here is
+# `mbs x length` tokens. Pairing (mbs=2, 4096) and (mbs=4, 2048) against the
+# existing (mbs=1, 8192) candidate holds the microbatch token count at 8192
+# across all three while quartering the sum of squares.
+#
+# num_microbatches stays small because the slot axis is already covered to 66
+# by the nmb64 config; what this run buys is the mbs axis.
+#
+# The lengths must reach the regime the real batch lives in. A first pass
+# stopped at 3072 tokens per sequence, which left the long-sequence rows still
+# entirely mbs=1 and therefore still collinear: exactly where the quadratic
+# coefficient is decided. The real trajectories run to 10453, so these go to
+# 10240 per sequence (20480 per microbatch at mbs=2), bracketing them.
+search_space:
+  tensor_parallel_sizes: [2]
+  pipeline_parallel_sizes: [3]
+  data_parallel_sizes: [1]
+  micro_batch_size: 2
+  num_microbatches: [1, 4]
+  sequence_lengths: [2048, 4096, 6144, 8192, 10240]
+  recompute: full

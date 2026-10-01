@@ -25,7 +25,7 @@ synthetic data.
 
 The second regression is close to an identity transform: the data is noise-free and was generated
 by the very linear model being fitted. `synthesize` exists only to bridge into `dryrun-regress`'s
-input format. Meanwhile the first regression is lossy in a way that cannot be recovered — tile
+input format. Meanwhile the first regression is lossy in a way that cannot be recovered: tile
 quantization, FlashAttention's 128-alignment staircase, and the latency-bound regime at low token
 counts are all flattened into a straight line before any consumer sees them.
 
@@ -62,7 +62,7 @@ the same choice on the decision that matters most, and it is the opposite of the
 query time.**
 
 - aiconfigurator: `systems/data/{gpu}/{family}/{backend}/{version}/{op}_perf.parquet`.
-  Verified schemas — GEMM is 107,225 rows of `(m, n, k, gemm_dtype) → latency` plus a
+  Verified schemas: GEMM is 107,225 rows of `(m, n, k, gemm_dtype) → latency` plus a
   `kernel_source` column recording the actual kernel
   (`torch.nn.functional.linear` vs `CutlassFP8ScaledMMLinearKernel`); `context_attention` is 50,830
   rows keyed by `(batch_size, isl, num_heads, num_key_value_heads, head_dim, attn_dtype,
@@ -100,7 +100,7 @@ ops.P2P("context_p2p", pp_size - 1, h, pp_size),
 ```
 
 Latency is `sum(op.query(db) * op.scale_factor for op in ops)`, where `scale_factor` is the layer
-count. This declarative op list — not a coefficient converter — is the "kernel level → vLLM/Megatron
+count. This declarative op list (not a coefficient converter) is the "kernel level → vLLM/Megatron
 level" translation layer.
 
 **Neither reference models training.** The Megatron side of this design has no prior art to copy.
@@ -116,20 +116,20 @@ level" translation layer.
 | D5 | `decode_coeffs` returns a local tangent | Preserves the simulator's O(1) closed-form decode advance without touching `advance.py` |
 | D6 | Parquet for measurement tables, coexisting with `CostArtifact` JSON for coefficients | Different semantics; JSON is wrong for tens of thousands of rows |
 | D7 | Delete the hardcoded `scheduling_overhead_s`; measure CPU overhead, fit the residual | A constant cannot represent a workload-dependent gap |
-| D8 | Report prefill / decode / mixed error **separately**; never a pooled number | See §7 — the existing baseline is 99.9% decode, so a pooled metric hides prefill entirely |
+| D8 | Report prefill / decode / mixed error **separately**; never a pooled number | See §7: the existing baseline is 99.9% decode, so a pooled metric hides prefill entirely |
 
 ### D3 in detail
 
 Two rows are measured per attention shape and distinguished by `kernel_source`:
 
-1. Whatever vLLM's own selector picks — resolved via `current_platform.get_attn_backend_cls(...)`,
+1. Whatever vLLM's own selector picks: resolved via `current_platform.get_attn_backend_cls(...)`,
    with the KV cache built per `backend_cls.get_required_kv_cache_layout()` and run through
    `impl_cls`, as aiconfigurator's `collector/vllm/collect_attn.py` does. Tagged with the concrete
    backend and version (e.g. `vllm_flash_attn_fa3`).
 2. FlashInfer's paged wrappers (`BatchPrefillWithPagedKVCacheWrapper`,
    `BatchDecodeWithPagedKVCacheWrapper`), tagged `flashinfer_<version>`.
 
-**The query path defaults to row 1** — the model must predict the backend vLLM actually runs.
+**The query path defaults to row 1**: the model must predict the backend vLLM actually runs.
 Row 2 is selected only by an explicit `attention_backend` override in the composed cost config, so
 that "how much would switching backends buy" is answerable without changing the default prediction.
 
@@ -144,7 +144,7 @@ return `latency = SOL(query, target_gpu) / interp(utility)`. Past the measured f
 boundary utility rather than extrapolating latency.
 
 This matters concretely here: the target GPU is **H20**, whose BF16 compute is modest while HBM3
-bandwidth is very high — a flops/bandwidth ratio unlike H100's. Transferring latency across such
+bandwidth is very high: a flops/bandwidth ratio unlike H100's. Transferring latency across such
 hardware is meaningless; transferring utility is defensible.
 
 **Limitation resolved (Fix B, 2026-08-24): D2 degrades in the dispatch-limited regime; floor in `max` fixes it.**
@@ -155,7 +155,7 @@ The Phase 1a gate confirmed D2 is a large win for compute- and bandwidth-limited
 latency. The reason is structural. D2 silently assumes SOL approaching zero implies latency
 approaching zero. When a kernel is dispatch-limited, SOL goes to zero while measured latency
 plateaus at a constant per-call overhead (~70 us for vLLM, ~10 us for FlashInfer). Utility
-collapses toward zero too — at batch 1, step 0, utility is 0.000075 (SOL 0.005 us against
+collapses toward zero too: at batch 1, step 0, utility is 0.000075 (SOL 0.005 us against
 68.6 us measured). A multiplicative normalizer cannot represent an additive floor, so the
 interpolation surface becomes extremely steep in exactly the regime where Phase 1b needs it
 most: decode attention is 99.9% of the existing vLLM baseline.
@@ -207,7 +207,7 @@ def decode_coeffs(self, n_d, ctxsum):
 Decode latency is near-linear in `ctxsum` (KV bytes read scale linearly), so tangent error stays
 small. `advance.py` and `instance.py` are untouched.
 
-### D4 in detail — the training-side lever
+### D4 in detail: the training-side lever
 
 Backward dgrad and wgrad are both GEMMs, differing only in how `(m, n, k)` is permuted. With a
 unified GEMM table, training reuses forward measurements for free:
@@ -215,7 +215,7 @@ unified GEMM table, training reuses forward measurements for free:
 | Training component | Source |
 |---|---|
 | Forward GEMM | GEMM table |
-| Backward dgrad / wgrad | **Same GEMM table, permuted `(m, n, k)`** — zero new measurement |
+| Backward dgrad / wgrad | **Same GEMM table, permuted `(m, n, k)`**: zero new measurement |
 | Attention forward | `context_attention` table |
 | Attention backward | New measurement (FlashAttention backward) |
 | Recompute | Re-evaluate the recomputed layers' forward op list |
@@ -229,14 +229,14 @@ Only three new measurement families are needed for the whole training side.
 **Amendment (Phase 1a): per-(n,k) slicing is required and wgrad shapes must be measured explicitly.**
 
 Phase 1a holdout analysis found that interpolation accuracy with the original `(gemm_dtype,)` slicing
-was 8.48% MRE — above the 5% gate — because a small-m query's nearest neighbour in log2 space was a
+was 8.48% MRE (above the 5% gate) because a small-m query's nearest neighbour in log2 space was a
 point from a *different* projection that happened to be geometrically closer across the shared grid.
 The fix is to move `n` and `k` from `axis_columns` into `slice_columns`, so each `(dtype, n, k)` pair
 interpolates 1-D in `m`. This reduces GEMM MRE to 4.08% and makes the 5% gate pass.
 
 Per-(n,k) slicing changes the backward-reuse story. Dgrad permutes to `(n, k)` pairs that exist in
 the forward slices and therefore still requires no new measurement. However, wgrad's `n_wgrad` equals
-the token count, which is not one of the measured `(n, k)` projection pairs — a wgrad lookup would
+the token count, which is not one of the measured `(n, k)` projection pairs: a wgrad lookup would
 land in an unmeasured slice after slicing. Wgrad shapes are therefore measured explicitly alongside the
 forward shapes in `gemm_all_shapes`, adding 62 new measurement points for Qwen3-8B / TP=1 (64 total
 wgrad shapes minus 2 that coincide with forward shapes).
@@ -287,7 +287,7 @@ dryrun-regress   training   --latency-model hydraulis              real Megatron
 dryrun-regress   calibrate  --composed <tables> --against <jsonl>  kernel-sum → real gap (new)
 ```
 
-`kernels synthesize` is removed. Note there is no regression on the kernel tables themselves —
+`kernels synthesize` is removed. Note there is no regression on the kernel tables themselves : 
 utility is a deterministic transform of measurement. The only thing fitted is the residual between
 the sum of kernel times and real end-to-end latency, which is what `calibrate` does, following
 Frontier's per-op `calibration_scale`.
@@ -299,7 +299,7 @@ Frontier's per-op `calibration_scale`.
 - `dryrun/cost/kernel/{hardware,sol,table,interp,database,model_ops}.py`
 - `dryrun/cost/rollout/composed.py`, `dryrun/cost/training/composed.py`
 - `dryrun/profiler/kernels/{gemm,elementwise,attention_bwd,optimizer}.py`
-- `dryrun/cli/` — `kernels inspect` and `regress calibrate` handlers
+- `dryrun/cli/`: `kernels inspect` and `regress calibrate` handlers
 - `examples/profile/kernel/qwen3_8b_h20_tp1.yaml`, `..._tp2.yaml`
 
 ### Deleted
@@ -311,27 +311,27 @@ Frontier's per-op `calibration_scale`.
 
 ### Rewritten
 
-- `dryrun/profiler/kernels/attention.py` — paged KV via vLLM's selected backend, replacing dense SDPA
-- `dryrun/profiler/kernels/linear.py` → `gemm.py` — unified table, per-rank shapes
-- `dryrun/profiler/kernels/overhead.py` — measure and tabulate CPU overhead
+- `dryrun/profiler/kernels/attention.py`: paged KV via vLLM's selected backend, replacing dense SDPA
+- `dryrun/profiler/kernels/linear.py` → `gemm.py`: unified table, per-rank shapes
+- `dryrun/profiler/kernels/overhead.py`: measure and tabulate CPU overhead
   (schedule / sampler / prepare_inputs, keyed as in Frontier's schema); the file keeps its name but
   `resolve_scheduling_overhead` and the `DEFAULT_SCHEDULING_OVERHEAD_S` constant are removed (D7)
-- `dryrun/profiler/kernels/measurements.py` — parquet writer instead of JSON bundle
-- `dryrun/profiler/kernels/config.py` — sweep grids per op family; drop `synthesis`
+- `dryrun/profiler/kernels/measurements.py`: parquet writer instead of JSON bundle
+- `dryrun/profiler/kernels/config.py`: sweep grids per op family; drop `synthesis`
 
 Docs to refresh once behavior changes: `examples/profile/README.md`, `examples/regress/README.md`
 (both already carry uncommitted edits describing the `synthesize` flow being removed here).
 
 ### Reused (do not reimplement)
 
-- `dryrun/profiler/schema.py` — `ModelDescriptor`, `HardwareDescriptor`, `Parallelism`,
+- `dryrun/profiler/schema.py`: `ModelDescriptor`, `HardwareDescriptor`, `Parallelism`,
   `ProfileRecord`; `ProfileValidationError` for all validation
-- `dryrun/profiler/kernels/_timing.py` — `time_cuda_call`, `torch_dtype`
-- `dryrun/profiler/kernels/config.py` — `model_head_dim`, `model_intermediate_size`
-- `dryrun/cost/artifact.py` — `CostArtifact`, `ArtifactEntry`, `FitMetrics` for the calibrate output
-- `dryrun/cost/rollout/_fit.py` — `robust_nonnegative_fit`, `split_by_run` for calibrate
-- `dryrun/cost/training/inventory.py` — `parameter_inventory` for training memory
-- `dryrun/component/rollout/engine/advance.py` — untouched, satisfied via D5
+- `dryrun/profiler/kernels/_timing.py`: `time_cuda_call`, `torch_dtype`
+- `dryrun/profiler/kernels/config.py`: `model_head_dim`, `model_intermediate_size`
+- `dryrun/cost/artifact.py`: `CostArtifact`, `ArtifactEntry`, `FitMetrics` for the calibrate output
+- `dryrun/cost/rollout/_fit.py`: `robust_nonnegative_fit`, `split_by_run` for calibrate
+- `dryrun/cost/training/inventory.py`: `parameter_inventory` for training memory
+- `dryrun/component/rollout/engine/advance.py`: untouched, satisfied via D5
 
 ## 6. Phasing
 
@@ -346,7 +346,7 @@ Docs to refresh once behavior changes: `examples/profile/README.md`, `examples/r
 
 ### Baseline: audited, and skewed
 
-`outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl` — 49,208 records, H20, Qwen3-8B,
+`outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl`: 49,208 records, H20, Qwen3-8B,
 vllm 0.26.0, per-scheduler-iteration timing
 (`latency_source: scheduler-iteration-elapsed-ms`). Suitable in kind, but:
 
@@ -354,7 +354,7 @@ vllm 0.26.0, per-scheduler-iteration timing
 |---|---|---|
 | prefill | **58** | `n_tokens` 256–65536, `request_count` 1–42 |
 | decode | **49,144** | `request_count` almost entirely {1, 4, 16, 32, 48, 64}, ~8,190 each |
-| mixed | **6** | — |
+| mixed | **6** |: |
 
 Prefill is 0.1% of the file, and TP is 1 only. Prefill is exactly where kernel composition is
 hardest (quadratic `sum_l2` attention plus large GEMMs). A pooled error metric would be dominated
@@ -365,23 +365,23 @@ Hence D8, plus a top-up sweep.
 
 ### Steps
 
-1. **Unit** — `sol.py` closed forms against hand-computed values; `interp.py` on synthetic grids
+1. **Unit**: `sol.py` closed forms against hand-computed values; `interp.py` on synthetic grids
    with known answers. Four cases: exact grid hit; in-grid blend; past-frontier utility hold; and a
    *ragged* table, meaning a corner-truncated grid where one axis's branch has no data at a
    coordinate the other does (attention sweeps produce this whenever `batch_size × seq_len` exceeds
-   memory at large shapes) — the surviving branch must be SOL-corrected rather than silently
+   memory at large shapes): the surviving branch must be SOL-corrected rather than silently
    returning the wrong coordinate's value.
-2. **Held-out kernel accuracy** — profile a grid, withhold points, report per-family MRE%.
+2. **Held-out kernel accuracy**: profile a grid, withhold points, report per-family MRE%.
    Gate for 1a.
-3. **Top-up real-machine sweep** — a prefill-weighted vLLM sweep plus a TP=2 run, since 58 prefill
+3. **Top-up real-machine sweep**: a prefill-weighted vLLM sweep plus a TP=2 run, since 58 prefill
    points and zero TP=2 points cannot support a conclusion.
-4. **Composed vs real (the number that matters)** — for each record in the baseline plus the
+4. **Composed vs real (the number that matters)**: for each record in the baseline plus the
    top-up, compare `ComposedRollout.predict` against measured `latency_s`. Report
    **prefill MRE% / decode MRE% / mixed MRE% separately**, with counts. Gate for 1b.
-5. **Simulator equivalence** — run `dryrun` end-to-end with `rollout_cost=composed` against
+5. **Simulator equivalence**: run `dryrun` end-to-end with `rollout_cost=composed` against
    `rollout_cost=psrl`; confirm the D5 tangent does not distort long decode segments (compare
    `rollout_step.jsonl` step counts and total time).
-6. **Training** — `ComposedTraining` vs real Megatron iteration time from
+6. **Training**: `ComposedTraining` vs real Megatron iteration time from
    `dryrun-profile megatron`, reported per (TP, PP, recompute) cell. Gate for phase 2.
 
 All profiling and simulation runs require
@@ -391,14 +391,14 @@ All profiling and simulation runs require
 
 `vllm 0.26.1.dev0+g568afb3a1`, `flashinfer-python 0.6.14`, `torch 2.11.0+cu128`,
 `megatron-core 0.17.1`, `pyarrow 23.0.1`, `pandas 2.3.3`, `scipy 1.17.1`, `numpy 1.26.4`.
-`flash-attn` is **not** installed as a standalone package — attention profiling must go through
+`flash-attn` is **not** installed as a standalone package: attention profiling must go through
 vLLM's vendored `vllm_flash_attn` or FlashInfer. Hardware: 2 × NVIDIA H20, 97,871 MiB each.
 
 ## 8. Deferred
 
 - Compute/communication overlap (both references either omit it or bolt it on late; plain sum first)
 - MoE op families (Qwen3-8B is dense)
-- Cross-hardware validation — D2 makes it *possible*, but with one GPU type available it stays
+- Cross-hardware validation: D2 makes it *possible*, but with one GPU type available it stays
   unproven and must not be claimed
 - Context parallelism (`cp > 1`), already blocked in the training schema
 - Pipeline schedules other than 1F1B

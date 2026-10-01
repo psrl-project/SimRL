@@ -167,11 +167,21 @@ class SyncCostConfig:
 class RecomputeCostConfig:
     """Recompute cost configuration."""
 
+    # fixed | analytical | training_forward. Prefer training_forward: it prices
+    # the log-prob pass as a FLOP-derived fraction of the fitted training step,
+    # so it inherits that model's topology and sequence-length behaviour rather
+    # than needing an achieved-FLOPs number of its own.
     name: str = "fixed"
     time_per_token: float = 0.0
     model_params: int = 0
     peak_flops: float = 312e12
     overhead_factor: float = 1.1
+
+    # training_forward only: the unembedding runs over the full vocabulary in
+    # both passes, which adds a few percent on a model with a large vocab.
+    hidden_size: int = 0
+    vocab_size: int = 0
+    parameter_count: int = 0
 
 
 @dataclass
@@ -196,6 +206,30 @@ class AdmissionControlConfig:
 
 
 @dataclass
+class KvCacheSizingConfig:
+    """How to obtain `rollout.kv_blocks` instead of taking the literal value.
+
+    `kv_blocks` is the denominator of every reported `kv_cache_usage`, so a
+    placeholder value rescales the whole KV curve and makes it incomparable
+    with a measured one. These two fields let it come from the engine that was
+    actually measured, or from the model's own geometry.
+
+    Computed from the model rather than read from a run's log, so a
+    configuration can be simulated before it has ever been executed.
+    """
+
+    # A HuggingFace checkpoint directory. Derives capacity from the model
+    # geometry and the memory budget below. Overestimates by roughly 3%,
+    # because vLLM subtracts a measured non-KV peak that a config cannot reveal.
+    model_path: str | None = None
+    gpu_memory_mib: int = 97_871
+    gpu_memory_utilization: float = 0.9
+    tp_size: int = 1
+    parameter_count: int | None = None
+    non_kv_overhead_bytes: int = 0
+
+
+@dataclass
 class RolloutConfig:
     """Rollout engine knobs."""
 
@@ -208,6 +242,7 @@ class RolloutConfig:
     admission_control: AdmissionControlConfig = field(default_factory=AdmissionControlConfig)
     livelock_rounds: int = 50
     max_engine_iters: int = 10_000
+    kv_cache_sizing: KvCacheSizingConfig = field(default_factory=KvCacheSizingConfig)
 
 
 @dataclass
