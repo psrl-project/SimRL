@@ -382,8 +382,12 @@ def run_simulate(cfg: DictConfig) -> None:
 
     memory_mib = training.get("gpu_memory_mib", None)
     workload = build_workload(cfg.workload)
+    # None adopts the workload's own arity; an explicit value is checked against
+    # it by SimConfig, so a run against the wrong trace fails loudly.
+    group_size = job.group_size if job.group_size is not None else workload.group_size
     sim_cfg = SimConfig(
         batch_size=job.batch_size,
+        group_size=group_size,
         max_staleness=job.max_staleness,
         n_versions=job.n_versions,
         sync_time=cfg.sync_cost.get("sync_time", 0.0),
@@ -425,7 +429,8 @@ def run_simulate(cfg: DictConfig) -> None:
 
     dryrun_logger.info(
         f"Starting simulation: policy={policy.name}, n_versions={sim_cfg.n_versions}, "
-        f"n_instances={sim_cfg.n_instances}, batch_size={sim_cfg.batch_size}, "
+        f"n_instances={sim_cfg.n_instances}, batch_size={sim_cfg.batch_size} groups "
+        f"x group_size={sim_cfg.group_size} = {sim_cfg.responses_per_step} responses/step, "
         f"max_prompt_length={sim_cfg.max_prompt_length!r}, "
         f"max_output_length={sim_cfg.max_output_length!r}, "
         f"log_telemetry={log_telemetry}."

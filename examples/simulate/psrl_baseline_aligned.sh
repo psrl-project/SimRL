@@ -15,6 +15,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PSRL_LOG_DIR="${PSRL_LOG_DIR:-/apdcephfs_zwfy10_303541817/share_303541817/lhy/psrl/examples/dapo_trainer/megatron_psrl_log/qwen3_8b_megatron_baseline}"
 MODEL_PATH="${MODEL_PATH:-/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}"
 TRACE="${TRACE:-${ROOT_DIR}/outputs/workload/psrl_baseline/joint.jsonl}"
+# rollout_N: responses per prompt. The trace's group arity and the simulator's
+# group_size are both taken from here so they cannot disagree.
+export GROUP_SIZE="${GROUP_SIZE:-8}"
 
 if [[ ! -d "${PSRL_LOG_DIR}" ]]; then
     echo "Missing PSRL log directory: ${PSRL_LOG_DIR}" >&2
@@ -27,18 +30,19 @@ fi
 # curve cannot be attributed to either.
 if [[ ! -f "${TRACE}" ]]; then
     echo "Extracting the workload trace from ${PSRL_LOG_DIR}..."
-    python - "${PSRL_LOG_DIR}" "${TRACE}" <<'PYTRACE'
+    python - "${PSRL_LOG_DIR}" "${TRACE}" "${GROUP_SIZE}" <<'PYTRACE'
 import sys
 from dryrun.telemetry.psrl_log import extract_workload_trace
 
-extract_workload_trace(sys.argv[1], sys.argv[2], group_size=8, max_output_tokens=10240)
+extract_workload_trace(
+    sys.argv[1], sys.argv[2], group_size=int(sys.argv[3]), max_output_tokens=10240
+)
 PYTRACE
 fi
 
 # --- transcribed from the baseline script -------------------------------------
-# rollout_N=8 responses per prompt, train_batch_size=8 prompts -> 64 responses
-# per training step. batch_size counts responses.
-export BATCH_SIZE="${BATCH_SIZE:-64}"
+# train_batch_size=8 prompts; GROUP_SIZE is set above, next to the extraction.
+export BATCH_SIZE="${BATCH_SIZE:-8}"
 # GEN_INSTANCES = (1 node * 2 GPUs) / (GEN_TP=1 * GEN_PP=1) = 2.
 export N_INSTANCES="${N_INSTANCES:-2}"
 export ROLLOUT_TP="${ROLLOUT_TP:-1}"

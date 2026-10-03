@@ -64,8 +64,6 @@ drops, reached 24,904 output tokens/s, and observed maximum staleness 2.
 
 ## Current limitations
 
-- `job.batch_size` counts responses, not prompts; whole-group batch consumption
-  is not implemented yet.
 - Prompt prefill is charged once per response rather than once per shared
   prompt, so rollout time is slightly pessimistic.
 - The Qwen3-8B training cost remains fixed rather than fitted from a measured

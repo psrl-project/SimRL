@@ -80,6 +80,17 @@ class SimConfig:
     """Configuration for a single simulation run."""
 
     batch_size: int = 8
+    """Prompt groups consumed per training step.
+
+    Responses per step is `batch_size * group_size`. GRPO scores a response against
+    its own group, so a group is the indivisible unit of a training batch.
+    """
+    group_size: int = 1
+    """Responses sampled per prompt, the recipe's `rollout_n`.
+
+    Must equal `workload.group_size`. Only a trace carries real groups; the
+    synthetic distributions produce one response per prompt.
+    """
     max_staleness: int = 1
     n_versions: int = 20
     sync_time: float = 0.0
@@ -122,6 +133,24 @@ class SimConfig:
     When False, no JSONL files are written even if a `store` is passed to
     `Simulator`; this takes priority over `store`.
     """
+
+    def __post_init__(self) -> None:
+        if self.batch_size < 1:
+            raise ValueError(f"batch_size counts prompt groups and must be >= 1, got {self.batch_size}.")
+        if self.group_size < 1:
+            raise ValueError(f"group_size must be >= 1, got {self.group_size}.")
+        # Agreement is required rather than derived, so a directly constructed
+        # SimConfig cannot silently disagree with its own workload.
+        if self.group_size != self.workload.group_size:
+            raise ValueError(
+                f"group_size {self.group_size} does not match the workload's "
+                f"{self.workload.group_size}."
+            )
+
+    @property
+    def responses_per_step(self) -> int:
+        """Responses in one training batch."""
+        return self.batch_size * self.group_size
 
 
 @dataclass

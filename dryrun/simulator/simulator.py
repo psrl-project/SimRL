@@ -86,8 +86,16 @@ class Simulator:
         self.train_version: int = 0
         self.rollout_version: int = 0
         self.next_rid: int = 0
+        self.next_group_id: int = 0
         self.inflight: list[Request] = []
+        self.pending: dict[int, list[Request]] = {}
+        """Finished responses whose group is not complete yet, by group id.
+
+        A group is the unit of consumption, so a response waits here rather than
+        entering `ready` where a policy could select it without its siblings.
+        """
         self.ready: list[Request] = []
+        self.ready_groups: list[list[Request]] = []
         self.consumed: list[Request] = []
         self.dropped: list[Request] = []
         self.n_admitted: int = 0
@@ -107,9 +115,11 @@ class Simulator:
             train_version=self.train_version,
             rollout_version=self.rollout_version,
             batch_size=self.cfg.batch_size,
+            group_size=self.cfg.group_size,
             max_staleness=self.cfg.max_staleness,
             inflight=self.inflight,
             ready=self.ready,
+            ready_groups=self.ready_groups,
             n_admitted=self.n_admitted,
             n_consumed=self.n_consumed,
             n_instances=self.cfg.n_instances,
@@ -167,15 +177,37 @@ class Simulator:
         return loads.index(min(loads))
 
     def _admit(self, quota: int | None = None) -> int:
+        """Admit whole prompt groups, up to a response `quota`.
+
+        A group is admitted all-or-nothing. A half-admitted group can never be
+        consumed, so its finished responses would hold KV until the run ends.
+        The quota is a response count and is rounded down to a whole group.
+        """
         st = self._state()
         if quota is None:
             quota = self.policy.admit_quota(st)
+        group_size = self.cfg.group_size
         admitted = 0
-        while admitted < quota:
-            group_id, prompt_len, target_len = self._next_request_shape()
+        while admitted + group_size <= quota:
+            group = self._admit_one_group(st)
+            if group is None:
+                break
+            admitted += len(group)
+        if admitted:
+            self.telemetry.emit_instance_all(self.instances)
+        return admitted
+
+    def _admit_one_group(self, st: SimState) -> list[Request] | None:
+        """Admit one whole group, or roll back and return None."""
+        placed: list[tuple[Request, int]] = []
+        group_id = self.next_group_id
+        for index in range(self.cfg.group_size):
+            source_group_id, prompt_len, target_len = self._next_request_shape()
             req = Request(
                 rid=self.next_rid,
                 group_id=group_id,
+                group_index=index,
+                source_group_id=source_group_id,
                 prompt_len=prompt_len,
                 target_len=target_len,
                 v_traj=self.rollout_version,
@@ -185,16 +217,23 @@ class Simulator:
             # False means temporarily full (KV / waiting / running), not
             # that this request is oversized.
             if not self.instances[instance_id].add_request(req, self.t):
-                break
+                for done, inst_id in reversed(placed):
+                    self.instances[inst_id].cancel([done], keep_tokens=False)
+                    self.next_rid -= 1
+                    self.inflight.remove(done)
+                    self.n_admitted -= 1
+                return None
             self.next_rid += 1
             self.inflight.append(req)
             self.n_admitted += 1
-            self.policy.on_admit(req, st)
+            placed.append((req, instance_id))
+
+        self.next_group_id += 1
+        group = [req for req, _ in placed]
+        self.policy.on_admit(group, st)
+        for req in group:
             self.telemetry.write_request("admit", self.t, req)
-            admitted += 1
-        if admitted:
-            self.telemetry.emit_instance_all(self.instances)
-        return admitted
+        return group
 
     def run(self) -> SimResult:
         idle_rounds = 0
@@ -236,29 +275,50 @@ class Simulator:
             pbar.close()
 
     def _collect(self, done: list[Request]) -> None:
+        """Retire finished responses, releasing a group once it is whole."""
         st = self._state()
         for req in done:
             if req in self.inflight:
                 self.inflight.remove(req)
             # complete_time is already set by _retire via t_local. Do not overwrite.
             self.telemetry.write_request("complete", self.t, req)
-            if self.policy.on_complete(req, st) is CompleteAction.DROP:
-                req.status = ReqStatus.DROPPED
-                self.dropped.append(req)
-                self.telemetry.write_request("drop", self.t, req)
+            siblings = self.pending.setdefault(req.group_id, [])
+            siblings.append(req)
+            if len(siblings) < self.cfg.group_size:
+                continue
+            group = sorted(self.pending.pop(req.group_id), key=lambda r: r.group_index)
+            if self.policy.on_group_complete(group, st) is CompleteAction.DROP:
+                for member in group:
+                    member.status = ReqStatus.DROPPED
+                    self.dropped.append(member)
+                    self.telemetry.write_request("drop", self.t, member)
             else:
-                self.ready.append(req)
+                self.ready_groups.append(group)
+                self.ready.extend(group)
 
     def _discard(self, reqs: list[Request]) -> None:
+        """Drop requests, widening to whole prompt groups.
+
+        A group that loses one response can never be consumed, so its surviving
+        siblings would hold KV for the rest of the run. Dropping the group keeps
+        the invariant that everything in flight is still trainable.
+        """
         seen: set[int] = set()
         unique_reqs: list[Request] = []
-        for req in reqs:
+        for req in self._expand_to_groups(reqs):
             if id(req) in seen:
                 continue
             seen.add(id(req))
             unique_reqs.append(req)
 
         self.policy.on_discard(unique_reqs, self._state())
+
+        dropped_groups = {req.group_id for req in unique_reqs}
+        for group_id in dropped_groups:
+            self.pending.pop(group_id, None)
+        self.ready_groups = [
+            group for group in self.ready_groups if group[0].group_id not in dropped_groups
+        ]
 
         to_cancel: list[Request] = []
         for req in unique_reqs:
@@ -276,6 +336,17 @@ class Simulator:
                     [r for r in to_cancel if r.instance_id == inst.instance_id],
                     keep_tokens=False,
                 )
+
+    def _expand_to_groups(self, reqs: list[Request]) -> list[Request]:
+        """Add every still-live sibling of the given requests."""
+        if self.cfg.group_size == 1:
+            return list(reqs)
+        wanted = {req.group_id for req in reqs}
+        pending = [req for gid in wanted for req in self.pending.get(gid, ())]
+        live = [
+            req for req in (*self.inflight, *self.ready) if req.group_id in wanted
+        ]
+        return [*reqs, *pending, *live]
 
     def _is_cross_instance(self, event: EngineEvent) -> bool:
         # TODO(lhy): Return True for KV_PREEMPT once rerouting to other instances is implemented.
@@ -451,10 +522,14 @@ class Simulator:
         until train+sync finish.
         """
         train_start = self.t
+        consumed_ids = {req.group_id for req in batch}
+        self.ready_groups = [
+            group for group in self.ready_groups if group[0].group_id not in consumed_ids
+        ]
+        taken = {id(req) for req in batch}
+        self.ready = [req for req in self.ready if id(req) not in taken]
         for req in batch:
             req.consume_version = self.train_version
-            if req in self.ready:
-                self.ready.remove(req)
             self.consumed.append(req)
             self.n_consumed += 1
             self.telemetry.write_request("consume", self.t, req)
@@ -508,7 +583,8 @@ class Simulator:
             start=train_start,
             end=self.t,
             version=self.train_version,
-            batch_size=len(batch),
+            n_groups=len(batch) // self.cfg.group_size,
+            group_size=self.cfg.group_size,
             n_reqs=len(batch),
             total_tokens=total_tokens,
             train_time=train_time,
@@ -524,6 +600,7 @@ class Simulator:
             recompute_time=recompute_time,
             n_inflight=len(self.inflight),
             n_ready=len(self.ready),
+            n_pending=sum(len(group) for group in self.pending.values()),
             n_dropped_step=len(expired or []),
             extrapolation_notes=training_estimate.diagnostics.get("extrapolation_notes"),
         )

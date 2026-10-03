@@ -38,25 +38,28 @@ class SlimePolicy(StalenessPolicy):
         self.stall_time = 0.0
 
     def admit_quota(self, st: SimState) -> int:
+        # Counted in prompt groups, then converted: a group is indivisible.
         if self.remaining >= st.batch_size:
             return 0
         room = max(1, int(round(self.over_sampling_ratio * st.batch_size)))
         if self.max_inflight is not None:
-            room = min(room, self.max_inflight - len(st.inflight))
-        return max(0, room)
+            room = min(room, self.max_inflight - len(st.inflight) // st.group_size)
+        return max(0, room) * st.group_size
 
-    def on_admit(self, req: Request, st: SimState) -> None:
+    def on_admit(self, group: list[Request], st: SimState) -> None:
         self.remaining += 1
 
-    def on_complete(self, req: Request, st: SimState) -> CompleteAction:
-        if len(st.ready) < st.batch_size:
+    def on_group_complete(self, group: list[Request], st: SimState) -> CompleteAction:
+        # Over-sampling surplus is dropped a whole group at a time, so a late
+        # sibling never gets orphaned by its group already being full.
+        if len(st.ready_groups) < st.batch_size:
             return CompleteAction.KEEP
         return CompleteAction.DROP
 
     def peek_batch(self, st: SimState) -> list[Request] | None:
-        if len(st.ready) < st.batch_size:
+        if len(st.ready_groups) < st.batch_size:
             return None
-        return list(st.ready[:st.batch_size])
+        return [req for group in st.ready_groups[: st.batch_size] for req in group]
 
     def take_batch(self, st: SimState) -> list[Request] | None:
         chosen = self.peek_batch(st)

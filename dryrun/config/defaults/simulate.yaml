@@ -10,8 +10,13 @@ job:
   # Number of training versions (steps) to simulate.
   n_versions: 20
 
-  # Training batch size.
+  # Prompt groups consumed per training step. Responses per step is
+  # batch_size * group_size.
   batch_size: 8
+
+  # Responses sampled per prompt (the recipe's rollout_n). null reads it from
+  # the workload; only a trace carries real groups.
+  group_size: null
 
   # Maximum allowed staleness of consumed training data.
   # Used as a version bound by areal, psrl, and roll. For verl it is the

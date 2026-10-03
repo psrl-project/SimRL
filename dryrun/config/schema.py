@@ -190,6 +190,9 @@ class JobConfig:
 
     n_versions: int = 20
     batch_size: int = 8
+    """Prompt groups consumed per training step, not responses."""
+    group_size: int | None = None
+    """Responses per prompt. None reads it from the workload."""
     max_staleness: int = 2
     # Per-request caps applied after sampling. None means no truncation.
     max_prompt_length: int | None = None

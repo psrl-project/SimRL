@@ -51,6 +51,16 @@ class Request:
     target_len: int
     v_traj: int
     group_id: int = 0
+    """Monotonic key for the prompt group this response belongs to.
+
+    Not the workload's own group id: a workload shorter than the run repeats, so
+    its ids recur and two distinct groups would be treated as one. See
+    `source_group_id` for the provenance.
+    """
+    group_index: int = 0
+    """Position within the group, `0..group_size-1`."""
+    source_group_id: int = 0
+    """The workload group the lengths came from. Provenance only."""
     instance_id: int | None = None
     admit_time: float = 0.0
     dispatch_time: float = 0.0

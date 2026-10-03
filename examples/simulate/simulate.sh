@@ -31,7 +31,8 @@ TRAINING_DP="${TRAINING_DP:-}"
 EXTRAPOLATE="${EXTRAPOLATE:-}"
 
 N_VERSIONS="${N_VERSIONS:-20}"
-BATCH_SIZE="${BATCH_SIZE:-256}"
+BATCH_SIZE="${BATCH_SIZE:-256}"   # prompt groups per training step
+GROUP_SIZE="${GROUP_SIZE:-}"      # responses per prompt; empty reads it from the workload
 N_INSTANCES="${N_INSTANCES:-4}"
 MAX_STALENESS="${MAX_STALENESS:-2}"
 MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-2048}"
@@ -307,6 +308,7 @@ python -m dryrun.cli.main \
     "${TRAINING_OVERRIDES[@]}" \
     job.n_versions="${N_VERSIONS}" \
     job.batch_size="${BATCH_SIZE}" \
+    ${GROUP_SIZE:+job.group_size="${GROUP_SIZE}"} \
     job.max_staleness="${MAX_STALENESS}" \
     job.max_prompt_length="${MAX_PROMPT_LENGTH}" \
     job.max_output_length="${MAX_OUTPUT_LENGTH}" \

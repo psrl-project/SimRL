@@ -22,13 +22,61 @@ class SimState:
     train_version: int = 0
     rollout_version: int = 0
     batch_size: int = 0
+    """Prompt groups per training batch. Responses is `batch_size * group_size`."""
+    group_size: int = 1
     max_staleness: int = 0
     inflight: list[Request] = field(default_factory=list)
     ready: list[Request] = field(default_factory=list)
+    """Responses awaiting consumption. Only members of complete groups appear."""
+    ready_groups: list[list[Request]] = field(default_factory=list)
+    """The same responses grouped, so a batch cannot be sliced mid-group."""
     n_admitted: int = 0
     n_consumed: int = 0
     n_instances: int = 1
     sync_in_progress: bool = False
+
+    @property
+    def responses_per_batch(self) -> int:
+        return self.batch_size * self.group_size
+
+
+def take_complete_groups(
+    ready: list[Request],
+    n_groups: int,
+    group_size: int,
+) -> list[Request] | None:
+    """
+    Return the first `n_groups` fully-finished prompt groups, flattened.
+
+    GRPO scores each response against its own group, so a group missing even one
+    response is not trainable. Selecting by response count instead would favour
+    short responses, whose long siblings are still generating.
+
+    Groups are returned in the order their last response landed, so a batch is
+    the oldest complete work rather than an arbitrary subset.
+
+    Args:
+        ready: Finished requests awaiting consumption.
+        n_groups: Prompt groups required.
+        group_size: Responses that make a group complete.
+
+    Returns:
+        `n_groups * group_size` requests, or None if too few groups are complete.
+    """
+    if n_groups < 1 or group_size < 1:
+        raise ValueError(
+            f"n_groups and group_size must be >= 1, got {n_groups} and {group_size}."
+        )
+    buckets: dict[int, list[Request]] = {}
+    complete: list[list[Request]] = []
+    for req in ready:
+        bucket = buckets.setdefault(req.group_id, [])
+        bucket.append(req)
+        if len(bucket) == group_size:
+            complete.append(bucket)
+            if len(complete) == n_groups:
+                return [req for group in complete for req in group]
+    return None
 
 
 class StalenessPolicy(ABC):
@@ -40,17 +88,34 @@ class StalenessPolicy(ABC):
 
     @abstractmethod
     def admit_quota(self, st: SimState) -> int:
-        """How many new rollouts may be admitted at this instant."""
+        """How many new responses may be admitted at this instant.
 
-    def on_admit(self, req: Request, st: SimState) -> None:
-        """Hook for policies that reserve resources at dispatch time."""
+        Counted in responses, not groups, because the engine's capacity is what
+        bounds it. The simulator rounds down to a whole group.
+        """
 
-    def on_complete(self, req: Request, st: SimState) -> CompleteAction:
+    def on_admit(self, group: list[Request], st: SimState) -> None:
+        """Hook for policies that reserve resources at dispatch time.
+
+        Called once per admitted prompt group, after every response in it has
+        been placed on an instance.
+        """
+
+    def on_group_complete(self, group: list[Request], st: SimState) -> CompleteAction:
+        """Decide whether a finished prompt group is kept for training.
+
+        Called once, when the group's last response finishes. Returning `DROP`
+        discards the whole group, since a partial group is not trainable.
+        """
         return CompleteAction.KEEP
 
     @abstractmethod
     def peek_batch(self, st: SimState) -> list[Request] | None:
-        """Return the next training batch without consuming policy state."""
+        """Return the next training batch without consuming policy state.
+
+        The batch is `st.batch_size` complete groups, flattened: exactly
+        `st.responses_per_batch` responses.
+        """
 
     def take_batch(self, st: SimState) -> list[Request] | None:
         """Consume and return the next training batch."""

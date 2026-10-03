@@ -26,12 +26,12 @@ class TestDisabledIsNoOp:
         telemetry.flush_rollout_step(inst)
         telemetry.write_request("admit", 0.0, _make_request())
         telemetry.write_train(
-            t=1.0, start=0.0, end=1.0, version=1, batch_size=1, n_reqs=1,
+            t=1.0, start=0.0, end=1.0, version=1, n_groups=1, group_size=1, n_reqs=1,
             total_tokens=10, train_time=1.0, peak_memory_bytes=123,
             training_tp=1, training_pp=1, training_dp=1, training_cp=1,
             micro_batch_size=1, schedule="1f1b", activation_recompute="none",
             sync_time=0.0, recompute_time=0.0,
-            n_inflight=0, n_ready=0, n_dropped_step=0,
+            n_inflight=0, n_ready=0, n_pending=0, n_dropped_step=0,
         )
         assert not telemetry.enabled
         assert store.list_streams() == []  # store was never touched.
@@ -43,12 +43,12 @@ class TestDisabledIsNoOp:
         assert not telemetry.enabled
         telemetry.write_request("admit", 0.0, _make_request())
         telemetry.write_train(
-            t=1.0, start=0.0, end=1.0, version=1, batch_size=1, n_reqs=1,
+            t=1.0, start=0.0, end=1.0, version=1, n_groups=1, group_size=1, n_reqs=1,
             total_tokens=10, train_time=1.0, peak_memory_bytes=123,
             training_tp=1, training_pp=1, training_dp=1, training_cp=1,
             micro_batch_size=1, schedule="1f1b", activation_recompute="none",
             sync_time=0.0, recompute_time=0.0,
-            n_inflight=0, n_ready=0, n_dropped_step=0,
+            n_inflight=0, n_ready=0, n_pending=0, n_dropped_step=0,
         )
         assert list(store.iter("request")) == []
         assert list(store.iter("train")) == []
@@ -134,12 +134,12 @@ class TestEnabledWritesRichRecords:
         store = JsonlStore(tmp_path / "logs")
         telemetry = SimTelemetry(store)
         telemetry.write_train(
-            t=3.0, start=2.0, end=3.0, version=1, batch_size=4, n_reqs=4,
+            t=3.0, start=2.0, end=3.0, version=1, n_groups=4, group_size=1, n_reqs=4,
             total_tokens=100, train_time=1.0, peak_memory_bytes=456,
             training_tp=2, training_pp=1, training_dp=2, training_cp=1,
             micro_batch_size=1, schedule="1f1b", activation_recompute="none",
             sync_time=0.0, recompute_time=0.0,
-            n_inflight=5, n_ready=0, n_dropped_step=0,
+            n_inflight=5, n_ready=0, n_pending=0, n_dropped_step=0,
         )
         row = next(iter(store.iter("train")))
         assert row["dt"] == 1.0

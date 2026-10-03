@@ -85,11 +85,14 @@ class PSRLPolicy(StalenessPolicy):
 
     def _lazy_init(self, st: SimState) -> None:
         self._batch_size = st.batch_size
+        self._group_size = st.group_size
+        # An entry holds one prompt group, and `rollout_n` is how many responses
+        # share it, which is what the real controller means by these fields.
         self._inventory = StalenessInventory(
             num_entries=st.batch_size,
             ready_num_entries=st.batch_size,
             staleness=st.max_staleness,
-            rollout_n=1,
+            rollout_n=st.group_size,
         )
         self._inventory.ensure_buffer_exists(st.train_version + st.max_staleness)
 
@@ -99,31 +102,34 @@ class PSRLPolicy(StalenessPolicy):
         if self._inventory is None:
             self._lazy_init(st)
         # New requests are generated at `rollout_version`, so only count slots
-        # those trajectories can actually occupy.
+        # those trajectories can actually occupy. Entries are prompt groups.
         max_bid = st.rollout_version + st.max_staleness
         self._inventory.ensure_buffer_exists(max(st.train_version, st.rollout_version) + st.max_staleness)
-        return self._inventory.get_empty_entries_total_num(max_bid)
+        free_groups = self._inventory.get_empty_entries_total_num(max_bid)
+        return free_groups * st.group_size
 
-    def on_admit(self, req: Request, st: SimState) -> None:
+    def on_admit(self, group: list[Request], st: SimState) -> None:
         assert self._inventory is not None, "on_admit called before admit_quota."
-        max_bid = req.v_traj + st.max_staleness
-        entry_info = EntryInfo(
-            rollout_instance_id=("sim", req.instance_id or 0),
-            prompt_id=req.rid,
-            request_idx=0,
-            model_version=req.v_traj,
-        )
-        buffer_id, entry_id = self._inventory.reserve_data(entry_info, max_bid)
-        assert buffer_id is not None, (
-            f"reserve_data returned None for request {req.rid} "
-            f"(v_traj={req.v_traj}, max_bid={max_bid}); admit_quota should have gated this."
-        )
+        for req in group:
+            max_bid = req.v_traj + st.max_staleness
+            entry_info = EntryInfo(
+                rollout_instance_id=("sim", req.instance_id or 0),
+                prompt_id=req.group_id,
+                request_idx=req.group_index,
+                model_version=req.v_traj,
+            )
+            buffer_id, entry_id = self._inventory.reserve_data(entry_info, max_bid)
+            assert buffer_id is not None, (
+                f"reserve_data returned None for group {req.group_id} "
+                f"(v_traj={req.v_traj}, max_bid={max_bid}); admit_quota should have gated this."
+            )
 
-    def on_complete(self, req: Request, st: SimState) -> CompleteAction:
-        assert self._inventory is not None, "on_complete called before any admit."
-        if req.rid not in self._inventory.data_tracker:
+    def on_group_complete(self, group: list[Request], st: SimState) -> CompleteAction:
+        assert self._inventory is not None, "on_group_complete called before any admit."
+        group_id = group[0].group_id
+        if group_id not in self._inventory.data_tracker:
             return CompleteAction.DROP
-        buffer_id, entry_id, occupy_num = self._inventory.occupy_data_with_reserve(req.rid)
+        buffer_id, entry_id, occupy_num = self._inventory.occupy_data_with_reserve(group_id)
         if buffer_id is None:
             return CompleteAction.DROP
         return CompleteAction.KEEP
@@ -139,17 +145,17 @@ class PSRLPolicy(StalenessPolicy):
         if status in (BufferStatus.READY, BufferStatus.READY_WITH_CAPACITY):
             buffer = self._inventory.buffers[bid]
             ready_n = buffer.ready_num_entries
-            prompt_ids = [
+            group_ids = [
                 buffer.entries[i].entry_info.prompt_id
                 for i in range(ready_n)
                 if buffer.entries[i].entry_info is not None
             ]
-            by_rid = {r.rid: r for r in st.ready}
-            chosen = [by_rid[pid] for pid in prompt_ids if pid in by_rid]
+            by_group = {group[0].group_id: group for group in st.ready_groups}
+            chosen = [by_group[gid] for gid in group_ids if gid in by_group]
             if len(chosen) < st.batch_size:
                 return None
 
-            return chosen[:st.batch_size]
+            return [req for group in chosen[: st.batch_size] for req in group]
 
         return None
 
@@ -189,7 +195,7 @@ class PSRLPolicy(StalenessPolicy):
             return
         reserved: list[int] = []
         occupied: list[int] = []
-        for prompt_id in dict.fromkeys(r.rid for r in reqs):
+        for prompt_id in dict.fromkeys(r.group_id for r in reqs):
             location = self._inventory.data_tracker.get(prompt_id)
             if location is None:
                 continue

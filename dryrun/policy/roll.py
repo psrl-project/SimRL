@@ -10,8 +10,8 @@ from .base import CompleteAction, SimState, StalenessPolicy
 
 
 @dataclass
-class _Group:
-    """One FIFO of finished prompts per admission step."""
+class _Cohort:
+    """One FIFO of finished prompt groups per admission step."""
 
     running: set[int] = field(default_factory=set)
     finished: deque = field(default_factory=deque)
@@ -34,76 +34,77 @@ class RollPolicy(StalenessPolicy):
         self.running_prompts = 0
         self.completed_prompts = 0
         self._configured = False
-        self.groups: dict[int, _Group] = {}
+        self.cohorts: dict[int, _Cohort] = {}
         self.gc_dropped = 0
 
-    def _ensure_group(self, step: int) -> _Group:
-        return self.groups.setdefault(step, _Group())
+    def _ensure_cohort(self, step: int) -> _Cohort:
+        return self.cohorts.setdefault(step, _Cohort())
 
     def _configure(self, st: SimState) -> None:
         ratio = st.max_staleness
         if ratio > 0:
             self.budget = ratio * st.batch_size
         self.budget += st.batch_size
-        self._ensure_group(st.train_version)
+        self._ensure_cohort(st.train_version)
         self._configured = True
 
     def admit_quota(self, st: SimState) -> int:
         if not self._configured:
             self._configure(st)
-        self._ensure_group(st.train_version)
+        self._ensure_cohort(st.train_version)
         room = self.budget - (self.running_prompts + self.completed_prompts)
         if self.max_inflight is not None:
-            room = min(room, self.max_inflight - len(st.inflight))
-        return max(0, room)
+            room = min(room, self.max_inflight - len(st.inflight) // st.group_size)
+        return max(0, room) * st.group_size
 
-    def on_admit(self, req: Request, st: SimState) -> None:
+    def on_admit(self, group: list[Request], st: SimState) -> None:
         self.running_prompts += 1
-        self._ensure_group(req.v_traj).running.add(req.rid)
+        self._ensure_cohort(group[0].v_traj).running.add(group[0].group_id)
 
-    def on_complete(self, req: Request, st: SimState) -> CompleteAction:
-        group = self.groups.get(req.v_traj)
-        if group is None or req.rid not in group.running:
+    def on_group_complete(self, group: list[Request], st: SimState) -> CompleteAction:
+        group_id = group[0].group_id
+        cohort = self.cohorts.get(group[0].v_traj)
+        if cohort is None or group_id not in cohort.running:
             return CompleteAction.DROP
-        group.running.discard(req.rid)
-        group.finished.append(req)
+        cohort.running.discard(group_id)
+        cohort.finished.append(group)
         self.running_prompts -= 1
         self.completed_prompts += 1
         return CompleteAction.KEEP
 
     def _eligible_steps(self, st: SimState) -> list[int]:
         min_step = st.train_version - st.max_staleness
-        steps = [s for s in sorted(self.groups) if min_step <= s < st.train_version]
-        if st.train_version in self.groups:
+        steps = [s for s in sorted(self.cohorts) if min_step <= s < st.train_version]
+        if st.train_version in self.cohorts:
             steps.append(st.train_version)
         return steps
 
     def peek_batch(self, st: SimState) -> list[Request] | None:
         steps = self._eligible_steps(st)
-        available = sum(len(self.groups[s].finished) for s in steps)
+        available = sum(len(self.cohorts[s].finished) for s in steps)
         if available < st.batch_size:
             return None
 
-        collected: list[Request] = []
+        collected: list[list[Request]] = []
         for step in steps:
-            group = self.groups[step]
+            cohort = self.cohorts[step]
             needed = st.batch_size - len(collected)
-            collected.extend(list(group.finished)[:needed])
+            collected.extend(list(cohort.finished)[:needed])
             if len(collected) >= st.batch_size:
                 break
-        return collected[:st.batch_size]
+        return [req for group in collected[: st.batch_size] for req in group]
 
     def take_batch(self, st: SimState) -> list[Request] | None:
         batch = self.peek_batch(st)
         if batch is None:
             return None
 
-        remaining = len(batch)
+        remaining = st.batch_size
         for step in self._eligible_steps(st):
-            group = self.groups[step]
-            take = min(remaining, len(group.finished))
+            cohort = self.cohorts[step]
+            take = min(remaining, len(cohort.finished))
             for _ in range(take):
-                group.finished.popleft()
+                cohort.finished.popleft()
             remaining -= take
             if remaining == 0:
                 break
@@ -111,38 +112,37 @@ class RollPolicy(StalenessPolicy):
 
     def on_train_version_advance(self, train_version: int, st: SimState) -> None:
         self.budget += st.batch_size
-        self._ensure_group(train_version)
+        self._ensure_cohort(train_version)
 
     def expire(self, st: SimState, expected_train_version: int) -> list[Request]:
         max_gc_step = (expected_train_version - 1) - st.max_staleness
         if max_gc_step < 0:
             return []
-        by_rid = {r.rid: r for r in (*st.inflight, *st.ready)}
+        by_group: dict[int, list[Request]] = {}
+        for req in (*st.inflight, *st.ready):
+            by_group.setdefault(req.group_id, []).append(req)
         victims = []
-        for step in [s for s in self.groups if s <= max_gc_step]:
-            group = self.groups.pop(step)
-            # Finished prompts that aged out of the consume window are dropped,
+        for step in [s for s in self.cohorts if s <= max_gc_step]:
+            cohort = self.cohorts.pop(step)
+            # Finished groups that aged out of the consume window are dropped,
             # not consumed. This can happen when they complete after the last
-            # take_batch that was still allowed to pull from this group.
-            while group.finished:
-                req = group.finished.popleft()
-                victims.append(req)
+            # take_batch that was still allowed to pull from this cohort.
+            while cohort.finished:
+                victims.extend(cohort.finished.popleft())
                 self.completed_prompts -= 1
                 self.gc_dropped += 1
-            for rid in group.running:
-                req = by_rid.get(rid)
-                if req is not None:
-                    victims.append(req)
+            for group_id in cohort.running:
+                victims.extend(by_group.get(group_id, ()))
                 self.running_prompts -= 1
                 self.gc_dropped += 1
         return victims
 
     def check_invariants(self, st: SimState) -> None:
         floor = st.train_version - st.max_staleness
-        for step, group in self.groups.items():
+        for step, cohort in self.cohorts.items():
             if step < floor:
-                assert not group.running and not group.finished, (
-                    f"Group {step} below floor {floor} (version={st.train_version}) "
-                    f"still has {len(group.running)} running / "
-                    f"{len(group.finished)} finished."
+                assert not cohort.running and not cohort.finished, (
+                    f"Cohort {step} below floor {floor} (version={st.train_version}) "
+                    f"still has {len(cohort.running)} running / "
+                    f"{len(cohort.finished)} finished."
                 )

@@ -205,17 +205,12 @@ A candidate that crashes before writing the marker is classified as `failed` rat
 dropping a memory lower bound from the fit. This affects the shard=2 cell in particular, where
 static occupancy is highest. See {doc}`../profiling/fsdp`.
 
-**`batch_size` counts responses, not prompts.**
-`job.batch_size` in the simulation config counts individual responses, not prompt groups. A
-training step triggers when `batch_size` responses have been collected, regardless of whether
-those responses come from a complete set of groups. Whole-group batch consumption is not
-implemented.
-
 **Prompt prefill charged once per response.**
 When a prompt has `n` sampled responses, the simulator charges prefill `n` times, once per
 response, rather than once per shared prompt. Rollout time is therefore slightly pessimistic
-for group-structured workloads. See {doc}`../workload/index` for the joint trace format that
-preserves group boundaries.
+for group-structured workloads. This is the remaining group-level inaccuracy now that batches
+are consumed a whole group at a time. See {doc}`../workload/index` for the joint trace format
+that preserves group boundaries.
 
 ---
 

@@ -14,10 +14,11 @@ fi
 
 # PSRL DAPO recipe (psrl/examples/dapo_trainer/qwen3_8b_megatron.sh):
 # 64 prompts x n=8 per step, prompt cap 1024, response cap 10240, staleness 2,
-# gen tp=1, 16 rollout instances. batch_size counts responses, so 64*8 = 512.
+# gen tp=1, 16 rollout instances.
 export WORKLOAD=dapo_trace
 export N_VERSIONS="${N_VERSIONS:-16}"
-export BATCH_SIZE="${BATCH_SIZE:-512}"
+export BATCH_SIZE="${BATCH_SIZE:-64}"
+export GROUP_SIZE="${GROUP_SIZE:-8}"
 export N_INSTANCES="${N_INSTANCES:-16}"
 export MAX_STALENESS="${MAX_STALENESS:-2}"
 export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-1024}"

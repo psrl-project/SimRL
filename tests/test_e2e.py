@@ -69,19 +69,20 @@ class TestPSRLBoundHolds:
 class TestPSRLRequestLifecycle:
     def test_interrupt_preserves_reservation_and_discard_releases_it(self):
         policy = PSRLPolicy()
-        st = SimState(batch_size=4, max_staleness=2, train_version=0, rollout_version=0)
-        req = Request(rid=0, prompt_len=10, target_len=100, v_traj=0)
+        st = SimState(batch_size=4, group_size=1, max_staleness=2, train_version=0, rollout_version=0)
+        req = Request(rid=0, group_id=0, prompt_len=10, target_len=100, v_traj=0)
 
         assert policy.admit_quota(st) == 12
-        policy.on_admit(req, st)
+        policy.on_admit([req], st)
         inventory = policy._inventory
         assert inventory is not None
-        original_location = inventory.data_tracker[req.rid]
+        original_location = inventory.data_tracker[req.group_id]
         buffer_id, entry_id = original_location
         original_version = inventory.buffers[buffer_id].entries[entry_id].entry_info.model_version
 
         interrupted = SimState(
             batch_size=4,
+            group_size=1,
             max_staleness=2,
             train_version=1,
             rollout_version=1,
@@ -90,28 +91,28 @@ class TestPSRLRequestLifecycle:
         policy.on_interrupt([req], interrupted)
         policy.on_interrupt([req], interrupted)
 
-        assert inventory.data_tracker[req.rid] == original_location
+        assert inventory.data_tracker[req.group_id] == original_location
         assert inventory.buffers[buffer_id].entries[entry_id].entry_info.model_version == original_version
         assert policy.admit_quota(st) == 11
 
         policy.on_discard([req], st)
-        assert req.rid not in inventory.data_tracker
+        assert req.group_id not in inventory.data_tracker
         assert policy.admit_quota(st) == 12
 
     def test_discard_releases_occupied_entry(self):
         policy = PSRLPolicy()
-        st = SimState(batch_size=4, max_staleness=2, train_version=0, rollout_version=0)
-        req = Request(rid=0, prompt_len=10, target_len=100, v_traj=0)
+        st = SimState(batch_size=4, group_size=1, max_staleness=2, train_version=0, rollout_version=0)
+        req = Request(rid=0, group_id=0, prompt_len=10, target_len=100, v_traj=0)
 
         policy.admit_quota(st)
-        policy.on_admit(req, st)
-        assert policy.on_complete(req, st) is CompleteAction.KEEP
+        policy.on_admit([req], st)
+        assert policy.on_group_complete([req], st) is CompleteAction.KEEP
 
         inventory = policy._inventory
         assert inventory is not None
-        assert req.rid in inventory.data_tracker
+        assert req.group_id in inventory.data_tracker
         policy.on_discard([req], st)
-        assert req.rid not in inventory.data_tracker
+        assert req.group_id not in inventory.data_tracker
 
 
 class TestArealTokenBucket:
@@ -160,19 +161,22 @@ class TestVerlAsync:
 
     def test_window_budget_and_sync_carryover(self):
         policy = VerlPolicy(staleness_threshold=2.0)
-        st = SimState(batch_size=4, n_instances=2)
+        st = SimState(batch_size=4, group_size=1, n_instances=2)
         assert policy.admit_quota(st) == 12
 
-        reqs = [Request(rid=i, prompt_len=10, target_len=100, v_traj=0) for i in range(6)]
+        reqs = [
+            Request(rid=i, group_id=i, prompt_len=10, target_len=100, v_traj=0)
+            for i in range(6)
+        ]
         for req in reqs:
             st.inflight.append(req)
-            policy.on_admit(req, st)
+            policy.on_admit([req], st)
         assert policy.staleness_samples == 6
         assert policy.admit_quota(st) == 6
 
         for req in reqs[:4]:
             st.inflight.remove(req)
-            assert policy.on_complete(req, st) is CompleteAction.KEEP
+            assert policy.on_group_complete([req], st) is CompleteAction.KEEP
         assert policy.take_batch(st) == reqs[:4]
         assert policy.staleness_samples == 6
         assert policy.admit_quota(st) == 6
@@ -435,46 +439,83 @@ class TestLengthCaps:
         assert any(r.target_len == 10 for r in requests)
 
 
-class TestGroupIdPropagation:
-    def test_group_id_reaches_requests(self):
-        """Group ids from the workload must appear on the generated requests."""
-        from collections import Counter
-
+class TestGrouping:
+    def _grouped_cfg(self, **overrides):
         from dryrun.workload.trace import RequestGroup
 
         groups = [
             RequestGroup(group_id=i, prompt_len=128, output_lens=(50, 60, 70, 80))
             for i in range(6)
         ]
-        cfg = SimConfig(
-            batch_size=8,
+        kwargs = dict(
+            batch_size=2,
+            group_size=4,
             max_staleness=2,
             n_versions=6,
             workload=GroupedWorkload.from_groups(groups),
             log_telemetry=False,
         )
+        kwargs.update(overrides)
+        return kwargs["workload"], SimConfig(**kwargs)
+
+    def test_group_identity_reaches_requests(self):
+        """Provenance and the simulator's own group key both land on requests."""
+        workload, cfg = self._grouped_cfg()
         result = _run_sim(PSRLPolicy(), None, cfg)
         all_requests = result.consumed + result.dropped
         assert all_requests, "Expected at least one admitted request."
 
-        workload_group_ids = {g.group_id for g in groups}
-        observed_group_ids = {r.group_id for r in all_requests}
+        source_ids = {g.group_id for g in workload.groups}
+        assert {r.source_group_id for r in all_requests} <= source_ids
 
-        # Every observed group id must come from the workload.
-        assert observed_group_ids <= workload_group_ids, (
-            f"Unexpected group ids {observed_group_ids - workload_group_ids!r} found on requests."
+        # Each group key must carry exactly one response per group_index.
+        by_group: dict[int, set[int]] = {}
+        for req in all_requests:
+            by_group.setdefault(req.group_id, set()).add(req.group_index)
+        for group_id, indices in by_group.items():
+            assert indices <= {0, 1, 2, 3}, f"Group {group_id} has indices {indices!r}."
+
+    def test_consumed_batches_hold_only_complete_groups(self):
+        """A training batch is whole groups, never a slice across them."""
+        from collections import Counter
+
+        _, cfg = self._grouped_cfg()
+        result = _run_sim(PSRLPolicy(), None, cfg)
+        assert not result.livelocked
+
+        by_version: dict[int, list] = {}
+        for req in result.consumed:
+            by_version.setdefault(req.consume_version, []).append(req)
+
+        assert by_version, "Expected at least one consumed batch."
+        for version, batch in by_version.items():
+            counts = Counter(r.group_id for r in batch)
+            assert len(counts) == cfg.batch_size, (
+                f"Version {version} consumed {len(counts)} groups, expected {cfg.batch_size}."
+            )
+            assert set(counts.values()) == {cfg.group_size}, (
+                f"Version {version} consumed partial groups: {dict(counts)!r}."
+            )
+
+    def test_group_keys_are_unique_across_workload_wraparound(self):
+        """A workload shorter than the run must not reuse a group key.
+
+        The workload repeats, so its own ids recur. Reusing them would merge two
+        distinct groups into one oversized staleness entry.
+        """
+        _, cfg = self._grouped_cfg(n_versions=6, batch_size=2)
+        result = _run_sim(PSRLPolicy(), None, cfg)
+        consumed_groups = {r.group_id for r in result.consumed}
+        assert len(consumed_groups) == cfg.n_versions * cfg.batch_size, (
+            f"Expected every consumed group to be distinct, got {len(consumed_groups)} "
+            f"for {cfg.n_versions * cfg.batch_size} consumed groups."
         )
 
-        # More than one distinct group id must be seen. If group_id is not
-        # threaded from the workload into Request, every request would land
-        # on the default (group 0) and len(observed_group_ids) would be 1.
-        assert len(observed_group_ids) > 1, (
-            f"Expected more than one distinct group id, got {observed_group_ids!r}."
-        )
+    def test_config_rejects_group_size_disagreeing_with_workload(self):
+        from dryrun.workload.trace import RequestGroup
 
-        # At least one group id must appear on more than one request, proving
-        # that multi-response groups are actually used (not just group 0 for all).
-        counts = Counter(r.group_id for r in all_requests)
-        assert max(counts.values()) > 1, (
-            "Expected at least one group id to appear on more than one request."
+        workload = GroupedWorkload.from_groups(
+            [RequestGroup(group_id=0, prompt_len=8, output_lens=(10, 20))]
         )
+        with pytest.raises(ValueError, match="does not match the workload"):
+            SimConfig(batch_size=2, group_size=4, workload=workload)

@@ -158,8 +158,9 @@ class TestTrainStream:
             assert r["version"] == i
             assert r["end"] >= r["start"]
             assert r["dt"] == r["end"] - r["start"]
-            assert r["batch_size"] == cfg.batch_size
-            assert r["n_reqs"] == cfg.batch_size
+            assert r["n_groups"] == cfg.batch_size
+            assert r["group_size"] == cfg.group_size
+            assert r["n_reqs"] == cfg.responses_per_step
             assert r["total_tokens"] > 0
             assert r["train_time"] > 0
             assert r["peak_memory_bytes"] == 0

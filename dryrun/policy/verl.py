@@ -39,6 +39,8 @@ class VerlPolicy(StalenessPolicy):
         self._configured = False
 
     def _configure(self, st: SimState) -> None:
+        # Every count here is in prompt groups, so the queue evicts a whole
+        # group rather than orphaning one response of it.
         required = st.batch_size * self.require_batches
         self.max_required = int(required * (self.threshold + 1))
         self.max_queue_size = self.max_required
@@ -54,36 +56,37 @@ class VerlPolicy(StalenessPolicy):
             return 0
         room = self.max_required - self.staleness_samples
         if self.max_inflight is not None:
-            room = min(room, self.max_inflight - len(st.inflight))
-        return max(0, room)
+            room = min(room, self.max_inflight - len(st.inflight) // st.group_size)
+        return max(0, room) * st.group_size
 
-    def on_admit(self, req: Request, st: SimState) -> None:
+    def on_admit(self, group: list[Request], st: SimState) -> None:
         self.staleness_samples += 1
 
-    def on_complete(self, req: Request, st: SimState) -> CompleteAction:
+    def on_group_complete(self, group: list[Request], st: SimState) -> CompleteAction:
         if not self._configured:
             self._configure(st)
         if len(self.queue) >= self.max_queue_size:
             self.dropped += 1
             return CompleteAction.DROP
-        self.queue.append(req)
+        self.queue.append(group)
         return CompleteAction.KEEP
 
     def peek_batch(self, st: SimState) -> list[Request] | None:
         required = st.batch_size * self.require_batches
         if len(self.queue) < required:
             return None
-        return list(self.queue)[:required]
+        return [req for group in list(self.queue)[:required] for req in group]
 
     def take_batch(self, st: SimState) -> list[Request] | None:
         batch = self.peek_batch(st)
         if batch is None:
             return None
-        required = len(batch)
-        return [self.queue.popleft() for _ in range(required)]
+        required = st.batch_size * self.require_batches
+        popped = [self.queue.popleft() for _ in range(required)]
+        return [req for group in popped for req in group]
 
     def on_train_version_advance(self, train_version: int, st: SimState) -> None:
-        self.staleness_samples = len(st.inflight) + len(self.queue)
+        self.staleness_samples = len(st.inflight) // st.group_size + len(self.queue)
 
     def check_invariants(self, st: SimState) -> None:
         assert len(self.queue) <= self.max_queue_size, (

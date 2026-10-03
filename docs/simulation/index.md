@@ -27,8 +27,9 @@ Every configurable key is listed in {doc}`../reference/configuration`.
 
 ## The five things that most often surprise people
 
-1. **`job.batch_size` counts responses, not prompts.** With a DAPO-style trace at eight
-   responses per prompt, `batch_size=512` consumes 64 prompts.
+1. **`job.batch_size` counts prompt groups, not responses.** With a DAPO-style trace at
+   eight responses per prompt, `batch_size=64` consumes 64 prompts and 512 responses.
+   A batch is always whole groups, since GRPO scores a response against its own group.
 2. **`job.max_staleness` means something different in each policy**: a version bound
    for some, a ratio fallback for others, and it is ignored outright by one. See
    {doc}`policies`.
