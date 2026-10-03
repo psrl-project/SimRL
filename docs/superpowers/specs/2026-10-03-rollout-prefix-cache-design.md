@@ -160,20 +160,23 @@ distribution.
 | P1 | Pool lives under `component/rollout/engine/kv/`, not under `cost/` | It is a state machine, not a cost model: it fits no coefficient, reads no artifact, has no domain gate |
 | P2 | Derive block hashes from provenance; do not add a trace column | We generate the workload, so the lineage is known. Costs one one-directional bias (D1) and keeps the trace format untouched |
 | P3 | Express a hit by pre-setting `prefilled`; add no `num_computed_tokens` field | Both prefill paths already compute `prompt_len + generated - prefilled`, so the saved tokens leave `t2` and `n_tokens` automatically. Zero change to the cost model |
-| P4 | `OrderedDict` for the free queue, replacing Frontier's hand-written doubly linked list | `popitem(last=False)` and `pop(block_id)` give the same O(1) semantics without two pointers on every block, per AGENTS.md on established libraries |
+| P4 | Keep vLLM's hand-written doubly linked free list rather than an `OrderedDict` | The `prev`/`next` pointers a mid-list removal preserves *are* the minimum information an undo needs. `OrderedDict.pop(key)` discards position, so a revived hit block could never be put back where it was. See P9 |
 | P5 | Split `abort_all` into `free` plus `reset` | A weight update clears hashes; an agentic round boundary must not. Same mechanism, two call sites |
 | P6 | Default `enable_prefix_caching=True`; disabling is a data state, not a bypass branch | The default should match the simulated system's default. The pool still does block accounting; `computed_blocks` just returns empty |
 | P7 | Validate against a purpose-built vLLM experiment, not against the aligned baseline | That baseline's groups are fabricated (D2), so within-group reuse cannot be judged there |
 | P8 | Register every expected hit count before measuring; fit nothing | There is nothing to fit. The experiment decides right or wrong, not a coefficient |
+| P9 | Undo pool mutations by storing old values for touched blocks only, never by snapshotting the pool | `copy.deepcopy` of a 31279-block pool measures **179 ms**, which over 4949 steps across 2 instances is **1771 s** against a 3349 s run. Capturing the free-list order per event is 3.97 s, better but still proportional to capacity. Only the touched-block list is proportional to work: median **2** blocks per prefill step |
 
 ### 3.1 Module layout
 
 ```
 dryrun/component/rollout/engine/kv/
-    block.py     KvBlock: block_id, ref_cnt, block_hash
-    pool.py      BlockPool: free LRU queue, hash -> block map, eviction
-    manager.py   KvCacheManager: computed_blocks / can_allocate / allocate / free
-    lineage.py   block hash derivation (ours; Frontier is fed this by the trace)
+    block.py      KvBlock: block_id, ref_cnt, block_hash, free-list links
+    free_list.py  FreeBlockList: the doubly linked LRU queue
+    pool.py       BlockPool: allocation, hash -> block map, eviction
+    manager.py    KvCacheManager: computed_blocks / can_allocate / allocate / free
+    lineage.py    block hash derivation (ours; Frontier is fed this by the trace)
+    undo.py       BlockSnapshot: old values for the blocks one event touched
 ```
 
 `cost/rollout/kv_cache.py` keeps its single job, *how many blocks exist*. The new module owns
@@ -181,10 +184,11 @@ dryrun/component/rollout/engine/kv/
 
 ### 3.2 The pool invariant
 
-Four pieces of state: `blocks` (index is block id), `free_queue` (`ref_cnt == 0`, ordered by
-release time), `hash_to_block`, and `eviction_count`.
+Four pieces of state: `blocks` (index is block id), a doubly linked free list of blocks whose
+`ref_cnt` is zero (head is least recently freed, so head is the eviction victim),
+`hash_to_block`, and `eviction_count`.
 
-The invariant that makes the whole thing work: **a block may be in `free_queue` and in
+The invariant that makes the whole thing work: **a block may be in the free list and in
 `hash_to_block` at the same time.** That is the "nobody holds it, but its hash is still
 mapped, so it can still hit" state, and every cross-sync and cross-round reuse depends on it.
 A hash is destroyed only when its block is handed to someone else (`get_new_blocks` reaching
@@ -201,7 +205,68 @@ A full hit leaves `num_new_tokens == 0`, but the model must forward at least one
 produce the next logits. This branch fires for real in our workload whenever a group's
 `prompt_len` is a multiple of `block_size`; without it the engine produces a zero-token step.
 
-### 3.4 Seams in `NativeInstance`
+### 3.4 Undoing pool mutations
+
+`undo_last_event` (`instance.py:80`) is a live path, not a safety net:
+`advance_one_event` is *speculative*. The driver advances every instance by one event, commits
+the earliest, and rolls the rest back (`simulator.py:388-396` seeding, `:356-360` undoing). That
+is how instances share one global clock. So every pool mutation has to be reversible.
+
+Today `InstanceSnapshot` captures `prefilled` per request, which suffices only because
+occupancy is *derived* from it. A pool holding refcounts, a hash map, and a free list breaks
+that: an uncommitted prefill step would roll `prefilled` back while leaving pool state mutated,
+and the two would disagree with nothing downstream to notice.
+
+The existing snapshot code already establishes how to do this, and states the rule in its own
+comment (`snapshot.py:78-83`): **capture cost must be proportional to the live batch, never to
+the accumulated run.** Three measured candidates against that rule:
+
+| Approach | Cost per event | Over the aligned run (4949 steps, 2 instances) | Proportional to |
+|---|---|---|---|
+| `copy.deepcopy(pool)` | 179 ms | **1771 s** against a 3349 s run | capacity (31279) |
+| capture free-list order | 401 us | 3.97 s | capacity (31279) |
+| **touched-block old values** | median 2 entries | negligible | **work** |
+
+Only the third obeys the rule. It is also the same shape as `ReqSnapshot`: store the old value,
+assign it back. No write-ahead log, no inverse operations, no replay — those would introduce a
+second mental model into a module that currently has exactly one.
+
+Per event, store one entry per block the event touched:
+
+```python
+@dataclass
+class BlockSnapshot:
+    ref_cnt: int
+    block_hash: Hashable | None
+    prev_free: KvBlock | None   # position in the free list
+    next_free: KvBlock | None
+```
+
+`prev_free` / `next_free` are why P4 reverses the `OrderedDict` decision. A hit on a currently
+free block removes it from the middle of the list; restoring it means re-linking it exactly
+where it was. The linked list carries that position in the node itself, so the "old value" is
+already there for the taking. An `OrderedDict` discards it on `pop(key)`, and a block put back
+at the tail instead of its original position leaves occupancy *correct* while silently
+rewriting LRU order — invisible to `blocks_used()` and fatal to eviction order, which is
+exactly what validation scenario 4 measures.
+
+Three further pieces of state, each handled by the existing playbook:
+
+- `hash_to_block` additions: store the keys added, delete them on undo.
+- `eviction_count`, `queries`, `hits`: plain scalars, stored and assigned back. These must be
+  rolled back too, or an uncommitted event permanently inflates counters that are compared
+  against `vllm:prefix_cache_queries` and reported as eviction pressure.
+- Lifetime: the touched-block list hangs off the same `_save_snapshot()` / `undo_last_event()`
+  pair that already exists. No new lifecycle concept.
+
+**One asymmetry worth stating, because it is real rather than an implementation shortcut.** A
+decode segment's pool changes are fully determined by `(rid, prefilled_before, k)`, which
+`ReqSnapshot` already stores, because decode grows only private blocks and never hits. A
+prefill step is not recomputable that way: it *hits*, and a hit depends on what the hash map
+held at that moment, which is global state. The uniform touched-block mechanism covers both, so
+this is not exploited — but it is why a "just recompute everything" design cannot work.
+
+### 3.5 Seams in `NativeInstance`
 
 Two methods change body, not signature:
 
