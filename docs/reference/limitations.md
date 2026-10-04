@@ -148,12 +148,26 @@ term at TP=2: every phase under-predicts (signed error -2.31% decode, -2.63% pre
 unmodelled overlap saving worth the collective's 13.2% share would have produced over-prediction
 near +13%. And TP=4/8 have per-kernel collective tables but no end-to-end baseline.
 
-**Cross-node tensor parallelism is not measured.** The collective sweep runs
-`torch.multiprocessing.spawn` against `127.0.0.1`, so every world size is intra-node over NVLink.
-`GpuSpec.link_bandwidth_bytes_per_s` is a single constant (4.5e11), so a two-node ring and an
-intra-node one at the same world size would be priced identically. This is acceptable for rollout,
-where TP is deployed within a node, and is the thing to fix first when DP or PP communication is
-modelled.
+**Cross-node collectives are measured, at roughly ±15% rather than ±5%.** Resolved
+2026-10-04: `nodes` is a slice column alongside `world_size`, `GpuSpec` carries a separate
+`inter_node_bandwidth_bytes_per_s` (5.0e10, one 400 Gb/s bond per GPU, against NVLink's
+4.5e11), and the sweep launches over real nodes via ssh instead of `127.0.0.1`. Measured at
+`(16, 2)` and `(24, 3)` on 24 H20s.
+
+What remains a limitation is the accuracy, not the coverage. The cross-node tables score
+9.9-17.3% held-out MRE where the intra-node ones score 3.2-10.2%, with utility as low as
+0.004. Non-monotonic step counts are no worse cross-node than intra-node (2-3 of 17 against
+3-4 of 17), which rules out contention and makes this a real property of the surface: the
+flat-ring SOL is a poor description of a hierarchical collective. `nodes` being a slice
+column is what confines that to the cross-node rows. Price cross-node DP reduction at
+roughly ±15% and say so; densifying the grid is the lever if better is needed.
+
+Two further gaps. Cross-node rows carry **no `vllm` column**, because vLLM disables its
+custom all-reduce for a group spanning nodes (`custom_all_reduce.py:90`) and falls through
+to pynccl, which the control table already measures; the column is left absent rather than
+filled with a relabelled NCCL row. And NUMA placement within a node is still unmodelled:
+GPUs 0-3 and 4-7 sit on different NUMA domains with different NIC affinity, which `nodes`
+does not capture, though all-to-all NVLink makes the GPU-to-GPU path uniform regardless.
 
 **`ComposedRollout` decode over-predicted ~13% at small batch.**
 At `requests ∈ [1, 4]` the median decode ratio is 1.1312 against 0.996-1.014 at larger
@@ -205,12 +219,36 @@ A candidate that crashes before writing the marker is classified as `failed` rat
 dropping a memory lower bound from the fit. This affects the shard=2 cell in particular, where
 static occupancy is highest. See {doc}`../profiling/fsdp`.
 
-**Prompt prefill charged once per response.**
-When a prompt has `n` sampled responses, the simulator charges prefill `n` times, once per
-response, rather than once per shared prompt. Rollout time is therefore slightly pessimistic
-for group-structured workloads. This is the remaining group-level inaccuracy now that batches
-are consumed a whole group at a time. See {doc}`../workload/index` for the joint trace format
-that preserves group boundaries.
+**Prefix reuse is derived from provenance, so it under-reports hits in one direction.**
+Block identity comes from `(source_group_id, block_index)` for prompt-interior blocks and
+`(rid, block_index)` otherwise, rather than from a hash of token ids the simulator never holds.
+Two *different* prompts that happen to share leading full blocks hit in the real engine and miss
+here. On RL workloads distinct problems almost certainly differ at token 0, and every weight
+update clears the hash map anyway, so the effect is second order -- but it is one-directional:
+this never over-reports a hit. A workload with a shared system prompt or shared few-shot prefix
+would amplify it, and the fix at that point is an optional explicit prefix-grouping key on the
+trace, not a change to the hash rule. See {doc}`../simulation/prefix-cache`.
+
+This replaced an earlier and larger inaccuracy, recorded here because the comparison is the
+useful part: prefill used to be charged `n` times for a prompt with `n` sampled responses, once
+per response rather than once per shared prompt. At DAPO's `rollout_n=8` that was 8x the real
+engine's prompt prefill.
+
+**Within-group reuse cannot be judged on the aligned baseline.**
+`extract_workload_trace` chunks completed requests into groups of `group_size` in request-id
+order, because the route trace does not record which prompt each response belonged to
+(`psrl_log.py`, `write_workload_trace`). That reproduces the length distribution and the group
+arity exactly but not the grouping, so a hit rate measured there reflects fabricated groups.
+This is why prefix caching is validated against a purpose-built vLLM experiment instead; see
+{doc}`../simulation/prefix-cache`.
+
+**No cross-instance reuse, and the router scatters groups.**
+The block pool is per-instance, as in the real engine, while `_select_instance` picks the
+least-active one, so a group's siblings land on different instances and within-group reuse is
+diluted. Frontier makes this a hard gate: multi-replica prefix caching requires a sticky
+scheduler or it raises. We do not port that gate, because what PSRL actually does has not been
+verified and copying Frontier's policy would weld in an unverified assumption. Routing is
+tracked separately.
 
 ---
 

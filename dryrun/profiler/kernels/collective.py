@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -53,17 +54,32 @@ dryrun_logger = logging.getLogger(__file__)
 # memory, so `mixed` is the normal outcome rather than a warning sign.
 _MIXED = "mixed"
 
-# The fabric variables the environment script already exports. They are logged rather than
-# set: they describe this cluster's RoCE configuration, and a sweep run under different
-# values would measure a fabric no real training job uses.
-_FABRIC_ENV = (
+# Fabric settings are whatever the environment exported, never values this module chooses:
+# they describe the cluster's RoCE configuration, and a sweep run under different ones would
+# measure a fabric no real training job uses.
+#
+# Every NCCL_* variable is forwarded to remote nodes rather than a curated subset. A
+# non-interactive ssh shell on this cluster inherits ~/.bashrc, which sets seven of them,
+# while the project env script sets twenty-one, and the two disagree: the script orders
+# NCCL_IB_HCA as bond_1,5,3,7,4,8,2,6 for rail alignment where .bashrc orders it 1..8, and
+# the script additionally sets NCCL_ALGO and NCCL_LL_THRESHOLD. Both of those change the
+# schedule NCCL picks. Letting each node resolve its own would mean the two ends of a
+# cross-node ring ran different configurations, which is a measurement of nothing.
+_FABRIC_PREFIX = "NCCL_"
+
+# Logged explicitly because these are the ones that change what is measured rather than how
+# it is reported, so they belong in the run record even though all NCCL_* vars are forwarded.
+_FABRIC_LOGGED = (
     "NCCL_IB_HCA",
     "NCCL_IB_DISABLE",
     "NCCL_IB_GID_INDEX",
     "NCCL_IB_TC",
     "NCCL_IB_SL",
-    "NCCL_IB_TIMEOUT",
     "NCCL_SOCKET_IFNAME",
+    "NCCL_ALGO",
+    "NCCL_LL_THRESHOLD",
+    "NCCL_NET_GDR_LEVEL",
+    "NCCL_PXN_DISABLE",
 )
 
 
@@ -75,10 +91,26 @@ def _free_port() -> int:
 
 def _log_fabric() -> dict[str, str]:
     """Return and log the inherited NCCL fabric settings, so rows trace to a configuration."""
-    resolved = {name: os.environ.get(name, "") for name in _FABRIC_ENV}
+    resolved = {name: os.environ.get(name, "") for name in _FABRIC_LOGGED}
     for name, value in resolved.items():
         dryrun_logger.info(f"Collective sweep inherits {name}={value!r}.")
     return resolved
+
+
+def _fabric_exports() -> list[str]:
+    """
+    Return `NAME=value` assignments for every NCCL variable in this process's environment.
+
+    Prepended to the remote command so both ends of a cross-node ring run the same fabric
+    configuration. Without this each node resolves its own from `~/.bashrc`, which on this
+    cluster disagrees with the project env script on `NCCL_IB_HCA`'s ordering and omits
+    `NCCL_ALGO` and `NCCL_LL_THRESHOLD` entirely.
+    """
+    return [
+        f"{name}={shlex.quote(value)}"
+        for name, value in sorted(os.environ.items())
+        if name.startswith(_FABRIC_PREFIX)
+    ]
 
 
 def _torchrun_command(
@@ -179,7 +211,13 @@ def _run_topology(
                 spec_path=spec_path,
                 output_path=output_path,
             )
-            remote = " ".join(("cd", str(Path.cwd()), "&&", *command))
+            # `env` rather than a login shell: sourcing a profile would let the remote
+            # node's own NCCL settings win, which is the thing being prevented. The
+            # interpreter is addressed by absolute path (sys.executable on the shared
+            # filesystem), so no PATH setup is needed and none is done.
+            remote = " ".join(
+                ("cd", shlex.quote(str(Path.cwd())), "&&", "env", *_fabric_exports(), *command)
+            )
             ssh_command = [
                 "ssh",
                 "-o",
@@ -315,12 +353,15 @@ def profile_collective(
                 )
             )
 
-    import vllm
-
     written: list[Path] = []
     for op in ops:
         vllm_rows = _rows_for(raw, op, "vllm_latency_s")
         if vllm_rows:
+            # Imported here rather than at the top of the loop: a cross-node-only sweep
+            # produces no dispatched rows at all, because vLLM refuses a group spanning
+            # nodes, and paying its import to write nothing is waste.
+            import vllm
+
             writer = writer_factory("vllm", str(vllm.__version__), _kernel_source(raw, op))
             written.append(writer.write(op, vllm_rows))
         nccl_rows = _rows_for(raw, op, "nccl_latency_s")
@@ -330,9 +371,11 @@ def profile_collective(
             )
             written.append(writer.write(op, nccl_rows))
         if not vllm_rows:
-            # Not every collective has a server-level entry point: vLLM's pipeline send/recv
+            # Two distinct reasons, both stated rather than silently skipped. Within a node,
+            # not every collective has a server-level entry point: vLLM's pipeline send/recv
             # uses a separate group with its own buffers, so a `vllm` row for p2p would
-            # misattribute the kernel. Stated rather than silently skipped.
+            # misattribute the kernel. Across nodes, vLLM disables its custom all-reduce and
+            # symmetric memory outright, so no op has a dispatched path.
             dryrun_logger.info(
                 f"No vllm-dispatched rows for {op}; only the nccl control table is written."
             )

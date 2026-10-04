@@ -220,11 +220,20 @@ is therefore not the dominant term at this degree, though it remains unquantifie
 
 ## What is still missing
 
-- **Cross-node `tp` is not measured.** The collective sweep spawns against `127.0.0.1`, so every
-  world size is intra-node over NVLink, and `GpuSpec.link_bandwidth_bytes_per_s` is a single
-  constant. A two-node ring and an intra-node one at the same world size would price identically.
-  Acceptable for rollout, where `tp` stays inside a node. It is the first thing to fix when DP or PP
-  communication is modelled.
+- **Cross-node collectives are now measured** (2026-10-04), which closes what this list
+  previously called "the first thing to fix when DP or PP communication is modelled". `nodes`
+  is a slice column alongside `world_size`, `GpuSpec` carries a separate
+  `inter_node_bandwidth_bytes_per_s`, and the sweep runs over real nodes via ssh rather than
+  `127.0.0.1`. Measured at `(16, 2)` and `(24, 3)` on 24 H20s: a cross-node ring is 2.1-3.8x
+  slower than intra-node in the floor-dominated regime and 1.34-1.84x at 64 MiB and above.
+
+  Two caveats carry forward. The cross-node tables score 9.9-17.3% MRE against 3.2-10.2%
+  intra-node, and monotonicity counts rule out contention, so that is a real property of the
+  surface rather than a bad run: treat cross-node pricing as roughly +-15%. And cross-node
+  rows carry **no `vllm` column**, because vLLM disables its custom all-reduce for a group
+  spanning nodes (`custom_all_reduce.py:90`) and falls through to pynccl, which the control
+  table already measures. See
+  `docs/superpowers/specs/2026-10-04-collective-ops-design.md`.
 - **`tp=4` and `tp=8` have collective tables but no end-to-end baseline.** Scoring either needs a
   vLLM sweep at that degree, and a compute sweep too, since GEMM and attention shapes are sharded.
 - **No overlap model.** See above.

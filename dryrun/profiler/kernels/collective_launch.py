@@ -157,8 +157,25 @@ def _vllm_call(op: str, tensor: Any) -> Any:
     return None
 
 
-def _measure(spec: dict[str, Any], rank: int, world_size: int) -> list[dict[str, Any]]:
-    """Time every (op, dtype, message size) point and return rank 0's rows."""
+def _measure(
+    spec: dict[str, Any],
+    rank: int,
+    world_size: int,
+    *,
+    dispatcher_available: bool,
+) -> list[dict[str, Any]]:
+    """Time every (op, dtype, message size) point and return rank 0's rows.
+
+    Args:
+        spec (dict[str, Any]): Ops, dtypes, message sizes, and iteration counts.
+        rank (int): This process's global rank.
+        world_size (int): Ranks in the group.
+        dispatcher_available (bool): Whether vLLM's parallel state was built. False across
+            nodes, where vLLM refuses the group, so only the control latency is recorded.
+
+    Returns:
+        list[dict[str, Any]]: Rank 0's rows; empty on every other rank.
+    """
     rows: list[dict[str, Any]] = []
     warmup = int(spec["warmup_iterations"])
     active = int(spec["active_iterations"])
@@ -181,7 +198,7 @@ def _measure(spec: dict[str, Any], rank: int, world_size: int) -> list[dict[str,
                 nccl_latency_s = time_cuda_call(
                     nccl_call, warmup_iterations=warmup, active_iterations=active
                 )
-                vllm_call = _vllm_call(op, tensor)
+                vllm_call = _vllm_call(op, tensor) if dispatcher_available else None
                 vllm_latency_s = None
                 backend = None
                 if vllm_call is not None:
@@ -216,6 +233,7 @@ def main() -> None:
     args = parser.parse_args()
 
     spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+    nodes = int(spec["nodes"])
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -235,26 +253,47 @@ def main() -> None:
         initialize_model_parallel,
     )
 
-    vllm_config = VllmConfig(parallel_config=ParallelConfig(tensor_parallel_size=world_size))
-    with set_current_vllm_config(vllm_config):
-        init_distributed_environment(
-            world_size=world_size,
-            rank=rank,
-            distributed_init_method=(
-                f"tcp://{os.environ['MASTER_ADDR']}:{int(os.environ['MASTER_PORT']) + 1}"
-            ),
-            local_rank=local_rank,
-            backend="nccl",
+    # vLLM's parallel state is built only for an intra-node group, and that is a property
+    # of vLLM rather than a shortcut here. `custom_all_reduce.py:90` disables the custom
+    # kernel outright when `in_the_same_node_as` fails ("Custom allreduce is disabled
+    # because this process group spans across nodes"), and symmetric memory refuses the
+    # rendezvous for the same reason. So across nodes the dispatcher has nothing left to
+    # select and falls through to pynccl, which is what the `nccl` table already measures.
+    #
+    # Standing it up anyway cost ~60 s per topology of vLLM init to produce a duplicate of
+    # the control table. Cross-node rows therefore carry only the `nccl` latency, and the
+    # `vllm` column stays absent rather than being filled with a relabelled NCCL
+    # measurement, which would misattribute the kernel in exactly the way the two-table
+    # arrangement exists to prevent.
+    dispatcher_available = nodes == 1
+    if dispatcher_available:
+        vllm_config = VllmConfig(parallel_config=ParallelConfig(tensor_parallel_size=world_size))
+        with set_current_vllm_config(vllm_config):
+            init_distributed_environment(
+                world_size=world_size,
+                rank=rank,
+                distributed_init_method=(
+                    f"tcp://{os.environ['MASTER_ADDR']}:{int(os.environ['MASTER_PORT']) + 1}"
+                ),
+                local_rank=local_rank,
+                backend="nccl",
+            )
+            initialize_model_parallel(tensor_model_parallel_size=world_size)
+    else:
+        dryrun_logger.info(
+            f"nodes={nodes}: skipping vLLM parallel state. Its custom all-reduce and "
+            f"symmetric-memory paths both refuse a cross-node group, so only the "
+            f"torch.distributed control table is measured."
         )
-        initialize_model_parallel(tensor_model_parallel_size=world_size)
     try:
-        rows = _measure(spec, rank, world_size)
+        rows = _measure(spec, rank, world_size, dispatcher_available=dispatcher_available)
         if rank == 0:
             Path(args.output).write_text(json.dumps(rows, indent=2), encoding="utf-8")
             dryrun_logger.info(f"Wrote {len(rows)} collective measurements to {args.output}.")
     finally:
-        destroy_model_parallel()
-        destroy_distributed_environment()
+        if dispatcher_available:
+            destroy_model_parallel()
+            destroy_distributed_environment()
 
 
 if __name__ == "__main__":
