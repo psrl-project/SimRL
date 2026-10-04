@@ -1,11 +1,25 @@
 # Vendor-published peak numbers. `tc_flops_per_s` is dense tensor-core throughput
 # without sparsity. Adding a GPU here is a data change, not a code change.
+#
+# `inter_node_bandwidth_bytes_per_s` is the one exception: it describes the **cluster
+# fabric**, not the GPU, so a different cluster with the same GPU needs it re-derived
+# rather than copied. See the comment on the field below.
 h20:
   name: NVIDIA H20
   sm_count: 78
   memory_bytes: 102010650624
   memory_bandwidth_bytes_per_s: 4.0e12
   link_bandwidth_bytes_per_s: 4.5e11
+  # Per-GPU egress to another node, measured on this cluster 2026-10-04:
+  #   - 42 active InfiniBand ports at 200 Gb/s 4X HDR (/sys/class/infiniband/*/ports/1/rate)
+  #   - bonded into 8 devices mlx5_bond_1..8, each 400000 Mb/s (/sys/class/net/bond*/speed)
+  #   - NCCL_IB_HCA already pins exactly those 8 bonds
+  #   - nvidia-smi topo -m shows exactly one PIX NIC per GPU, all 8
+  # So each rank owns one 400 Gb/s bond: 4.0e11 bit/s = 5.0e10 byte/s. A per-rank figure is
+  # what SOL needs, since SOL bounds one rank's traffic. The node aggregate is 8x this.
+  # Note this is ~9x below link_bandwidth (NVLink), which is why `nodes` is a slice column
+  # rather than an interpolation axis: the two regimes are not blendable.
+  inter_node_bandwidth_bytes_per_s: 5.0e10
   tc_flops_per_s:
     bfloat16: 148.0e12
     float16: 148.0e12

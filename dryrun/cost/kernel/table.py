@@ -71,8 +71,16 @@ class KernelTable:
         needed = required_columns(op)
         missing = [name for name in needed if name not in table.column_names]
         if missing:
+            # A missing column means the table predates a schema change, so the message names
+            # the remedy rather than only the symptom. This matters most for the collective
+            # family's `nodes`: read leniently as 1, a cross-node measurement would be
+            # attributed to NVLink and the ~9x error would surface much later as an
+            # unexplained model defect. Refusing is the only safe reading.
             raise KernelCoverageError(
-                f"Perf table {source} is missing columns: {', '.join(missing)}."
+                f"Perf table {source} is missing columns: {', '.join(missing)}. The table "
+                f"predates the current {op.name!r} schema; re-measure it with "
+                f"`dryrun-profile kernels run --family {op.family}` rather than reading it "
+                f"with assumed values."
             )
         columns = {name: table.column(name).to_pylist() for name in needed}
 

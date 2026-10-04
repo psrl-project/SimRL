@@ -1,0 +1,60 @@
+# Cross-node collective sweep. GEMM and attention are absent on purpose: a node boundary
+# changes what a collective costs and nothing about what a matmul costs, so re-sweeping
+# compute here would spend hours writing tables identical to the intra-node ones.
+#
+# This is the config that makes `nodes` a real column rather than a constant. Every other
+# kernel config pins `nodes: 1`, because `mp.spawn` and a local `torchrun` can only ever
+# produce an intra-node group, and `GpuSpec.link_bandwidth_bytes_per_s` would then price a
+# NIC hop at NVLink speed: a ~9x optimistic error on this cluster.
+#
+# Hosts are declared rather than discovered. Each is a distinct 8x H20 node sharing the
+# CephFS mount this repo lives on, verified 2026-10-04 by distinct GPU UUIDs. Rank 0 runs on
+# the first entry, which is also the rendezvous master.
+#
+# Prerequisites, all of which fail loudly rather than silently degrading:
+#   - passwordless ssh to every host (the driver uses BatchMode=yes)
+#   - the conda env sourced on every host, since each runs its own torchrun
+#   - NCCL_IB_DISABLE unset or 0; the driver refuses a cross-node topology otherwise,
+#     because a TCP fallback would produce rows that look like a slow NIC
+#
+# The fabric variables (NCCL_IB_HCA, NCCL_SOCKET_IFNAME, NCCL_IB_GID_INDEX, NCCL_IB_TC,
+# NCCL_IB_SL) are inherited from the environment script, not set here: they describe this
+# cluster's RoCE configuration, and overriding them would measure a fabric no real training
+# job runs on. The driver logs the resolved values so rows trace back to a configuration.
+model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}
+hardware:
+  gpu_name: H20
+  gpu_count: 24
+  gpu_memory_mib: 97871
+  node_count: 3
+  gpus_per_node: 8
+  # Intra-node is NVLink; across nodes it is 8 bonded 400 Gb/s RoCE links, one per GPU.
+  # See the inter_node_bandwidth_bytes_per_s comment in dryrun/cost/kernel/data/gpu_specs.yaml.
+  interconnect: NVLink+RoCE
+output_dir: ../../../outputs/profile/qwen3_8b/kernel_multinode
+experiment_name: qwen3-8b
+parallelism:
+  # Unused by the collective family, which reads its world sizes from `topologies` below.
+  # Kept because the shared config schema requires it.
+  tensor_parallel: 1
+
+collective:
+  # Same grid as the intra-node configs, so a row is comparable across topologies at equal
+  # message size. That comparability is what verification 6 in the design spec rests on: a
+  # cross-node ring must measure materially slower than an intra-node one at the same size,
+  # or the rendezvous never left the node and every row here is void.
+  message_bytes: [4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152,
+     4194304, 8388608, 16777216, 33554432, 67108864, 134217728, 268435456, 536870912]
+  # Cross-node only at full nodes. Spreading fewer than 8 ranks over 2 nodes is not a
+  # configuration either backend runs, and `nodes=3` is included because a 3-node ring has a
+  # different hop count from a 2-node one: without it, any `nodes` dependence would be
+  # unfalsifiable from two points.
+  topologies: [[16, 2], [24, 3]]
+  hostnames: [28.49.55.85, 29.162.247.148, 28.49.196.175]
+  dtypes: [bfloat16, float32]
+
+measurement:
+  warmup_iterations: 5
+  active_iterations: 20
+  dtype: bfloat16
+  kv_cache_dtype: bfloat16

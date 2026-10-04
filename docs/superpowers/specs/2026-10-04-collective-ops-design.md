@@ -443,14 +443,74 @@ whether the op abstraction is real, exactly as the elementwise/all_reduce additi
 | Phase | Scope | Gate |
 |---|---|---|
 | A0 | Capture §4 baselines into a committed gate | **Done 2026-10-04**: `tests/test_collective_baseline_regression.py`, 12 tests, deterministic across repeat runs; surfaced the ws=8 report-ordering defect above |
-| A1 | `_CollectiveOp` base; `nodes` slice; `inter_node` SOL; re-sweep intra-node | §4 table: GEMM/attention identical, collectives within +-0.5pp, rollout tp=2 e2e within +-0.5pp |
-| A2 | torchrun child + ssh multi-node driver; cross-node sweep at `nodes` 2 and 3; re-sweep ws=8 so its holdout matches its tables | `all_reduce` holdout MRE reported per `(world_size, nodes)` with `point_count > 0`; the ws=8 report's mtime must postdate its tables |
-| A3 | `reduce_scatter`, `all_gather`, `broadcast`, `p2p` ops and measurement | Per-op holdout MRE reported; `floor.py` and `holdout.py` unedited |
+| A1 | `_CollectiveOp` base; `nodes` slice; `inter_node` SOL; re-sweep intra-node | **Done 2026-10-04**, gate passed in full: see below |
+| A2 | ssh multi-node driver; cross-node sweep at `nodes` 2 and 3 | `all_reduce` holdout MRE reported per `(world_size, nodes)` with `point_count > 0`; cross-node must measure materially slower than intra-node |
+| A3 | `reduce_scatter`, `all_gather`, `broadcast`, `p2p` ops and measurement | **Done 2026-10-04** alongside A1: all five ops measured, `floor.py` and `holdout.py` unedited |
 | A4 | Docs | Every figure traces to an A1-A3 command |
 
-A1 must complete before A2: a cross-node measurement mixed into the schema change would
-make the neutrality comparison meaningless. A3 depends only on A1, so it can proceed in
-parallel with A2.
+A1 had to complete before A2: a cross-node measurement mixed into the schema change would
+make the neutrality comparison meaningless. A3 turned out to be free to land with A1 rather
+than after it, because `_CollectiveOp.measure` times every registered collective inside one
+process group, so adding the four ops added no separate measurement pass.
+
+### A1 + A3 results
+
+The compute families were **bit-identical**, which is what makes the collective movement
+attributable rather than ambiguous:
+
+| family | baseline | after | required |
+|---|---|---|---|
+| `gemm/vllm` | 3.9019% | 3.9019% | exact |
+| `context_attention/vllm` | 6.6801% | 6.6801% | exact |
+| `generation_attention/vllm` | 4.5715% | 4.5715% | exact |
+| `context_attention/flashinfer` | 9.9274% | 9.9274% | exact |
+| `generation_attention/flashinfer` | 6.3715% | 6.3715% | exact |
+| `elementwise/vllm` | 9.3544% | 9.3544% | exact |
+| `all_reduce/vllm` | 6.0122% | 6.3064% (+0.294pp) | +-0.5pp |
+| `all_reduce/nccl` | 4.9606% | 4.6572% (-0.303pp) | +-0.5pp |
+
+End-to-end at tp=2 against the spliced serial baseline, the load-bearing check:
+
+| phase | baseline | after | delta |
+|---|---|---|---|
+| prefill, 29 buckets | 3.597% | 3.673% | +0.076pp |
+| decode, 204 buckets | 9.510% | 9.792% | +0.282pp |
+| decode, `reqs>=5`, 137 buckets | 2.957% | 3.071% | +0.114pp |
+| mixed, 7 buckets | 3.643% | 3.742% | +0.099pp |
+
+The attention and elementwise **fitted floors did not move at all** (vllm 45/22 us,
+flashinfer 16/6 us, elementwise 2 us), which is a second independent neutrality signal:
+those tables were not re-measured, so their floors could not change.
+
+Nine tables written, 108 rows each (18 message sizes x 2 dtypes x 3 topologies). `p2p` has
+no `vllm` table, because vLLM's pipeline send/recv uses a separate group with its own
+buffers and a `vllm`-labelled p2p row would misattribute the kernel:
+
+| op | `vllm` MRE | `nccl` MRE | fitted floor (vllm / nccl) |
+|---|---|---|---|
+| `all_reduce` | 6.31% | 4.66% | 6 us / 2 us |
+| `reduce_scatter` | 4.71% | 10.17% | 12 us / 2 us |
+| `all_gather` | 3.16% | 7.11% | 6 us / 4 us |
+| `broadcast` | 4.73% | 6.52% | 6 us / 6 us |
+| `p2p` | n/a | 4.97% | n/a / 12 us |
+
+Two structural gates also passed, and they are the real test of whether the op abstraction
+holds: **`floor.py` and `holdout.py` were not edited**, yet both picked up four new ops
+automatically (they iterate `ops_in(version_dir)`), and **`cli/profile.py` was not edited**,
+because `--family` choices derive from the registry and `measure` is dispatched per family.
+
+Three findings worth recording:
+
+- **`reduce_scatter/nccl` at 10.17% is the worst table in the family**, with a utility floor
+  of 0.006 and a 186% max error. The dispatched path scores 4.71% on the same shapes, so
+  this is the control backend describing a schedule the server does not run, the same effect
+  already documented for `all_reduce` at larger world sizes.
+- **The dispatched and control backends disagree about which op is hard.** `nccl` beats
+  `vllm` on `all_reduce` (4.66% against 6.31%) but loses on every other op, by 2-6pp. A
+  single-op family could not have surfaced that.
+- **`reduce_scatter`'s fitted floor differs 6x between backends** (12 us dispatched against
+  2 us control). Fitting each op independently rather than sharing one collective constant
+  was therefore load-bearing, not tidiness.
 
 ## 8. Verification
 

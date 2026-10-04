@@ -90,6 +90,7 @@ def test_custom_spec_path_is_honored(tmp_path):
         "  memory_bytes: 1024\n"
         "  memory_bandwidth_bytes_per_s: 2.0\n"
         "  link_bandwidth_bytes_per_s: 1.0\n"
+        "  inter_node_bandwidth_bytes_per_s: 0.5\n"
         "  tc_flops_per_s:\n"
         "    bfloat16: 3.0\n",
         encoding="utf-8",

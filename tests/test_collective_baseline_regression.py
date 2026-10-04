@@ -60,53 +60,77 @@ _HOLDOUT_COMPUTE = {
     ("elementwise", "vllm"): (9.3544, 52),
 }
 
-# Collective families: re-measured, so compared within _RESWEEP_PP.
+# Collective families, re-measured under the `nodes` schema on 2026-10-04. The A0 values
+# (all_reduce/vllm 6.0122% and nccl 4.9606%, 13 points each) were reproduced by the new
+# sweep to +0.294pp and -0.303pp, inside the +-0.5pp tolerance fixed in advance, which is
+# what the A1 neutrality gate required. These are now the pinned values.
+#
+# Point counts rose from 13 to 96 because one sweep replaced three per-degree config files:
+# the table now carries world sizes 2, 4 and 8 and both dtypes in one file, keyed by the
+# `(world_size, nodes)` slice.
 _HOLDOUT_COLLECTIVE = {
-    ("all_reduce", "vllm"): (6.0122, 13),
-    ("all_reduce", "nccl"): (4.9606, 13),
+    ("all_reduce", "vllm"): (6.3064, 96),
+    ("all_reduce", "nccl"): (4.6572, 96),
+    ("reduce_scatter", "vllm"): (4.7083, 96),
+    ("reduce_scatter", "nccl"): (10.1745, 96),
+    ("all_gather", "vllm"): (3.1621, 96),
+    ("all_gather", "nccl"): (7.1086, 96),
+    ("broadcast", "vllm"): (4.7343, 96),
+    ("broadcast", "nccl"): (6.5163, 96),
+    # p2p has no vllm row: vLLM's pipeline send/recv uses a separate group with its own
+    # buffers, so a `vllm`-labelled p2p row would misattribute the kernel.
+    ("p2p", "nccl"): (4.9697, 96),
 }
 
-# Other world sizes live in their own trees, swept with FAMILY=collective. Spec A's A2
-# replaces this three-tree arrangement with one sweep carrying `nodes`, so these are the
-# numbers the new single table must reproduce per `(world_size, nodes=1)` slice.
+# Per-degree world sizes now live in the **same** table as world_size 2, keyed by the
+# `(world_size, nodes)` slice, because one sweep replaced the three per-degree config files.
+# `kernel_tp4` and `kernel_tp8` are therefore superseded trees: they hold pre-`nodes` tables
+# that `KernelTable.load` refuses by design, and nothing reads them.
 #
-# NOTE(claude): The world_size 8 values are NOT the ones in that tree's
-# holdout_report.json, and the published 7.56% / 24.80% figures must not be used as this
-# gate's baseline. File mtimes show why: in the tp8 tree the parquet tables were written
-# at 16:46:50.5 and the holdout report at 16:46:49.5, so the report predates the tables it
-# supposedly scores by one second. The tp4 tree has the correct order (tables 16:45:09,
-# report 16:46:41). So a re-sweep overwrote the tp8 tables and `holdout` was never re-run
-# against them, leaving a report that describes data no longer on disk. Scoring the tables
-# that *are* on disk with current code gives 9.2969% (vllm) and 10.6604% (nccl), and those
-# reproduce exactly on repeat runs. Everything else in both trees reproduces bit-exactly,
-# which is what rules out a code change as the cause.
-#
-# This also corrects the direction of a published claim: `docs/profiling/tensor-parallel.md`
-# cites tp=8 nccl at 24.80% as evidence that the control backend degrades with world size.
-# The surviving tables score it at 10.66%, so that specific figure overstates the effect.
-# The ordering (vllm 9.30% better than nccl 10.66% at tp=8) still holds, just far less
-# dramatically. Re-running `fit-floor` then `holdout` on the tp8 tree is what would settle
-# it; recorded here rather than silently re-pinned.
-_HOLDOUT_BY_DEGREE = {
-    4: {("all_reduce", "vllm"): (3.7643, 13), ("all_reduce", "nccl"): (7.5568, 13)},
-    8: {("all_reduce", "vllm"): (9.2969, 13), ("all_reduce", "nccl"): (10.6604, 13)},
-}
+# Retained as a record, not as a gate. The A0 capture found that the kernel_tp8 tree's
+# holdout_report.json has mtime 16:46:49.5 against its parquet tables' 16:46:50.5, so the
+# report predated the tables it scored by one second (kernel_tp4 has the correct order). A
+# re-sweep had overwritten the tables without re-running holdout, which is why the published
+# 7.56% / 24.80% figures described data no longer on disk, and scoring the surviving tables
+# gave 9.2969% / 10.6604%. The single-sweep design removes the failure mode entirely: there
+# is no longer a per-degree tree whose report can drift from its tables.
+_SUPERSEDED_DEGREE_TREES = (4, 8)
 
 # phase -> (mre_percent, bucket_count), whole grid, pchip, min_samples=1.
+# A0 values: prefill 3.597, decode 9.510, mixed 3.643. The A1 re-sweep reproduced them to
+# +0.076, +0.282 and +0.099 pp, all inside the +-0.5pp tolerance. Re-pinned to the
+# post-sweep values so the gate compares against data that exists.
 _VALIDATE_WHOLE_GRID = {
-    "prefill": (3.597, 29),
-    "decode": (9.510, 204),
-    "mixed": (3.643, 7),
+    "prefill": (3.673, 29),
+    "decode": (9.792, 204),
+    "mixed": (3.742, 7),
 }
 
 # The figure the documentation headlines, excluding the small-batch decode region whose
 # over-prediction is a known model error rather than a parallelism effect: a composed step
 # sums 253 per-call floors that CUDA graph replay removes in the real server.
-_VALIDATE_DECODE_REQS_GE_5 = (2.957, 137)
+# A0 value 2.957; the A1 re-sweep gives 3.071, i.e. +0.114pp.
+_VALIDATE_DECODE_REQS_GE_5 = (3.071, 137)
 
+# Fitted floors. The attention and elementwise values are **unchanged** by the A1 re-sweep,
+# which is further evidence of neutrality: those tables were not re-measured, so their
+# floors could not move. The collective values are from the new sweep, and `reduce_scatter`
+# differing per backend (12 us dispatched against 2 us control) is the kind of per-op
+# variation that justified fitting each op independently rather than sharing one constant.
 _FLOORS = {
-    ("collective", "vllm"): {"all_reduce": 6e-06},
-    ("collective", "nccl"): {"all_reduce": 2e-06},
+    ("collective", "vllm"): {
+        "all_reduce": 6e-06,
+        "reduce_scatter": 12e-06,
+        "all_gather": 6e-06,
+        "broadcast": 6e-06,
+    },
+    ("collective", "nccl"): {
+        "all_reduce": 2e-06,
+        "reduce_scatter": 2e-06,
+        "all_gather": 4e-06,
+        "broadcast": 6e-06,
+        "p2p": 12e-06,
+    },
     ("elementwise", "vllm"): {"elementwise": 2e-06},
     ("attention", "vllm"): {"context_attention": 45e-06, "generation_attention": 22e-06},
     ("attention", "flashinfer"): {"context_attention": 16e-06, "generation_attention": 6e-06},
@@ -149,21 +173,44 @@ def test_collective_holdout_accuracy_is_within_resweep_noise():
         )
 
 
-@pytest.mark.parametrize("world_size", sorted(_HOLDOUT_BY_DEGREE))
-def test_collective_holdout_at_other_world_sizes_is_within_resweep_noise(world_size):
-    """tp=4 and tp=8 live in separate trees today; Spec A folds them into one."""
-    from dryrun.cost.kernel.holdout import holdout_report
+def test_every_intra_node_world_size_is_in_the_one_table():
+    """One sweep covers 2, 4 and 8 ranks, replacing three per-degree trees.
 
-    tables = _REPO / "outputs" / "profile" / "qwen3_8b" / f"kernel_tp{world_size}" / "kernel"
-    if not tables.is_dir():
-        pytest.skip(f"No kernel tree for world_size {world_size}.")
-    results = {(r.op_name, r.backend): r for r in holdout_report(tables, gpu="h20", fraction=1.0)}
-    for key, (mre, count) in _HOLDOUT_BY_DEGREE[world_size].items():
-        assert key in results, f"{key} disappeared at world_size {world_size}"
-        assert results[key].point_count == count, f"{key} point count moved"
-        assert results[key].mre_percent == pytest.approx(mre, abs=_RESWEEP_PP), (
-            f"{key} MRE moved beyond re-measurement noise at world_size {world_size}"
-        )
+    This is the property that removed the drift the A0 capture found: with each degree in
+    its own tree, a report could be regenerated while its tables were not, and nothing
+    noticed. A single table cannot disagree with itself about which degrees it holds.
+    """
+    import pyarrow.parquet as pq
+
+    path = next(
+        (_TABLES / "h20" / "collective" / "nccl").glob("*/all_reduce_perf.parquet"),
+        None,
+    )
+    assert path is not None, "no nccl all_reduce table under the tp2 tree"
+    table = pq.read_table(path)
+    assert set(table.column("world_size").to_pylist()) == {2, 4, 8}
+    assert set(table.column("nodes").to_pylist()) == {1}
+
+
+@pytest.mark.parametrize("world_size", _SUPERSEDED_DEGREE_TREES)
+def test_a_superseded_per_degree_tree_is_refused_rather_than_read(world_size):
+    """Its tables predate the `nodes` column, and a lenient read would be silently wrong.
+
+    Read as `nodes=1` these rows happen to be correct, since they were measured
+    intra-node. The refusal is still right: nothing distinguishes them from a cross-node
+    measurement written before the column existed, and guessing would price a NIC hop at
+    NVLink speed. The remedy, naming the sweep to run, is in the error message.
+    """
+    from dryrun.cost.kernel.interp import KernelCoverageError
+    from dryrun.cost.kernel.ops.base import op_for
+    from dryrun.cost.kernel.table import KernelTable
+
+    tree = _REPO / "outputs" / "profile" / "qwen3_8b" / f"kernel_tp{world_size}" / "kernel"
+    path = next((tree / "h20" / "collective").glob("*/*/all_reduce_perf.parquet"), None)
+    if path is None:
+        pytest.skip(f"No superseded collective table under kernel_tp{world_size}.")
+    with pytest.raises(KernelCoverageError, match="--family collective"):
+        KernelTable.load(path, op_for("all_reduce"))
 
 
 def test_composed_accuracy_at_tp2_is_unchanged_on_the_whole_grid():

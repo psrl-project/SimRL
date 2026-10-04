@@ -108,10 +108,49 @@ def test_tp1_emits_no_collective_at_all():
 
 
 def test_an_unmeasured_world_size_raises_rather_than_extrapolating():
-    """world_size is a slice column: a 2-rank and an 8-rank ring are different schedules."""
+    """world_size is a slice column: a 2-rank and a 16-rank ring are different schedules.
+
+    This used to assert on world_size 8, which was unmeasured when each degree needed its
+    own config file and its own tree. One sweep now carries every intra-node degree in one
+    table, so 8 is measured and 16 is the smallest degree that is not (it requires two
+    nodes). The behaviour under test is unchanged: a slice column refuses rather than
+    blending two topologies.
+    """
     from dryrun.cost.kernel.database import CommQuery, KernelDatabase
     from dryrun.cost.kernel.interp import KernelCoverageError
 
     database = KernelDatabase.from_root(_TP2_TABLES, gpu="h20")
     with pytest.raises(KernelCoverageError):
-        database.query_comm(CommQuery(world_size=8, message_bytes=1 << 20, backend="nccl"))
+        database.query_comm(
+            CommQuery(
+                op="all_reduce",
+                world_size=16,
+                nodes=2,
+                message_bytes=1 << 20,
+                backend="nccl",
+            )
+        )
+
+
+def test_an_unmeasured_node_count_raises_at_a_measured_world_size():
+    """The point of the `nodes` slice: 8 ranks on one node and on two are not the same ring.
+
+    The intra-node sweep measures `(8, 1)`, so a query for `(8, 2)` must refuse rather than
+    answer from the NVLink rows. Reading those rows would price a NIC hop at NVLink speed,
+    a ~9x optimistic error that interpolates perfectly smoothly and so would never look
+    like a coverage gap.
+    """
+    from dryrun.cost.kernel.database import CommQuery, KernelDatabase
+    from dryrun.cost.kernel.interp import KernelCoverageError
+
+    database = KernelDatabase.from_root(_TP2_TABLES, gpu="h20")
+    measured = database.query_comm(
+        CommQuery(op="all_reduce", world_size=8, nodes=1, message_bytes=1 << 20, backend="nccl")
+    )
+    assert measured > 0.0
+    with pytest.raises(KernelCoverageError):
+        database.query_comm(
+            CommQuery(
+                op="all_reduce", world_size=8, nodes=2, message_bytes=1 << 20, backend="nccl"
+            )
+        )

@@ -16,7 +16,21 @@ parallelism:
   tensor_parallel: 8
 
 collective:
-  token_counts: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+  # Message sizes are swept directly rather than derived from token counts: the five
+  # collectives do not carry the same size at the same token count. An SP-sharded
+  # reduce_scatter moves tokens*hidden/tp where an all_reduce moves tokens*hidden, and a
+  # Megatron gradient bucket is unrelated to tokens entirely (it buckets at
+  # max(40M, 1M*dp) *parameters*, so Qwen3-8B reduces ~205 buckets of ~153 MiB). The grid
+  # spans 4 KiB to 512 MiB, which covers all three regimes.
+  message_bytes: [4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152,
+     4194304, 8388608, 16777216, 33554432, 67108864, 134217728, 268435456, 536870912]
+  # (world_size, nodes) pairs. Every collective is timed inside one process group per
+  # topology, because group setup dominates a small-message measurement. `nodes` is a slice
+  # column, so an unmeasured topology raises rather than interpolating from another one.
+  topologies: [[2, 1], [4, 1], [8, 1]]
+  # float32 is not optional: Megatron reduces gradients in fp32, so a bf16-only table
+  # cannot price the data-parallel reduction.
+  dtypes: [bfloat16, float32]
 
 measurement:
   warmup_iterations: 5

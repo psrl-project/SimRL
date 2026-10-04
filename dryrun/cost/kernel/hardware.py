@@ -106,6 +106,15 @@ class GpuSpec:
     memory_bandwidth_bytes_per_s: float
     tc_flops_per_s: dict[str, float]
     link_bandwidth_bytes_per_s: float
+    inter_node_bandwidth_bytes_per_s: float
+    """Per-rank egress to another node, in bytes per second.
+
+    Unlike every other field here this describes the interconnect fabric rather than the
+    GPU, so two clusters holding the same GPU can legitimately disagree on it. It is
+    required rather than defaulted: a missing value would silently price a cross-node
+    collective at NVLink bandwidth, which on this cluster is 9x optimistic, and the
+    resulting error would look like a model defect rather than a configuration gap.
+    """
 
     def flops_for(self, dtype: str) -> float:
         """
@@ -158,6 +167,7 @@ class GpuSpec:
                 for key, item in value["tc_flops_per_s"].items()
             },
             link_bandwidth_bytes_per_s=float(value["link_bandwidth_bytes_per_s"]),
+            inter_node_bandwidth_bytes_per_s=float(value["inter_node_bandwidth_bytes_per_s"]),
         )
 
 

@@ -178,6 +178,12 @@ class ModelOps:
         one: written inline it sits one indentation level away from a plausible-looking
         layer-count error.
 
+        Both `op` and `nodes` are passed explicitly rather than defaulted. vLLM keeps its
+        tensor-parallel group inside one node, so `nodes=1` is correct here, but it is an
+        assumption about deployment rather than a property of the model, and a cross-node
+        group read against an intra-node table is optimistic by the NVLink-to-NIC ratio.
+        Naming it is what makes it reviewable.
+
         Args:
             token_count (int): Tokens the all-reduce covers. In decode this equals the request
                 count; in prefill it is the total prompt token count.
@@ -190,7 +196,11 @@ class ModelOps:
             return ()
         message_bytes = token_count * self._hidden_size * self._element_bytes
         query = CommQuery(
-            world_size=self._tensor_parallel, message_bytes=message_bytes, dtype=self._dtype
+            op="all_reduce",
+            world_size=self._tensor_parallel,
+            nodes=1,
+            message_bytes=message_bytes,
+            dtype=self._dtype,
         )
         return ((query, 2 * self._num_layers),)
 

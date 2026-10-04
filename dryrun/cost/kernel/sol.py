@@ -57,12 +57,25 @@ def _require_positive(**values: int) -> None:
 # between `generation` and `generation_attention` (in floor fitting, in two holdout sites, and
 # in the database), each of which was a place a new floor-taking op had to be threaded through.
 # See `dryrun/cost/kernel/floor.py` for the fitting procedure.
+# The four collectives added alongside `all_reduce` share its 2 us fallback. They are not
+# separately fitted here on purpose: a fallback exists to keep a missing floors.json loud
+# rather than silently zero, and inventing per-op constants nobody measured would dress a
+# guess up as a measurement. `fit-floor` replaces all of them from the real sweep, and
+# `floor.py` fits each op independently because their launch costs are not actually equal.
+_COLLECTIVE_FALLBACK_S: dict[str, float] = {
+    "all_reduce": 2e-6,
+    "reduce_scatter": 2e-6,
+    "all_gather": 2e-6,
+    "broadcast": 2e-6,
+    "p2p": 2e-6,
+}
+
 FALLBACK_FLOORS_S: dict[str, dict[str, float]] = {
     "vllm": {
         "context_attention": 32e-6,
         "generation_attention": 22e-6,
         "elementwise": 2e-6,
-        "all_reduce": 2e-6,
+        **_COLLECTIVE_FALLBACK_S,
     },
     "flashinfer": {
         "context_attention": 4e-6,
@@ -71,9 +84,7 @@ FALLBACK_FLOORS_S: dict[str, dict[str, float]] = {
     # The collective family is measured twice: `vllm` times the dispatcher a server actually
     # uses, and `nccl` times `torch.distributed.all_reduce` as a control. Both need a floor,
     # because a launch cost dominates entirely at the message sizes a decode step produces.
-    "nccl": {
-        "all_reduce": 2e-6,
-    },
+    "nccl": dict(_COLLECTIVE_FALLBACK_S),
 }
 
 

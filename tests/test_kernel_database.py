@@ -140,6 +140,7 @@ def test_a_different_target_gpu_rescales_through_sol(gemm_root, tmp_path):
         "  memory_bytes: 102010650624\n"
         "  memory_bandwidth_bytes_per_s: 2.0e12\n"
         "  link_bandwidth_bytes_per_s: 4.5e11\n"
+        "  inter_node_bandwidth_bytes_per_s: 5.0e10\n"
         "  tc_flops_per_s:\n"
         "    bfloat16: 74.0e12\n",
         encoding="utf-8",
@@ -202,7 +203,9 @@ def test_a_comm_query_without_a_measured_table_names_the_sweep_to_run(gemm_root)
 
     database = KernelDatabase.from_root(gemm_root, gpu="h20")
     with pytest.raises(KernelCoverageError, match="--family collective"):
-        database.query_comm(CommQuery(world_size=2, message_bytes=1 << 20))
+        database.query_comm(
+            CommQuery(op="all_reduce", world_size=2, nodes=1, message_bytes=1 << 20)
+        )
 
 
 def test_ambiguous_version_requires_a_pin(tmp_path):

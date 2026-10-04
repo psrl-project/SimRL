@@ -133,9 +133,17 @@ class AttentionQuery:
 
 @dataclass(frozen=True)
 class CommQuery:
-    """One tensor-parallel all-reduce to price."""
+    """One collective to price, identified by op and by topology.
 
+    `nodes` has no default. A cross-node collective priced against an intra-node table is
+    optimistic by roughly the NVLink-to-NIC ratio (9x on H20 here), and a default would
+    make that the silent outcome of forgetting the field. The caller states the topology it
+    means, and `model_ops.comm_queries` passes `nodes=1` explicitly for the same reason.
+    """
+
+    op: str
     world_size: int
+    nodes: int
     message_bytes: int
     dtype: str = "bfloat16"
     backend: str | None = _COLLECTIVE_BACKEND
@@ -143,20 +151,34 @@ class CommQuery:
     def __post_init__(self) -> None:
         if self.world_size <= 0:
             raise KernelCoverageError(f"Comm world_size must be positive, got {self.world_size!r}.")
+        if self.nodes <= 0:
+            raise KernelCoverageError(f"Comm nodes must be positive, got {self.nodes!r}.")
+        if self.nodes > self.world_size:
+            raise KernelCoverageError(
+                f"Comm nodes {self.nodes!r} exceeds world_size {self.world_size!r}, which "
+                f"describes no rank placement."
+            )
         if self.message_bytes <= 0:
             raise KernelCoverageError(
                 f"Comm message_bytes must be positive, got {self.message_bytes!r}."
+            )
+        # Fail here rather than at lookup: a typo'd op name would otherwise surface as a
+        # missing-table coverage error, which reads like an unswept topology.
+        if op_for(self.op).family != "collective":
+            raise KernelCoverageError(
+                f"Comm op {self.op!r} is not a collective; it belongs to family "
+                f"{op_for(self.op).family!r}."
             )
 
     @property
     def op_name(self) -> str:
         """Return the parquet op name this query reads."""
-        return "all_reduce"
+        return self.op
 
     @property
     def slice_key(self) -> tuple[Any, ...]:
-        """Return the categorical key in the all-reduce op's slice order."""
-        return (canonical_dtype(self.dtype), self.world_size)
+        """Return the categorical key in the collective ops' slice order."""
+        return (canonical_dtype(self.dtype), self.world_size, self.nodes)
 
     @property
     def coords(self) -> tuple[float, ...]:
@@ -310,16 +332,19 @@ class KernelDatabase:
 
     def query_comm(self, query: CommQuery) -> float:
         """
-        Return the predicted latency in seconds of one all-reduce.
+        Return the predicted latency in seconds of one collective.
 
         Args:
-            query (CommQuery): Per-rank message size and world size.
+            query (CommQuery): Collective op, topology (`world_size`, `nodes`), and
+                per-rank message size.
 
         Returns:
             float: `SOL(query) / interpolated utility`, in seconds.
 
         Raises:
-            KernelCoverageError: If no table or slice covers the query.
+            KernelCoverageError: If no table or slice covers the query. Both `world_size`
+                and `nodes` are slice columns, so an unswept topology raises here rather
+                than being interpolated from a different one.
         """
         return self._price(query)
 

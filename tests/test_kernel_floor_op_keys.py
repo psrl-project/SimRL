@@ -39,12 +39,14 @@ def test_a_missing_file_falls_back_to_the_hardcoded_map_under_op_keys(tmp_path):
 
     loaded = load_floors(tmp_path, backend="vllm", warn_missing=True)
     assert loaded == FALLBACK_FLOORS_S["vllm"]
-    assert set(loaded) == {
-        "context_attention",
-        "generation_attention",
-        "elementwise",
-        "all_reduce",
-    }
+    # Derived from the registry rather than listed, so adding an op cannot leave this
+    # assertion quietly describing a subset of what the fallback actually covers. What is
+    # being asserted is that every key is an op name, which is the property that replaced
+    # the old phase keying.
+    from dryrun.cost.kernel.ops.base import OP_REGISTRY
+
+    assert set(loaded) <= set(OP_REGISTRY)
+    assert all(OP_REGISTRY[name].fits_floor for name in loaded)
 
 
 def test_a_missing_file_returns_none_when_not_warning(tmp_path):
@@ -52,21 +54,29 @@ def test_a_missing_file_returns_none_when_not_warning(tmp_path):
 
 
 def test_the_fallback_map_is_keyed_by_op_name_not_phase():
+    from dryrun.cost.kernel.ops.base import OP_REGISTRY, ops_for_family
     from dryrun.cost.kernel.sol import FALLBACK_FLOORS_S
 
-    assert FALLBACK_FLOORS_S["vllm"] == {
-        "context_attention": 32e-6,
-        "generation_attention": 22e-6,
-        "elementwise": 2e-6,
-        # The collective is measured through vLLM's dispatcher, so its table is filed under
-        # `vllm` and needs a fallback there. `nccl` keeps one for the control table.
-        "all_reduce": 2e-6,
-    }
+    # The attention and elementwise values are the fitted ones and are pinned: they came from
+    # a real sweep, and a silent change would move the gate.
+    vllm = FALLBACK_FLOORS_S["vllm"]
+    assert vllm["context_attention"] == 32e-6
+    assert vllm["generation_attention"] == 22e-6
+    assert vllm["elementwise"] == 2e-6
     assert FALLBACK_FLOORS_S["flashinfer"] == {
         "context_attention": 4e-6,
         "generation_attention": 6e-6,
     }
-    assert FALLBACK_FLOORS_S["nccl"] == {"all_reduce": 2e-6}
+    # Every collective is measured through vLLM's dispatcher *and* through torch.distributed
+    # as a control, so both subtrees need an entry for each: the backend selects which
+    # subtree is read, and a gap degrades to a zero floor on one side only.
+    collectives = {op.name for op in ops_for_family("collective")}
+    assert collectives <= set(vllm)
+    assert set(FALLBACK_FLOORS_S["nccl"]) == collectives
+    # No phase keys survive anywhere: that spelling forced four separate translations.
+    for backend, floors in FALLBACK_FLOORS_S.items():
+        assert set(floors) <= set(OP_REGISTRY), backend
+        assert "context" not in floors and "generation" not in floors, backend
 
 
 def test_the_old_attention_floor_name_is_gone():
