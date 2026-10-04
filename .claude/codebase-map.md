@@ -60,7 +60,9 @@ dryrun/
 │   │   │   ├── gemm.py      # GemmKernelOp (no floor; NB model_ops.GemmOp is a different concept)
 │   │   │   ├── attention.py # Context/GenerationAttentionKernelOp (shared slice, fitted floor)
 │   │   │   ├── elementwise.py  # ElementwiseKernelOp (measured, NOT summed into predict())
-│   │   │   └── collective.py   # AllReduceKernelOp (world_size is a slice column)
+│   │   │   └── collective.py   # _CollectiveOp base + all_reduce/reduce_scatter/all_gather/
+│   │   │                       #   broadcast/p2p. sol() once on the base; subclasses declare
+│   │   │                       #   only traffic_factor. (world_size, nodes) are slice columns
 │   │   ├── surface.py       # UtilitySurface protocol, PchipSurface, ShepardSurface
 │   │   ├── model_ops.py     # ModelOps (per-step op list, sharded for one TP degree)
 │   │   └── validate.py      # load_baseline, score_model (ComposedRollout vs vLLM JSONL)
@@ -116,7 +118,13 @@ dryrun/
 │   ├── io.py                # read_records, write_records, profile_digest
 │   └── kernels/
 │       ├── shapes.py        # transformer_gemm_shapes, logits_gemm_shape (GEMM shape arithmetic)
-│       └── elementwise.py   # Raw fused vLLM op timing (NOT the CustomOp module: 13x slower)
+│       ├── elementwise.py   # Raw fused vLLM op timing (NOT the CustomOp module: 13x slower)
+│       ├── collective.py    # Driver: torchrun locally, ssh per node when nodes>1. Forwards
+│       │                    #   every NCCL_* var (remote ~/.bashrc disagrees with the env script)
+│       └── collective_launch.py  # torchrun child; the only kernels module importing torch at
+│                            #   module scope. Skips vLLM parallel state when nodes>1: vLLM
+│                            #   disables custom all-reduce across nodes, so it costs 60s for
+│                            #   a duplicate of the nccl control table
 ├── workload/
 │   ├── distributions.py     # Synthetic bimodal/lognormal/powerlaw/uniform lengths
 │   ├── trace.py             # Joint RequestGroup trace read/write

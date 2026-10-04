@@ -97,17 +97,29 @@ TP=2 bash examples/profile/kernel/profile_qwen3_8b.sh all
 That runs `run` → `fit-floor` → `holdout` in that order, which is mandatory:
 `fit-floor` must precede `holdout`, and a floor-less `all_reduce` SOL errs by 220x at 4096 bytes.
 
-To add collective coverage at another world size without re-sweeping compute (seconds, not hours):
+**One collective sweep covers every intra-node degree.** The `collective:` block declares its
+own `topologies` as `(world_size, nodes)` pairs rather than reading
+`parallelism.tensor_parallel`, so a single run writes world sizes 2, 4 and 8 into one table.
+The older arrangement needed a separate config file and tree per degree, re-run with
+`FAMILY=collective`; that is gone, and with it the failure mode where one tree's
+`holdout_report.json` could be regenerated while its tables were not.
+
+All five collectives are timed inside one process group per topology, because group setup
+dominates a small-message measurement.
+
+For cross-node coverage, which needs hostnames and passwordless ssh:
 
 ```bash
-for TP in 4 8; do
-    TP=$TP FAMILY=collective bash examples/profile/kernel/profile_qwen3_8b.sh all
-done
+dryrun-profile kernels run      --config examples/profile/kernel/collective_multinode.yaml \
+                                --family collective
+dryrun-profile kernels fit-floor --config examples/profile/kernel/collective_multinode.yaml
+dryrun-profile kernels holdout   --config examples/profile/kernel/collective_multinode.yaml
 ```
 
-`world_size` is a **slice** column, so an unmeasured degree raises a coverage error rather than
-interpolating. That is intended: a 2-rank and an 8-rank all-reduce run different schedules over
-different topologies.
+`world_size` and `nodes` are both **slice** columns, so an unmeasured topology raises a
+coverage error rather than interpolating. That is intended twice over: a 2-rank and an 8-rank
+all-reduce run different ring schedules, and 8 ranks on one node and 8 across two traverse
+different links in different counts.
 
 Check the dispatch if you changed GPU or vLLM version:
 

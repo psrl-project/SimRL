@@ -1,7 +1,7 @@
 # Spec A: Collective Communication Op Family
 
 **Date:** 2026-10-04
-**Status:** approved, implementation in progress
+**Status:** implemented and gated. A0-A4 complete; see the phase table in section 7.
 **Repo:** `/apdcephfs_zwfy/share_303760348/lhy/DryRun-RL`
 **Sequencing:** this is spec 1 of 2. Spec B (kernel-composed training latency) consumes
 A's tables and is designed separately, after A's gates pass. §9 states the contract B
@@ -446,7 +446,7 @@ whether the op abstraction is real, exactly as the elementwise/all_reduce additi
 | A1 | `_CollectiveOp` base; `nodes` slice; `inter_node` SOL; re-sweep intra-node | **Done 2026-10-04**, gate passed in full: see below |
 | A2 | ssh multi-node driver; cross-node sweep at `nodes` 2 and 3 | **Done 2026-10-04**: 24 GPUs over 3 nodes, 5 tables, MRE reported per topology; see below |
 | A3 | `reduce_scatter`, `all_gather`, `broadcast`, `p2p` ops and measurement | **Done 2026-10-04** alongside A1: all five ops measured, `floor.py` and `holdout.py` unedited |
-| A4 | Docs | Every figure traces to an A1-A3 command |
+| A4 | Docs | **Done 2026-10-04**: every figure re-derived from the committed holdout reports |
 
 A1 had to complete before A2: a cross-node measurement mixed into the schema change would
 make the neutrality comparison meaningless. A3 turned out to be free to land with A1 rather

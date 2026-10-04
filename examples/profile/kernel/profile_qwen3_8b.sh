@@ -4,9 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TP="${TP:-1}"
 CONFIG="${CONFIG:-${ROOT_DIR}/examples/profile/kernel/qwen3_8b_h20_tp${TP}.yaml}"
-# Restricts `run` to one kernel family. The tp=4 and tp=8 configs exist only to complete the
-# all_reduce world_size slices, so re-sweeping gemm and attention at those degrees would cost
-# hours and write tables nothing reads.
+# Restricts `run` to one kernel family, e.g. to re-sweep collectives without spending hours
+# re-measuring gemm and attention.
+#
+# The tp=4 and tp=8 configs are superseded for collectives: one sweep now writes world sizes
+# 2, 4 and 8 into a single table, because the `collective:` block declares its own
+# `topologies` instead of reading `parallelism.tensor_parallel`. Those configs remain only
+# for compute sweeps at those degrees. Cross-node coverage lives in
+# collective_multinode.yaml, which needs hostnames and passwordless ssh.
 FAMILY="${FAMILY:-all}"
 ACTION="${1:-all}"
 
@@ -32,7 +37,7 @@ case "${ACTION}" in
     *)
         echo "Usage: $0 [run|fit-floor|holdout|all]" >&2
         echo "  TP=1|2|4|8       selects examples/profile/kernel/qwen3_8b_h20_tp\${TP}.yaml" >&2
-        echo "  FAMILY=collective  restricts run to one family (tp=4 and tp=8 need only this)" >&2
+        echo "  FAMILY=collective  restricts run to one family (one sweep covers ws 2/4/8)" >&2
         exit 1
         ;;
 esac
