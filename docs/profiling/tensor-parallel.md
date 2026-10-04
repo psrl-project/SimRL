@@ -58,12 +58,28 @@ number rather than an argument:
 |---|---|---|
 | `tp=2` | 6.01% | 4.96% |
 | `tp=4` | 3.76% | 7.56% |
-| `tp=8` | 7.56% | 24.80% |
+| `tp=8` | **9.30%** | **10.66%** |
 
 At `tp=2` the two agree within ~6% across the decode range because both sit on the same ~18 us
 launch floor. The old table was wrong in *identity* rather than badly wrong in *latency* at that degree.
-The penalty grows with world size: at `tp=8` the control reaches 24.80% with a utility floor of
-0.000, because its latencies increasingly describe a schedule the server does not run.
+The penalty grows with world size: `nccl` goes from beating `vllm` at `tp=2` to losing at
+`tp=4` and `tp=8`, because its latencies increasingly describe a schedule the server does
+not run.
+
+::{warning}
+The `tp=8` row was corrected on 2026-10-04. It previously read 7.56% / 24.80%, taken from
+that tree's `holdout_report.json`. That report's mtime (`2026-09-02T16:46:49.5`) **predates
+the parquet tables it scores** (`16:46:50.5`), whereas `tp=4` has the correct order: a
+re-sweep overwrote the tables and `holdout` was never re-run. Scoring the tables that are
+actually on disk gives 9.30% / 10.66%, reproducibly. Every other figure in both trees
+reproduces bit-exactly, which rules out a code regression.
+
+The qualitative claim survives: the dispatched backend still wins at `tp=8` and the control
+still degrades with world size. Its magnitude was overstated, and "a utility floor of
+0.000" was a property of the discarded data. See
+`docs/superpowers/specs/2026-10-04-collective-ops-design.md` section 4 and
+`tests/test_collective_baseline_regression.py`.
+::
 
 Since dispatch splits by message size at every world size, `kernel_source` reads `mixed` on these
 tables. The per-size backend is recoverable from `examples/profile/kernel/DISPATCH.md` and from the

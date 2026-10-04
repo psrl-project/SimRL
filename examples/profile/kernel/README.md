@@ -175,8 +175,9 @@ The collective is timed through `get_tp_group().all_reduce` (vLLM's own dispatch
 `torch.distributed.all_reduce`. Measured on H20 at all three degrees, that call is never what a
 server selects: the custom P2P kernel covers the whole 8-512 KiB range a decode step lives in.
 Both tables are written; `vllm` is what the cost model reads and `nccl` is kept as a control.
-Holdout, dispatched vs control: 6.01%/4.96% at tp=2, 3.76%/7.56% at tp=4, 7.56%/24.80% at tp=8.
-See `docs/profiling/tensor-parallel.md` and `DISPATCH.md`.
+Holdout, dispatched vs control: 6.01%/4.96% at tp=2, 3.76%/7.56% at tp=4, 9.30%/10.66% at tp=8.
+See `docs/profiling/tensor-parallel.md` and `DISPATCH.md`. The tp=8 pair was corrected on
+2026-10-04; its `holdout_report.json` predates the tables it scores.
 
 See `docs/kernel-ops.md` for how the op abstraction works and how to add a family, and
 `docs/composed-rollout.md` for why the `elementwise` table is measured but deliberately not

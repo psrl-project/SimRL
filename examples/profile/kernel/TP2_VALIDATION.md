@@ -98,8 +98,11 @@ Two things follow:
 That last point deserves emphasis because it tempers the original motivation. The
 custom-vs-NCCL distinction is real (measured, `torch.distributed.all_reduce` is never what a
 server dispatches) but at TP=2 on H20 it is worth ~1pp of end-to-end MRE, not the dominant error.
-Where it does bite is the per-kernel holdout as world size grows: the NCCL control reaches 24.80%
-MRE at world_size 8 against 7.56% for the dispatched table.
+Where it does bite is the per-kernel holdout as world size grows: the NCCL control reaches 10.66%
+MRE at world_size 8 against 9.30% for the dispatched table, having *beaten* it at world_size 2.
+(These world_size 8 figures were corrected on 2026-10-04; the previously published
+24.80% / 7.56% came from a holdout report that predates the tables it scores. See the
+warning in `docs/profiling/tensor-parallel.md`.)
 
 ## Status
 

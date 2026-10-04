@@ -275,13 +275,17 @@ an argument. `nccl` is retained as a control and is selectable with `CommQuery(b
 |---|---|---|
 | TP=2 | 6.01% | 4.96% |
 | TP=4 | 3.76% | 7.56% |
-| TP=8 | 7.56% | 24.80% |
+| TP=8 | **9.30%** | **10.66%** |
 
 At TP=2 the two tables agree within about 6% in the decode range, because both are pinned to the
 same 18 us launch floor, so the original table was wrong in *identity* rather than badly wrong in latency
-there. The penalty grows with world size: at TP=8 the NCCL control reaches 24.80% MRE with a
-utility floor of 0.000, because that table's latencies increasingly describe a schedule the server
-does not run.
+there. The penalty grows with world size: the NCCL control beats the dispatched table at TP=2
+and loses at TP=4 and TP=8, because its latencies increasingly describe a schedule the
+server does not run.
+
+The TP=8 row was corrected on 2026-10-04: it previously read 7.56% / 24.80%, from a
+`holdout_report.json` whose mtime predates the tables it scores. See the warning in
+{doc}`tensor-parallel`.
 
 Because the dispatch splits by message size at every world size, `kernel_source` reads `mixed` on
 these tables and the per-size backend is recoverable from `DISPATCH.md` and the profiler's log.
