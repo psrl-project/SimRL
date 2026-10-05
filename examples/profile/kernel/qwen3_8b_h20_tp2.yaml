@@ -11,7 +11,11 @@ parallelism:
   tensor_parallel: 2
 
 gemm:
-  token_counts: [1, 2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+  # Powers of two plus the non-power-of-two token counts that appear in the THD
+  # validation records: 3072, 6144, 7510, 10240, 11264, 12288, 22528. Without them,
+  # wgrad queries with k=token_count would raise KernelCoverageError for shapes in
+  # the validation set, blocking end-to-end scoring of ComposedTraining.
+  token_counts: [1, 2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024, 2048, 3072, 4096, 6144, 7510, 8192, 10240, 11264, 12288, 16384, 22528]
 
 attention:
   batch_sizes: [1, 2, 4, 8, 16, 32, 48, 64]
