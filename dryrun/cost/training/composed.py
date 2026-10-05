@@ -20,25 +20,43 @@ Measured on H20: 14.1 ms for a Qwen3-8B rank at tp=2, pp=3, which is 0.02-1.3% o
 validation set's step times. It is charged because an unmeasured term cannot be ruled out,
 and ruling it out turned out to be the result.
 
-Scores MRE 7.62% with signed mean +0.30% on the 22 out-of-sample Megatron THD records,
-against the fitted polynomial's 2.73% in-sample. The signed mean is the figure that matters
-more than the absolute one: it sat at -17% for as long as attention was mispriced, which is
-the signature of a missing additive term rather than a noisy one, and that is what located
-the attention bug. A residual that is scatter around zero has no single missing term left.
+Scores MRE 12.63% with signed mean -12.63% on the 22 out-of-sample Megatron THD records,
+against the fitted polynomial's 2.73% in-sample. **One unexplained term remains and it is
+the whole residual**: every record under-predicts by 4.7-25.6% of its own prediction. No
+constant is added for it, because a fitted constant is exactly the unexplained coefficient
+this model exists to avoid.
 
-What is still approximate, stated because the decomposition is what makes a kernel sum worth
-having over a fit:
+Its shape, regressed through the origin over all 22 records: proportional to total
+predicted time (c = 0.185, r^2 = 0.932). Not a fixed per-step cost, and not a per-slot
+constant either - `slots` alone gives r^2 = 0.869 and the per-slot values span 0.039-0.484 s.
 
-- The two residual adds are not charged. Megatron fuses each into one
-  `bias_dropout_add_fused_train` kernel and the elementwise table holds only the four kinds
-  vLLM runs, so the elementwise term (1.4% of a step) is under-counted by roughly 2/9.
-- Attention over a multi-sequence pack is over-charged, because the SOL's quadratic term uses
-  the pack's total tokens where attention does not cross a `cu_seqlens` boundary. Harmless
-  for the records scored here (all one-sequence packs, which is what the sweep measures) and
-  a factor of the sequence count otherwise.
-- Compute/communication overlap is not modelled; the sum is a plain sum.
+What it is not, each excluded by measurement rather than by argument:
 
-`docs/reference/limitations.md` carries these with their fixes.
+- Not the GEMM table being cuBLAS where training is TE. Measured: `te.Linear` against
+  `torch.nn.functional.linear` at the four Qwen3 tp=2 projections is **1.001x**. The gap
+  correlates with GEMM time at r^2 = 0.968, but GEMM is 69% of the prediction, so that is
+  collinearity with total cost rather than evidence.
+- Not the optimizer step (14.1 ms per step, measured at 81% of HBM peak so it has no
+  headroom to be larger).
+- Not recompute: the replay is already charged for the GEMMs, attention, elementwise and
+  the SP collectives (3 forward-shaped passes, 8 all-gather + 6 reduce-scatter per layer).
+- Not the two unmodelled residual-add kernels: priced at `rms_norm`'s bandwidth they come
+  to 5.4 ms per slot, 2.7% of the gap.
+
+At ~16 ms per layer against ~29 ms of modelled GEMM per layer it is too large to be any
+pointwise kernel, and the per-op tables it would have to live in are individually accurate
+to 2.8-5.7% on holdout. The remaining candidates need a profiler trace of a real step —
+kernels the composition does not know exist, or per-call launch overhead that the isolated
+measurements amortize away. `docs/reference/limitations.md` records it as the open item.
+
+**The MRE was 7.62% before the per-sequence attention fix below, and that was two errors
+cancelling.** Attention is now priced per `cu_seqlens` segment, which is correct physics:
+the correction removes 1.02-1.10x of the packing effect the validation set measures
+directly, and the predicted packing order correlates 0.9995 with the measured one where the
+pack-total model had zero spread to correlate. Once the per-slot offset above is removed,
+the per-sequence model tracks the five-record packing family at 1.48% against the
+pack-total model's 4.88%. Reverting to recover the lower pooled number would be keeping a
+known-wrong attention term because it happened to offset an unknown one.
 """
 
 from __future__ import annotations
@@ -214,6 +232,36 @@ class ComposedTraining(TrainingLatencyModel):
         if not microbatches:
             raise ValueError("A training step needs at least one microbatch.")
         return int(sum(mb.sum_tokens for mb in microbatches) / len(microbatches))
+
+    def _slot_pack_lengths(
+        self, microbatches: Sequence[SequenceStats], token_count: int
+    ) -> tuple[int, ...]:
+        """Return the per-sequence lengths one slot's attention is priced over.
+
+        Attention is the one term that needs the pack's *structure* rather than its token
+        total, because it does not cross a `cu_seqlens` boundary. Every other term is
+        linear in tokens and so depends only on `token_count`.
+
+        Taken from the first microbatch when the plan is uniform in shape, which every
+        profiled record is. For a ragged plan the lengths are scaled to the slot's mean
+        token count so the attention term stays consistent with the other terms' basis:
+        pricing attention over one microbatch's lengths while pricing the GEMMs at the
+        plan's mean would charge two different workloads in one slot.
+
+        A plan whose microbatches differ in sequence *count* is approximated by the first
+        microbatch's count. That is a real limitation and it is not exercised here: all 22
+        validation records are uniform (verified), and `MicrobatchPlanner` emits uniform
+        plans except under `PACKED_NO_PAD` with ragged input.
+        """
+        reference = microbatches[0]
+        lengths = reference.lengths or (reference.sum_tokens,)
+        if reference.sum_tokens == token_count:
+            return tuple(lengths)
+        # Ragged plan: rescale so the priced pack holds `token_count` tokens in the same
+        # proportions. `max(..., 1)` because a short sequence must not round to zero.
+        scale = token_count / reference.sum_tokens
+        return tuple(max(int(length * scale), 1) for length in lengths)
+
     def decompose_microbatches(
         self,
         microbatches: Sequence[SequenceStats],
@@ -279,20 +327,27 @@ class ComposedTraining(TrainingLatencyModel):
             ),
         }
 
-        # Attention forward is measured once and charged for each forward-shaped pass, so
-        # the recompute replay cannot drift from the GEMM path's own doubling. Backward is
-        # its own measured table rather than a multiple of forward: the measured ratio is
+        # Attention is priced per sequence in the pack, not over the pack total: a varlen
+        # kernel does not attend across a `cu_seqlens` boundary, so the quadratic work is
+        # `sum_i s_i^2`. See `TrainingOps.attention_queries` for the five 12288-token
+        # records that isolate this.
+        #
+        # The forward is measured once and charged for each forward-shaped pass, so the
+        # recompute replay cannot drift from the GEMM path's own doubling. The backward has
+        # its own measured table rather than being a multiple of forward: the ratio is
         # 2.24-2.42 and drifts with sequence length, so no single scalar is right.
-        attn_fwd_single = self._db.query_training_attention(
-            self._ops.attention_query(token_count=token_count, direction="forward")
-        )
-        terms["attn_fwd"] = attn_fwd_single * self._ops.attention_passes() * layers
-        terms["attn_bwd"] = (
-            self._db.query_training_attention(
-                self._ops.attention_query(token_count=token_count, direction="backward")
+        pack_lengths = self._slot_pack_lengths(microbatches, token_count)
+
+        def attention_s(direction: str) -> float:
+            return sum(
+                self._db.query_training_attention(query) * repeats
+                for query, repeats in self._ops.attention_queries(
+                    pack_lengths, direction=direction
+                )
             )
-            * layers
-        )
+
+        terms["attn_fwd"] = attention_s("forward") * self._ops.attention_passes() * layers
+        terms["attn_bwd"] = attention_s("backward") * layers
 
         # Logits run once per step on the last pipeline stage, over every token rather than
         # one per request. A missing dgrad slice is skipped rather than clamped onto a

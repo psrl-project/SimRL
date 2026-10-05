@@ -74,11 +74,40 @@ See {doc}`../profiling/kernels` for the canonical regenerated table.
 These are cases where the model is built and working but its accuracy on certain inputs is
 known to be limited.
 
-**`ComposedTraining` is 7.63% against measured steps, and three terms are approximate.**
-The kernel-composed Megatron latency model scores MRE 7.63% with signed mean +0.27% on the
-22 out-of-sample THD records, against the fitted polynomial's 2.73% in-sample. The residual
-is scatter rather than bias, so there is no single missing term, but three approximations
-are known and each is attributable:
+**`ComposedTraining` has one unexplained term carrying its whole 12.63% residual.**
+The kernel-composed Megatron latency model scores MRE 12.63%, signed mean -12.63%, on the
+22 out-of-sample THD records, against the fitted polynomial's 2.73% in-sample. Every record
+under-predicts, by 4.7-25.6% of its own prediction, which is the signature of one missing
+additive term rather than accumulated per-op error. No constant is fitted for it.
+
+Its shape, regressed through the origin: proportional to total predicted time (c = 0.185,
+r^2 = 0.932). Not a fixed per-step cost; not a per-slot constant either (`slots` alone gives
+r^2 = 0.869 and per-slot values span 0.039-0.484 s).
+
+Excluded by measurement, not by argument:
+
+- **Not the GEMM table being cuBLAS where training is TE.** `te.Linear` measured against
+  `torch.nn.functional.linear` at the four Qwen3 tp=2 projections is 1.001x. The gap
+  correlates with GEMM time at r^2 = 0.968, but GEMM is 69% of the prediction, so that is
+  collinearity with total cost rather than evidence.
+- **Not the optimizer step**, 14.1 ms at 81% of HBM peak, so no headroom to be larger.
+- **Not recompute**, already charged for GEMMs, attention, elementwise and the SP
+  collectives.
+- **Not the unmodelled residual adds**, 5.4 ms per slot or 2.7% of the gap.
+
+At ~16 ms per layer against ~29 ms of modelled GEMM per layer it is too large to be any
+pointwise kernel, and every per-op table it would have to live in holds 2.8-5.7% on
+holdout. Fix: profiler trace of a real step, looking for kernels the composition does not
+know exist or per-call overhead the isolated measurements amortize away.
+
+Note that this number was 7.62% for one commit, before attention was priced per
+`cu_seqlens` segment. That was two errors cancelling: the pack-total attention term
+over-predicted packed records by roughly what this term under-predicts. The correction is
+right on its own evidence — it removes 1.02-1.10x of the packing effect the validation set
+measures directly, and predicts the packing order at r = 0.9995 where the pack-total model
+had no spread at all — so the higher pooled MRE is the honest number.
+
+Two further approximations, each attributable:
 
 - **The two residual adds are not charged.** Megatron fuses each into one
   `bias_dropout_add_fused_train` kernel, and the measured elementwise table holds only the
@@ -86,17 +115,19 @@ are known and each is attributable:
   the same element count, which would be plausible and unverifiable. Two kernels against the
   seven charged, so the elementwise term (1.4% of a step) is under-counted by roughly 2/9.
   Fix: extend the elementwise sweep with the fused bias-dropout-add kernel.
-- **Attention over a multi-sequence pack is over-charged.** The SOL's quadratic term uses the
-  pack's `total_tokens`, but attention does not cross a `cu_seqlens` boundary: a pack of two
-  11264-token sequences does `2 * 11264^2 / 2` work, not `22528^2 / 2`. The over-estimate is
-  a factor of the sequence count. It is absorbed by the fitted utility only because the sweep
-  measures the same one-sequence packs the SOL assumes. Fix: sweep multi-sequence packs and
-  key the axis on `sum_squared_tokens`, which `SequenceStats` already carries.
-- **Compute/communication overlap is not modelled.** The sum is a plain sum. Megatron's
-  `overlap_grad_reduce` and `overlap_param_gather` make this a real question at `dp>1`; at
-  `dp=1` the only overlappable terms are the TP collectives (6.9% of a step) and the
-  pipeline sends. Were overlap dominant the composition would over-predict, and the signed
-  mean is +0.30%. Fix: compare against a run with the overlap flags explicitly off.
+- **A ragged microbatch plan prices attention from the first microbatch's shape.** The
+  per-sequence lengths are rescaled to the slot's mean token count, so a plan whose
+  microbatches differ in sequence *count* is approximated. Not exercised by any profiled
+  record (all 22 are uniform) and `MicrobatchPlanner` emits uniform plans except under
+  `PACKED_NO_PAD` with ragged input. Fix: price each microbatch separately rather than
+  pricing a mean slot.
+- **Compute/communication overlap is not modelled.** The sum is a plain sum, so overlap
+  would make it over-predict. It under-predicts everywhere, so overlap cannot be the
+  residual above and is if anything masked by it: correcting the residual would make any
+  unmodelled overlap visible as over-prediction. Megatron's `overlap_grad_reduce` and
+  `overlap_param_gather` make this a real question at `dp>1`; at `dp=1` the only
+  overlappable terms are the TP collectives (7.8% of a step) and the pipeline sends. Fix:
+  revisit once the residual is explained.
 
 The dispatch floor for both training attention directions is fitted to the candidate grid's
 top value (80 us) where the measured flat region implies ~195 us, so shapes entirely below

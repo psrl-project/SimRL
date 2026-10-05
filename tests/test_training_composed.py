@@ -70,11 +70,21 @@ class _StubDatabase:
         self.calls.append(("gemm", query))
         return self._costs["gemm"]
 
+    attention_cost_is_quadratic = False
+    """Price attention as `(total_tokens / 4096)^2` instead of a unit cost.
+
+    Off by default, because a unit cost makes every other assertion a count rather than a
+    product. One test needs the quadratic shape: splitting a pack must *lower* the
+    attention term, and three unit-cost calls are more than one, not less.
+    """
+
     def query_training_attention(self, query: TrainingAttentionQuery) -> float:
         # Keyed on direction, because forward and backward read separate measured tables
         # and a single cost would hide a composition charging the wrong one.
         family = f"attention_{query.direction}"
         self.calls.append((family, query))
+        if self.attention_cost_is_quadratic:
+            return self._costs[family] * (query.total_tokens / 4096.0) ** 2
         return self._costs[family]
 
     def query_elementwise(self, query: ElementwiseQuery) -> float:
@@ -197,6 +207,62 @@ def test_the_optimizer_term_is_omitted_when_the_caller_disables_it():
     assert terms["optimizer"] == 0.0
 
 
+def test_attention_is_priced_per_sequence_while_the_gemms_see_the_whole_pack():
+    """The two must differ, because only attention stops at a `cu_seqlens` boundary.
+
+    A pack of three 4096-token sequences runs its GEMMs over 12288 rows but does three
+    independent 4096-token attentions. Pricing attention at the pack total charged
+    `(sum_i s_i)^2` where the kernel does `sum_i s_i^2`, which over-predicted packed records
+    by the sequence count in the quadratic term.
+    """
+    model, db = _model()
+    packed = (SequenceStats.from_lengths((4096, 4096, 4096)),)
+    model.predict_microbatches(packed, TrainingParallelism(tp=2, pp=3, dp=1))
+
+    assert _token_counts(db) == {4096}, "attention must see each sequence, not the pack"
+    gemm_m = {query.m for name, query in db.calls if name == "gemm"}
+    assert 12288 in gemm_m, "the GEMMs must see the whole pack"
+
+
+def test_splitting_a_pack_lowers_the_attention_term_but_not_the_gemm_term():
+    """Holding tokens fixed and splitting the pack is what the validation set measures.
+
+    Five records hold 12288 tokens as (12288), (10240,2048), (6144,6144), (4096x3) and
+    (3072x4), and measured step time falls monotonically across them. Only the attention
+    term may move: every other term is linear in tokens, which is unchanged.
+    """
+    parallelism = TrainingParallelism(tp=2, pp=3, dp=1)
+    # A unit-cost stub cannot express this: three calls at 1.0 each exceed one call at 1.0,
+    # which is the arithmetic the real quadratic kernel inverts. So this one test uses a
+    # cost quadratic in sequence length, which is what attention actually is.
+    db = _StubDatabase()
+    db.attention_cost_is_quadratic = True
+    model = ComposedTraining(db, TrainingOps(_MODEL, tensor_parallel=2, recompute="full"))
+    whole = model.decompose_microbatches(
+        (SequenceStats.from_lengths((12288,)),), parallelism
+    )
+    split = model.decompose_microbatches(
+        (SequenceStats.from_lengths((4096, 4096, 4096)),), parallelism
+    )
+    assert split["attn_fwd"] < whole["attn_fwd"]
+    assert split["attn_bwd"] < whole["attn_bwd"]
+    for term in ("gemm_fwd", "gemm_bwd", "elementwise", "tp_collective", "logits"):
+        assert split[term] == pytest.approx(whole[term]), f"{term} moved with the packing"
+
+
+def test_repeated_sequence_lengths_are_charged_once_with_a_multiplier():
+    """Four 3072-token sequences are one table lookup times four, not four lookups.
+
+    The table read is identical either way; collapsing them keeps the query count
+    independent of the pack's sequence count, which matters for a 64-sequence pack.
+    """
+    ops = TrainingOps(_MODEL, tensor_parallel=2, recompute="full")
+    queries = ops.attention_queries((3072,) * 4, direction="forward")
+    assert len(queries) == 1
+    query, repeats = queries[0]
+    assert (query.total_tokens, repeats) == (3072, 4)
+
+
 def test_a_packed_microbatch_is_priced_at_its_summed_tokens_not_its_longest_sequence():
     """Under THD packing one row holds several sequences and the GEMMs run over all of them.
 
@@ -207,9 +273,10 @@ def test_a_packed_microbatch_is_priced_at_its_summed_tokens_not_its_longest_sequ
     model, db = _model()
     packed = (SequenceStats.from_lengths((4096, 4096, 4096)),)
     model.predict_microbatches(packed, TrainingParallelism(tp=2, pp=3, dp=1))
-    # The attention query's seq_len is the one unambiguous carrier of the token count: a
-    # GEMM's `m` is also the wgrad's `n_fwd`, so asserting on it would match by accident.
-    assert _token_counts(db) == {12288}
+    # Asserted on the GEMM `m` values, since attention is now priced per sequence and so no
+    # longer carries the pack total. 3072 and 75968 are the qkv `n` and the logits `n`.
+    gemm_m = {query.m for name, query in db.calls if name == "gemm"}
+    assert 12288 in gemm_m
 
 
 def test_a_ragged_plan_is_priced_at_the_mean_rather_than_the_longest_microbatch():

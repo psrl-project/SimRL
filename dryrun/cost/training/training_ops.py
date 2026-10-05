@@ -50,6 +50,8 @@ against a real step time is untested. The DP term is inactive at dp=1.
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -372,6 +374,60 @@ class TrainingOps:
                 self._num_layers * passes,
             )
             for kind, n_elements in kernels
+        )
+
+    def attention_queries(
+        self,
+        lengths: Sequence[int],
+        *,
+        direction: str = "forward",
+        backend: str | None = None,
+    ) -> tuple[tuple[TrainingAttentionQuery, int], ...]:
+        """
+        Return one attention query per sequence in a THD pack, with its multiplier.
+
+        **Attention does not cross a `cu_seqlens` boundary**, so a pack is not one large
+        attention call: a varlen kernel processes each segment independently, and the
+        quadratic work is ``sum_i s_i^2`` rather than ``(sum_i s_i)^2``. Pricing the pack
+        at its total was the last systematic error in the composition, and the validation
+        set isolates it exactly — five records hold 12288 tokens in different packings:
+
+        | lengths | measured step | model, pack-total | model, per-sequence |
+        |---|---|---|---|
+        | (12288,) | 4.2866 s | 4.0858 s | 4.0858 s |
+        | (10240, 2048) | 4.0712 s | 4.0858 s | lower |
+        | (6144, 6144) | 3.8828 s | 4.0858 s | lower |
+        | (4096 x3) | 3.7616 s | 4.0858 s | lower |
+        | (3072 x4) | 3.6836 s | 4.0858 s | lower |
+
+        Measured time falls monotonically as the pack splits while the token count holds,
+        which is `sum_i s_i^2` falling. The pack-total model priced all five identically
+        and so carried a 16% spread as residual: `count=1` records ran 11.4% low and
+        `count=3` 8.5% high, which is most of the remaining error.
+
+        Charging each segment at its own length also keeps every query on a measured grid
+        point rather than introducing a `sum_squared_tokens` axis the sweep never varied.
+
+        Args:
+            lengths (Sequence[int]): Per-sequence lengths in the pack. A single-element
+                sequence is the unpacked case and reduces to one query.
+            direction (str): ``"forward"`` or ``"backward"``.
+            backend (str | None): Override the query's own ``megatron`` default.
+
+        Returns:
+            tuple[tuple[TrainingAttentionQuery, int], ...]: ``(query, multiplier)`` pairs,
+                one per *distinct* length with the multiplier counting repeats.
+
+        Raises:
+            ValueError: If `lengths` is empty.
+        """
+        if not lengths:
+            raise ValueError("A THD pack must hold at least one sequence.")
+        counts = Counter(int(length) for length in lengths)
+        return tuple(
+            (self.attention_query(token_count=length, direction=direction, backend=backend),
+             repeats)
+            for length, repeats in sorted(counts.items())
         )
 
     def attention_query(

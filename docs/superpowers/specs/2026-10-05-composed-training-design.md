@@ -7,9 +7,17 @@
 
 ## 0. Result, and where this design was wrong
 
-`ComposedTraining` predicts the 22 out-of-sample Megatron THD step times at **MRE 7.62%**,
-signed mean **+0.30%**, median ratio 0.9997, against the fitted polynomial's 2.73% in-sample.
-No fitted coefficients. `tests/test_training_composed_accuracy.py` pins it.
+`ComposedTraining` predicts the 22 out-of-sample Megatron THD step times at **MRE 12.63%**,
+signed mean **-12.63%**, against the fitted polynomial's 2.73% in-sample. No fitted
+coefficients. `tests/test_training_composed_accuracy.py` pins it.
+
+**One unexplained term carries the whole residual**, and it is the open item: every record
+under-predicts by 4.7-25.6% of its own prediction, proportional to total predicted time
+(c = 0.185, r^2 = 0.932). Measurement excludes the GEMM table (`te.Linear` vs `F.linear` is
+1.001x), the optimizer step, recompute, and the unmodelled residual adds. At ~16 ms per
+layer against ~29 ms of modelled GEMM per layer it is too large to be a pointwise kernel,
+and every table it would live in holds 2.8-5.7% on holdout. Resolving it needs a profiler
+trace rather than more composition.
 
 The path there, because the terms that mattered were not the terms this design predicted:
 
@@ -19,7 +27,18 @@ The path there, because the terms that mattered were not the terms this design p
 | 17.46% | -17.46% | + elementwise (-1.39pp) |
 | 17.23% | -17.23% | + optimizer step (-0.23pp) |
 | 7.63% | +0.27% | + measured THD attention, both directions (**-9.60pp**) |
-| **7.62%** | **+0.30%** | + pipeline p2p sends (-0.01pp) |
+| 7.62% | +0.30% | + pipeline p2p sends (-0.01pp) |
+| **12.63%** | **-12.63%** | + per-sequence attention (**+5.01pp**) |
+
+The last row raises the pooled MRE and is still correct. Attention does not attend across a
+`cu_seqlens` boundary, so a pack's quadratic work is `sum_i s_i^2`; charging `(sum_i s_i)^2`
+over-predicted packed records by roughly what the unexplained term under-predicts, and the
+7.62% was two errors cancelling. The validation set isolates this directly — five records
+hold 12288 tokens as (12288), (10240,2048), (6144,6144), (4096x3), (3072x4), and measured
+step time falls monotonically across them while the pack-total model predicted all five
+identically. The correction removes 1.02-1.10x of that measured effect and orders the five
+at r = 0.9995. Reverting it to recover the lower number would mean keeping a known-wrong
+term because it happened to offset an unknown one.
 
 Elementwise and the optimizer step are the two terms §2 identifies as missing, and together
 they closed 1.6pp of a 19pp gap. The gap was almost entirely **attention priced from the
@@ -77,11 +96,11 @@ the pooled MRE:
 
 | term | share | term | share |
 |---|---|---|---|
-| `gemm_bwd` | 30.3% | `tp_collective` | 6.9% |
-| `gemm_fwd` | 30.2% | `logits` | 1.5% |
-| `attn_bwd` | 16.0% | `elementwise` | 1.4% |
-| `attn_fwd` | 13.5% | `optimizer` | 0.2% |
-| | | `pp_comm` | 0.03% |
+| `gemm_bwd` | 34.6% | `tp_collective` | 7.8% |
+| `gemm_fwd` | 34.4% | `logits` | 1.8% |
+| `attn_bwd` | 10.5% | `elementwise` | 1.6% |
+| `attn_fwd` | 9.1% | `optimizer` | 0.3% |
+| | | `pp_comm` | 0.0% |
 
 Holdouts for the three new ops: `training_attention_forward` 5.66% (48 points),
 `training_attention_backward` 3.83% (48), `optimizer_step` 2.84% (12). `gemm` holds at
