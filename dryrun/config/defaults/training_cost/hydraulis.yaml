@@ -46,6 +46,7 @@ optimizer_state_dtype: fp32
 # When true, optimizer state is additionally sharded by DP.
 distributed_optimizer: true
 
+
 # Feature names for which out-of-domain queries are permitted instead of rejected.
 # Empty (the default) means strict. When a name is listed the prediction proceeds and the
 # exceedance is recorded in the estimate's diagnostics under 'extrapolation_notes'.

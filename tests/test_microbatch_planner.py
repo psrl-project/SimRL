@@ -207,18 +207,26 @@ def test_pad_to_max_padding_is_per_microbatch_not_rank_wide():
     assert token_counts[1] == 9176 * 2
 
 
-def test_token_budget_seq_cap_enforced_when_sequences_are_short():
-    """When all sequences are tiny the token budget alone yields 1 microbatch but
-    micro_batch_size forces more splits."""
-    # 8 short sequences on one rank, budget large enough to fit all in one pass token-wise,
-    # but micro_batch_size=1 means each must be its own microbatch.
+def test_token_budget_ignores_micro_batch_size():
+    """Under dynamic batching the budget alone sets the count.
+
+    verl reads `micro_batch_size_per_gpu` only on the static path; with
+    `use_dynamic_bsz=True` `rearrange_micro_batches` computes
+    `min(num_groups, ceildiv(total_seqlen, max_token_len))` and never raises the
+    count to one sequence per microbatch. Raising it invents pipeline slots the
+    engine does not run, and the step is charged per slot: with the usual
+    `ppo_micro_batch_size_per_gpu=1` that made a 48-microbatch step cost 64,
+    which is where a 33% training overprediction came from.
+
+    Checked against ground truth on two PSRL runs -- the microbatch count the
+    engine's own progress bar reports agrees with `ceildiv` on 15 of 15 steps.
+    """
     planner = MicrobatchPlanner(BatchingMode.TOKEN_BUDGET, max_tokens_per_rank=100_000)
     lengths = tuple([100] * 8)
     plan = planner.plan(lengths, dp=1, micro_batch_size=1)
-    # Budget alone would give 1 microbatch, but seq cap forces 8.
-    assert len(plan) == 8
-    for microbatch in plan:
-        assert microbatch.count == 1
+    # 800 tokens against a 100k budget is one pass, whatever micro_batch_size says.
+    assert len(plan) == 1
+    assert plan[0].count == 8
 
 
 def test_token_budget_seq_cap_does_not_affect_when_budget_already_tighter():

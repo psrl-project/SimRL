@@ -85,8 +85,8 @@ dryrun-regress training \
 echo ""
 echo "=== PHASE 5: simulate PSRL baseline ==="
 TRAINING_ARTIFACT="${COST_OUT}/training_hydraulis.json" \
-    bash examples/simulate/psrl_baseline_aligned.sh
+    bash examples/simulate/psrl_aligned.sh
 
 echo ""
 echo "Done. Cost artifact: ${COST_OUT}/training_hydraulis.json"
-echo "Simulation output:   ${ROOT_DIR}/outputs/simulate/psrl_baseline_aligned/"
+echo "Simulation output:   ${ROOT_DIR}/outputs/simulate/psrl_aligned/"

@@ -60,6 +60,8 @@ variant.
 :maxdepth: 2
 
 policies
+routing
+prefix-cache
 domain-gates
 outputs
 ```

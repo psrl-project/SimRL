@@ -51,7 +51,7 @@ echo ""
 echo "=== PHASE 5: simulate the PSRL baseline ==="
 TRAINING_ARTIFACT="${COST_OUT}/training_hydraulis.json" \
     OUTPUT_DIR="${ROOT_DIR}/outputs/simulate/psrl_thd" \
-    bash examples/simulate/psrl_baseline_aligned.sh
+    bash examples/simulate/psrl_aligned.sh
 
 echo ""
 echo "Artifact:   ${COST_OUT}/training_hydraulis.json"

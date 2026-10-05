@@ -147,21 +147,28 @@ class MicrobatchPlanner:
         """
         Group to the token budget, then pad within each group.
 
-        The microbatch count is driven first by the token budget: the total tokens on the
-        rank divided by the budget gives the minimum number of passes a rank needs. But a
-        rank cannot pack more than `micro_batch_size` sequences into one forward pass
-        regardless of how few tokens they carry, so the count is also capped by
-        ceil(len / micro_batch_size) when that yields more microbatches. Token budget is
-        a target, not a guarantee: a single sequence longer than the budget yields one
-        oversized microbatch, matching verl's behaviour.
+        The count is `ceil(total_tokens / budget)`, capped at one sequence per
+        microbatch. This reproduces verl exactly: `rearrange_micro_batches` computes
+        `min(num_groups, ceildiv(total_seqlen, max_token_len))` and then balances
+        that many groups by workload. Validated against both matched PSRL runs --
+        15 of 15 steps agree with the microbatch count the engine's own progress
+        bar reports (44, 51, 46, 52, 51, 45, 52, 43, 48, 47 at batch 8, and
+        189, 187, 174, 184, 171 at batch 32).
+
+        `micro_batch_size` is deliberately ignored. verl reads it only on the
+        static path (`use_dynamic_bsz=False`); under dynamic batching the budget
+        alone decides, so raising the count to `ceil(len / micro_batch_size)`
+        invents microbatches the engine never runs. With the usual
+        `ppo_micro_batch_size_per_gpu=1` that meant one sequence per microbatch --
+        64 instead of 48 on the batch-8 run -- and the step is charged per
+        pipeline slot, so the error went straight into the predicted latency.
+
+        Token budget is a target, not a guarantee: a single sequence longer than
+        the budget yields one oversized microbatch, as it does in verl.
         """
         budget = int(self.max_tokens_per_rank or 0)
         total = sum(lengths)
         count = max(1, -(-total // budget))
-        # A rank cannot put more than micro_batch_size sequences into one forward pass,
-        # so the sequence-count cap may force more microbatches than the budget alone.
-        seq_cap_count = -(-len(lengths) // micro_batch_size)
-        count = max(count, seq_cap_count)
         count = min(count, len(lengths))
         groups = _balanced_partitions(lengths, count)
         microbatches = []

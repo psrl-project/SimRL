@@ -50,6 +50,7 @@ rollout:
 
   # Tokens per KV block.
   block_size: 16
+  enable_prefix_caching: true
 
   # Where kv_blocks should come from instead of the literal above. Leaving
   # model_path null keeps the literal.
@@ -79,6 +80,48 @@ rollout:
     # Reject new requests when the running batch is already at max_concurrency.
     reject_if_running_full: false
 
+  # Cross-instance routing. A request is admitted into the router queue and
+  # placed on an instance when one can take it, so a busy fleet produces queue
+  # depth rather than a rejected admission.
+  router:
+    # Which instance a queued request is sent to:
+    #   request_num_balance  fewest in-flight requests (the matched PSRL run's)
+    #   round_robin          cycle through eligible instances
+    #   random               uniform, seeded via strategy_args.seed
+    #   kv_cache_aware       most free KV blocks
+    #   prefix_aware         whoever already holds the prefix, unless skewed
+    #   throughput_balance   smallest predicted step-time increase
+    strategy: request_num_balance
+
+    # Keyword arguments for the chosen strategy, e.g.
+    #   {cache_threshold: 0.3, balance_abs_threshold: 64} for prefix_aware
+    #   {seed: 0} for random
+    strategy_args: {}
+
+    # Tie-break among queued requests of the same weight version:
+    # short_length | long_length | small_id. Lower versions always go first,
+    # whatever this is set to.
+    sort_key: short_length
+
+    # Router-side cap on how many requests one instance may hold. 0 disables.
+    # Distinct from rollout.max_concurrency, which is vLLM's max_num_seqs
+    # inside the engine; this one decides eligibility before the offer.
+    max_concurrent_seqs_per_instance: 0
+
+    # Skip an instance that already has a queue of its own.
+    reject_on_waiting: false
+
+    # Pin a prompt group's responses to the instance that took the first one.
+    # False matches the run this is aligned against, which scatters every
+    # group across both instances.
+    enable_group_sticky: false
+
+    # Instance queue depth past which preempted requests go back to the router
+    # to be placed again, possibly elsewhere. This is vLLM's
+    # preemption_notification_threshold: a preempted request is requeued
+    # locally first, and only surrendered once that queue is congested.
+    # null leaves every preemption local.
+    max_waiting_after_preempt: null
 
   # Idle rounds before the simulator declares livelock.
   livelock_rounds: 50

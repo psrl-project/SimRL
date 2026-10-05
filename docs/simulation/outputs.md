@@ -153,6 +153,26 @@ always produce a record.
 | `running_len` | Per-request `{rid: {generated, target_len, ctx, prefilled}}` mapping |
 | `waiting_len` | Same structure for the waiting queue |
 
+### `gateway.jsonl`: router queue depth
+
+One record per change in the router's queue, de-duplicated the same way. A simulation and a
+converted real run write the **same** schema, which is what lets one `plot_instance_load` draw
+both and `dryrun-compare` put like against like. On the real side the first four fields come
+from `smg_routing_status.jsonl`; the reroute counters are simulation-only.
+
+| Field | Meaning |
+|-------|---------|
+| `t` | Simulation time of this snapshot |
+| `queue_len` | Requests admitted but not yet placed on an instance |
+| `pending_request_num` | Duplicate of `queue_len`, as the real gateway reports it |
+| `running_request_num` | Requests the instances hold, running or queued |
+| `n_routed` | Cumulative placements, including re-placements |
+| `n_reroutes` | Cumulative placements after a request's first |
+| `n_cross_instance_reroutes` | Of those, how many moved to a different instance |
+
+The last field is the one to watch after a weight update: the matched real run put it at 58.5%
+of loopbacks, and before the router existed it was structurally 0%. See {doc}`routing`.
+
 ---
 
 ## The five plots
@@ -184,7 +204,7 @@ the bars extend beyond `job.max_staleness`, the policy invariant is not being re
 
 ### `instance_load.png`
 
-Training band at the top, with one subplot per rollout instance below. Each
+Router queue depth on top, then the training band, then one subplot per rollout instance. Each
 subplot shows the number of running and waiting requests over time (left axis) and KV
 cache utilisation (right axis, shaded). KV utilisation is rendered with linear
 interpolation rather than step interpolation, because decode segments involve continuous
@@ -351,18 +371,22 @@ only on a committed state change, so an idle stretch yields one simulated record
 against a hundred real ones. A sample-counted idle fraction reported 21% against 59%
 for two runs whose instances both drained to exactly zero for every training block.
 
-`examples/simulate/psrl_baseline_aligned.sh` is a worked example: every knob
+`examples/simulate/psrl_aligned.sh` is a worked example: every knob
 transcribed from the run being matched, plus the three things no script reveals --
 the workload lengths, the KV capacity, and the training cost for that exact mesh.
 `outputs/simulate/ALIGNMENT_LOG.md` records what each fix bought.
 
 ### Reading the resulting figure
 
-**The orange and green lines coincide.** In a real run the engine's `num_waiting_reqs` is
-always 0, because queuing happens in the router, not in the engine. This is real behaviour,
-not a wiring bug. The simulator models waiting inside the engine queue, so its two lines do
-separate. The router queue row above the band is where the real run's queuing is visible.
-That queue is global and is deliberately not attributed to individual instances.
+**The orange and green lines coincide in a real run.** Its engine reports
+`num_waiting_reqs = 0` throughout, because queuing happens in the router rather than in the
+engine. This is real behaviour, not a wiring bug.
+
+The simulator now queues in the router too, so **both sides draw the row** and it is the right
+place to compare backlog. The simulated engine's waiting queue is no longer the whole fleet's
+backlog, only work an instance has accepted, so its two lines separate much less than they used
+to. The router queue is global and is deliberately not attributed to individual instances.
+See {doc}`routing`.
 
 **Instance numbers are replica indices, not a dense range.** A run whose rollout replicas
 are 0 and 2 produces subplots titled `instance 0` and `instance 2`.

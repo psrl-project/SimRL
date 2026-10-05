@@ -374,6 +374,7 @@ def run_simulate(cfg: DictConfig) -> None:
     training = cfg.training_cost
     training_parallelism = build_training_parallelism(training)
     admit = rollout.admission_control
+    router = rollout.get("router", {})
     log_telemetry = cfg.get("log_telemetry", True)
 
     output_dir = Path(cfg.output_dir)
@@ -408,10 +409,18 @@ def run_simulate(cfg: DictConfig) -> None:
         token_budget=rollout.token_budget,
         kv_blocks=resolve_kv_blocks(rollout),
         block_size=rollout.block_size,
+        enable_prefix_caching=rollout.get("enable_prefix_caching", True),
         max_concurrency=rollout.get("max_concurrency", None),
         reject_if_kv_full=admit.get("reject_if_kv_full", True),
         reject_if_waiting=admit.get("reject_if_waiting", False),
         reject_if_running_full=admit.get("reject_if_running_full", False),
+        routing_strategy=router.get("strategy", "request_num_balance"),
+        routing_strategy_args=dict(router.get("strategy_args", {}) or {}),
+        router_sort_key=router.get("sort_key", "short_length"),
+        max_concurrent_seqs_per_instance=router.get("max_concurrent_seqs_per_instance", 0),
+        router_reject_on_waiting=router.get("reject_on_waiting", False),
+        enable_group_sticky=router.get("enable_group_sticky", False),
+        max_waiting_after_preempt=router.get("max_waiting_after_preempt", None),
         n_instances=rollout.n_instances,
         workload=workload,
         max_prompt_length=_length_cap(job.get("max_prompt_length", None)),

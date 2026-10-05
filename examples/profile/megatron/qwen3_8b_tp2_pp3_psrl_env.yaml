@@ -1,0 +1,79 @@
+# The same shapes as qwen3_8b_tp2_pp3_psrl_shapes.yaml, measured in PSRL's OWN
+# conda environment rather than DryRun's.
+#
+# Why. Profiling the baseline run's exact shape in DryRun's environment gave
+# 74.21 s against the run's own 110.95 s for the same 606k tokens, while the
+# loopback run's shape agreed to 0.5%. A per-step constant cannot produce
+# agreement at one shape and a 1.49x gap at another, and solving the two matched
+# shapes jointly wants both a ~52 s fixed term AND a 0.79 scale on the fitted
+# step. A scale factor on a fitted cost model is a fudge unless its cause is
+# known, and the two environments do not run the same kernels:
+#
+#   package              DryRun (dryrun-rl)   PSRL
+#   megatron-core        0.17.1               0.19.0
+#   transformer-engine   2.14.1               2.7.0
+#   flash-attn           2.8.3.post1          2.8.1
+#   torch                2.11.0+cu128         same
+#
+# So the per-token difference is plausibly the stack, not the model form. This
+# config settles it: identical shapes, identical launcher, PSRL's packages.
+#
+# Acceptance, registered before measuring. At nmb=64, one 9476-token sequence:
+#   - landing near 110 s means the stack explains the per-token gap, the cost
+#     model is sound, and artifacts must be profiled in the environment they
+#     will answer for;
+#   - landing near 74 s again means the stack is not the cause and the remaining
+#     difference belongs to verl's wrapper, to be measured by instrumenting PSRL.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 6
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+# A separate tree: these points are a diagnostic, and must not silently join the
+# shipped cell until the question above is answered.
+output_dir: ../../../outputs/profile/qwen3_8b/megatron_tp2_pp3_psrl_env
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  max_steps: 12
+  warmup_steps: 4
+
+profiling:
+  allow_incomplete: false
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+search_space:
+  packing: thd
+  tensor_parallel_sizes: [2]
+  pipeline_parallel_sizes: [3]
+  data_parallel_sizes: [1]
+  # 64 is the baseline's real count; 4 anchors the cheap end so a slope through
+  # the new token band is measurable without paying for 64 microbatches twice.
+  # 256 is the loopback's real count and the only point outside the old sweep.
+  num_microbatches: [4, 64, 256]
+  recompute: full
+
+  # One sequence per pack, because that is what both runs produce. The lengths
+  # bracket the band the runs occupy (9476 and 10071) and tie back to the two
+  # existing anchors so the new points can be compared against the old fit.
+  # Every length is even: sequence parallelism splits a pack across TP=2, so an
+  # odd total fails with `split_with_sizes expects split_sizes to sum exactly`.
+  # 10071 (the loopback's real mean) is therefore measured at 10072.
+  sequence_shapes:
+    - [8192]
+    - [9476]
+    - [10072]
+    - [11264]
+    - [12288]

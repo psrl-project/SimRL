@@ -24,6 +24,7 @@ from .store import JsonlStore
 
 if TYPE_CHECKING:
     from ..component.rollout.engine import NativeInstance, Request
+    from ..component.rollout.router import Router
 
 
 class SimTelemetry:
@@ -33,6 +34,7 @@ class SimTelemetry:
         self.store = store if enabled else None
         self._last_instance_key: dict[int, tuple] = {}
         self._stats_cursor: dict[int, int] = {}
+        self._last_gateway_key: tuple | None = None
 
     @property
     def enabled(self) -> bool:
@@ -92,6 +94,44 @@ class SimTelemetry:
         for inst in instances:
             self.emit_instance(inst)
 
+    # --- router queue ("gateway" stream) --------------------------------
+
+    def emit_gateway(
+        self,
+        t: float,
+        router: "Router",
+        instances: Iterable[NativeInstance],
+    ) -> None:
+        """Log one router queue-depth sample, skipping exact duplicates.
+
+        Deliberately the *same* schema the real-run converter writes from
+        `smg_routing_status.jsonl` (`telemetry/psrl_log.py`), so one
+        `plot_instance_load` draws both and `dryrun-compare` puts like against
+        like. A separate `router` stream would fork the figure in two.
+
+        `running_request_num` counts what the instances hold, matching the
+        gateway's own meaning of requests committed to an instance and not yet
+        finished, rather than the queue depth repeated.
+        """
+        if self.store is None:
+            return
+        queue_len = router.queue_len
+        running = sum(len(inst.running) + len(inst.waiting) for inst in instances)
+        key = (t, queue_len, running)
+        if self._last_gateway_key == key:
+            return
+        self._last_gateway_key = key
+        self.store.write(
+            "gateway",
+            t=t,
+            queue_len=queue_len,
+            pending_request_num=queue_len,
+            running_request_num=running,
+            n_routed=router.n_routed,
+            n_reroutes=router.n_reroutes,
+            n_cross_instance_reroutes=router.n_cross_instance_reroutes,
+        )
+
     # --- rollout steps ("rollout_step" stream) --------------------------
 
     def flush_rollout_step(self, inst: NativeInstance) -> None:
@@ -108,6 +148,8 @@ class SimTelemetry:
                 phase=stat.phase,
                 steps=stat.steps,
                 n_prefill=stat.n_prefill,
+                n_prefill_hit=stat.n_prefill_hit,
+                n_prefill_computed=stat.n_prefill_computed,
                 n_decode=stat.n_decode,
                 n_tokens=stat.n_tokens,
                 dt=stat.dt,
@@ -158,6 +200,11 @@ class SimTelemetry:
             ),
             num_preemptions=req.num_preemptions,
             num_aborts=req.num_aborts,
+            num_reroutes=req.num_reroutes,
+            # Both were already maintained on Request but never written, which
+            # left the cost of a loopback inferable but not measurable.
+            reprefill_tokens=req.reprefill_tokens,
+            prefix_hit_tokens=req.prefix_hit_tokens,
         )
 
     # --- train steps ("train" stream) -----------------------------------

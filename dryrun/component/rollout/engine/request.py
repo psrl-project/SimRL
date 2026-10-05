@@ -62,6 +62,11 @@ class Request:
     source_group_id: int = 0
     """The workload group the lengths came from. Provenance only."""
     instance_id: int | None = None
+    """The instance most recently serving this request, None before first placement.
+
+    Survives a reclaim, so a re-placement can be told apart as same-instance or
+    cross-instance. SMG keeps the same thing as its `x-base-worker-id` hint.
+    """
     admit_time: float = 0.0
     dispatch_time: float = 0.0
     segments: list[Segment] = field(default_factory=list)
@@ -72,7 +77,22 @@ class Request:
     consume_version: int | None = None
     num_aborts: int = 0
     num_preemptions: int = 0
+    num_reroutes: int = 0
+    """Times the router placed this request after its first placement.
+
+    A weight update or a preemption overflow returns a request to the router,
+    which may then send it somewhere else. In the matched run 58.5% of
+    loopbacks landed on a different instance, so this is not a rare path.
+    """
+    router_enqueue_time: float = 0.0
+    """When this request most recently entered the router queue."""
     reprefill_tokens: int = 0
+    prefix_hit_tokens: int = 0
+    """Prompt tokens this request skipped because the KV cache already held them.
+
+    Accumulates across resumptions, so a request interrupted by a weight update
+    and re-prefilled records what the cache saved each time.
+    """
 
     @property
     def remaining(self) -> int:

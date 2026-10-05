@@ -1,5 +1,5 @@
 # Profiles the exact training mesh of the PSRL baseline run
-# (psrl/examples/dapo_trainer/qwen3_8b_megatron_baseline.sh): TP=2, PP=3, CP=1
+# (psrl/examples/dapo_trainer/qwen3_8b_megatron_simulate.sh): TP=2, PP=3, CP=1
 # on 6 GPUs, which gives DP=1.
 #
 # The production sweep (qwen3_8b.yaml) covers TP/PP in {1,4,8}x{1,4} and so has

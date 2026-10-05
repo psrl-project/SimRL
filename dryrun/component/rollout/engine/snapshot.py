@@ -2,7 +2,12 @@
 
 The simulator advances each instance to its next event and discards the events
 it does not commit, so every mutation an event performs must be reversible.
-These snapshots hold the minimal state needed to undo one event.
+
+This is a thin adapter over `..undo`: capturing an instance means opening an
+`UndoLog`, registering the old values of what the instance itself owns, and
+handing that log to the engine so the pool can register its own. Restoring means
+rolling the log back. There is no per-subsystem field list here, which is what
+lets a new subsystem become undoable without editing this file.
 """
 
 from __future__ import annotations
@@ -10,95 +15,91 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .request import ReqStatus, Request
+from .request import Request
+from .undo import AttrSnapshot, Recorder, TruncateList, UndoLog
 
 if TYPE_CHECKING:
     from .instance import NativeInstance
 
+_REQUEST_FIELDS = (
+    "prefilled",
+    "generated",
+    "status",
+    "complete_time",
+    "num_preemptions",
+    "num_aborts",
+    "reprefill_tokens",
+    "prefix_hit_tokens",
+)
+"""What an *event* mutates, and therefore what must roll back.
 
-@dataclass
-class ReqSnapshot:
-    """Per-request mutable state captured for undo."""
+Router-owned fields (`instance_id`, `num_reroutes`, `router_enqueue_time`) are
+deliberately absent: the router only ever runs after an event commits, so no
+speculative window can touch them. If that ever changes, the assertion in
+`Router.dispatch` fires before this list becomes wrong.
+"""
 
-    prefilled: int
-    generated: int
-    status: ReqStatus
-    complete_time: float | None
-    num_preemptions: int
-    reprefill_tokens: int
-    n_segments: int
-    last_seg_tokens: int  # 0 when segments list is empty
 
-    @classmethod
-    def capture(cls, req: Request) -> ReqSnapshot:
-        return cls(
-            prefilled=req.prefilled,
-            generated=req.generated,
-            status=req.status,
-            complete_time=req.complete_time,
-            num_preemptions=req.num_preemptions,
-            reprefill_tokens=req.reprefill_tokens,
-            n_segments=len(req.segments),
-            last_seg_tokens=req.segments[-1].tokens if req.segments else 0,
+def record_request(req: Request, recorder: Recorder) -> None:
+    """Register one request's mutable state, once per event.
+
+    `segments` is append-only except for its last entry, which is incremented in
+    place, so the length alone is not enough -- hence the extra entry. This is
+    the same correction the original hand-written snapshot made.
+    """
+    recorder.record_once(
+        ("req", id(req)),
+        lambda: AttrSnapshot.capture(req, *_REQUEST_FIELDS),
+    )
+    recorder.record_once(("segs", id(req)), lambda: TruncateList.capture(req.segments))
+    if req.segments:
+        recorder.record_once(
+            ("seg_tail", id(req)),
+            lambda: AttrSnapshot.capture(req.segments[-1], "tokens"),
         )
-
-    def restore(self, req: Request) -> None:
-        req.prefilled = self.prefilled
-        req.generated = self.generated
-        req.status = self.status
-        req.complete_time = self.complete_time
-        req.num_preemptions = self.num_preemptions
-        req.reprefill_tokens = self.reprefill_tokens
-        # The `segments` list is append only, so truncate and fix the last entry.
-        del req.segments[self.n_segments :]
-        if self.n_segments > 0 and req.segments:
-            req.segments[-1].tokens = self.last_seg_tokens
 
 
 @dataclass
 class InstanceSnapshot:
-    """
-    Minimal snapshot of `NativeInstance` mutable state, taken before each event.
+    """One event's worth of captured old values.
 
-    Sufficient to fully restore state via `NativeInstance.undo_last_event`.
+    Args:
+        log: The undo log the event recorded into.
     """
 
-    t_local: float
-    waiting: list[Request]
-    running: list[Request]
-    completed_len: int
-    n_preemptions: int
-    stats_len: int
-    # Paired with the request object itself, not keyed by id(req): the snapshot
-    # already pins every request it captured, so restore needs no lookup.
-    req_snapshots: list[tuple[Request, ReqSnapshot]]
+    log: UndoLog
 
     @classmethod
-    def capture(cls, inst: NativeInstance) -> InstanceSnapshot:
-        # `completed` is deliberately not snapshotted per-request. Events only
-        # mutate requests in `waiting`/`running`, and a request retired *by* this
-        # event was in `running` at capture time, so it is already covered. Once
-        # retired a request is never touched again, and `restore` truncates the
-        # list back to `completed_len`. Including it would make snapshot cost grow
-        # with the whole run instead of with the live batch.
-        return cls(
-            t_local=inst.t_local,
-            waiting=list(inst.waiting),
-            running=list(inst.running),
-            completed_len=len(inst.completed),
-            n_preemptions=inst.n_preemptions,
-            stats_len=len(inst.step_stats),
-            req_snapshots=[
-                (r, ReqSnapshot.capture(r)) for r in (*inst.waiting, *inst.running)
-            ],
-        )
+    def capture(cls, inst: "NativeInstance") -> "InstanceSnapshot":
+        """Open a log and register what the instance itself owns.
 
-    def restore(self, inst: NativeInstance) -> None:
-        inst.t_local = self.t_local
-        inst.waiting = list(self.waiting)
-        inst.running = list(self.running)
-        del inst.completed[self.completed_len :]
-        inst.n_preemptions = self.n_preemptions
-        del inst.step_stats[self.stats_len :]
-        for req, rs in self.req_snapshots:
-            rs.restore(req)
+        `completed` is deliberately captured by length rather than per request.
+        Events only mutate requests in `waiting` / `running`, and a request
+        retired *by* this event was in `running` at capture time, so it is
+        already covered. Including it would make capture cost grow with the
+        whole run instead of with the live batch.
+
+        `waiting` and `running` are captured as *copies* of the lists, because
+        the engine reorders them in place. The copy is a shallow one: it holds
+        the same `Request` objects, whose own fields are captured separately, so
+        the cost is proportional to the live batch rather than to the run.
+        """
+        log = UndoLog()
+        log.record(AttrSnapshot.capture(inst, "t_local", "n_preemptions"))
+        log.record(
+            AttrSnapshot(
+                target=inst,
+                names=("waiting", "running"),
+                values=(list(inst.waiting), list(inst.running)),
+            )
+        )
+        log.record(TruncateList.capture(inst.completed))
+        log.record(TruncateList.capture(inst.step_stats))
+        for req in (*inst.waiting, *inst.running):
+            record_request(req, log)
+        return cls(log=log)
+
+    def restore(self, inst: "NativeInstance") -> None:
+        """Roll every captured value back, newest first."""
+        del inst  # Every entry holds its own target.
+        self.log.rollback()

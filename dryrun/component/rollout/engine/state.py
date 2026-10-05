@@ -1,12 +1,17 @@
 """Value objects describing engine instance state.
 
 `StepStat` accumulates what happened during engine steps (telemetry), while
-`InstanceLoad` is the view a router uses to pick a target instance.
+`InstanceLoad` and its `InstanceView` extension are what a router sees when it
+picks a target instance.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from .request import Request
 
 
 @dataclass
@@ -19,6 +24,12 @@ class StepStat:
     engine step (any waiting request in the batch) and `"decode"` for a pure
     closed-form decode segment. `t` is the simulation time at which the step
     ends (commits), matching `NativeInstance.t_local` after the step.
+
+    `n_prefill` is the work this step charged. `n_prefill_hit` is what the
+    prefix cache absorbed and `n_prefill_computed` is what was really computed,
+    named to match the real engine's own columns (`prefill_tokens` and
+    `computed (cache miss)` in `outputs/simulate/SMG_LOOPBACK_FIX.md`) so
+    `dryrun-compare` puts like against like.
     """
 
     n_tokens: int
@@ -30,6 +41,8 @@ class StepStat:
     dt: float = 0.0
     phase: str = "decode"
     t: float = 0.0
+    n_prefill_hit: int = 0
+    n_prefill_computed: int = 0
 
     def __post_init__(self) -> None:
         if self.saturated and self.saturated_steps == 0:
@@ -45,3 +58,37 @@ class InstanceLoad:
     n_running: int
     kv_utilization: float
     total_ctx: int
+
+    @property
+    def n_active(self) -> int:
+        """Requests the instance holds, queued or decoding."""
+        return self.n_waiting + self.n_running
+
+
+@dataclass
+class InstanceView(InstanceLoad):
+    """What a routing strategy is allowed to see about one instance.
+
+    Extends `InstanceLoad` with the two things a cache-aware or cost-based
+    strategy needs and a pure load-balancer does not. Strategies read this
+    rather than `NativeInstance` so that a strategy cannot mutate the engine,
+    and so that a strategy can be unit tested without building one.
+
+    Attributes:
+        free_blocks: KV blocks currently unallocated.
+        committed_blocks: Blocks the resident requests will need for the
+            context they already hold, including ones still queued and so
+            holding nothing yet. The same quantity `add_request` reserves on,
+            so a strategy and the admission gate agree about what full means.
+        prefix_hit_tokens: Tokens a prefill of a given request would skip
+            because the instance's cache already holds them. Non-mutating, so
+            asking does not move the counters compared against the real
+            engine's `vllm:prefix_cache_queries`.
+        step_time_delta: Predicted increase in step latency from adding a
+            given request, in seconds.
+    """
+
+    free_blocks: int = 0
+    committed_blocks: int = 0
+    prefix_hit_tokens: Callable[["Request"], int] = lambda req: 0
+    step_time_delta: Callable[["Request"], float] = lambda req: 0.0

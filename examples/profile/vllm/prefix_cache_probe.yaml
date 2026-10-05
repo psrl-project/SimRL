@@ -1,0 +1,73 @@
+# Four controlled prefix-cache scenarios, for checking the simulated block pool
+# against the engine it models.
+#
+# Every `expect_*` value below is arithmetic over prompt_len and block_size and
+# was written before anything was measured. A disagreement means the pool's
+# semantics are wrong and the logic has to change; it is never a reason to edit
+# an expectation.
+#
+# lru_eviction is listed first deliberately. KV never saturates under the
+# project's main workload, so it is the one scenario that reaches
+# `BlockPool._maybe_evict` at all -- without it that path ships unexercised.
+
+block_size: 16
+ready_timeout: 900
+
+scenarios:
+  # Squeeze capacity so revisiting a prompt set must evict. 64 prompts of ~2048
+  # tokens is ~8192 blocks of KV, far beyond what 0.30 utilisation leaves after
+  # weights, so the early prompts cannot survive to the second pass.
+  - name: lru_eviction
+    gpu_memory_utilization: 0.30
+    prompt_len: 2048
+    max_tokens: 16
+    n_prompts: 64
+    max_model_len: 8192
+    expect_hit_rate_below: 0.95
+    expect_note: >-
+      With capacity for only a fraction of the working set, the second pass
+      cannot hit everything. A hit rate at or near 1.0 would mean eviction never
+      happened and the scenario did not test what it claims to.
+
+  # One prompt, eight samples: the GRPO shape. The first request misses every
+  # block and the other seven hit all of them, so hits/queries -> 7/8 as the
+  # prompt grows relative to the per-request remainder.
+  - name: within_group_shared_prompt
+    gpu_memory_utilization: 0.90
+    prompt_len: 2048
+    max_tokens: 16
+    n: 8
+    max_model_len: 8192
+    expect_hit_rate_min: 0.80
+    expect_note: >-
+      Seven of eight requests hit the shared prompt in full. Exact equality with
+      7/8 is not required because vLLM hands back the last block of a full hit,
+      which costs one block per hitting request.
+
+  # Round two's prompt is round one's prompt plus its output: the shape both a
+  # resumed partial rollout and an agentic next round take. Hits land on blocks
+  # whose ref_cnt has already reached zero, which is the pool invariant.
+  - name: continued_prefix
+    gpu_memory_utilization: 0.90
+    prompt_len: 2048
+    max_tokens: 64
+    max_model_len: 8192
+    expect_hit_rate_min: 0.80
+    expect_note: >-
+      Round one's whole context is still cached, so round two hits all but the
+      handed-back last block and whatever tokens fall in a partial block.
+
+  # reset_prefix_cache, then resend. This is the weight-sync path: PSRL's
+  # pull_model calls it, and `abort_all` models both halves.
+  - name: hit_rate_after_reset
+    gpu_memory_utilization: 0.90
+    prompt_len: 2048
+    max_tokens: 16
+    n: 8
+    max_model_len: 8192
+    expect_hit_rate_min: 0.80
+    expect_note: >-
+      The reset empties the map, so the first request of the resend misses
+      everything and repopulates it; its siblings then hit. The post-reset rate
+      therefore matches the within-group rate rather than falling to zero, which
+      is the mechanism behind the 9% measured in SMG_LOOPBACK_FIX.md.

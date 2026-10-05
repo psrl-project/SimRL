@@ -124,6 +124,23 @@ class PSRLPolicy(StalenessPolicy):
                 f"(v_traj={req.v_traj}, max_bid={max_bid}); admit_quota should have gated this."
             )
 
+    def on_route(self, req: Request, instance_id: int, st: SimState) -> None:
+        """Tell the inventory where this request actually landed.
+
+        `on_admit` runs before routing now, so the id it reserved with is a
+        placeholder. The real gateway does the same correction when it commits
+        a selection, and the inventory provides this method for it.
+
+        The entry may be gone by the time a re-route happens (the group was
+        dropped, or consumed), so a missing prompt id is expected rather than
+        exceptional.
+        """
+        assert self._inventory is not None, "on_route called before admit_quota."
+        if req.group_id not in self._inventory.data_tracker:
+            return
+        request_id = req.group_id * self._inventory.rollout_n + req.group_index
+        self._inventory.update_request_instance_id(request_id, ("sim", instance_id))
+
     def on_group_complete(self, group: list[Request], st: SimState) -> CompleteAction:
         assert self._inventory is not None, "on_group_complete called before any admit."
         group_id = group[0].group_id

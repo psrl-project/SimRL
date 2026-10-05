@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from ....cost.rollout import RolloutCostModel, advance
 from .event import EngineEvent, EventKind
+from .kv import KvCacheManager
 from .request import ReqStatus, Request
 from .snapshot import InstanceSnapshot
 from .state import InstanceLoad, StepStat
+from .undo import NULL_RECORDER, AttrSnapshot
 
 
 def blocks_for(n_tokens: int, block_size: int) -> int:
@@ -33,6 +35,7 @@ class NativeInstance:
         reject_if_kv_full: bool = True,
         reject_if_waiting: bool = False,
         reject_if_running_full: bool = False,
+        enable_prefix_caching: bool = True,
     ):
         self.cost = cost
         self.M = token_budget
@@ -45,6 +48,16 @@ class NativeInstance:
         self.reject_if_kv_full = reject_if_kv_full
         self.reject_if_waiting = reject_if_waiting
         self.reject_if_running_full = reject_if_running_full
+        self.enable_prefix_caching = enable_prefix_caching
+
+        # Occupancy, hit lookup, and eviction all live in the pool. Disabling
+        # prefix caching leaves the pool doing block accounting and simply
+        # records no hashes, so there is no second code path to keep in step.
+        self.kv = KvCacheManager(
+            num_blocks=kv_blocks,
+            block_size=block_size,
+            enable_caching=enable_prefix_caching,
+        )
 
         self.t_local: float = 0.0
         self.waiting: list[Request] = []
@@ -53,6 +66,9 @@ class NativeInstance:
         self.n_preemptions: int = 0
         self.completed: list[Request] = []
         self._snapshot: InstanceSnapshot | None = None
+        # The recorder every mutating pool call receives. Swapped for a real
+        # log only while a speculative event is in flight.
+        self._recorder = NULL_RECORDER
 
     @property
     def n_active(self) -> int:
@@ -68,20 +84,81 @@ class NativeInstance:
         )
 
     def blocks_used(self) -> int:
-        return sum(blocks_for(r.prefilled, self.block_size) for r in self.waiting + self.running)
+        return self.kv.num_used_blocks
 
     def free_blocks(self) -> int:
-        return self.kv_blocks - self.blocks_used()
+        return self.kv.num_free_blocks
+
+    def committed_blocks(self) -> int:
+        """Blocks the resident requests need for the context they already hold.
+
+        Counts queued requests too, which is the point: one that has not been
+        prefilled holds no blocks yet but is going to, and a router comparing
+        raw `free_blocks` across instances would see no difference between an
+        empty instance and one with a hundred requests about to start. This is
+        the same sum `add_request` reserves on.
+        """
+        committed = sum(r.ctx for r in self.waiting + self.running)
+        return blocks_for(committed, self.block_size)
+
+    def _apply_prefix_hit(self, req: Request) -> int:
+        """Advance `req.prefilled` over whatever the cache already holds.
+
+        A hit is expressed by moving `prefilled` rather than by a separate
+        `num_computed_tokens` field, because both prefill paths already compute
+        `prompt_len + generated - prefilled` as the work remaining. The saved
+        tokens therefore drop out of `n_tokens` and `t2` on their own, and the
+        cost model needs no change at all.
+
+        Args:
+            req: A request about to be prefilled, with `prefilled == 0`.
+
+        Returns:
+            Tokens the cache covered, 0 when nothing hit.
+        """
+        if not self.enable_prefix_caching or req.prefilled > 0:
+            return 0
+        hit_blocks, hit_tokens = self.kv.computed_blocks(req, recorder=self._recorder)
+        if hit_tokens <= 0:
+            return 0
+        if not self.kv.can_allocate(req, n_tokens=1, hit_blocks=hit_blocks):
+            return 0
+        self.kv.allocate(req, n_tokens=0, hit_blocks=hit_blocks, recorder=self._recorder)
+        self._recorder.record_once(
+            ("hit", id(req)),
+            lambda: AttrSnapshot.capture(req, "prefilled", "prefix_hit_tokens"),
+        )
+        req.prefilled = hit_tokens
+        req.prefix_hit_tokens += hit_tokens
+        return hit_tokens
 
     def _save_snapshot(self) -> None:
-        """Save current state as the undo point for the next event."""
+        """Open an undo log for the event about to run."""
         self._snapshot = InstanceSnapshot.capture(self)
+        self._recorder = self._snapshot.log
+
+    def commit_last_event(self) -> None:
+        """Accept the last event, discarding the undo log it recorded into.
+
+        The counterpart to `undo_last_event`. Without it a snapshot outlives
+        the event that opened it, with two consequences: the log keeps growing
+        as later committed work records into it, and an `undo_last_event`
+        reaching that state would roll back work that was already committed.
+        Both were latent while the snapshot was only ever read right after an
+        event, but a router that asks whether an instance is mid-event needs
+        the answer to be true only when one really is.
+
+        Idempotent, so a caller need not track whether an event is open.
+        """
+        self._snapshot = None
+        self._recorder = NULL_RECORDER
 
     def undo_last_event(self) -> None:
-        """Restore state from the last saved snapshot, reversing the last event."""
+        """Reverse the last event, restoring request, instance and pool state."""
         assert self._snapshot is not None, "No snapshot to undo."
         self._snapshot.restore(self)
         self._snapshot = None
+        self._recorder = NULL_RECORDER
 
     def add_request(self, req: Request, t: float) -> bool:
         """
@@ -144,10 +221,54 @@ class NativeInstance:
                 req.status = ReqStatus.RUNNING
                 self.running.append(req)
 
+    def _decode_running_once(self, version: int) -> tuple[list[Request], bool]:
+        """Advance every running request by one decode token.
+
+        Served before the waiting queue, as vLLM does, so that a full pool
+        starves new admissions rather than the batch already in flight.
+
+        Args:
+            version: Weight version producing these tokens.
+
+        Returns:
+            The requests that advanced, and whether the pool refused any of
+            them. A refusal means the step is KV-bound: the caller admits no new
+            prefill work, matching vLLM's `if not preempted_reqs:` guard.
+        """
+        n_decode = min(len(self.running), self.M)
+        decoding = self.running[:n_decode]
+        stepped: list[Request] = []
+        blocked = False
+        # `blocks_for(p + 1) - blocks_for(p) == 1` exactly when
+        # `p % block_size == 0`, which is the `grows` flag below. Tracking free
+        # blocks incrementally avoids recomputing the occupancy sum per request.
+        oldest = (
+            min(self.running, key=lambda r: (r.dispatch_time, r.rid))
+            if self.running
+            else None
+        )
+        free = self.free_blocks()
+        for r in decoding:
+            grows = (r.prefilled % self.block_size) == 0
+            if grows and free <= 0 and r is not oldest:
+                blocked = True
+                continue
+            if self.kv.allocate(r, n_tokens=1, hit_blocks=[], recorder=self._recorder) is None:
+                # The `grows`/`free` test above approximates pool capacity; the
+                # pool itself is the authority, so skip rather than advance past
+                # what it granted.
+                blocked = True
+                continue
+            r.add_tokens(version, 1)
+            r.prefilled += 1
+            if grows:
+                free -= 1
+            stepped.append(r)
+        return stepped, blocked
+
     def _prefill_budget_step(self, version: int):
         n_d = len(self.running)
         n_decode = min(n_d, self.M)
-        decoding = self.running[:n_decode]
         budget = self.M - n_decode
         t2 = 0
         prefill_tokens = 0
@@ -155,14 +276,69 @@ class NativeInstance:
         finished_prefill: list[Request] = []
         n_in_batch = self._n_in_batch()
 
+        # The running batch is served first, and the waiting queue only gets
+        # what is left. This is vLLM's order ("First, schedule the RUNNING
+        # requests" then "Next, schedule the WAITING requests",
+        # `vllm/v1/core/sched/scheduler.py`), and the order is load-bearing
+        # rather than cosmetic: prefilling first takes the blocks the decode
+        # then needs, so the step overflows, preempts the request it just
+        # admitted, and repeats forever at one block of progress. Serving decode
+        # first means a full pool simply stops admitting instead.
+        stepped, decode_blocked = self._decode_running_once(version)
+        newly_done = [r for r in stepped if r.remaining <= 0]
+
         free = self.free_blocks()
+        prefill_hit = 0
+        # vLLM also refuses to admit anything in a step that had to preempt
+        # (`if not preempted_reqs:` guards its waiting loop). A pool too full to
+        # fund one decode token per running request is in no position to take on
+        # new work either.
         for req in sorted(self.waiting, key=lambda r: (r.dispatch_time, r.rid)):
             if budget <= 0:
                 break
             if req.prefilled == 0:
+                # A KV-bound step admits no *new* work, as vLLM's waiting loop
+                # is guarded by `if not preempted_reqs:`. Requests already
+                # mid-prefill are exempt and must stay so: they are holding
+                # blocks without decoding, so starving them leaves the pool
+                # pinned by requests that can never finish.
+                if decode_blocked:
+                    break
                 if self.max_concurrency is not None and n_in_batch >= self.max_concurrency:
                     break
+                # Admission is all-or-nothing: a request enters the batch only
+                # if the pool can hold the context it needs, plus one block of
+                # headroom per resident request so the batch already running can
+                # still take its next decode token.
+                #
+                # vLLM gets this from the shape of its waiting loop rather than
+                # from a reserve. It *peeks* at the head of the queue
+                # (`scheduler.py:679`), tries to allocate, and on failure does
+                # `if new_blocks is None: break` -- leaving the request queued
+                # and popping it only after a successful allocation
+                # (`:978`). So a request that does not fit never gets a partial
+                # foothold.
+                #
+                # Without this the engine hands every request a sliver and none
+                # can finish: 128 requests needing 78,335 blocks against a
+                # 31,294-block pool pin the instance at `running=1,
+                # waiting=127`. Capacity allows about 61 residents, and the real
+                # engine's measured median running on this workload is 59.
+                #
+                # Note this is *not* vLLM's `--watermark`, which defaults to 0.0
+                # and was not set in the run being matched. That knob reserves a
+                # fraction of the whole pool to make preemption rarer; this is
+                # the structural admission test that holds even with it off.
+                if self.running:
+                    want = req.prompt_len + req.generated
+                    headroom = len(self.running) * self.block_size
+                    if blocks_for(want, self.block_size) + blocks_for(
+                        headroom, self.block_size
+                    ) > self.free_blocks():
+                        break
                 n_in_batch += 1
+                prefill_hit += self._apply_prefix_hit(req)
+                free = self.free_blocks()
             need = req.prompt_len + req.generated - req.prefilled
             if need <= 0:
                 finished_prefill.append(req)
@@ -174,6 +350,22 @@ class NativeInstance:
             chunk = min(chunk, (have + max(0, free)) * self.block_size - req.prefilled)
             if chunk <= 0:
                 break
+            # The pool is the authority on capacity, not the running `free`
+            # tally: a hit may have revived blocks, and the tally cannot see
+            # sharing. Shrink to what the pool will actually grant rather than
+            # advancing `prefilled` past it, which would leave the two
+            # disagreeing and silently overcommit the cache.
+            while chunk > 0 and not self.kv.can_allocate(req, chunk, []):
+                chunk -= self.block_size
+            if chunk <= 0:
+                break
+            granted = self.kv.allocate(
+                req, n_tokens=chunk, hit_blocks=[], recorder=self._recorder
+            )
+            assert granted is not None, (
+                f"KV pool refused {chunk} prefill tokens for request {req.rid} "
+                f"after can_allocate approved them."
+            )
             free -= blocks_for(req.prefilled + chunk, self.block_size) - have
             req.prefilled += chunk
             prefill_tokens += chunk
@@ -193,7 +385,9 @@ class NativeInstance:
                 n_tokens,
                 n_decode,
                 prefill_tokens,
-                self.cost.saturated(n_tokens, t2, ctxsum, n_reqs),
+                saturated=self.cost.saturated(n_tokens, t2, ctxsum, n_reqs),
+                n_prefill_hit=prefill_hit,
+                n_prefill_computed=prefill_tokens,
                 steps=1,
                 dt=dt,
                 phase="prefill",
@@ -201,23 +395,6 @@ class NativeInstance:
                 t=self.t_local + dt,
             )
         )
-
-        stepped = []
-        oldest = min(self.running, key=lambda r: (r.dispatch_time, r.rid)) if self.running else None
-        # blocks_for(p + 1) - blocks_for(p) == 1 exactly when p % block_size == 0,
-        # which is the `grows` flag below. So track free blocks incrementally
-        # instead of recomputing the O(len(queues)) occupancy sum per request.
-        free = self.free_blocks()
-        for r in decoding:
-            grows = (r.prefilled % self.block_size) == 0
-            if grows and free <= 0 and r is not oldest:
-                continue
-            r.add_tokens(version, 1)
-            r.prefilled += 1
-            if grows:
-                free -= 1
-            stepped.append(r)
-        newly_done = [r for r in stepped if r.remaining <= 0]
 
         for req in finished_prefill:
             if not self._can_run_more():
@@ -231,6 +408,29 @@ class NativeInstance:
         """Return the running batch size and total context, the segment methods' arguments."""
         return len(self.running), sum(r.ctx for r in self.running)
 
+    def step_time_delta(self, req: Request) -> float:
+        """How much one more decode step would cost if `req` joined this batch.
+
+        What a throughput-balancing router asks before placing a request. The
+        comparison is against the current batch's own step, so the answer is
+        the marginal cost rather than the absolute one, and an idle instance
+        correctly reports the cost of starting a batch of one.
+
+        Nothing is mutated: the request is priced as if it were resident, but
+        it is not added to any queue.
+
+        Args:
+            req: The request being considered for placement.
+
+        Returns:
+            Predicted increase in one decode step's latency, in seconds, never
+            negative.
+        """
+        n_d, ctxsum = self._decode_batch()
+        before = self.cost.step_time(n_d, 0, ctxsum, n_d) if n_d else 0.0
+        after = self.cost.step_time(n_d + 1, 0, ctxsum + req.ctx, n_d + 1)
+        return max(0.0, after - before)
+
     def _kv_exhaustion_steps(self) -> int | None:
         """
         Steps of decode until this instance would exceed its KV budget.
@@ -240,17 +440,26 @@ class NativeInstance:
         request finishes before that happens.
         """
         B = self.block_size
-        # blocks_for(p) == p // B + blocks_for(p % B), so occupancy at step k is
-        #     blocks(k) = fixed + sum(count * blocks_for(residue + k))
-        # over the B residue buckets, independent of how many requests there are.
-        # blocks(0) is exactly what `blocks_used()` returns, so `base` below is
-        # that value and does not need computing twice.
-        fixed = sum(blocks_for(r.prefilled, B) for r in self.waiting)
+        # `blocks_for(p) == p // B + blocks_for(p % B)`, so the running batch's
+        # growth over k steps is `sum(count * blocks_for(residue + k)) - base`,
+        # bucketed by residue modulo B, independent of how many requests there
+        # are. Waiting requests contribute nothing: they hold blocks but do not
+        # grow during a decode segment.
+        #
+        # Only the *increments* may be computed from `prefilled`. The intercept
+        # must come from the pool, because prefix sharing makes a sum over
+        # `blocks_for(prefilled)` an over-estimate -- 896 against a real 134 in
+        # the GRPO shape. Using it drives `k` to 0, preempts, lets the request
+        # back in, and livelocks with the pool three-quarters empty.
+        #
+        # The increments stay valid because sharing is fixed at the prompt:
+        # siblings diverge from their first generated token, so every block a
+        # request grows during decode is private, and the difference of the two
+        # `blocks_for` calls is exactly that request's growth.
         residues = [0] * B
         for r in self.running:
-            fixed += r.prefilled // B
             residues[r.prefilled % B] += 1
-        base = fixed + sum(c * blocks_for(res, B) for res, c in enumerate(residues) if c)
+        base = self.blocks_used()
         if base > self.kv_blocks:
             return 0
 
@@ -302,6 +511,9 @@ class NativeInstance:
                     break
                 n_in_batch += 1
             eff = effective.get(id(req), req.prefilled)
+            if eff == 0:
+                eff = self.kv.peek_hit_tokens(req)
+                effective[id(req)] = eff
             need = req.prompt_len + req.generated - eff
             if need <= 0:
                 continue
@@ -348,17 +560,47 @@ class NativeInstance:
             t=self.t_local,
         )
 
+    def _decode_segment(self, version: int, k: int) -> None:
+        """Advance every running request by `k` decode tokens.
+
+        Args:
+            version: Weight version producing these tokens.
+            k: Steps to advance. Must be a count the pool can satisfy for every
+                running request: `_kv_exhaustion_steps` returns the first
+                *overflowing* step, so callers pass `k - 1` when it binds.
+
+        Raises:
+            AssertionError: If the pool refuses. Advancing `prefilled` past what
+                the pool granted would leave the two disagreeing, which is the
+                bug this assert exists to catch rather than to tolerate.
+        """
+        for r in self.running:
+            granted = self.kv.allocate(
+                r, n_tokens=k, hit_blocks=[], recorder=self._recorder
+            )
+            assert granted is not None, (
+                f"KV pool refused {k} decode tokens for request {r.rid} "
+                f"(prefilled={r.prefilled}, free={self.free_blocks()}). The step "
+                f"count must be one the pool can satisfy for every request."
+            )
+            r.add_tokens(version, k)
+            r.prefilled += k
+
     def _decode_one_event(self, version: int) -> EngineEvent:
         """Advance one full decode segment (until completion or KV exhaustion) and return the event."""
         n_d, ctxsum = self._decode_batch()
         k_done, _ = advance.next_completion([r.remaining for r in self.running])
         k_kv = self._kv_exhaustion_steps()
-        k = k_done if k_kv is None else min(k_done, k_kv)
+        # `_kv_exhaustion_steps` reports the first step that *overflows*, so the
+        # last step that fits is one fewer. The old accounting could advance into
+        # the overflow and detect it afterwards, because occupancy was recomputed
+        # from `prefilled`; the pool is authoritative now, so the segment has to
+        # stop short and preempt instead.
+        kv_bound = k_kv is not None and k_kv <= k_done
+        k = max(0, k_kv - 1) if kv_bound else k_done
 
         if k > 0:
-            for r in self.running:
-                r.add_tokens(version, k)
-                r.prefilled += k
+            self._decode_segment(version, k)
             dt = self.cost.decode_segment_time(n_d, ctxsum, k)
             self.t_local += dt
             saturated_steps = self.cost.decode_saturated_steps(n_d, ctxsum, k)
@@ -376,7 +618,7 @@ class NativeInstance:
                 )
             )
 
-        if self.blocks_used() > self.kv_blocks or (k_kv is not None and k >= k_kv):
+        if kv_bound:
             self._preempt_one()
             return EngineEvent(
                 kind=EventKind.KV_PREEMPT,
@@ -399,9 +641,16 @@ class NativeInstance:
 
         Saves a snapshot for undo before mutating state. Returns the event, or
         None if the instance is idle (no waiting or running requests).
+
+        An idle instance drops any snapshot it was holding, so a snapshot exists
+        exactly while an uncommitted event is in flight. Without that, an undo
+        following an idle call would rewind to whichever event came before,
+        rather than being a no-op.
         """
         self._promote_ready()
         if not self.running and not self.waiting:
+            self._snapshot = None
+            self._recorder = NULL_RECORDER
             return None
         self._save_snapshot()
         if self.waiting:
@@ -458,15 +707,17 @@ class NativeInstance:
             n_d, ctxsum = self._decode_batch()
             k_done, _ = advance.next_completion([r.remaining for r in self.running])
             k_kv = self._kv_exhaustion_steps()
-            k_int = k_done if k_kv is None else min(k_done, k_kv)
+            # One short of the first overflowing step, as in `_decode_one_event`:
+            # the pool is authoritative, so the segment must not advance into a
+            # block it was never granted.
+            kv_bound = k_kv is not None and k_kv <= k_done
+            k_int = max(0, k_kv - 1) if kv_bound else k_done
             budget = t_limit - self.t_local
             k_budget = self.cost.decode_steps_within(n_d, ctxsum, budget)
 
             k = min(k_int, k_budget)
             if k > 0:
-                for r in self.running:
-                    r.add_tokens(version, k)
-                    r.prefilled += k
+                self._decode_segment(version, k)
                 dt = self.cost.decode_segment_time(n_d, ctxsum, k)
                 self.t_local += dt
                 saturated_steps = self.cost.decode_saturated_steps(n_d, ctxsum, k)
@@ -496,7 +747,7 @@ class NativeInstance:
             if newly:
                 done.extend(self._retire(newly))
                 return done, False
-            if k_kv is not None and k >= k_kv:
+            if kv_bound and k >= k_int:
                 self._preempt_one()
                 return done, False
             if k == 0:
@@ -505,13 +756,34 @@ class NativeInstance:
         return done, True
 
     def _deadlocked(self) -> bool:
+        """Whether the pool is too full for the batch to make progress.
+
+        A request sitting exactly on a block boundary needs a new block for its
+        next token; one mid-block does not. So with no free blocks the step's
+        decode throughput is only the mid-block requests, and the boundary ones
+        are stalled.
+
+        The test is "some request is stalled", not "every request is stalled".
+        Requiring unanimity never fires at realistic batch sizes -- with 254
+        running requests at staggered lengths, the chance of all of them landing
+        on a boundary in the same step is negligible -- so the engine would keep
+        emitting steps that advance a shrinking subset while the stalled ones
+        wait forever. The loopback-fix workload is 2.6x oversubscribed against
+        both instances' pools combined, and the real engine resolves exactly
+        this by preempting (383 of its 1663 requests finish with
+        `finish_reason="abort"`), so stalling instead would be the wrong model.
+        """
         if not self.running or self.free_blocks() > 0:
             return False
-        decode_blocked = all((r.prefilled % self.block_size) == 0 for r in self.running)
+        decode_stalled = any(
+            (r.prefilled % self.block_size) == 0 for r in self.running
+        )
         prefill_blocked = any(
             r.prompt_len + r.generated - r.prefilled > 0 for r in self.waiting
         )
-        return decode_blocked and prefill_blocked
+        # A full pool with nothing waiting is still stalled if every running
+        # request needs a block it cannot get; preemption is the only way out.
+        return decode_stalled and (prefill_blocked or len(self.running) > 1)
 
     def _preempt_for_progress(self) -> bool:
         if not self.running:
@@ -529,6 +801,7 @@ class NativeInstance:
         for r in reqs:
             if r in self.running:
                 self.running.remove(r)
+            self.kv.free(r, recorder=self._recorder)
             r.status = ReqStatus.DONE
             r.complete_time = self.t_local
             self.completed.append(r)
@@ -544,6 +817,7 @@ class NativeInstance:
         victim.status = ReqStatus.PREEMPTED
         victim.num_preemptions += 1
         victim.reprefill_tokens += victim.ctx
+        self.kv.free(victim, recorder=self._recorder)
         victim.prefilled = 0
         self.waiting.insert(0, victim)
         self.n_preemptions += 1
@@ -553,10 +827,18 @@ class NativeInstance:
         req.num_aborts += 1
         if keep_tokens:
             req.reprefill_tokens += req.ctx
+        self.kv.free(req, recorder=self._recorder)
         req.prefilled = 0
 
-    def abort_all(self) -> list[Request]:
+    def abort_all(self, requeue: bool = True) -> list[Request]:
         """Interrupt every request for a weight update, keeping its tokens but not its KV.
+
+        Args:
+            requeue: Whether the aborted requests stay on this instance's
+                waiting list. False empties the instance and hands them back,
+                which is what a router does so they can be placed again. The
+                real gateway re-routes 58.5% of them to a *different*
+                instance, so keeping them pinned here is not neutral.
 
         The request resumes rather than restarting: it keeps `generated` and the
         segments recording which weight version produced what. What it loses is
@@ -585,11 +867,42 @@ class NativeInstance:
         for r in aborted:
             self._release(r, keep_tokens=True)
             r.status = ReqStatus.WAITING
-        self.waiting = aborted[:]
+        self.waiting = aborted[:] if requeue else []
         self.running = []
+        # `_release` already freed each request's blocks. Clearing the hash map
+        # is the second, separate step: it is what `pull_model` ->
+        # `reset_prefix_cache` does, and it is deliberately *not* done at an
+        # agentic round boundary, where `cancel(keep_tokens=True)` frees blocks
+        # but leaves their hashes addressable so the next round hits.
+        self.kv.reset_hashes(recorder=self._recorder)
         return aborted
 
-    def cancel(self, reqs: list[Request], keep_tokens: bool = True) -> list[Request]:
+    def cancel(
+        self,
+        reqs: list[Request],
+        keep_tokens: bool = True,
+        requeue: bool = True,
+    ) -> list[Request]:
+        """Remove `reqs` from this instance, freeing their KV.
+
+        Args:
+            reqs: Requests to remove. Ones this instance does not hold are
+                skipped.
+            keep_tokens: Whether the generated tokens survive, charging the
+                context to `reprefill_tokens` for the eventual resume.
+            requeue: Whether a surviving request goes back onto this
+                instance's waiting list. False hands ownership to the caller,
+                which is what the router does when it reclaims a request to
+                place somewhere else. Ignored when `keep_tokens` is False,
+                since a request that kept nothing has nothing to resume.
+                `instance_id` deliberately survives either way: it records
+                where the request last ran, which is what lets a re-placement
+                be identified as same-instance or cross-instance. SMG keeps the
+                same thing as its `x-base-worker-id` hint.
+
+        Returns:
+            The requests actually removed.
+        """
         canceled = []
         for r in reqs:
             if r in self.running:
@@ -601,6 +914,7 @@ class NativeInstance:
             self._release(r, keep_tokens=keep_tokens)
             if keep_tokens:
                 r.status = ReqStatus.WAITING
-                self.waiting.append(r)
+                if requeue:
+                    self.waiting.append(r)
             canceled.append(r)
         return canceled

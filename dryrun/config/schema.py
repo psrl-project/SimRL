@@ -233,6 +233,52 @@ class KvCacheSizingConfig:
 
 
 @dataclass
+class RouterConfig:
+    """Cross-instance routing: where a request waits, and who takes it.
+
+    Field names follow the PSRL run's own
+    `psrl.rollout_coordination.routing_strategy.*` keys wherever one exists, so
+    a setting can be transcribed rather than translated.
+    """
+
+    strategy: str = "request_num_balance"
+    """request_num_balance | round_robin | random | kv_cache_aware |
+    prefix_aware | throughput_balance.
+
+    The default reproduces the former least-active selection exactly, so it is
+    behaviour-preserving as well as what the matched PSRL run uses.
+    """
+    strategy_args: dict = field(default_factory=dict)
+    """Per-strategy keyword arguments, e.g. cache_threshold for prefix_aware."""
+    sort_key: str = "short_length"
+    """Tie-break among same-version queued requests: short_length | long_length | small_id."""
+    max_concurrent_seqs_per_instance: int = 0
+    """Router-side cap on requests one instance may hold. 0 disables the gate.
+
+    Distinct from `rollout.max_concurrency`, which is vLLM's own max_num_seqs
+    inside the engine. This one decides eligibility before the request is
+    offered at all.
+    """
+    reject_on_waiting: bool = False
+    """Whether the router skips an instance that already has a queue of its own."""
+    enable_group_sticky: bool = False
+    """Pin a prompt group's responses to the instance that accepted the first.
+
+    False matches the matched run, which scatters all 160 groups across both
+    instances. Turning it on concentrates a group's KV so its siblings share
+    the prompt prefix.
+    """
+    max_waiting_after_preempt: int | None = None
+    """Instance queue depth past which preempted requests return to the router.
+
+    vLLM's `preemption_notification_threshold`: a preempted request is requeued
+    locally first and only handed back once the local queue is congested,
+    because requeueing into a congested instance makes it worse. None leaves
+    every preemption local, which is the behaviour before this existed.
+    """
+
+
+@dataclass
 class RolloutConfig:
     """Rollout engine knobs."""
 
@@ -241,8 +287,17 @@ class RolloutConfig:
     token_budget: int = 8192
     kv_blocks: int = 100_000
     block_size: int = 16
+    enable_prefix_caching: bool = True
+    """Whether the engine reuses KV blocks across requests sharing a prefix.
+
+    Defaults to True because real vLLM does: a default that disagrees with the
+    simulated system is a silent bias. Turning it off leaves the pool doing
+    block accounting and simply records no hashes, so nothing can hit; it is a
+    data state rather than a second code path.
+    """
     max_concurrency: int | None = None
     admission_control: AdmissionControlConfig = field(default_factory=AdmissionControlConfig)
+    router: RouterConfig = field(default_factory=RouterConfig)
     livelock_rounds: int = 50
     max_engine_iters: int = 10_000
     kv_cache_sizing: KvCacheSizingConfig = field(default_factory=KvCacheSizingConfig)

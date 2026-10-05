@@ -114,11 +114,37 @@ class SimConfig:
     token_budget: int = 8192
     kv_blocks: int = 100_000
     block_size: int = 16
+    enable_prefix_caching: bool = True
     max_concurrent: int | None = None
     max_concurrency: int | None = None
     reject_if_kv_full: bool = True
     reject_if_waiting: bool = False
     reject_if_running_full: bool = False
+    routing_strategy: str = "request_num_balance"
+    """Which instance a queued request is sent to.
+
+    The default reproduces the former least-active selection exactly, so it is
+    the behaviour-preserving choice as well as the one the matched PSRL run
+    uses. See `component/rollout/router/strategies.py`.
+    """
+    routing_strategy_args: dict = field(default_factory=dict)
+    """Per-strategy keyword arguments, e.g. `cache_threshold` for prefix_aware."""
+    router_sort_key: str = "short_length"
+    """Tie-break among same-version requests: short_length, long_length, small_id."""
+    max_concurrent_seqs_per_instance: int = 0
+    """Router-side cap on requests one instance may hold. 0 disables it."""
+    router_reject_on_waiting: bool = False
+    """Whether the router skips an instance that already has its own queue."""
+    enable_group_sticky: bool = False
+    """Pin a prompt group's responses to the instance that took the first one."""
+    max_waiting_after_preempt: int | None = None
+    """Instance queue depth past which preempted requests return to the router.
+
+    vLLM's `preemption_notification_threshold`: a preempted request is requeued
+    locally first, and only handed back once the local queue is congested,
+    because requeueing into a congested instance makes it worse. None disables
+    the path, leaving every preemption local.
+    """
     workload: GroupedWorkload = field(
         default_factory=lambda: GroupedWorkload.from_lengths([512], [100])
     )

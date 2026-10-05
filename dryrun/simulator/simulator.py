@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from ..component.recompute.cost import FixedRecomputeCost, RecomputeCostModel
 from ..component.rollout.engine import EngineEvent, EventKind, NativeInstance, ReqStatus, Request
+from ..component.rollout.router import AdmissionGate, Router, SortKey, build_strategy
 from ..component.sync.cost import FixedSyncCost, SyncCostModel
 from ..cost.rollout import RolloutCostModel
 from ..cost.training import (
@@ -79,8 +80,21 @@ class Simulator:
                     reject_if_kv_full=cfg.reject_if_kv_full,
                     reject_if_waiting=cfg.reject_if_waiting,
                     reject_if_running_full=cfg.reject_if_running_full,
+                    enable_prefix_caching=cfg.enable_prefix_caching,
                 )
             )
+
+        self.router = Router(
+            strategy=build_strategy(cfg.routing_strategy, **cfg.routing_strategy_args),
+            instances=self.instances,
+            gate=AdmissionGate(
+                max_concurrent_seqs_per_instance=cfg.max_concurrent_seqs_per_instance,
+                reject_on_waiting=cfg.router_reject_on_waiting,
+            ),
+            sort_key=SortKey(cfg.router_sort_key),
+            enable_group_sticky=cfg.enable_group_sticky,
+            max_waiting_after_preempt=cfg.max_waiting_after_preempt,
+        )
 
         self.t: float = 0.0
         self.train_version: int = 0
@@ -172,16 +186,40 @@ class Simulator:
         prompt = min(req.prompt_len, self.cfg.max_prompt_length or req.prompt_len)
         return max(1, prompt + min(req.generated, self.cfg.max_output_length))
 
-    def _select_instance(self, req: Request) -> int:
-        loads = [inst.n_active for inst in self.instances]
-        return loads.index(min(loads))
+    def _dispatch_router(self) -> int:
+        """Place whatever the router can place right now.
+
+        Called only after a committed capacity release: a finished request, a
+        preemption, or a weight update. A dispatch at any other moment is a
+        provable no-op, because `add_request`'s binding gate is a block count
+        and nothing else in the attempt varies with time. See
+        `component/rollout/router/router.py`.
+
+        Returns:
+            How many requests were placed.
+        """
+        placed = self.router.dispatch(self.t)
+        if not placed:
+            return 0
+        st = self._state()
+        for req, instance_id in placed:
+            self.policy.on_route(req, instance_id, st)
+        self.telemetry.emit_instance_all(self.instances)
+        self.telemetry.emit_gateway(self.t, self.router, self.instances)
+        return len(placed)
 
     def _admit(self, quota: int | None = None) -> int:
-        """Admit whole prompt groups, up to a response `quota`.
+        """Admit whole prompt groups into the router, up to a response `quota`.
 
-        A group is admitted all-or-nothing. A half-admitted group can never be
-        consumed, so its finished responses would hold KV until the run ends.
-        The quota is a response count and is rounded down to a whole group.
+        A group is admitted all-or-nothing, because a half-admitted group can
+        never be consumed and its finished responses would hold KV until the
+        run ends. The quota is a response count, rounded down to a whole group.
+
+        Admission no longer touches an instance. The router accepts
+        unconditionally and places the request when some instance can take it,
+        so a busy fleet produces dwell rather than the rollback this used to
+        do. What bounds admission is the policy's own quota, which is what
+        bounded it before: the engine refusal was a secondary gate.
         """
         st = self._state()
         if quota is None:
@@ -189,17 +227,15 @@ class Simulator:
         group_size = self.cfg.group_size
         admitted = 0
         while admitted + group_size <= quota:
-            group = self._admit_one_group(st)
-            if group is None:
-                break
-            admitted += len(group)
+            admitted += len(self._admit_one_group(st))
         if admitted:
-            self.telemetry.emit_instance_all(self.instances)
+            self.telemetry.emit_gateway(self.t, self.router, self.instances)
+            self._dispatch_router()
         return admitted
 
-    def _admit_one_group(self, st: SimState) -> list[Request] | None:
-        """Admit one whole group, or roll back and return None."""
-        placed: list[tuple[Request, int]] = []
+    def _admit_one_group(self, st: SimState) -> list[Request]:
+        """Create one whole prompt group and hand it to the router."""
+        group: list[Request] = []
         group_id = self.next_group_id
         for index in range(self.cfg.group_size):
             source_group_id, prompt_len, target_len = self._next_request_shape()
@@ -213,23 +249,13 @@ class Simulator:
                 v_traj=self.rollout_version,
                 admit_time=self.t,
             )
-            instance_id = self._select_instance(req)
-            # False means temporarily full (KV / waiting / running), not
-            # that this request is oversized.
-            if not self.instances[instance_id].add_request(req, self.t):
-                for done, inst_id in reversed(placed):
-                    self.instances[inst_id].cancel([done], keep_tokens=False)
-                    self.next_rid -= 1
-                    self.inflight.remove(done)
-                    self.n_admitted -= 1
-                return None
             self.next_rid += 1
             self.inflight.append(req)
             self.n_admitted += 1
-            placed.append((req, instance_id))
+            group.append(req)
 
         self.next_group_id += 1
-        group = [req for req, _ in placed]
+        self.router.enqueue(group, self.t)
         self.policy.on_admit(group, st)
         for req in group:
             self.telemetry.write_request("admit", self.t, req)
@@ -251,7 +277,10 @@ class Simulator:
                 if batch is None:
                     self.policy.on_batch_unavailable(self._state())
                     if not self.inflight and self._admit() == 0:
-                        has_waiting = any(inst.waiting for inst in self.instances)
+                        has_waiting = (
+                            any(inst.waiting for inst in self.instances)
+                            or bool(self.router)
+                        )
                         if not has_waiting:
                             idle_rounds += 1
                             if idle_rounds > self.cfg.livelock_rounds:
@@ -320,6 +349,13 @@ class Simulator:
             group for group in self.ready_groups if group[0].group_id not in dropped_groups
         ]
 
+        # Take the dropped requests out of the router queue first. A queued
+        # request is inflight but sits on no instance, so the per-instance
+        # cancel below would skip it and a later dispatch would place work the
+        # simulator has already written off.
+        self.router.remove(unique_reqs)
+        self.router.release_group_pins(dropped_groups)
+
         to_cancel: list[Request] = []
         for req in unique_reqs:
             if req in self.inflight:
@@ -349,8 +385,25 @@ class Simulator:
         return [*reqs, *pending, *live]
 
     def _is_cross_instance(self, event: EngineEvent) -> bool:
-        # TODO(lhy): Return True for KV_PREEMPT once rerouting to other instances is implemented.
-        return False
+        """Whether this event can move work between instances.
+
+        A preemption frees its victim's blocks, so it is one of the three
+        moments the router can place something new. It only becomes a *global*
+        event when an instance's queue has run deeper than
+        `max_waiting_after_preempt` and work is about to leave it, which is
+        vLLM's own `preemption_notification_threshold` rule. Below the
+        threshold the victim is requeued locally and no other instance needs
+        to be told, which is the common case and must stay cheap: there were
+        2122 preemptions in the matched run against 404 aborts.
+        """
+        if self.router.max_waiting_after_preempt is None:
+            return False
+        if event.kind not in (EventKind.KV_PREEMPT, EventKind.DEADLOCK_PREEMPT):
+            return False
+        return any(
+            len(inst.waiting) > self.router.max_waiting_after_preempt
+            for inst in self.instances
+        )
 
     def _undo_events(self, events: dict[int, EngineEvent]) -> None:
         """Undo all pending events (one per instance) and clear the events dict."""
@@ -359,7 +412,14 @@ class Simulator:
         events.clear()
 
     def _align_instances(self, t: float, force_align_t_local: bool = False) -> None:
-        """Advance every lagging instance to a common global time."""
+        """Advance every lagging instance to a common global time.
+
+        Alignment is a committed advance, so any undo log still open is closed
+        first. `advance_to` would otherwise record committed mutations into a
+        log belonging to an event that has already been decided.
+        """
+        for inst in self.instances:
+            inst.commit_last_event()
         for inst in self.instances:
             assert inst.t_local <= t, "Instance time must be less than or equal to the target time."
             extra_done, _ = inst.advance_to(t, self.rollout_version)
@@ -421,6 +481,12 @@ class Simulator:
         events: dict[int, EngineEvent] = {}
         queue: list[tuple[float, int]] = []  # (event_time, instance_id)
 
+        # Place whatever is waiting before seeding. Entry to the engine loop is
+        # a committed point, and without this an instance that went idle while
+        # the router still held work would seed no event at all and the run
+        # would spin to a false livelock.
+        self._dispatch_router()
+
         # Telemetry reflects committed state only. Log it here, before any
         # speculative advance_one_event call below has a chance to mutate
         # step_stats / occupancy for an event that may still be undone.
@@ -443,17 +509,28 @@ class Simulator:
 
             # --- Cross-instance event: commit on owning instance, align others, re-seed ---
             if self._is_cross_instance(event):
-                # event is already committed on inst (at t_event).
-                # Undo all other pending events, advance them to t_event for clock consistency.
+                # The event is already committed on `inst` at t_event. The clock
+                # has to move before the others are aligned to it, otherwise
+                # `_align_instances` would assert against a stale global time.
+                self.t = max(self.t, t_event)
+                inst.commit_last_event()
                 self._undo_and_align(events, queue, t_event)
                 self.telemetry.sync_all(self.instances)
-                # TODO(lhy): Handle global cross-instance consequence here (e.g. KV rerouting).
-                # Re-seed all instances.
+                # An instance whose queue has run past the threshold hands its
+                # preempted overflow back, and the router re-places it. This is
+                # the only path by which work crosses instances mid-generation.
+                reclaimed = self.router.reclaim_preempted(self.t)
+                if reclaimed:
+                    self._dispatch_router()
+                    self.telemetry.sync_all(self.instances)
                 self._seed_events(events, queue)
                 continue
 
-            # Event is committed. Update global clock.
+            # Event is committed. Update global clock and close its undo log,
+            # so a later router dispatch can tell a live speculative event from
+            # a finished one.
             self.t = max(self.t, t_event)
+            inst.commit_last_event()
             self.telemetry.sync(inst)
 
             # --- Process completions ---
@@ -468,13 +545,19 @@ class Simulator:
 
                     self.policy.on_batch_unavailable(self._state())
 
-                # A completion can release policy capacity. Only invalidate the
-                # pending events when the policy permits another admission.
+                # A completion frees KV, which is one of the three moments the
+                # router can place work, and it can also release policy
+                # capacity. Breaking out for either is required: gating on the
+                # quota alone would leave a non-empty router queue untouched
+                # whenever the policy is saturated, even though this very
+                # completion just made room on an instance.
                 quota = self.policy.admit_quota(self._state())
-                if quota > 0:
+                if quota > 0 or self.router.has_dispatchable():
                     self._undo_and_align(events, queue, t_event)
                     self.telemetry.sync_all(self.instances)
-                    self._admit(quota)  # emits instance telemetry itself if it admits anything.
+                    self._dispatch_router()
+                    if quota > 0:
+                        self._admit(quota)
                     self._seed_events(events, queue)
                     continue
 
@@ -507,11 +590,21 @@ class Simulator:
         self.rollout_version = self.policy.rollout_version_after_train(self._state())
         weights_changed = self.rollout_version != previous_rollout_version
         if weights_changed and self.cfg.partial_rollout and self.inflight:
+            # Aborted requests go back to the router rather than staying on the
+            # instance that was serving them. The real gateway re-routes 58.5%
+            # of them elsewhere, so pinning them here is not a neutral
+            # simplification. This is also what puts the spike in the router
+            # queue row: the whole fleet lands in the queue at once and drains
+            # over the following dispatches.
+            aborted: list[Request] = []
             for inst in self.instances:
-                inst.abort_all()
+                aborted.extend(inst.abort_all(requeue=False))
+            self.router.enqueue(aborted, self.t)
             self.policy.on_interrupt(list(self.inflight), self._state())
             self.telemetry.emit_instance_all(self.instances)
-        self._admit()  # emits instance telemetry itself if it admits anything.
+            self.telemetry.emit_gateway(self.t, self.router, self.instances)
+            self._dispatch_router()
+        self._admit()  # emits router/instance telemetry itself if it admits anything.
 
     def _train(self, batch: list[Request]) -> None:
         """Consume `batch`, expire against the expected version, train, then publish.
@@ -528,6 +621,11 @@ class Simulator:
         ]
         taken = {id(req) for req in batch}
         self.ready = [req for req in self.ready if id(req) not in taken]
+        # A consumed group is finished with its instance, so its sticky pin is
+        # released. SMG drops the pin when the group's last request retires;
+        # holding it would let a repeating workload be pinned by a group that
+        # no longer exists.
+        self.router.release_group_pins(consumed_ids)
         for req in batch:
             req.consume_version = self.train_version
             self.consumed.append(req)

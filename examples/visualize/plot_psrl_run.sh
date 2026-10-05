@@ -8,7 +8,7 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-PSRL_LOG_DIR="${PSRL_LOG_DIR:-/apdcephfs_zwfy10_303541817/share_303541817/lhy/psrl/examples/dapo_trainer/megatron_psrl_log/qwen3_8b_megatron_baseline}"
+PSRL_LOG_DIR="${PSRL_LOG_DIR:-/apdcephfs_zwfy10_303541817/share_303541817/lhy/psrl/examples/dapo_trainer/megatron_psrl_log/qwen3_8b_megatron_simulate}"
 RUN_NAME="${RUN_NAME:-$(basename "${PSRL_LOG_DIR}")}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/outputs/visualize/${RUN_NAME}}"
 

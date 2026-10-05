@@ -30,7 +30,13 @@ dryrun/
 │   │   │   ├── event.py         # EventKind, EngineEvent
 │   │   │   ├── state.py         # StepStat, InstanceLoad
 │   │   │   └── snapshot.py      # ReqSnapshot, InstanceSnapshot (event rollback)
-│   │   └── router/              # (placeholder for routing strategies)
+│   │   └── router/              # Cross-instance routing: dwell queue + strategies
+│   │       ├── request_queue.py # RouterQueue, SortKey (min-heap on version/sort_key/arrival)
+│   │       ├── strategy.py      # RoutingStrategy protocol, STRATEGY_REGISTRY, build_strategy
+│   │       ├── strategies.py    # The six strategies; @register_strategy is the only reg path
+│   │       └── router.py        # Router (queue + gate + dispatch), AdmissionGate.
+│   │                            #   Dispatch runs ONLY after a committed capacity release
+│   │                            #   (complete / preempt / weight publish), never mid-segment
 │   ├── training/
 │   │   └── cost.py          # TrainCostModel, FixedTrainCost, AnalyticalTrainCost
 │   ├── sync/
@@ -170,11 +176,23 @@ The unit of work every component handles. Import it from the engine package:
 - `decode_coeffs(n_d, ctxsum) -> (F, alpha, beta)`
 
 ### NativeInstance (dryrun/component/rollout/engine/instance.py)
-- `add_request(req, t) -> bool`
+- `add_request(req, t) -> bool` (the authority on admission; the router only gates eligibility)
 - `advance_to(t_limit, version) -> (completed, reached_limit)`
-- `advance_one_event(version) -> EngineEvent | None`, paired with `undo_last_event()`
-- `abort_all() -> list[Request]`
-- `cancel(reqs, keep_tokens) -> list[Request]`
+- `advance_one_event(version) -> EngineEvent | None`, paired with `undo_last_event()` or
+  `commit_last_event()`. One of the two must be called: a snapshot left open outlives its
+  event, so the log keeps growing and an undo would reverse committed work
+- `abort_all(requeue) -> list[Request]`, `cancel(reqs, keep_tokens, requeue)`.
+  `requeue=False` hands the requests to the caller instead of the instance's own queue,
+  which is how the router reclaims work to place elsewhere
+- `committed_blocks()` / `free_blocks()`: a queued request holds no blocks yet, so a router
+  comparing raw free blocks sees no difference between instances. Use both
+
+### Router (dryrun/component/rollout/router/router.py)
+- `enqueue(reqs, t)`, `remove(reqs)`, `dispatch(t) -> [(req, instance_id)]`
+- `has_dispatchable()`: the engine loop must break out for this as well as for admit quota,
+  or a saturated policy strands the queue
+- `reclaim_preempted(t)`: vLLM's `preemption_notification_threshold`
+- `release_group_pins(group_ids)`
 
 ### StalenessPolicy (dryrun/policy/base.py)
 - `admit_quota(st: SimState) -> int`
@@ -207,6 +225,8 @@ The unit of work every component handles. Import it from the engine package:
 5. `cost.analytical`, `cost.empirical` (depend on cost.base)
 6. `component.rollout.engine.event`, `.state`, `.snapshot` (depend on engine.request)
 7. `component.rollout.engine.instance` (depends on the other engine modules, cost.rollout.advance, cost.base)
+7a. `component.rollout.router.*` (depends on engine; importing the package registers every
+     strategy, which is the only registration path)
 8. `policy.base` (depends on engine.request)
 9. `policy.*` (depend on policy.base, engine.request)
 10. `workload.*` (depends on engine.request)

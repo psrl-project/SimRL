@@ -1,0 +1,97 @@
+# Profiles the exact microbatch shapes the two PSRL runs actually train on, to
+# settle why the fitted THD cell predicts one run well and the other badly.
+#
+# The open question. Using the repository's own `MicrobatchPlanner` to derive
+# each run's real features, and the fused THD profile to fit the four-term form:
+#
+#   run        nmb   tok/mb   measured us/tok   predicted   error
+#   baseline    64     9476            182.9       ~123     -32.6%
+#   loopback   256    10071            120.4       ~128      +7.7%
+#
+# Both runs pack ONE sequence per microbatch (mean length 9476 and 10071 against
+# a 12800-token budget, so a second never fits). Both run TP2/PP3, THD, full
+# recompute, identical scripts apart from `train_batch_size`. Yet the same
+# coefficients under-predict one by a third and over-predict the other.
+#
+# What has already been ruled out:
+#   - artifact choice: BSHD vs THD was a real bug, fixed; THD took loopback from
+#     +60.1% to +1.9%, and left baseline at -32.5%.
+#   - unfused attention: the `raw/` tree is fused (collect+refit reproduces the
+#     shipped coefficients to four significant figures).
+#   - a missing fixed per-step cost: the two runs' errors have OPPOSITE signs, so
+#     no constant can correct both.
+#   - domain coverage: baseline's nmb=64 and tok/mb=9476 both sit INSIDE the
+#     profiled box. The run that is 4x outside it (loopback, nmb=256) is the one
+#     that matches.
+#   - GPU contention from the co-resident rollout: during training windows the
+#     rollout instances run 13% FASTER, not slower.
+#   - configuration drift: the two PSRL scripts differ only in
+#     `train_batch_size` (8 vs 32) and `total_training_steps`.
+#
+# So the profiler and PSRL disagree about throughput at a shape the profiler has
+# already measured. The existing sweep only ever measured 4096, 12288, 20648 and
+# 22528 tokens per microbatch; the ~9.5-10k band both runs actually live in was
+# always reached by interpolation. This config measures that band directly, at
+# the microbatch counts the runs really use.
+#
+# Acceptance, registered before measuring. At nmb=64, tok/mb=9476, 1 seq:
+#   - if the profiler reproduces ~183 us/token, the fitted form is interpolating
+#     across a real non-linearity between 4096 and 12288, and the fix is these
+#     points plus possibly a different token term;
+#   - if it reproduces ~123 us/token, the profiler and PSRL genuinely differ at
+#     an identical shape, the cost model is not at fault, and the next step is to
+#     instrument PSRL's `update_actor` directly rather than profile further.
+# Either outcome ends the ambiguity, which is why this runs before any refit.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 6
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+# A separate tree: these points are a diagnostic, and must not silently join the
+# shipped cell until the question above is answered.
+output_dir: ../../../outputs/profile/qwen3_8b/megatron_tp2_pp3_psrl_shapes
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  max_steps: 12
+  warmup_steps: 4
+
+profiling:
+  allow_incomplete: false
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+search_space:
+  packing: thd
+  tensor_parallel_sizes: [2]
+  pipeline_parallel_sizes: [3]
+  data_parallel_sizes: [1]
+  # 64 is the baseline's real count; 4 anchors the cheap end so a slope through
+  # the new token band is measurable without paying for 64 microbatches twice.
+  # 256 is the loopback's real count and the only point outside the old sweep.
+  num_microbatches: [4, 64, 256]
+  recompute: full
+
+  # One sequence per pack, because that is what both runs produce. The lengths
+  # bracket the band the runs occupy (9476 and 10071) and tie back to the two
+  # existing anchors so the new points can be compared against the old fit.
+  # Every length is even: sequence parallelism splits a pack across TP=2, so an
+  # odd total fails with `split_with_sizes expects split_sizes to sum exactly`.
+  # 10071 (the loopback's real mean) is therefore measured at 10072.
+  sequence_shapes:
+    - [8192]
+    - [9476]
+    - [10072]
+    - [11264]
+    - [12288]

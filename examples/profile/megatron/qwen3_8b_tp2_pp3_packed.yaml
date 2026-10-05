@@ -1,0 +1,116 @@
+# Breaks the token/quadratic collinearity in the TP2/PP3 latency fit, and
+# extends the microbatch-count domain to what a 32-prompt batch really needs.
+#
+# Why this exists. The existing TP2/PP3 cell
+# (qwen3_8b_tp2_pp3.yaml + _nmb64.yaml) fits well in-sample, r^2 = 0.988 and
+# 10.33% train MRE, but predicts the loopback-fix run's training step at
+# +74% because that run leaves the fitted box:
+#
+#   feature                  profiled        loopback-fix     stretch
+#   pipeline_slots           [3, 66]         237              3.6x
+#   sum_squared_tokens       <= 3.32e9       9.05e9           2.7x
+#
+# and the quadratic term carries 71% of the predicted time, so a 2.7x stretch
+# on it is the whole error. The same coefficients score +5.6% on the batch-8
+# baseline, whose features sit at 0.61x of the cap. The fit is not wrong; it is
+# being asked outside its domain.
+#
+# Why more of the same points would not fix it. Measured on the design matrix
+# before spending any GPU time:
+#
+#   grid                                      corr(w_tokens, w_sumsq)
+#   current: nmb {1,4,64}, 1 seq per mb       0.9625
+#   + nmb {128,192}                           0.9626
+#   + micro_batch_size {1,2,4}                0.9627
+#
+# Neither extra microbatch counts nor a micro_batch_size dimension moves it:
+# both columns carry the same `mbs * L` factor and grow together. A fit cannot
+# separate two columns that correlate at 0.96, which is why the split between
+# `token_cost` and `token_quadratic_cost` is underdetermined and why
+# extrapolating it fails.
+#
+# What does work: hold the microbatch's token count fixed and vary how many
+# sequences it is split into. Attention does not cross sequence boundaries, so
+# `Sum(s^2)` changes by the sequence count while `Sum(s)` stays put --
+# 1x12288 and 12x1024 are the same 12288 tokens but differ 12x in `Sum(s^2)`.
+# That drops the correlation to 0.6608 on its own, and 0.7296 when combined
+# with the length arm below, at rank 4 and cond 4.5e9.
+#
+# This config therefore measures two arms in one tree:
+#   - the length arm (one sequence per microbatch, the original sweep), which
+#     is what sets the absolute scale;
+#   - the packing arm (a fixed ~12288-token microbatch split 1/2/4/8/12 ways),
+#     which is what separates the linear and quadratic terms.
+#
+# Acceptance, registered before measuring: after refitting, the cell's
+# `corr(w_tokens, w_sumsq)` must fall below 0.85 and the loopback-fix run's
+# train/step error must come inside 15%. If the correlation does not move, the
+# fitted *form* is the problem rather than its coverage, and the next step is to
+# normalise the quadratic term by sequence count rather than add more points.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}
+
+# Same mesh as the runs being matched: TP=2, PP=3, CP=1 on 6 GPUs, so DP=1.
+hardware:
+  gpu_name: H20
+  gpu_count: 6
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+# Written into the same tree as the other TP2/PP3 configs so the refit sees
+# every arm at once. `entry_for` matches the mesh exactly, so all three configs
+# contribute to one cell.
+output_dir: ../../../outputs/profile/qwen3_8b/megatron_tp2_pp3
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  # Twelve steps with four discarded: one warmup step does not reach steady
+  # state, and eight retained samples allow a median where two would not.
+  max_steps: 12
+  warmup_steps: 4
+
+profiling:
+  allow_incomplete: false
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+# `sequence_shapes` gives the lengths packed into one microbatch, which is what
+# the real trainer's token-budget packer produces from ragged trajectories (the
+# loopback-fix run packs 256 sequences into 235 microbatches at a 12800-token
+# budget). `sequence_lengths` cannot express this: `cli/profile.py` expands it to
+# `[length] * micro_batch_size`, so every microbatch is uniform and the two token
+# columns stay locked together. Note the two keys are mutually exclusive and
+# `sequence_lengths` wins if both appear, so both arms are spelled out here.
+#
+# First five shapes are the length arm (one sequence per microbatch, matching the
+# original sweep) and set the absolute scale. The next four are the packing arm:
+# ~12288 tokens per microbatch split 2/4/8/12 ways, which moves `Sum(s^2)` by up
+# to 12x while `Sum(s)` barely changes.
+#
+# nmb reaches 240 so `pipeline_slots` covers 242, against the 237 the real run
+# needs. Jumping 64 -> 240 rather than stepping through is deliberate: the form
+# is exactly linear in slots, so the lever only needs its ends measured, and
+# each extra count costs a full candidate.
+search_space:
+  tensor_parallel_sizes: [2]
+  pipeline_parallel_sizes: [3]
+  micro_batch_size: 1
+  num_microbatches: [1, 4, 128, 240]
+  sequence_shapes:
+    - [1024]
+    - [2048]
+    - [4096]
+    - [8192]
+    - [12288]
+    - [6144, 6144]
+    - [3072, 3072, 3072, 3072]
+    - [1536, 1536, 1536, 1536, 1536, 1536, 1536, 1536]
+    - [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024]
+  recompute: full

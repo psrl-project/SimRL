@@ -101,6 +101,16 @@ class StalenessPolicy(ABC):
         been placed on an instance.
         """
 
+    def on_route(self, req: Request, instance_id: int, st: SimState) -> None:
+        """Hook for policies tracking which instance serves a request.
+
+        Called every time the router places `req`, including re-placements
+        after a weight update or a preemption overflow. Separate from
+        `on_admit` because admission and placement are no longer the same
+        moment: a request is admitted into the router queue first and may wait
+        there, and may later move to a different instance.
+        """
+
     def on_group_complete(self, group: list[Request], st: SimState) -> CompleteAction:
         """Decide whether a finished prompt group is kept for training.
 
