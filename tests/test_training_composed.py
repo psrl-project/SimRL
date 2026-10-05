@@ -168,25 +168,34 @@ def test_each_pipeline_stage_is_charged_its_own_layers_not_the_whole_model():
     at_pp3 = model.decompose_microbatches(plan, TrainingParallelism(tp=2, pp=3, dp=1))
     at_pp1 = model.decompose_microbatches(plan, TrainingParallelism(tp=2, pp=1, dp=1))
 
-    # pp=1: 3 slots x 36 layers = 108 layer-slots.
-    # pp=3: 5 slots (3+3-1) x 12 layers = 60 layer-slots. Ratio 60/108.
+    # Per-layer work is per microbatch, not per slot (traced: kernel counts scale 4.00x
+    # from nmb=1 to nmb=4). So 3 microbatches x 12 layers at pp=3 against 3 x 36 at pp=1 is
+    # exactly 1/pp, and the bubble is a separate term rather than folded into these.
     for term in ("gemm_fwd", "gemm_bwd", "attn_fwd", "elementwise", "tp_collective"):
-        assert at_pp3[term] / at_pp1[term] == pytest.approx(60.0 / 108.0), term
+        assert at_pp3[term] / at_pp1[term] == pytest.approx(1.0 / 3.0), term
+    # pp=1 has no boundary to wait at, so it has no bubble at all.
+    assert at_pp1["bubble"] == 0.0
+    assert at_pp3["bubble"] > 0.0
 
 
-def test_the_pipeline_bubble_appears_as_slots_exceeding_microbatches():
-    """At pp=3 with 3 microbatches the critical path is 5 slots, not 3.
+def test_the_bubble_is_a_named_term_costing_pp_minus_one_idle_slots():
+    """`pp - 1` slots in which this stage has no microbatch, whatever the microbatch count.
 
-    The bubble is not a separate additive term here: it falls out of the slot count, which
-    is why there is no `bubble` key to drift from the terms it is derived from.
+    It is a separate term rather than folded into the per-layer costs because the two scale
+    differently: compute goes as the microbatch count, the bubble as `pp - 1`. Tracing
+    showed the bubble is not an abstraction — it appears on the GPU as
+    `ncclDevKernel_SendRecv` blocking at the boundary, 2.859 s across 2 calls for a 48 MiB
+    handoff, which is 35 MB/s on a 450 GB/s link.
     """
     model, _ = _model()
-    one_mb = model.decompose_microbatches(_plan(4096), TrainingParallelism(tp=2, pp=3, dp=1))
-    three_mb = model.decompose_microbatches(
-        _plan(4096, 4096, 4096), TrainingParallelism(tp=2, pp=3, dp=1)
-    )
-    # 1 microbatch -> 1+3-1 = 3 slots; 3 microbatches -> 3+3-1 = 5 slots.
-    assert three_mb["gemm_fwd"] / one_mb["gemm_fwd"] == pytest.approx(5.0 / 3.0)
+    parallelism = TrainingParallelism(tp=2, pp=3, dp=1)
+    one_mb = model.decompose_microbatches(_plan(4096), parallelism)
+    three_mb = model.decompose_microbatches(_plan(4096, 4096, 4096), parallelism)
+
+    # Compute triples with the microbatch count.
+    assert three_mb["gemm_fwd"] / one_mb["gemm_fwd"] == pytest.approx(3.0)
+    # The bubble is `pp - 1 = 2` idle slots either way, so it does not.
+    assert three_mb["bubble"] == pytest.approx(one_mb["bubble"])
 
 
 def test_per_step_terms_are_not_multiplied_by_the_slot_count():
@@ -371,9 +380,10 @@ def test_pipeline_sends_scale_with_microbatches_not_with_slots():
     parallelism = TrainingParallelism(tp=2, pp=3, dp=1)
     one = model.decompose_microbatches(_plan(4096), parallelism)
     three = model.decompose_microbatches(_plan(4096, 4096, 4096), parallelism)
-    # 3 microbatches against 1, so 3x the sends; but 5 slots against 3, so 5/3 the gemms.
+    # Both the sends and the per-layer work are per microbatch, so both triple. The bubble
+    # is what does not, and `test_the_bubble_is_a_named_term...` covers that.
     assert three["pp_comm"] == pytest.approx(3.0 * one["pp_comm"])
-    assert three["gemm_fwd"] == pytest.approx(5.0 / 3.0 * one["gemm_fwd"])
+    assert three["gemm_fwd"] == pytest.approx(3.0 * one["gemm_fwd"])
 
 
 def test_a_single_stage_pipeline_charges_no_sends():

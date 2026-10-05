@@ -84,17 +84,23 @@ _TOLERANCE_PP = 0.5
 # Mean share of the prediction per term. Pinned because a pooled MRE cannot distinguish
 # "the composition improved" from "one term grew to cover another term's omission".
 _TERM_SHARES = {
-    "gemm_bwd": 34.6,
-    "gemm_fwd": 34.4,
-    "attn_bwd": 10.5,
-    "attn_fwd": 9.1,
-    "tp_collective": 7.8,
+    # The bubble is the largest single term, which the trace confirms rather than
+    # contradicts: at nmb=1, pp=3 rank 0 spends 2.859 s of a 4.29 s step inside a blocking
+    # `ncclDevKernel_SendRecv` at the stage boundary. 48 MiB at 35 MB/s on a 450 GB/s link
+    # is a wait, not a transfer.
+    "bubble": 36.1,
+    "gemm_bwd": 21.9,
+    "gemm_fwd": 21.8,
+    "attn_bwd": 6.6,
+    "attn_fwd": 5.7,
+    "tp_collective": 5.0,
     "logits": 1.8,
-    "elementwise": 1.6,
+    # Known low by ~4.6x: the sweep covers the 4 kernels vLLM runs where a traced Megatron
+    # step executes 64. See `test_the_elementwise_term_is_the_known_shortfall`.
+    "elementwise": 1.0,
     "optimizer": 0.3,
-    # Two stage-boundary crossings per microbatch per direction, 57-270 us each against
-    # step times of 1.06-72 s. Charged because the `p2p` table exists and an omitted term
-    # cannot be distinguished from one measured at zero; it closed 0.01pp.
+    # The bytes actually moving at a stage boundary, as distinct from `bubble`, which is
+    # the stage waiting. 57-270 us per crossing against step times of 1.06-72 s.
     "pp_comm": 0.0,
 }
 _SHARE_TOLERANCE_PP = 1.0
@@ -237,6 +243,42 @@ def test_the_optimizer_term_resolves_against_the_measured_table():
     """
     result = _scored()
     assert result.term_shares["optimizer"] > 0.0005
+
+
+def test_the_gemm_and_attention_terms_match_a_traced_step():
+    """Validated against real kernels, not just against each other.
+
+    Tracing rank 0 of the 12288-token step and dividing by the microbatch count gives
+    per-stage GEMM 0.8299 s and attention 0.3936 s, against the composition's 0.8162 and
+    0.3927: ratios of 0.98 and 1.00. At nmb=4 both are 1.00. So the two largest compute
+    tables are right, and the residual is not in them.
+
+    Asserted here as a share rather than re-derived, because the trace is a 10 MiB artifact
+    under `outputs/` that a fresh clone will not have. `docs/reference/limitations.md`
+    records the command that produced it.
+    """
+    result = _scored()
+    # GEMM forward and backward are near-equal because the backward's two GEMMs cost about
+    # what the recompute-doubled forward does; a drift between them means a multiplier moved.
+    assert result.term_shares["gemm_fwd"] == pytest.approx(
+        result.term_shares["gemm_bwd"], rel=0.05
+    )
+
+
+def test_the_elementwise_term_is_the_known_shortfall():
+    """Traced at 0.21-0.22x of the real elementwise cost, and that is most of the residual.
+
+    The sweep measures the 4 kernels vLLM runs; a traced Megatron step executes 64 distinct
+    non-GEMM/attention/collective/optimizer kernels totalling 0.0896 s per stage against the
+    0.0190 s charged. Scaled by `pp` and the microbatch count, the shortfall is 4.9% of the
+    4.9% gap at nmb=1 and 10.0% of the 13.6% gap at nmb=4.
+
+    The fix is a measurement, not a coefficient: sweep the generic `at::native` elementwise
+    kernels, `CatArrayBatchedCopy` (the QKV split) and TE's own rmsnorm. Until then this
+    pins the term low so the gap stays attributable.
+    """
+    result = _scored()
+    assert result.term_shares["elementwise"] < 0.02
 
 
 def test_the_optimizer_term_is_small_enough_that_it_was_never_the_residual():

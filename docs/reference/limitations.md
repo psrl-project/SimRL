@@ -74,38 +74,44 @@ See {doc}`../profiling/kernels` for the canonical regenerated table.
 These are cases where the model is built and working but its accuracy on certain inputs is
 known to be limited.
 
-**`ComposedTraining` has one unexplained term carrying its whole 12.63% residual.**
+**`ComposedTraining` is 12.63% against measured steps; a kernel trace located the gap.**
 The kernel-composed Megatron latency model scores MRE 12.63%, signed mean -12.63%, on the
 22 out-of-sample THD records, against the fitted polynomial's 2.73% in-sample. Every record
-under-predicts, by 4.7-25.6% of its own prediction, which is the signature of one missing
-additive term rather than accumulated per-op error. No constant is fitted for it.
+under-predicts.
 
-Its shape, regressed through the origin: proportional to total predicted time (c = 0.185,
-r^2 = 0.932). Not a fixed per-step cost; not a per-slot constant either (`slots` alone gives
-r^2 = 0.869 and per-slot values span 0.039-0.484 s).
+A CUDA kernel trace of rank 0 at 12288 tokens (`DRYRUN_TRACE_STEP=4 dryrun-profile megatron
+run --config examples/profile/megatron/qwen3_8b_thd.yaml --candidates ... --index 1`, and
+`--index 9` for nmb=4) compares term by term against the composition's per-stage cost:
 
-Excluded by measurement, not by argument:
+| term | composed | traced | ratio |
+|---|---|---|---|
+| gemm | 0.8162 s | 0.8299 s | 0.98 |
+| attention | 0.3927 s | 0.3936 s | 1.00 |
+| tp_collective | 0.0912 s | 0.0824 s | 1.11 |
+| elementwise | 0.0190 s | 0.0896 s | **0.21** |
 
-- **Not the GEMM table being cuBLAS where training is TE.** `te.Linear` measured against
-  `torch.nn.functional.linear` at the four Qwen3 tp=2 projections is 1.001x. The gap
-  correlates with GEMM time at r^2 = 0.968, but GEMM is 69% of the prediction, so that is
-  collinearity with total cost rather than evidence.
-- **Not the optimizer step**, 14.1 ms at 81% of HBM peak, so no headroom to be larger.
-- **Not recompute**, already charged for GEMMs, attention, elementwise and the SP
-  collectives.
-- **Not the unmodelled residual adds**, 5.4 ms per slot or 2.7% of the gap.
+What this establishes, which scoring against step times alone cannot: the GEMM and
+attention tables are correct against the kernels that actually ran, and the sequence-parallel
+collective counts derived from TE source are exact (traced 97 all-gathers and 73
+reduce-scatters against the derived 96 and 72, the extra one each being process-group setup).
 
-At ~16 ms per layer against ~29 ms of modelled GEMM per layer it is too large to be any
-pointwise kernel, and every per-op table it would have to live in holds 2.8-5.7% on
-holdout. Fix: profiler trace of a real step, looking for kernels the composition does not
-know exist or per-call overhead the isolated measurements amortize away.
+**The elementwise term is low by 4.6x, and that is most of the residual.** Scaled by `pp`
+and the microbatch count it accounts for 4.9% of the 4.9% shortfall at nmb=1 and 10.0% of
+the 13.6% shortfall at nmb=4. The cause is coverage, not formula: the sweep measures the
+four kernels vLLM runs, where a traced Megatron step executes **64 distinct** non-GEMM,
+non-attention, non-collective, non-optimizer kernels — generic `at::native` elementwise,
+`CatArrayBatchedCopy` for the QKV split, bf16 copies, and TE's own rmsnorm rather than
+vLLM's. Fix: sweep that population, keyed per kernel as the existing `op_kind` slice already
+allows. Scaling the current term by 4.6 would fit a coefficient instead and is not done.
 
-Note that this number was 7.62% for one commit, before attention was priced per
-`cu_seqlens` segment. That was two errors cancelling: the pack-total attention term
-over-predicted packed records by roughly what this term under-predicts. The correction is
-right on its own evidence — it removes 1.02-1.10x of the packing effect the validation set
-measures directly, and predicts the packing order at r = 0.9995 where the pack-total model
-had no spread at all — so the higher pooled MRE is the honest number.
+Two earlier hypotheses are now excluded by measurement rather than argument, and are
+recorded because both were plausible: the GEMM table being cuBLAS where training is TE
+(`te.Linear` against `torch.nn.functional.linear` is **1.001x**), and a fixed per-step or
+per-slot overhead (per-slot residual spans 0.039-0.484 s, a 12x range).
+
+Note also that the trace itself perturbs the step: traced total was +10.7% against the
+untraced median at nmb=4. So per-term *ratios* within one trace are usable and traced
+*totals* are not comparable to measured step times.
 
 Two further approximations, each attributable:
 

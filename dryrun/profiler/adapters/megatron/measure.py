@@ -69,6 +69,7 @@ class DryRunMeasurementCallback(Callback):
         self._static_allocated_bytes: int | None = None
         self._static_reserved_bytes: int | None = None
         self._started_at: float | None = None
+        self._trace: Any = None
 
     # --- training loop hooks ------------------------------------------------
 
@@ -97,6 +98,7 @@ class DryRunMeasurementCallback(Callback):
 
     def on_train_step_start(self, context: CallbackContext) -> None:
         torch.cuda.synchronize()
+        self._maybe_start_trace()
         self._started_at = time.perf_counter()
 
     def on_train_step_end(self, context: CallbackContext) -> None:
@@ -104,6 +106,7 @@ class DryRunMeasurementCallback(Callback):
         if self._started_at is None:
             raise RuntimeError("on_train_step_end fired without a matching start.")
         self._step_times.append(time.perf_counter() - self._started_at)
+        self._maybe_stop_trace()
         self._started_at = None
         self._record_microbatch_shape()
 
@@ -160,6 +163,49 @@ class DryRunMeasurementCallback(Callback):
             # inventory is how we confirm the peak reset kept the static pool.
             payload["static_reserved_bytes_at_train_start"] = self._static_reserved_bytes
         return payload
+
+    # --- kernel tracing, off unless asked for -------------------------------
+
+    def _maybe_start_trace(self) -> None:
+        """Begin a CUDA kernel trace when `DRYRUN_TRACE_STEP` names this step.
+
+        Off by default and deliberately so: the profiler perturbs the very step times
+        the latency model is fitted against, so a traced run must not also be a
+        measured run. It exists to answer "which kernels does a step actually
+        execute", which is the one question `ComposedTraining`'s per-op decomposition
+        cannot answer from the cost side — the composition can only report the ops it
+        already knows about, and a residual that is *none* of them is invisible to it.
+
+        Only rank 0 traces. The ranks hold different pipeline stages, so a trace per
+        rank would need stage-aware aggregation to mean anything, and rank 0's stage
+        is the one carrying the embedding and the loss.
+        """
+        target = os.environ.get("DRYRUN_TRACE_STEP")
+        if target is None or self._trace is not None or _rank() != 0:
+            return
+        if len(self._step_times) != int(target):
+            return
+        self._trace = torch.profiler.profile(
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ],
+            record_shapes=True,
+        )
+        self._trace.__enter__()
+
+    def _maybe_stop_trace(self) -> None:
+        """Close the trace and write both a raw export and a kernel-time summary."""
+        if self._trace is None:
+            return
+        self._trace.__exit__(None, None, None)
+        destination = self._run_dir / f"trace_step{len(self._step_times) - 1}.json"
+        self._trace.export_chrome_trace(str(destination))
+        _write_json_atomic(
+            self._run_dir / f"kernel_totals_step{len(self._step_times) - 1}.json",
+            _kernel_totals(self._trace),
+        )
+        self._trace = None
 
     # --- internals ---------------------------------------------------------
 
@@ -256,3 +302,135 @@ def write_oom_sidecar(
         _write_json_atomic(run_dir / f"oom_rank{rank}.json", payload)
     except Exception as marker_error:  # noqa: BLE001 - must never mask the OOM
         print(f"[dryrun] rank {rank} failed to write its OOM marker: {marker_error!r}")
+
+
+# Substring patterns mapping a CUDA kernel name onto the op family `ComposedTraining`
+# charges it under. Ordered: the first match wins, so a more specific pattern must come
+# first. `None` means "deliberately not one of the composition's families", which is the
+# bucket that answers the question this tracing exists for.
+#
+# Matching on kernel names is inherently a heuristic, and the summary keeps an
+# `unmatched` list naming every kernel that fell through with its total time. A residual
+# hiding in `unmatched` is the finding; a residual hiding in a *mis*-matched bucket would
+# be a bug in this table, which is why nothing is silently absorbed into "other".
+_KERNEL_CATEGORIES: tuple[tuple[str, str | None], ...] = (
+    # Attention, before GEMM: flash kernels are matmuls too but are charged separately.
+    ("flash_fwd", "attention"),
+    ("flash_bwd", "attention"),
+    ("fmha", "attention"),
+    ("attn", "attention"),
+    # GEMM. cutlass and the cublas-internal names both appear.
+    ("cutlass", "gemm"),
+    ("gemm", "gemm"),
+    ("cublas", "gemm"),
+    # cuBLAS's Hopper-generation GEMM kernels are named `nvjet_tst_*` and match none of
+    # the historical patterns. They were 0.86 s of `unmatched` before this line, which is
+    # how the unmatched bucket earns its keep: it named the gap instead of hiding it.
+    ("nvjet", "gemm"),
+    ("nn_", "gemm"),
+    ("s16816", "gemm"),
+    ("ampere_", "gemm"),
+    ("sm90", "gemm"),
+    # Collectives.
+    ("nccl", "collective"),
+    ("AllReduce", "collective"),
+    ("ReduceScatter", "collective"),
+    ("AllGather", "collective"),
+    ("SendRecv", "collective"),
+    # Optimizer.
+    ("multi_tensor_adam", "optimizer"),
+    ("multi_tensor_l2norm", "optimizer"),
+    ("multi_tensor_scale", "optimizer"),
+    ("adam", "optimizer"),
+    # Elementwise: norms, rope, activation, and the fused residual add.
+    ("rmsnorm", "elementwise"),
+    ("layernorm", "elementwise"),
+    ("layer_norm", "elementwise"),
+    ("rms_norm", "elementwise"),
+    ("rotary", "elementwise"),
+    ("RoPE", "elementwise"),
+    ("silu", "elementwise"),
+    ("swiglu", "elementwise"),
+    ("bias_dropout", "elementwise"),
+    ("dropout", "elementwise"),
+    ("GeluFunctor", "elementwise"),
+    # Loss and the logit path.
+    ("cross_entropy", "loss"),
+    ("softmax", "loss"),
+    ("log_softmax", "loss"),
+)
+
+
+def _categorize_kernel(name: str) -> str | None:
+    """Return the op family a CUDA kernel belongs to, or None when unrecognized."""
+    lowered = name.lower()
+    for pattern, family in _KERNEL_CATEGORIES:
+        if pattern.lower() in lowered:
+            return family
+    return None
+
+
+def _kernel_totals(trace: Any) -> dict[str, Any]:
+    """
+    Summarize one step's CUDA kernel time by op family.
+
+    This is the measurement `ComposedTraining`'s decomposition structurally cannot make.
+    The composition sums the ops it knows about, so a cost it has no term for is invisible
+    from the cost side however carefully the per-term shares are read. Here the total is
+    whatever the GPU actually ran, and the `unmatched` list is the part no modelled family
+    claims.
+
+    Device time is summed per kernel name rather than taken from the profiler's own
+    grouping, because `key_averages()` aggregates by op rather than by kernel and a fused
+    TE module appears as one op spanning several kernels.
+
+    **Only `DeviceType.CUDA` events are counted.** `self_device_time_total` is non-zero on
+    the *CPU-side* op as well as on the kernel it launched, so filtering merely on "has
+    device time" double-counts every collective: `nccl:coalesced` and
+    `ncclDevKernel_SendRecv` both reported 2.859 s across 2 calls, and the first version of
+    this function summed both. That inflated the collective family to 68% of device time,
+    which is exactly the kind of plausible-looking number this tracing exists to avoid
+    producing.
+
+    Returns:
+        dict[str, Any]: `by_family` in seconds, `total_device_s`, `unmatched` as a
+            descending list of `[name, seconds, count]`, and `top_kernels` for context.
+    """
+    from collections import defaultdict
+
+    per_kernel: dict[str, list[float]] = defaultdict(lambda: [0.0, 0])
+    cuda_device = torch.autograd.DeviceType.CUDA
+    for event in trace.events():
+        # A CPU op carries the device time of the kernels it launched, so counting both
+        # the op and its kernel doubles every collective. Only the kernel is real work.
+        if getattr(event, "device_type", None) != cuda_device:
+            continue
+        name = getattr(event, "name", "")
+        duration = getattr(event, "self_device_time_total", 0) or 0
+        if duration <= 0:
+            continue
+        entry = per_kernel[name]
+        entry[0] += float(duration) / 1e6  # microseconds -> seconds
+        entry[1] += 1
+
+    by_family: dict[str, float] = defaultdict(float)
+    unmatched: list[tuple[str, float, int]] = []
+    for name, (seconds, count) in per_kernel.items():
+        family = _categorize_kernel(name)
+        if family is None:
+            unmatched.append((name, seconds, count))
+            by_family["unmatched"] += seconds
+        else:
+            by_family[family] += seconds
+
+    unmatched.sort(key=lambda item: -item[1])
+    ranked = sorted(per_kernel.items(), key=lambda item: -item[1][0])
+    return {
+        "by_family_s": {name: by_family[name] for name in sorted(by_family)},
+        "total_device_s": sum(by_family.values()),
+        "distinct_kernels": len(per_kernel),
+        "unmatched": [[name, seconds, count] for name, seconds, count in unmatched[:40]],
+        "top_kernels": [
+            [name, entry[0], entry[1]] for name, entry in ranked[:40]
+        ],
+    }

@@ -21,33 +21,42 @@ validation set's step times. It is charged because an unmeasured term cannot be 
 and ruling it out turned out to be the result.
 
 Scores MRE 12.63% with signed mean -12.63% on the 22 out-of-sample Megatron THD records,
-against the fitted polynomial's 2.73% in-sample. **One unexplained term remains and it is
-the whole residual**: every record under-predicts by 4.7-25.6% of its own prediction. No
-constant is added for it, because a fitted constant is exactly the unexplained coefficient
-this model exists to avoid.
+against the fitted polynomial's 2.73% in-sample. Every record under-predicts.
 
-Its shape, regressed through the origin over all 22 records: proportional to total
-predicted time (c = 0.185, r^2 = 0.932). Not a fixed per-step cost, and not a per-slot
-constant either - `slots` alone gives r^2 = 0.869 and the per-slot values span 0.039-0.484 s.
+**A kernel trace of a real step located the residual, and validated most of the model.**
+Tracing rank 0 at 12288 tokens for nmb 1 and nmb 4 (`DRYRUN_TRACE_STEP=4`, see
+`adapters/megatron/measure.py`) gives per-stage costs to compare term by term:
 
-What it is not, each excluded by measurement rather than by argument:
+| term | composed | traced | ratio |
+|---|---|---|---|
+| gemm | 0.8162 s | 0.8299 s | 0.98 |
+| attention | 0.3927 s | 0.3936 s | 1.00 |
+| tp_collective | 0.0912 s | 0.0824 s | 1.11 |
+| elementwise | 0.0190 s | 0.0896 s | **0.21** |
 
-- Not the GEMM table being cuBLAS where training is TE. Measured: `te.Linear` against
-  `torch.nn.functional.linear` at the four Qwen3 tp=2 projections is **1.001x**. The gap
-  correlates with GEMM time at r^2 = 0.968, but GEMM is 69% of the prediction, so that is
-  collinearity with total cost rather than evidence.
-- Not the optimizer step (14.1 ms per step, measured at 81% of HBM peak so it has no
-  headroom to be larger).
-- Not recompute: the replay is already charged for the GEMMs, attention, elementwise and
-  the SP collectives (3 forward-shaped passes, 8 all-gather + 6 reduce-scatter per layer).
-- Not the two unmodelled residual-add kernels: priced at `rms_norm`'s bandwidth they come
-  to 5.4 ms per slot, 2.7% of the gap.
+So the GEMM and attention tables are right against real kernels, not merely
+self-consistent, and the SP collective counts are confirmed exactly: the trace shows 97
+all-gathers and 73 reduce-scatters against the derived 96 and 72, the extra one each being
+setup. **Elementwise is low by 4.6x**, and that is most of the gap: scaled by `pp` and the
+microbatch count it accounts for 4.9% of the 4.9% shortfall at nmb=1 and 10.0% of the 13.6%
+at nmb=4.
 
-At ~16 ms per layer against ~29 ms of modelled GEMM per layer it is too large to be any
-pointwise kernel, and the per-op tables it would have to live in are individually accurate
-to 2.8-5.7% on holdout. The remaining candidates need a profiler trace of a real step —
-kernels the composition does not know exist, or per-call launch overhead that the isolated
-measurements amortize away. `docs/reference/limitations.md` records it as the open item.
+The cause is a coverage gap rather than a wrong formula. The sweep measures the four
+kernels vLLM runs; a traced Megatron step executes **64 distinct** non-GEMM,
+non-attention, non-collective, non-optimizer kernels — generic `at::native` elementwise,
+`CatArrayBatchedCopy` for the QKV split, bf16 copies, and TE's own rmsnorm. The fix is to
+sweep them, not to scale the existing term.
+
+**The bubble is real and is now a named term at 36.1% of the prediction.** It appears on
+the GPU as `ncclDevKernel_SendRecv` blocking at the stage boundary: 2.859 s across 2 calls
+for a 48 MiB handoff, which is 35 MB/s on a 450 GB/s link, so it is a stage waiting rather
+than bytes moving. `pp_comm` is the transfer; `bubble` is the wait.
+
+**Per-layer work is charged per microbatch, not per slot**, which the trace settles: every
+per-layer kernel count scales exactly 4.00x from nmb=1 to nmb=4 (flash forward 24 -> 96,
+all-gather 97 -> 388, reduce-scatter 73 -> 292). The previous code multiplied by `slots`
+and added no separate bubble, which is algebraically the same total but conflated two
+quantities that scale differently.
 
 **The MRE was 7.62% before the per-sequence attention fix below, and that was two errors
 cancelling.** Attention is now priced per `cu_seqlens` segment, which is correct physics:
@@ -276,10 +285,23 @@ class ComposedTraining(TrainingLatencyModel):
         exactly the instrument you would use to diagnose that drift, so it must not be the
         thing that drifted.
 
-        Under 1F1B the critical path is ``num_microbatches + pp - 1`` slots, and each slot
-        executes one pipeline stage's ``num_layers / pp`` layers. The per-slot cost is
-        therefore priced at a fraction of the model, and the bubble falls out of the slot
-        count exceeding the microbatch count rather than being a separate term.
+        **Per-layer work is charged per microbatch; only the bubble is charged per slot.**
+        Verified by tracing rank 0 of a real step at 12288 tokens, nmb 1 against nmb 4:
+        every per-layer kernel count scales exactly 4.00x (flash forward 24 -> 96, flash
+        backward 12 -> 48, all-gather 97 -> 388, reduce-scatter 73 -> 292), and the device
+        time with it (gemm 3.92x, attention 3.98x, elementwise 4.00x).
+
+        Charging per *slot* was a measured over-count: at nmb=1, pp=3 the step has 3 slots
+        but one microbatch, so the SP collectives were priced at 288 all-gathers where the
+        trace shows 96. The error is `slots / num_microbatches`, which is 3x at nmb=1, 1.5x
+        at nmb=4 and 1.03x at nmb=64 — invisible in a pooled MRE fitted over mixed
+        microbatch counts, and the reason the residual looked proportional to total cost.
+
+        The bubble is the `pp - 1` slots in which a stage has no microbatch to process. It
+        appears on the GPU as `ncclDevKernel_SendRecv` blocking at the stage boundary: the
+        trace shows 2.859 s across 2 calls for a 48 MiB handoff, which is 35 MB/s on a
+        450 GB/s link, so it is a wait rather than a transfer. Priced as
+        `(slots - num_microbatches)` idle slots of one stage's work.
 
         Args:
             microbatches: The plan, each entry carrying `sum_tokens`.
@@ -302,7 +324,8 @@ class ComposedTraining(TrainingLatencyModel):
                 f"{self._ops.tensor_parallel}. Construct a TrainingOps with the same TP degree."
             )
         token_count = self._slot_token_count(microbatches)
-        slots = pipeline_slots(len(microbatches), parallelism.pp)
+        num_microbatches = len(microbatches)
+        slots = pipeline_slots(num_microbatches, parallelism.pp)
         # Each slot is one pipeline stage's work. A multiplier declared per *model* is
         # scaled by this ratio; a multiplier declared per *step* is not.
         stage_fraction = 1.0 / parallelism.pp
@@ -360,20 +383,24 @@ class ComposedTraining(TrainingLatencyModel):
             except KernelCoverageError:
                 pass
 
-        # Pipeline sends are per *microbatch*, not per layer, so they are charged outside
-        # the per-layer scaling and against the microbatch count rather than the slot count:
-        # the bubble slots carry no microbatch and so send nothing.
+        # The transfer itself, which is per microbatch per boundary crossing. Distinct from
+        # `bubble` below: this is the bytes moving, that is the stage waiting.
         pp_comm = sum(
             self._db.query_comm(query) * mult
             for query, mult in self._ops.pp_comm_queries(
                 token_count, pipeline_parallel=parallelism.pp
             )
-        ) * len(microbatches)
+        ) * num_microbatches
 
-        # Every per-layer term is charged once per slot; logits and the optimizer are
-        # per-step and are not.
-        scaled = {name: value * slots for name, value in terms.items()}
+        # Per-layer terms are charged once per *microbatch* (traced: every per-layer kernel
+        # count scales 4.00x from nmb=1 to nmb=4). The idle slots are charged separately so
+        # the two cannot be confused again.
+        scaled = {name: value * num_microbatches for name, value in terms.items()}
         scaled["pp_comm"] = pp_comm
+        # The 1F1B bubble: `pp - 1` slots in which this stage has no microbatch. Each costs
+        # one stage-pass of wall time, which is the per-microbatch cost already computed.
+        idle_slots = slots - num_microbatches
+        scaled["bubble"] = idle_slots * sum(terms.values())
         scaled["logits"] = logits
         scaled["optimizer"] = self._optimizer_latency(parallelism)
         return scaled
