@@ -28,6 +28,22 @@ attention:
 elementwise:
   token_counts: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 
+optimizer:
+  # Parameter counts, not token counts: an Adam step reads and writes the optimizer state
+  # once per step regardless of how many tokens produced the gradients. The grid brackets
+  # `total_parameters / (tp * pp * dp)`, which is the shard one rank updates. Qwen3-8B at
+  # tp=2/pp=3/dp=1 gives 1.365B; the smaller points cover higher parallelism degrees and a
+  # distributed optimizer dividing again across DP, and the sub-10M points exist to locate
+  # the launch floor rather than because any real shard is that small.
+  #
+  # The ceiling is 2.048B, not higher: a shard needs ~18 bytes per parameter for its
+  # parameter, gradient and fp32 state, so 4.096B wants 115 GiB against H20's 95 GiB. The
+  # first sweep included that point, the allocation OOM'd inside TE, and the timed step then
+  # measured an empty update at an implied 190 TB/s. `profiler/kernels/optimizer.py` now
+  # refuses such a point rather than recording it.
+  param_counts: [1000000, 2000000, 5000000, 10000000, 20000000, 50000000, 100000000,
+     200000000, 341000000, 512000000, 683000000, 1024000000, 1365000000, 2048000000]
+
 collective:
   # Message sizes are swept directly rather than derived from token counts: the five
   # collectives do not carry the same size at the same token count. An SP-sharded

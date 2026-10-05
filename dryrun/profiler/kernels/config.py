@@ -106,6 +106,30 @@ class ElementwiseSweep:
 
 
 @dataclass(frozen=True)
+class OptimizerSweep:
+    """Parameter-shard sizes to measure the fused Adam step at.
+
+    Parameter counts rather than token counts: an Adam step's cost is independent of how
+    many tokens produced the gradients. This is the only sweep in the tree with no token
+    axis, and that is a property of the op rather than an omission.
+
+    The grid should bracket `total_parameters / (tp * pp * dp)` for the configurations being
+    modelled, since that is the shard one rank updates. Qwen3-8B at tp=2, pp=3 gives
+    1.365B, and a dp=8 distributed optimizer would divide that again.
+    """
+
+    param_counts: tuple[int, ...]
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> OptimizerSweep:
+        return cls(
+            param_counts=_positive_int_tuple(
+                value["param_counts"], field="optimizer.param_counts"
+            )
+        )
+
+
+@dataclass(frozen=True)
 class CollectiveSweep:
     """Message sizes and topologies to measure every collective at.
 

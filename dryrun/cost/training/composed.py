@@ -13,17 +13,28 @@ so the default multiplier is 1.0. A per-shape backward table (B1) would improve 
 the current prediction is in the right range and is explicit rather than absorbed into
 an unexplained coefficient.
 
-Optimizer step cost is treated as a fixed per-step overhead. Its profiled value is a
-property of the host-side Adam kernel time and the memory bandwidth over the parameter
-shards, both of which are dominated by parameter count rather than sequence length. The
-default is zero (no term), which expresses that it is not yet measured; a caller can pass
-a measured value, and the per-term decomposition surfaces its magnitude clearly.
+The optimizer step is a measured kernel like any other, priced from the `optimizer_step`
+table against the parameter shard one rank updates. It is the only term with no token axis,
+because an Adam step's cost does not depend on how many tokens produced the gradients.
+Measured on H20: 14.1 ms for a Qwen3-8B rank at tp=2, pp=3, which is 0.02-1.3% of the
+validation set's step times. It is charged because an unmeasured term cannot be ruled out,
+and ruling it out turned out to be the result.
+
+What the composition is still missing, stated because the decomposition is what makes a
+kernel sum worth having: the residual against the 22 THD records is a uniform
+under-prediction of ~17%, and it scales with work rather than being a fixed per-step cost
+(10-39% of prediction across a 192x token range). So the gap is in a per-token term, not in
+anything charged once per step. The leading candidates are the GEMM table being measured
+with `torch.nn.functional.linear` where TE dispatches its own kernels, and the attention
+table being vLLM's FlashAttention where TE dispatches cuDNN FusedAttention on sm90.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
+from ...profiler.schema import SequenceStats
 from ..kernel.database import KernelDatabase
 from ..kernel.interp import KernelCoverageError
 from .base import TrainingLatencyModel, TrainingParallelism, TrainingWorkload
@@ -49,9 +60,10 @@ class ComposedTraining(TrainingLatencyModel):
         ops: Per-microbatch op list, sharded for the intended TP degree.
         attn_bwd_fwd_ratio: Attention backward latency as a multiple of forward. Default 1.0
             (measured 0.83-0.99x for cuDNN FusedAttention on H20). Set to 0 to omit.
-        optimizer_overhead_s: Per-step optimizer cost in seconds. Default 0.0 (unmeasured).
-            Measured on H20 with Adam + distributed optimizer = approximately 0.15-0.35s for
-            an 8.19B parameter model, but this is highly configuration-dependent.
+        charge_optimizer: Whether to price the fused Adam step from the `optimizer_step`
+            table. Default True. Set False to score a configuration whose optimizer table
+            has not been swept; the term is then absent from the decomposition rather than
+            silently zero, so the omission is visible.
 
     Example::
 
@@ -71,12 +83,12 @@ class ComposedTraining(TrainingLatencyModel):
         ops: TrainingOps,
         *,
         attn_bwd_fwd_ratio: float = 1.0,
-        optimizer_overhead_s: float = 0.0,
+        charge_optimizer: bool = True,
     ) -> None:
         self._db = database
         self._ops = ops
         self._attn_bwd_fwd_ratio = attn_bwd_fwd_ratio
-        self._optimizer_overhead_s = optimizer_overhead_s
+        self._charge_optimizer = charge_optimizer
 
     @classmethod
     def from_checkpoint(
@@ -92,7 +104,7 @@ class ComposedTraining(TrainingLatencyModel):
         distributed_optimizer: bool = True,
         utility_surface: str = "pchip",
         attn_bwd_fwd_ratio: float = 1.0,
-        optimizer_overhead_s: float = 0.0,
+        charge_optimizer: bool = True,
         base_dir: Path | None = None,
     ) -> ComposedTraining:
         """Convenience constructor that reads tables and checkpoint from disk."""
@@ -106,8 +118,12 @@ class ComposedTraining(TrainingLatencyModel):
             distributed_optimizer=distributed_optimizer,
             base_dir=base_dir,
         )
-        return cls(db, ops, attn_bwd_fwd_ratio=attn_bwd_fwd_ratio,
-                   optimizer_overhead_s=optimizer_overhead_s)
+        return cls(
+            db,
+            ops,
+            attn_bwd_fwd_ratio=attn_bwd_fwd_ratio,
+            charge_optimizer=charge_optimizer,
+        )
 
     def predict(
         self,
@@ -149,80 +165,161 @@ class ComposedTraining(TrainingLatencyModel):
             parallelism.dp,
             micro_batch_size=workload.micro_batch_size,
         )
-        num_microbatches = len(microbatches)
-        slots = pipeline_slots(num_microbatches, parallelism.pp)
+        return self.predict_microbatches(microbatches, parallelism)
 
-        # Price a single stage's worth of work: num_layers / pp.
-        # The slot cost scales the op multipliers to per-stage rather than per-model.
-        layers_per_stage = self._ops.num_layers / parallelism.pp
-
-        # Price each microbatch at sum_tokens (THD packing packs multiple sequences into
-        # one row, so GEMMs run over sum_tokens not max_tokens; using max_tokens understated
-        # packed records by the packing factor).
-        avg_sum_tok = sum(mb.sum_tokens for mb in microbatches) / max(len(microbatches), 1)
-        tok = int(avg_sum_tok)
-
-        slot_latency = self._price_stage(tok, layers_per_stage)
-
-        return slots * slot_latency + self._optimizer_overhead_s
-
-    def _price_stage(
+    def predict_microbatches(
         self,
-        token_count: int,
-        layers_per_stage: float,
-        *,
-        charge_logits: bool = True,
+        microbatches: Sequence[SequenceStats],
+        parallelism: TrainingParallelism,
     ) -> float:
-        """Price one pipeline stage's worth of work (forward + backward, with recompute).
+        """
+        Predict latency for an already-planned microbatch sequence.
+
+        This is the entry point validation uses, because a profiled record carries the plan
+        Megatron actually executed. Routing through `predict` would re-plan it from the
+        sequence lengths and fold `MicrobatchPlanner`'s disagreement with Megatron's own
+        batching into the latency score, making a composition error and a planning error
+        indistinguishable.
 
         Args:
-            token_count: Tokens in the microbatch. Under THD packing this is
-                ``sum_tokens``, not ``max_tokens``.
-            layers_per_stage: ``num_layers / pp``. Fractional values are fine.
-            charge_logits: Whether to charge the logits GEMM. It runs once per step on
-                the last pipeline stage only, so a caller pricing a middle stage passes
-                False. Default True because the single-stage (pp=1) case always pays it.
+            microbatches: The plan, each entry carrying `sum_tokens`.
+            parallelism: TP/PP/DP degrees. TP must match `ops.tensor_parallel`.
+
+        Returns:
+            float: Predicted step latency in seconds.
+
+        Raises:
+            KernelCoverageError: If any query falls outside the measured tables.
+            ValueError: If `parallelism.tp` does not match `ops.tensor_parallel`, or if
+                `microbatches` is empty.
         """
-        total = 0.0
-        layers = layers_per_stage  # fractional is fine: the multiplier is linear
+        terms = self.decompose_microbatches(microbatches, parallelism)
+        return sum(terms.values())
 
-        # Forward GEMMs: multiplier already includes recompute doubling (in TrainingOps)
-        for query, mult_full in self._ops.forward_gemm_queries(token_count):
-            total += self._db.query_gemm(query) * (mult_full * layers / self._ops.num_layers)
+    def _slot_token_count(self, microbatches: Sequence[SequenceStats]) -> int:
+        """Return the token count one pipeline slot is priced at.
 
-        # Backward GEMMs (dgrad + wgrad): each runs once per token per layer
-        for query, _ in self._ops.backward_gemm_queries(token_count):
-            total += self._db.query_gemm(query) * layers
+        The mean `sum_tokens` across the plan, not the max. Under 1F1B every microbatch
+        occupies one slot on the critical path, so the step cost is the sum over
+        microbatches, and `slots * mean` reproduces that sum exactly when the plan is
+        uniform while staying linear in the ragged case. `max` would charge every slot for
+        the longest microbatch, which over-predicts a ragged RL batch by the raggedness.
 
-        # Attention: num_passes (1 or 2 under recompute) for forward
-        attn_query = self._ops.attention_query(token_count=token_count)
-        attn_fwd_single = self._db.query_attention(attn_query)
-        attn_passes = self._ops.attention_passes()
-        total += attn_fwd_single * attn_passes * layers
+        `sum_tokens` rather than `max_tokens`: under THD packing a microbatch holding three
+        4096-token sequences runs its GEMMs over 12288 rows. Pricing `max_tokens` understated
+        those records by the packing factor, which measured as a 3x miss.
+        """
+        if not microbatches:
+            raise ValueError("A training step needs at least one microbatch.")
+        return int(sum(mb.sum_tokens for mb in microbatches) / len(microbatches))
+    def decompose_microbatches(
+        self,
+        microbatches: Sequence[SequenceStats],
+        parallelism: TrainingParallelism,
+    ) -> dict[str, float]:
+        """
+        Return the latency contribution of each op family for one step.
 
-        # Attention backward
-        total += attn_fwd_single * self._attn_bwd_fwd_ratio * layers
+        This is the per-term decomposition Spec B calls for, and `predict_microbatches` is
+        defined as the sum of this dict rather than as a parallel computation. Two code
+        paths summing the same kernels would be free to drift, and the decomposition is
+        exactly the instrument you would use to diagnose that drift, so it must not be the
+        thing that drifted.
 
-        # TP collectives: scale per-layer count proportionally
-        for query, mult_full in self._ops.tp_comm_queries(token_count):
-            mult_stage = mult_full * layers / self._ops.num_layers
-            total += self._db.query_comm(query) * mult_stage
+        Under 1F1B the critical path is ``num_microbatches + pp - 1`` slots, and each slot
+        executes one pipeline stage's ``num_layers / pp`` layers. The per-slot cost is
+        therefore priced at a fraction of the model, and the bubble falls out of the slot
+        count exceeding the microbatch count rather than being a separate term.
 
-        # Logits: once per step on the last stage, over EVERY token (not one per
-        # request as in inference). A missing dgrad slice is skipped rather than
-        # clamped onto a neighbouring projection's curve.
-        if charge_logits:
-            for query, mult in self._ops.logits_queries(token_count):
-                try:
-                    total += self._db.query_gemm(query) * mult
-                except KernelCoverageError:
-                    pass
+        Args:
+            microbatches: The plan, each entry carrying `sum_tokens`.
+            parallelism: TP/PP/DP degrees. TP must match `ops.tensor_parallel`.
 
-        return total
+        Returns:
+            dict[str, float]: Seconds per term. Keys are ``gemm_fwd``, ``gemm_bwd``,
+                ``attn_fwd``, ``attn_bwd``, ``elementwise``, ``tp_collective``, ``logits``,
+                and ``optimizer``. Summing them gives `predict_microbatches`.
 
-    def _price_microbatch(self, token_count: int) -> float:
-        """Price one full model microbatch (forward + backward, all layers). Used for decompose."""
-        return self._price_stage(token_count, self._ops.num_layers)
+        Raises:
+            KernelCoverageError: If any query falls outside the measured tables.
+            ValueError: If `parallelism.tp` does not match `ops.tensor_parallel`, or if
+                `microbatches` is empty.
+        """
+        if parallelism.tp != self._ops.tensor_parallel:
+            raise ValueError(
+                f"parallelism.tp {parallelism.tp} does not match ops.tensor_parallel "
+                f"{self._ops.tensor_parallel}. Construct a TrainingOps with the same TP degree."
+            )
+        token_count = self._slot_token_count(microbatches)
+        slots = pipeline_slots(len(microbatches), parallelism.pp)
+        # Each slot is one pipeline stage's work. A multiplier declared per *model* is
+        # scaled by this ratio; a multiplier declared per *step* is not.
+        stage_fraction = 1.0 / parallelism.pp
+        layers = self._ops.num_layers * stage_fraction
+
+        terms = {
+            "gemm_fwd": sum(
+                self._db.query_gemm(query) * mult * stage_fraction
+                for query, mult in self._ops.forward_gemm_queries(token_count)
+            ),
+            "gemm_bwd": sum(
+                self._db.query_gemm(query) * layers
+                for query, _ in self._ops.backward_gemm_queries(token_count)
+            ),
+            "elementwise": sum(
+                self._db.query_elementwise(query) * mult * stage_fraction
+                for query, mult in self._ops.elementwise_queries(token_count)
+            ),
+            "tp_collective": sum(
+                self._db.query_comm(query) * mult * stage_fraction
+                for query, mult in self._ops.tp_comm_queries(token_count)
+            ),
+        }
+
+        # Attention forward is measured once and charged for each forward-shaped pass, so
+        # the recompute replay cannot drift from the GEMM path's own doubling.
+        attn_fwd_single = self._db.query_attention(
+            self._ops.attention_query(token_count=token_count)
+        )
+        terms["attn_fwd"] = attn_fwd_single * self._ops.attention_passes() * layers
+        terms["attn_bwd"] = attn_fwd_single * self._attn_bwd_fwd_ratio * layers
+
+        # Logits run once per step on the last pipeline stage, over every token rather than
+        # one per request. A missing dgrad slice is skipped rather than clamped onto a
+        # neighbouring projection's curve: the measured table has no row for it, and the
+        # nearest slice describes different work.
+        logits = 0.0
+        for query, mult in self._ops.logits_queries(token_count):
+            try:
+                logits += self._db.query_gemm(query) * mult
+            except KernelCoverageError:
+                pass
+
+        # Every per-layer term is charged once per slot; logits and the optimizer are
+        # per-step and are not.
+        scaled = {name: value * slots for name, value in terms.items()}
+        scaled["logits"] = logits
+        scaled["optimizer"] = self._optimizer_latency(parallelism)
+        return scaled
+
+    def _optimizer_latency(self, parallelism: TrainingParallelism) -> float:
+        """Return the fused Adam step cost for one rank's parameter shard, in seconds.
+
+        Zero when the caller disabled the term, when the model descriptor carries no
+        parameter count, or when the `optimizer_step` table has not been swept. The last
+        case is a coverage gap rather than a zero cost, but refusing the whole prediction
+        over a term measured at 0.02-1.3% of a step would trade a small known error for a
+        total one. The decomposition reports the zero, which is where the omission shows.
+        """
+        if not self._charge_optimizer:
+            return 0.0
+        query = self._ops.optimizer_query(pipeline_parallel=parallelism.pp)
+        if query is None:
+            return 0.0
+        try:
+            return self._db.query_optimizer(query)
+        except KernelCoverageError:
+            return 0.0
 
     def decompose(
         self,
@@ -230,58 +327,19 @@ class ComposedTraining(TrainingLatencyModel):
         parallelism: TrainingParallelism,
     ) -> dict[str, float]:
         """
-        Return the latency contribution of each op family for one step.
+        Return the per-term decomposition for a workload, planning it first.
 
-        This is the per-term decomposition Spec B calls for: the value of a kernel sum
-        is that a miss points to a named op. The dict keys match the trainable terms;
-        the sum of values equals ``predict()``.
+        Args:
+            workload: Sequence lengths and batching parameters.
+            parallelism: TP/PP/DP degrees.
 
         Returns:
-            dict[str, float]: Keys are ``"gemm_fwd"``, ``"gemm_bwd"``, ``"attn_fwd"``,
-                ``"attn_bwd"``, ``"tp_collective"``, ``"optimizer"``, ``"bubble"``.
-                All values are in seconds.
+            dict[str, float]: As `decompose_microbatches`.
         """
-        if parallelism.tp != self._ops.tensor_parallel:
-            raise ValueError(
-                f"parallelism.tp {parallelism.tp} does not match ops.tensor_parallel "
-                f"{self._ops.tensor_parallel}."
-            )
-
-        planner = MicrobatchPlanner(
-            BatchingMode.FIXED_SIZE,
-            max_tokens_per_rank=workload.max_tokens_per_microbatch,
-        )
+        planner = MicrobatchPlanner(BatchingMode.PAD_TO_MAX)
         microbatches = planner.plan(
             workload.sequence_lengths,
             parallelism.dp,
             micro_batch_size=workload.micro_batch_size,
         )
-        num_microbatches = len(microbatches)
-        slots = pipeline_slots(num_microbatches, parallelism.pp)
-        avg_token_count = sum(mb.max_tokens for mb in microbatches) / max(len(microbatches), 1)
-        tok = int(avg_token_count)
-
-        gemm_fwd = sum(
-            self._db.query_gemm(q) * m for q, m in self._ops.forward_gemm_queries(tok)
-        )
-        gemm_bwd = sum(
-            self._db.query_gemm(q) * m for q, m in self._ops.backward_gemm_queries(tok)
-        )
-        attn_fwd_s = self._db.query_attention(self._ops.attention_query(token_count=tok))
-        attn_fwd = attn_fwd_s * self._ops.num_layers
-        attn_bwd = attn_fwd * self._attn_bwd_fwd_ratio
-        tp_coll = sum(
-            self._db.query_comm(q) * m for q, m in self._ops.tp_comm_queries(tok)
-        )
-        slot_latency = gemm_fwd + gemm_bwd + attn_fwd + attn_bwd + tp_coll
-        bubble = (slots - num_microbatches) * slot_latency / max(num_microbatches, 1)
-
-        return {
-            "gemm_fwd": gemm_fwd * slots,
-            "gemm_bwd": gemm_bwd * slots,
-            "attn_fwd": attn_fwd * slots,
-            "attn_bwd": attn_bwd * slots,
-            "tp_collective": tp_coll * slots,
-            "optimizer": self._optimizer_overhead_s,
-            "bubble": bubble,
-        }
+        return self.decompose_microbatches(microbatches, parallelism)

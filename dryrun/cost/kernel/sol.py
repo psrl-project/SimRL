@@ -85,6 +85,11 @@ FALLBACK_FLOORS_S: dict[str, dict[str, float]] = {
     # uses, and `nccl` times `torch.distributed.all_reduce` as a control. Both need a floor,
     # because a launch cost dominates entirely at the message sizes a decode step produces.
     "nccl": dict(_COLLECTIVE_FALLBACK_S),
+    # `megatron` names the framework whose optimizer is timed: TE's `FusedAdam`, which is
+    # what `megatron/core/optimizer/__init__.py` imports in preference to torch's. The
+    # floor matters least of any op here, since a real shard is 10^8-10^9 parameters and the
+    # measured step is bandwidth-bound at 2703 GB/s well before a launch cost is visible.
+    "megatron": {"optimizer_step": 2e-6},
 }
 
 

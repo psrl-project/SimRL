@@ -56,10 +56,16 @@ from typing import TYPE_CHECKING
 
 from ...profiler.hf import model_descriptor_from_yaml
 from ...profiler.kernels.attention import rank_head_counts
-from ...profiler.kernels.config import model_head_dim
+from ...profiler.kernels.config import model_head_dim, model_intermediate_size
 from ...profiler.kernels.shapes import logits_gemm_shape, transformer_gemm_shapes
 from ...profiler.schema import ModelDescriptor, ProfileValidationError
-from ..kernel.database import AttentionQuery, CommQuery, GemmQuery
+from ..kernel.database import (
+    AttentionQuery,
+    CommQuery,
+    ElementwiseQuery,
+    GemmQuery,
+    OptimizerQuery,
+)
 from ..kernel.hardware import dtype_bytes
 
 if TYPE_CHECKING:
@@ -147,6 +153,9 @@ class TrainingOps:
         if model.hidden_size is None:
             raise ProfileValidationError("Model is missing hidden_size.")
         self._hidden_size = int(model.hidden_size)
+        self._intermediate_size = model_intermediate_size(model)
+        self._qk_layernorm = bool(model.extra.get("qk_layernorm", False))
+        self._parameter_count = model.parameter_count
         self._dtype = dtype
         self._gradient_dtype = gradient_dtype
         self._element_bytes = dtype_bytes(dtype)
@@ -298,6 +307,73 @@ class TrainingOps:
             (GemmQuery(m=self._logits_n, n=self._logits_k, k=token_count), 1),
         )
 
+    def elementwise_queries(
+        self, token_count: int
+    ) -> tuple[tuple[ElementwiseQuery, float], ...]:
+        """
+        Return the pointwise kernel queries per step, each with its per-step multiplier.
+
+        Where the sequence is sharded matters, and the two groups shard differently:
+
+        - The two hidden-size RMSNorms sit **outside** the all_gather, on the
+          sequence-parallel region, so each rank normalizes ``token_count / tp`` rows of
+          ``hidden_size``. Charging them the full sequence would overstate them by ``tp``.
+        - RoPE and the q/k norms sit **inside** the TP region, after the all_gather, so
+          each rank sees the full sequence but only its own ``num_heads / tp`` heads.
+          `self._num_heads` and `self._num_kv_heads` are already the per-rank counts from
+          `rank_head_counts`, so the token count passed here is the full one.
+        - SwiGLU likewise runs inside the TP region on ``intermediate_size / tp`` columns.
+
+        The multiplier counts forward, recompute replay, and backward. Backward is charged
+        at the same cost as forward, which is the same approximation
+        `ComposedTraining` makes for attention and for the same reason: a pointwise
+        kernel's backward reads and writes comparable traffic to its forward. RoPE backward
+        is the exception, being a transpose-free rotation with no saved-tensor read, so it
+        is charged at forward cost rather than attempting a separate ratio.
+
+        Not charged: the two residual adds, which Megatron fuses into one
+        `bias_dropout_add_fused_train` kernel each. The measured table holds only the four
+        kinds vLLM runs (`ELEMENTWISE_KINDS`), and a fused bias-dropout-add is not among
+        them. It is omitted rather than priced against `rms_norm`'s curve at the same
+        element count: both are bandwidth-bound over `token_count * hidden_size`, so the
+        substitution would look plausible and be unverifiable. Two kernels per layer against
+        the seven charged here, so the omission is a known under-count of roughly this
+        term's 2/9, and it is the next thing to measure if elementwise proves load-bearing.
+
+        Args:
+            token_count (int): Tokens in the microbatch, before any SP sharding. Under THD
+                packing this is ``sum_tokens``.
+
+        Returns:
+            tuple[tuple[ElementwiseQuery, float], ...]: ``(query, multiplier)`` pairs. The
+                multiplier is a float because it folds the layer count with the pass count.
+        """
+        tp = self._tensor_parallel
+        sp_tokens = max(token_count // tp, 1)
+        passes = 3.0 if self._recompute == "full" else 2.0  # fwd (+replay) + bwd
+
+        kernels: list[tuple[str, int]] = [
+            # input_layernorm and pre_mlp_layernorm, both on the SP-sharded sequence.
+            ("rms_norm", sp_tokens * self._hidden_size),
+            ("rms_norm", sp_tokens * self._hidden_size),
+            # RoPE on query and on key, inside the TP region on this rank's heads.
+            ("rotary_embedding", token_count * self._num_heads * self._head_dim),
+            ("rotary_embedding", token_count * self._num_kv_heads * self._head_dim),
+            # SwiGLU: chunk + silu + mul, fused into one kernel by `silu_and_mul`.
+            ("silu_and_mul", token_count * (self._intermediate_size // tp)),
+        ]
+        if self._qk_layernorm:
+            kernels.append(("qk_norm", token_count * self._num_heads * self._head_dim))
+            kernels.append(("qk_norm", token_count * self._num_kv_heads * self._head_dim))
+
+        return tuple(
+            (
+                ElementwiseQuery(op_kind=kind, n_elements=n_elements, dtype=self._dtype),
+                self._num_layers * passes,
+            )
+            for kind, n_elements in kernels
+        )
+
     def attention_query(self, *, token_count: int, backend: str | None = None) -> AttentionQuery:
         """
         Return the attention query for one microbatch.
@@ -371,6 +447,41 @@ class TrainingOps:
             (ag_query, ag_per_layer * self._num_layers),
             (rs_query, rs_per_layer * self._num_layers),
         )
+
+    def optimizer_query(self, *, pipeline_parallel: int) -> OptimizerQuery | None:
+        """
+        Return the fused Adam step query for one rank, or None if the shard is unknown.
+
+        The shard is ``parameter_count / (tp * pp * dp)``: tensor and pipeline parallelism
+        each divide the parameters a rank holds, and the distributed optimizer divides again
+        across the DP group. Without it, every DP rank would update the full set redundantly,
+        which is what `distributed_optimizer=False` means.
+
+        Measured magnitude, so the term's weight is stated rather than implied: a Qwen3-8B
+        rank at tp=2, pp=3 holds 1.365B parameters and the step costs 14.1 ms on H20, running
+        at 2703 GB/s against the card's 3.35 TB/s peak. Against the 1.06-72 s steps in the
+        THD validation set that is 0.02-1.3%. The term is real and it is not where a composed
+        step's error lives; measuring it is how that was established rather than assumed.
+
+        Returns None rather than raising when `parameter_count` is absent, because a
+        descriptor built from a config without a weight index carries an estimate or
+        nothing, and refusing to predict at all would be a worse failure than omitting a
+        1% term. `ComposedTraining` reports the omission through the decomposition.
+
+        Args:
+            pipeline_parallel (int): PP degree, which the ops do not carry: they describe one
+                microbatch's kernels and PP is a property of the step's schedule.
+
+        Returns:
+            OptimizerQuery | None: The query, or None when the parameter count is unknown.
+        """
+        if self._parameter_count is None:
+            return None
+        divisor = self._tensor_parallel * max(pipeline_parallel, 1)
+        if self._distributed_optimizer:
+            divisor *= self._dp
+        shard = max(int(self._parameter_count // divisor), 1)
+        return OptimizerQuery(param_count=shard)
 
     def dp_comm_queries(self) -> tuple[tuple[CommQuery, int], ...]:
         """

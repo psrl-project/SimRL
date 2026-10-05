@@ -82,6 +82,7 @@ def load_hf_model_descriptor(source: str | Path) -> ModelDescriptor:
         extra["model_type"] = config["model_type"]
     if config.get("head_dim") is not None:
         extra["head_dim"] = int(config["head_dim"])
+    extra["qk_layernorm"] = _has_qk_layernorm(config)
     for marker in _ARCHITECTURE_MARKER_KEYS:
         value = config.get(marker)
         if value is not None:
@@ -143,6 +144,32 @@ def _parameter_count(model_dir: Path | None, config: dict[str, Any]) -> int | No
                 width = _DTYPE_BYTES.get(dtype, 2)
                 return int(total_size) // width
     return _estimate_parameter_count(config)
+
+
+def _has_qk_layernorm(config: dict[str, Any]) -> bool:
+    """Report whether each attention layer normalizes query and key per head.
+
+    Two extra RMSNorm kernels per layer, over `head_dim` rather than `hidden_size`. The
+    narrow row makes them disproportionately expensive: measured on H20 at 25.2M elements,
+    `qk_norm` costs 122.9 us against `rms_norm`'s 40.8 us for the identical element count,
+    because a 128-wide row cannot saturate the memory system. So the composed training model
+    must know whether they are present rather than assume either way.
+
+    `qk_layernorm` is read from the config when stated, which is how Megatron's
+    `TransformerConfig` spells it. HuggingFace Qwen3 configs do not carry the flag, so the
+    architecture name is the fallback: `Qwen3ForCausalLM` and `Qwen3MoeForCausalLM` both
+    apply `q_norm`/`k_norm` unconditionally (verified against the checkpoint's own weight
+    index, which holds `self_attn.q_norm.weight` per layer). Anything else defaults to
+    absent, which is the pre-Qwen3 norm.
+    """
+    stated = config.get("qk_layernorm")
+    if stated is not None:
+        return bool(stated)
+    model_type = str(config.get("model_type", ""))
+    if model_type.startswith("qwen3"):
+        return True
+    architectures = config.get("architectures") or []
+    return any(str(name).startswith("Qwen3") for name in architectures)
 
 
 def _estimate_parameter_count(config: dict[str, Any]) -> int | None:

@@ -35,6 +35,11 @@ _DEFAULT_BACKEND = "vllm"
 # `torch.distributed.all_reduce` prices a kernel it never invokes. Pass `backend="nccl"`
 # explicitly to read the control table the collective sweep also writes.
 _COLLECTIVE_BACKEND = "vllm"
+# The optimizer backend names the training framework, not the inference server: the measured
+# kernel is TE's `FusedAdam`, which `megatron/core/optimizer/__init__.py` imports in
+# preference to apex's and to torch's. vLLM runs no optimizer, so the module-level `vllm`
+# default would resolve to a directory that cannot exist.
+_OPTIMIZER_BACKEND = "megatron"
 _PHASES = ("context", "generation")
 
 
@@ -132,6 +137,103 @@ class AttentionQuery:
 
 
 @dataclass(frozen=True)
+class ElementwiseQuery:
+    """One pointwise kernel call to price, identified by kind and element count.
+
+    `op_kind` is a slice column, so each kind gets its own utility surface: `qk_norm`
+    normalizes over `head_dim` where `rms_norm` normalizes over `hidden_size`, which puts
+    them on different points of the bandwidth curve at the same token count.
+
+    Consumed by `ComposedTraining` only. `ComposedRollout` deliberately omits this family:
+    its GEMM and attention utilities were fitted against a CUDA-graph-replayed server whose
+    elementwise cost is already inside them, and adding this term double-counts it (measured:
+    decode 4.84% -> 11.18% MRE). Megatron runs no CUDA graphs on the training path, so the
+    cost is genuinely exposed there. See `ops/elementwise.py` for the full derivation.
+    """
+
+    op_kind: str
+    n_elements: int
+    dtype: str = "bfloat16"
+    backend: str | None = None
+
+    def __post_init__(self) -> None:
+        from .ops.elementwise import ELEMENTWISE_KINDS
+
+        if self.op_kind not in ELEMENTWISE_KINDS:
+            known = ", ".join(ELEMENTWISE_KINDS)
+            raise KernelCoverageError(
+                f"Unknown elementwise op_kind {self.op_kind!r}. Known kinds: {known}."
+            )
+        if self.n_elements <= 0:
+            raise KernelCoverageError(
+                f"Elementwise n_elements must be positive, got {self.n_elements!r}."
+            )
+
+    @property
+    def op_name(self) -> str:
+        """Return the parquet op name this query reads."""
+        return "elementwise"
+
+    @property
+    def slice_key(self) -> tuple[Any, ...]:
+        """Return the categorical key in `ELEMENTWISE_OP.slice_columns` order."""
+        return (canonical_dtype(self.dtype), self.op_kind)
+
+    @property
+    def coords(self) -> tuple[float, ...]:
+        """Return interpolation coordinates in `ELEMENTWISE_OP.axis_columns` order."""
+        return (float(self.n_elements),)
+
+
+@dataclass(frozen=True)
+class OptimizerQuery:
+    """One fused optimizer step to price, over one rank's parameter shard.
+
+    The only query in this module with no token or shape axis: an Adam step's cost is
+    independent of how many tokens produced the gradients. `param_count` is the shard one
+    rank updates, which is `total_parameters / (tp * pp * dp)` under a distributed
+    optimizer.
+
+    `backend` defaults to `megatron` rather than to the database's `vllm` default, because
+    the measured kernel is TE's `FusedAdam` and vLLM has no optimizer at all. A `vllm`-keyed
+    optimizer table would describe nothing.
+    """
+
+    param_count: int
+    optimizer: str = "adam"
+    state_kind: str = "master_fp32"
+    backend: str | None = _OPTIMIZER_BACKEND
+
+    def __post_init__(self) -> None:
+        from .ops.optimizer import OPTIMIZER_STATE_KINDS
+
+        if self.param_count <= 0:
+            raise KernelCoverageError(
+                f"Optimizer param_count must be positive, got {self.param_count!r}."
+            )
+        if self.state_kind not in OPTIMIZER_STATE_KINDS:
+            known = ", ".join(OPTIMIZER_STATE_KINDS)
+            raise KernelCoverageError(
+                f"Unknown optimizer state_kind {self.state_kind!r}. Known kinds: {known}."
+            )
+
+    @property
+    def op_name(self) -> str:
+        """Return the parquet op name this query reads."""
+        return "optimizer_step"
+
+    @property
+    def slice_key(self) -> tuple[Any, ...]:
+        """Return the categorical key in `OPTIMIZER_STEP_OP.slice_columns` order."""
+        return (self.optimizer, self.state_kind)
+
+    @property
+    def coords(self) -> tuple[float, ...]:
+        """Return interpolation coordinates in `OPTIMIZER_STEP_OP.axis_columns` order."""
+        return (float(self.param_count),)
+
+
+@dataclass(frozen=True)
 class CommQuery:
     """One collective to price, identified by op and by topology.
 
@@ -187,7 +289,7 @@ class CommQuery:
 
 
 # Union of all concrete query types; used in signatures that must not branch on the type.
-_AnyQuery = GemmQuery | AttentionQuery | CommQuery
+_AnyQuery = GemmQuery | AttentionQuery | ElementwiseQuery | OptimizerQuery | CommQuery
 
 
 class KernelDatabase:
@@ -317,12 +419,44 @@ class KernelDatabase:
         """
         return self._price(query)
 
+    def query_elementwise(self, query: ElementwiseQuery) -> float:
+        """
+        Return the predicted latency in seconds of one pointwise kernel call.
+
+        Args:
+            query (ElementwiseQuery): Kind and element count. The element count is the
+                number of elements *read*; the SOL assumes an equal write.
+
+        Returns:
+            float: `SOL(query) / interpolated utility`, in seconds.
+
+        Raises:
+            KernelCoverageError: If no table or slice covers the query.
+        """
+        return self._price(query)
+
+    def query_optimizer(self, query: OptimizerQuery) -> float:
+        """
+        Return the predicted latency in seconds of one fused optimizer step.
+
+        Args:
+            query (OptimizerQuery): The parameter shard one rank updates.
+
+        Returns:
+            float: `SOL(query) / interpolated utility`, in seconds.
+
+        Raises:
+            KernelCoverageError: If no table or slice covers the query.
+        """
+        return self._price(query)
+
     def utility(self, query: _AnyQuery) -> float:
         """
         Return the interpolated utility at one query, for diagnostics.
 
         Args:
-            query (GemmQuery | AttentionQuery | CommQuery): Any query this database can price.
+            query (GemmQuery | AttentionQuery | ElementwiseQuery | OptimizerQuery | CommQuery):
+                Any query this database can price.
 
         Returns:
             float: Dimensionless efficiency, roughly in (0, 1]. A value above ~1.2 means

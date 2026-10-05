@@ -39,6 +39,32 @@ def test_load_hf_model_descriptor_from_local_checkpoint():
     assert descriptor.parameter_count == 16381470720 // 2
 
 
+def test_qk_layernorm_is_detected_for_qwen3_and_absent_elsewhere(tmp_path: Path):
+    """Two extra RMSNorms per layer, and they are the costliest kind per element.
+
+    Measured on H20 at 25.2M elements, `qk_norm` costs 122.9 us against `rms_norm`'s
+    40.8 us: a 128-wide row cannot saturate the memory system. So `ComposedTraining` must
+    know whether they are present, and defaulting either way would be a real error in one
+    direction. HuggingFace Qwen3 configs do not carry the flag, so the architecture name is
+    the fallback; `self_attn.q_norm.weight` in the weight index is the ground truth.
+    """
+    assert load_hf_model_descriptor(HF_QWEN).extra["qk_layernorm"] is True
+
+    config = json.loads((HF_QWEN / "config.json").read_text(encoding="utf-8"))
+    config["architectures"] = ["LlamaForCausalLM"]
+    config["model_type"] = "llama"
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    assert load_hf_model_descriptor(tmp_path).extra["qk_layernorm"] is False
+
+
+def test_an_explicit_qk_layernorm_flag_overrides_the_architecture_guess(tmp_path: Path):
+    """Megatron's `TransformerConfig` spells it out, and a stated value is authoritative."""
+    config = json.loads((HF_QWEN / "config.json").read_text(encoding="utf-8"))
+    config["qk_layernorm"] = False
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    assert load_hf_model_descriptor(tmp_path).extra["qk_layernorm"] is False
+
+
 def test_load_hf_model_descriptor_estimates_without_weight_index(tmp_path: Path):
     (tmp_path / "config.json").write_text(
         (HF_QWEN / "config.json").read_text(encoding="utf-8"),
