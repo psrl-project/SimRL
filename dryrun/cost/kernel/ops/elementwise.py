@@ -34,7 +34,27 @@ from .base import register_op
 # The kernels vLLM runs between the GEMMs of one transformer block. `qk_norm` is separate from
 # `rms_norm` because it normalizes over `head_dim` rather than `hidden_size`, so it lands on a
 # different point of the bandwidth curve at the same token count.
-ELEMENTWISE_KINDS: tuple[str, ...] = ("rms_norm", "rotary_embedding", "silu_and_mul", "qk_norm")
+ELEMENTWISE_KINDS: tuple[str, ...] = (
+    "rms_norm",
+    "rotary_embedding",
+    "silu_and_mul",
+    "qk_norm",
+    "tensor_plumbing",
+)
+"""The pointwise kinds a step issues.
+
+`tensor_plumbing` is not a model kernel and is measured for the training path only. Tracing
+a real Megatron step found 158.7 device launches per layer per microbatch against the 7 the
+model inventory named, and the population is `aten::copy_` (414 calls), `aten::cat` (193,
+the QKV split), `aten::to` (246), `aten::mul` (289) and `aten::add_` (158) rather than
+norms or activations. It is tensor staging: dtype conversions, contiguity fixes, and the
+concatenations TE's fused modules need around their inputs.
+
+It is one kind rather than five because the cost is **85% launch floor** at 4096 tokens
+(8.74 us per launch against 2.5 ns per token), so what distinguishes the members is their
+count, not their bandwidth curve. Measuring `copy_` separately from `mul` would fit two
+nearly identical floors. See `docs/reference/limitations.md`.
+"""
 
 
 @dataclass(frozen=True)

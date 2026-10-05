@@ -58,7 +58,12 @@ _HOLDOUT_COMPUTE = {
     ("generation_attention", "vllm"): (4.5715, 72),
     ("context_attention", "flashinfer"): (9.9274, 59),
     ("generation_attention", "flashinfer"): (6.3715, 72),
-    ("elementwise", "vllm"): (9.3544, 52),
+    # Re-swept 2026-10-05 when the `tensor_plumbing` kind was added for the training path,
+    # taking the point count from 52 to 65 and the MRE from 9.3544% to 6.7111%. The MRE
+    # *improving* on a denser surface is the expected direction here: a copy is the cleanest
+    # bandwidth curve of the five kinds, so it adds easy points. `ComposedRollout` does not
+    # read this table at all, which the unchanged end-to-end validate numbers below confirm.
+    ("elementwise", "vllm"): (6.7111, 65),
 }
 
 # NOTE(claude): The 2026-10-05 gemm re-sweep moved end-to-end decode from 9.792% to 9.204%,

@@ -74,10 +74,9 @@ See {doc}`../profiling/kernels` for the canonical regenerated table.
 These are cases where the model is built and working but its accuracy on certain inputs is
 known to be limited.
 
-**`ComposedTraining` is 12.63% against measured steps; a kernel trace located the gap.**
-The kernel-composed Megatron latency model scores MRE 12.63%, signed mean -12.63%, on the
-22 out-of-sample THD records, against the fitted polynomial's 2.73% in-sample. Every record
-under-predicts.
+**`ComposedTraining` is 8.13% against measured steps; one per-token term is unexplained.**
+MRE 8.13%, signed mean -8.13%, on the 22 out-of-sample THD records against the fitted
+polynomial's 2.73% in-sample. The record whose kernels were traced predicts to -0.12%.
 
 A CUDA kernel trace of rank 0 at 12288 tokens (`DRYRUN_TRACE_STEP=4 dryrun-profile megatron
 run --config examples/profile/megatron/qwen3_8b_thd.yaml --candidates ... --index 1`, and
@@ -88,30 +87,41 @@ run --config examples/profile/megatron/qwen3_8b_thd.yaml --candidates ... --inde
 | gemm | 0.8162 s | 0.8299 s | 0.98 |
 | attention | 0.3927 s | 0.3936 s | 1.00 |
 | tp_collective | 0.0912 s | 0.0824 s | 1.11 |
-| elementwise | 0.0190 s | 0.0896 s | **0.21** |
+| elementwise (before the fix) | 0.0190 s | 0.0896 s | 0.21 |
 
-What this establishes, which scoring against step times alone cannot: the GEMM and
-attention tables are correct against the kernels that actually ran, and the sequence-parallel
-collective counts derived from TE source are exact (traced 97 all-gathers and 73
-reduce-scatters against the derived 96 and 72, the extra one each being process-group setup).
+What this establishes, which scoring against step times alone cannot: the GEMM and attention
+tables are correct against the kernels that actually ran, and the sequence-parallel collective
+counts derived from TE source are exact (traced 97 all-gathers and 73 reduce-scatters against
+the derived 96 and 72, the extra one each being process-group setup).
 
-**The elementwise term is low by 4.6x, and that is most of the residual.** Scaled by `pp`
-and the microbatch count it accounts for 4.9% of the 4.9% shortfall at nmb=1 and 10.0% of
-the 13.6% shortfall at nmb=4. The cause is coverage, not formula: the sweep measures the
-four kernels vLLM runs, where a traced Megatron step executes **64 distinct** non-GEMM,
-non-attention, non-collective, non-optimizer kernels — generic `at::native` elementwise,
-`CatArrayBatchedCopy` for the QKV split, bf16 copies, and TE's own rmsnorm rather than
-vLLM's. Fix: sweep that population, keyed per kernel as the existing `op_kind` slice already
-allows. Scaling the current term by 4.6 would fit a coefficient instead and is not done.
+**The elementwise gap was kernel count, not kernel size, and is now closed.** The trace
+issues 158.7 tensor-staging launches per layer per microbatch where the inventory named 7
+model kernels. The population is `aten::copy_`, `aten::cat` (the QKV split), `aten::to`,
+`aten::mul`, `aten::add_` — buffer plumbing around TE's fused modules. At 4096 tokens 85% of
+its cost is launch floor (8.74 us per launch against 2.5 ns per token), so scaling the seven
+existing kernels by 4.6 would have been wrong: that scales with tokens where most of the real
+cost does not. Added as a `tensor_plumbing` elementwise kind; closed 4.50pp of 12.63%.
 
-Two earlier hypotheses are now excluded by measurement rather than argument, and are
-recorded because both were plausible: the GEMM table being cuBLAS where training is TE
-(`te.Linear` against `torch.nn.functional.linear` is **1.001x**), and a fixed per-step or
-per-slot overhead (per-slot residual spans 0.039-0.484 s, a 12x range).
+**Remaining: a per-token term the trace has not named.** The gap goes as total tokens at
+r^2 = 0.936, better than microbatch count (0.860) or total predicted time (0.893), and runs
+0.1-18.4% of prediction with every record the same sign. Fix: trace the remaining token
+counts (22528 OOMs under the profiler, so it needs a smaller candidate or a lighter trace)
+and diff the kernel inventory again.
 
-Note also that the trace itself perturbs the step: traced total was +10.7% against the
-untraced median at nmb=4. So per-term *ratios* within one trace are usable and traced
-*totals* are not comparable to measured step times.
+**The traced plumbing count is the weakest input in the model.** It is a property of how
+megatron-core and Transformer Engine stage buffers, not of the architecture, so it does not
+transfer to another framework or version and cannot be derived. `PLUMBING_LAUNCHES_PER_LAYER`
+names it as a single constant for that reason. Fix: derive it from the module graph, or
+re-trace per framework version.
+
+Three hypotheses excluded by measurement rather than argument, recorded because all were
+plausible: the GEMM table being cuBLAS where training is TE (`te.Linear` against
+`torch.nn.functional.linear` is **1.001x**), a fixed per-step or per-slot overhead (per-slot
+residual spans 0.039-0.484 s), and the optimizer step (14.1 ms at 81% of HBM peak).
+
+Note that the trace perturbs the step: traced total was +10.7% against the untraced median at
+nmb=4. Per-term *ratios* within one trace are usable; traced *totals* are not comparable to
+measured step times.
 
 Two further approximations, each attributable:
 

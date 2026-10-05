@@ -99,7 +99,17 @@ def test_the_kinds_share_one_schema_because_they_share_one_sol_shape():
     """All four are pure bandwidth; only the bytes touched differ, which n_elements carries."""
     assert ELEMENTWISE_OP.slice_columns == ("dtype", "op_kind")
     assert ELEMENTWISE_OP.axis_columns == ("n_elements",)
-    assert set(ELEMENTWISE_KINDS) == {"rms_norm", "rotary_embedding", "silu_and_mul", "qk_norm"}
+    assert set(ELEMENTWISE_KINDS) == {
+        "rms_norm",
+        "rotary_embedding",
+        "silu_and_mul",
+        "qk_norm",
+        # Not a model kernel: the dtype conversions, contiguity fixes and concatenations a
+        # real Megatron step issues around TE's fused modules. Shares the schema because it
+        # shares the roofline (read a tensor, write a tensor); what makes it its own kind is
+        # that its count comes from a trace rather than from the architecture.
+        "tensor_plumbing",
+    }
 
 
 def test_the_op_takes_a_fitted_floor():

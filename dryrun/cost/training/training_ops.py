@@ -73,6 +73,23 @@ from ..kernel.hardware import dtype_bytes
 if TYPE_CHECKING:
     pass
 
+# Device launches of tensor-staging kernels per transformer layer per microbatch, summed
+# over the forward, the recompute replay and the backward. Measured by tracing rank 0 of a
+# real step (`DRYRUN_TRACE_STEP`, see `adapters/megatron/measure.py`): 2238 such launches at
+# nmb=1 and 7950 at nmb=4 over 12 layers solve to 158.7 per layer-microbatch plus 334 per
+# step, and the count is identical at 4096 and 12288 tokens so it is not a function of the
+# token count.
+#
+# This is a *measured* count rather than a derived one, and that is a real limitation: it is
+# a property of how megatron-core and Transformer Engine stage their buffers, so it cannot be
+# read off the architecture and does not transfer to another framework or version. It is a
+# count rather than a fitted coefficient — the per-launch cost still comes from the measured
+# table — but a count taken from one trace is the weakest input in this model.
+#
+# The 334 per-step launches (grad-norm plumbing, optimizer staging) are not charged: they
+# amortize to under 0.5% of a step at nmb>=4 and would need their own term.
+PLUMBING_LAUNCHES_PER_LAYER = 158.7
+
 # Collective message sizes under sequence parallelism:
 # The all_gather restores the full sequence before the GEMM (size s*h/tp -> s*h),
 # and the reduce_scatter shards back afterwards (size s*h -> s*h/tp).
@@ -368,13 +385,30 @@ class TrainingOps:
             kernels.append(("qk_norm", token_count * self._num_heads * self._head_dim))
             kernels.append(("qk_norm", token_count * self._num_kv_heads * self._head_dim))
 
-        return tuple(
+        queries = [
             (
                 ElementwiseQuery(op_kind=kind, n_elements=n_elements, dtype=self._dtype),
                 self._num_layers * passes,
             )
             for kind, n_elements in kernels
+        ]
+        # Tensor plumbing: the dtype conversions, contiguity fixes and concatenations a real
+        # step issues around the fused modules. Its multiplier is a *traced* count rather
+        # than a derived one, because it is a property of how megatron-core and TE stage
+        # their buffers and cannot be read off the architecture.
+        #
+        # Already includes all passes, so it is not multiplied by `passes` again.
+        queries.append(
+            (
+                ElementwiseQuery(
+                    op_kind="tensor_plumbing",
+                    n_elements=sp_tokens * self._hidden_size,
+                    dtype=self._dtype,
+                ),
+                self._num_layers * PLUMBING_LAUNCHES_PER_LAYER,
+            )
         )
+        return tuple(queries)
 
     def attention_queries(
         self,

@@ -20,10 +20,11 @@ Measured on H20: 14.1 ms for a Qwen3-8B rank at tp=2, pp=3, which is 0.02-1.3% o
 validation set's step times. It is charged because an unmeasured term cannot be ruled out,
 and ruling it out turned out to be the result.
 
-Scores MRE 12.63% with signed mean -12.63% on the 22 out-of-sample Megatron THD records,
-against the fitted polynomial's 2.73% in-sample. Every record under-predicts.
+Scores MRE 8.13% with signed mean -8.13% on the 22 out-of-sample Megatron THD records,
+against the fitted polynomial's 2.73% in-sample. The record whose kernels were actually
+traced (12288 tokens, nmb=1) predicts to **-0.12%**.
 
-**A kernel trace of a real step located the residual, and validated most of the model.**
+**A kernel trace of a real step validated most of the model and found what was missing.**
 Tracing rank 0 at 12288 tokens for nmb 1 and nmb 4 (`DRYRUN_TRACE_STEP=4`, see
 `adapters/megatron/measure.py`) gives per-stage costs to compare term by term:
 
@@ -32,31 +33,34 @@ Tracing rank 0 at 12288 tokens for nmb 1 and nmb 4 (`DRYRUN_TRACE_STEP=4`, see
 | gemm | 0.8162 s | 0.8299 s | 0.98 |
 | attention | 0.3927 s | 0.3936 s | 1.00 |
 | tp_collective | 0.0912 s | 0.0824 s | 1.11 |
-| elementwise | 0.0190 s | 0.0896 s | **0.21** |
+| elementwise (before) | 0.0190 s | 0.0896 s | 0.21 |
 
-So the GEMM and attention tables are right against real kernels, not merely
-self-consistent, and the SP collective counts are confirmed exactly: the trace shows 97
-all-gathers and 73 reduce-scatters against the derived 96 and 72, the extra one each being
-setup. **Elementwise is low by 4.6x**, and that is most of the gap: scaled by `pp` and the
-microbatch count it accounts for 4.9% of the 4.9% shortfall at nmb=1 and 10.0% of the 13.6%
-at nmb=4.
+So the GEMM and attention tables are right against real kernels rather than merely
+self-consistent, and the SP collective counts derived from TE source are exact: the trace
+shows 97 all-gathers and 73 reduce-scatters against the derived 96 and 72, the extra one each
+being process-group setup.
 
-The cause is a coverage gap rather than a wrong formula. The sweep measures the four
-kernels vLLM runs; a traced Megatron step executes **64 distinct** non-GEMM,
-non-attention, non-collective, non-optimizer kernels — generic `at::native` elementwise,
-`CatArrayBatchedCopy` for the QKV split, bf16 copies, and TE's own rmsnorm. The fix is to
-sweep them, not to scale the existing term.
+**Elementwise was low by 4.6x, and the cause was kernel count, not kernel size.** The trace
+issues 158.7 tensor-staging launches per layer per microbatch where the inventory named 7
+model kernels, and the population is `aten::copy_`, `aten::cat` (the QKV split), `aten::to`,
+`aten::mul` and `aten::add_` — buffer plumbing around TE's fused modules, not norms or
+activations. At 4096 tokens **85% of its cost is launch floor** (8.74 us per launch against
+2.5 ns per token), which is why scaling the existing seven kernels by 4.6 would have been
+wrong: that scales with tokens where most of the real cost does not. Added as a
+`tensor_plumbing` elementwise kind with a traced count; closed 4.50pp.
 
-**The bubble is real and is now a named term at 36.1% of the prediction.** It appears on
-the GPU as `ncclDevKernel_SendRecv` blocking at the stage boundary: 2.859 s across 2 calls
-for a 48 MiB handoff, which is 35 MB/s on a 450 GB/s link, so it is a stage waiting rather
-than bytes moving. `pp_comm` is the transfer; `bubble` is the wait.
+**What remains is per-token work the trace has not named.** The gap goes as total tokens at
+r^2 = 0.936, better than the microbatch count (0.860) or total predicted time (0.893), and
+is 0.1-18.4% of prediction with every record the same sign. Not fitted.
+
+**The bubble is real and is a named term at 36.1% of the prediction.** It appears on the GPU
+as `ncclDevKernel_SendRecv` blocking at the stage boundary: 2.859 s across 2 calls for a
+48 MiB handoff, which is 35 MB/s on a 450 GB/s link, so it is a stage waiting rather than
+bytes moving. `pp_comm` is the transfer; `bubble` is the wait.
 
 **Per-layer work is charged per microbatch, not per slot**, which the trace settles: every
 per-layer kernel count scales exactly 4.00x from nmb=1 to nmb=4 (flash forward 24 -> 96,
-all-gather 97 -> 388, reduce-scatter 73 -> 292). The previous code multiplied by `slots`
-and added no separate bubble, which is algebraically the same total but conflated two
-quantities that scale differently.
+all-gather 97 -> 388, reduce-scatter 73 -> 292).
 
 **The MRE was 7.62% before the per-sequence attention fix below, and that was two errors
 cancelling.** Attention is now priced per `cu_seqlens` segment, which is correct physics:

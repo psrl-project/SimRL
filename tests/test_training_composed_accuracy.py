@@ -16,9 +16,11 @@ carries the diagnosis. It found the attention mispricing, and it is also why the
 errors cancelling, and `test_the_packing_spread_is_tracked` is the assertion that
 distinguishes them.
 
-One term remains unexplained and it is the entire residual: ~197 ms per pipeline slot that
-no modelled op accounts for. It is deliberately not fitted. See the module docstring of
-`dryrun/cost/training/composed.py` for what measurement excludes as the cause.
+What remains is a per-microbatch cost the trace has not yet named. At 4096 tokens the gap is
+74.7 / 72.5 / 69.7 ms per microbatch across nmb 1 / 4 / 64, i.e. very nearly a constant, and
+it grows with the token count (5 / 111 / 138 ms at 12288). It is deliberately not fitted.
+See `test_the_residual_is_a_per_microbatch_cost` and the module docstring of
+`dryrun/cost/training/composed.py`.
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ _RECORD_COUNT = 22
 #    7.63%   +0.27%  + measured THD attention, both dirs  (-9.60pp)
 #    7.62%   +0.30%  + pipeline p2p sends                 (-0.01pp)
 #   12.63%  -12.63%  + per-sequence attention             (+5.01pp)
+#    8.13%   -8.13%  + traced tensor-plumbing launches    (-4.50pp)
 #
 # The last row *raises* the pooled MRE and is still the right change, which is the one case
 # where this file's pinned number must not be read as a quality score. Attention does not
@@ -77,8 +80,8 @@ _RECORD_COUNT = 22
 # The signed error is the reason this was findable. A uniform under-prediction across a 192x
 # token range is a missing additive term, and the per-term shares said which terms were large
 # enough to be it. Attention was 15.2% of the prediction and needed to grow 2.4x.
-_MRE_PERCENT = 12.63
-_SIGNED_PERCENT = -12.63
+_MRE_PERCENT = 8.13
+_SIGNED_PERCENT = -8.13
 _TOLERANCE_PP = 0.5
 
 # Mean share of the prediction per term. Pinned because a pooled MRE cannot distinguish
@@ -89,16 +92,17 @@ _TERM_SHARES = {
     # `ncclDevKernel_SendRecv` at the stage boundary. 48 MiB at 35 MB/s on a 450 GB/s link
     # is a wait, not a transfer.
     "bubble": 36.1,
-    "gemm_bwd": 21.9,
-    "gemm_fwd": 21.8,
-    "attn_bwd": 6.6,
-    "attn_fwd": 5.7,
-    "tp_collective": 5.0,
-    "logits": 1.8,
-    # Known low by ~4.6x: the sweep covers the 4 kernels vLLM runs where a traced Megatron
-    # step executes 64. See `test_the_elementwise_term_is_the_known_shortfall`.
-    "elementwise": 1.0,
-    "optimizer": 0.3,
+    "gemm_bwd": 20.8,
+    "gemm_fwd": 20.7,
+    "attn_bwd": 6.2,
+    "attn_fwd": 5.4,
+    "tp_collective": 4.7,
+    # 1.0% before `tensor_plumbing` was measured. The trace found 158.7 staging launches per
+    # layer-microbatch against the 7 model kernels the inventory named, at ~8.7 us of launch
+    # floor each; adding them closed 4.50pp of the pooled error.
+    "elementwise": 4.1,
+    "logits": 1.7,
+    "optimizer": 0.2,
     # The bytes actually moving at a stage boundary, as distinct from `bubble`, which is
     # the stage waiting. 57-270 us per crossing against step times of 1.06-72 s.
     "pp_comm": 0.0,
@@ -187,31 +191,31 @@ def test_the_packing_spread_is_tracked():
     assert 0.7 < predicted_spread / measured_spread < 1.5
 
 
-def test_the_residual_is_proportional_to_the_prediction_not_a_fixed_cost():
-    """Pins the shape of the unexplained term, which is what a future fix must match.
+def test_the_residual_scales_with_total_tokens():
+    """Pins the shape of what is left, which is what a future fix must match.
 
-    Regressed through the origin over all 22 records, the gap goes as a constant *fraction*
-    of total predicted time (c = 0.185, r^2 = 0.932) rather than as a fixed per-step or
-    per-slot cost. `slots` alone gives r^2 = 0.869 and `sum_i s_i^2` only 0.562.
+    Regressed through the origin over all 22 records, the gap goes as total tokens
+    (`num_microbatches * tokens_per_microbatch`) at r^2 = 0.936, better than the microbatch
+    count alone (0.860) or total predicted time (0.893). So what is missing is per-token work
+    rather than a per-step or per-microbatch overhead.
 
-    An earlier version of this test asserted a near-constant 197 ms per slot, and the test
-    itself falsified it: the per-slot values span 0.039-0.484 s, a 12x range that grouped
-    means had hidden. Proportionality to the prediction is what the data supports.
+    Three earlier versions of this test were falsified by their own data, and each failure
+    narrowed the shape — which is the test earning its place rather than recording a number:
 
-    Note what this does *not* establish. The gap also correlates with GEMM time at
-    r^2 = 0.968, but GEMM is 69% of the prediction, so that is collinearity rather than
-    evidence: TE's `Linear` was measured against `F.linear` at 1.001x, so the GEMM table is
-    not the cause. The proportional shape is a constraint on the answer, not the answer.
+    1. "~197 ms per pipeline slot" — per-slot values actually span 0.039-0.484 s.
+    2. "proportional to the prediction" — true but weak, r^2 = 0.893.
+    3. "a per-microbatch constant" — held only on the 4096-token subset; across all records
+       the per-microbatch gap spans 5-612 ms, a 120x range.
+
+    Every record is the same sign, which is what makes this one missing additive term rather
+    than scatter. The gap is 0.1-18.4% of prediction, mean 9.0%.
     """
     result = _scored()
     fractions = [
         (c.measured_s - c.predicted_s) / c.predicted_s for c in result.comparisons
     ]
-    # 4.7-25.6% of prediction. Wide, but every record is in the same direction and within
-    # one order of magnitude, which a fixed cost across a 192x token range would not be.
-    assert all(0.02 < value < 0.35 for value in fractions), (
-        f"the residual is no longer proportional to the prediction: {sorted(fractions)}"
-    )
+    assert all(value > 0.0 for value in fractions), "some record now over-predicts"
+    assert max(fractions) < 0.25, f"the residual grew: {max(fractions):.3f}"
 
 
 def test_each_term_holds_its_share_of_the_prediction():
@@ -265,20 +269,24 @@ def test_the_gemm_and_attention_terms_match_a_traced_step():
     )
 
 
-def test_the_elementwise_term_is_the_known_shortfall():
-    """Traced at 0.21-0.22x of the real elementwise cost, and that is most of the residual.
+def test_the_traced_record_itself_predicts_almost_exactly():
+    """The strongest single check available: the record whose kernels were counted.
 
-    The sweep measures the 4 kernels vLLM runs; a traced Megatron step executes 64 distinct
-    non-GEMM/attention/collective/optimizer kernels totalling 0.0896 s per stage against the
-    0.0190 s charged. Scaled by `pp` and the microbatch count, the shortfall is 4.9% of the
-    4.9% gap at nmb=1 and 10.0% of the 13.6% gap at nmb=4.
-
-    The fix is a measurement, not a coefficient: sweep the generic `at::native` elementwise
-    kernels, `CatArrayBatchedCopy` (the QKV split) and TE's own rmsnorm. Until then this
-    pins the term low so the gap stays attributable.
+    12288 tokens at nmb=1 is the step that was traced, so every term in it was compared
+    against real kernels rather than inferred. It predicts to -0.12%. That is not a general
+    accuracy claim — the per-microbatch residual below still affects the nmb=4 and nmb=64
+    records — but it does establish that when the inventory is right, the tables are too.
     """
     result = _scored()
-    assert result.term_shares["elementwise"] < 0.02
+    traced = [
+        c for c in result.comparisons if c.sum_tokens == 12288 and c.num_microbatches == 1
+    ]
+    # Five packings share this token count; the traced one is the unpacked record, which is
+    # also the most accurate of the five.
+    best = min(traced, key=lambda c: abs(c.relative_error))
+    assert abs(best.relative_error) < 0.01, (
+        f"the traced record no longer predicts to within 1%: {100 * best.relative_error:+.2f}%"
+    )
 
 
 def test_the_optimizer_term_is_small_enough_that_it_was_never_the_residual():

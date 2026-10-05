@@ -175,7 +175,31 @@ def profile_elementwise(
                 )
             )
 
+            # `tensor_plumbing`: the dtype conversions, contiguity fixes and concatenations
+            # a real training step issues around the fused modules. Timed as a bf16 copy of
+            # a hidden-size tensor, which is the modal member of the traced population
+            # (`aten::copy_` 414 calls, `aten::to` 246, `aten::cat` 193, `aten::mul` 289).
+            #
+            # One representative rather than five measurements, because the cost is 85%
+            # launch floor at these sizes: what separates the members is how many fire, not
+            # their bandwidth curve. `TrainingOps` carries the count.
+            plumbing_in = torch.randn(tokens, hidden, dtype=dtype, device="cuda")
+            plumbing_out = torch.empty_like(plumbing_in)
+            rows.append(
+                _row(
+                    dtype_name,
+                    "tensor_plumbing",
+                    tokens * hidden,
+                    time_cuda_call(
+                        lambda o=plumbing_out, i=plumbing_in: o.copy_(i),
+                        warmup_iterations=measurement.warmup_iterations,
+                        active_iterations=measurement.active_iterations,
+                    ),
+                )
+            )
+
             del positions, hidden_in, hidden_out, query, key, gate_up, gate_out, head_in, head_out
+            del plumbing_in, plumbing_out
             torch.cuda.empty_cache()
 
     writer = writer_factory("vllm", str(vllm.__version__), "vllm._custom_ops")

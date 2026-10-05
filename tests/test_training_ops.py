@@ -217,11 +217,53 @@ def test_a_model_without_qk_layernorm_is_charged_no_per_head_norms():
 
 
 def test_elementwise_multipliers_count_forward_recompute_and_backward():
-    """Three forward-shaped passes under full recompute, two without."""
+    """Three forward-shaped passes under full recompute, two without.
+
+    `tensor_plumbing` is excluded: its multiplier is a traced launch count that already
+    spans all passes, so it is not multiplied by the pass count again.
+    """
     for recompute, passes in (("full", 3.0), ("none", 2.0)):
         ops = _ops(recompute=recompute)
-        multipliers = {m for _, m in ops.elementwise_queries(4096)}
+        multipliers = {
+            m
+            for q, m in ops.elementwise_queries(4096)
+            if q.op_kind != "tensor_plumbing"
+        }
         assert multipliers == {36 * passes}, recompute
+
+
+def test_the_plumbing_multiplier_is_a_traced_count_not_a_derived_one():
+    """It is `num_layers * PLUMBING_LAUNCHES_PER_LAYER` and does not scale with passes.
+
+    The count comes from tracing rank 0 of a real step: 2238 staging launches at nmb=1 and
+    7950 at nmb=4 over 12 layers solve to 158.7 per layer-microbatch. That already includes
+    the forward, the recompute replay and the backward, so applying the pass multiplier
+    again would triple it.
+
+    It is also the weakest input in the model, because it describes how megatron-core and TE
+    stage their buffers rather than anything about the architecture, and so does not transfer
+    to another framework or version. Asserted explicitly for that reason.
+    """
+    from dryrun.cost.training.training_ops import PLUMBING_LAUNCHES_PER_LAYER
+
+    for recompute in ("full", "none"):
+        ops = _ops(recompute=recompute)
+        plumbing = [
+            (q, m) for q, m in ops.elementwise_queries(4096) if q.op_kind == "tensor_plumbing"
+        ]
+        assert len(plumbing) == 1
+        assert plumbing[0][1] == pytest.approx(36 * PLUMBING_LAUNCHES_PER_LAYER), recompute
+
+
+def test_the_plumbing_query_is_sized_on_the_sequence_parallel_shard():
+    """The staged tensors are the SP-region activations, so `token_count / tp` rows."""
+    token_count = 8192
+    tp = 2
+    ops = _ops(tensor_parallel=tp)
+    plumbing = next(
+        q for q, _ in ops.elementwise_queries(token_count) if q.op_kind == "tensor_plumbing"
+    )
+    assert plumbing.n_elements == (token_count // tp) * 4096
 
 
 def test_every_elementwise_query_names_a_measured_kind():
