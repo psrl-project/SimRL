@@ -40,6 +40,9 @@ _COLLECTIVE_BACKEND = "vllm"
 # preference to apex's and to torch's. vLLM runs no optimizer, so the module-level `vllm`
 # default would resolve to a directory that cannot exist.
 _OPTIMIZER_BACKEND = "megatron"
+# Training attention is measured through Transformer Engine, which is what Megatron calls,
+# so it shares the `megatron` backend directory with the optimizer rather than `vllm`.
+_TRAINING_BACKEND = "megatron"
 _PHASES = ("context", "generation")
 
 
@@ -186,6 +189,70 @@ class ElementwiseQuery:
 
 
 @dataclass(frozen=True)
+class TrainingAttentionQuery:
+    """One THD-packed attention call to price, in one direction.
+
+    Separate from `AttentionQuery` because it describes a different kernel on a different
+    layout. A packed training microbatch is one row with `cu_seqlens`, so there is no batch
+    dimension to vary, and the measured table is TE's FlashAttention rather than vLLM's
+    prefill kernel. Substituting the rollout table understated the forward by 1.59-1.84x.
+
+    `direction` selects the op rather than being a slice column: forward and backward have
+    different rooflines (the backward computes three gradients), and a slice would imply
+    they interpolate onto one surface.
+    """
+
+    direction: str
+    num_heads: int
+    total_tokens: int
+    num_kv_heads: int
+    head_dim: int
+    attn_dtype: str = "bfloat16"
+    attn_mask_type: str = "padding_causal"
+    backend: str | None = _TRAINING_BACKEND
+
+    def __post_init__(self) -> None:
+        from .ops.attention_training import TRAINING_MASK_TYPES
+
+        if self.direction not in ("forward", "backward"):
+            raise KernelCoverageError(
+                f"Training attention direction must be 'forward' or 'backward', got "
+                f"{self.direction!r}."
+            )
+        for name in ("num_heads", "total_tokens", "num_kv_heads", "head_dim"):
+            if getattr(self, name) <= 0:
+                raise KernelCoverageError(
+                    f"Training attention {name} must be positive, got {getattr(self, name)!r}."
+                )
+        if self.attn_mask_type not in TRAINING_MASK_TYPES:
+            known = ", ".join(TRAINING_MASK_TYPES)
+            raise KernelCoverageError(
+                f"Unknown training attention mask type {self.attn_mask_type!r}. Known "
+                f"types: {known}. Transformer Engine rejects plain 'causal' for THD."
+            )
+
+    @property
+    def op_name(self) -> str:
+        """Return the parquet op name this query reads."""
+        return f"training_attention_{self.direction}"
+
+    @property
+    def slice_key(self) -> tuple[Any, ...]:
+        """Return the categorical key in the training attention slice order."""
+        return (
+            self.num_kv_heads,
+            self.head_dim,
+            canonical_dtype(self.attn_dtype),
+            self.attn_mask_type,
+        )
+
+    @property
+    def coords(self) -> tuple[float, ...]:
+        """Return interpolation coordinates in the training attention axis order."""
+        return (float(self.num_heads), float(self.total_tokens))
+
+
+@dataclass(frozen=True)
 class OptimizerQuery:
     """One fused optimizer step to price, over one rank's parameter shard.
 
@@ -289,7 +356,14 @@ class CommQuery:
 
 
 # Union of all concrete query types; used in signatures that must not branch on the type.
-_AnyQuery = GemmQuery | AttentionQuery | ElementwiseQuery | OptimizerQuery | CommQuery
+_AnyQuery = (
+    GemmQuery
+    | AttentionQuery
+    | TrainingAttentionQuery
+    | ElementwiseQuery
+    | OptimizerQuery
+    | CommQuery
+)
 
 
 class KernelDatabase:
@@ -426,6 +500,21 @@ class KernelDatabase:
         Args:
             query (ElementwiseQuery): Kind and element count. The element count is the
                 number of elements *read*; the SOL assumes an equal write.
+
+        Returns:
+            float: `SOL(query) / interpolated utility`, in seconds.
+
+        Raises:
+            KernelCoverageError: If no table or slice covers the query.
+        """
+        return self._price(query)
+
+    def query_training_attention(self, query: TrainingAttentionQuery) -> float:
+        """
+        Return the predicted latency in seconds of one THD attention call.
+
+        Args:
+            query (TrainingAttentionQuery): Packed shape and direction.
 
         Returns:
             float: `SOL(query) / interpolated utility`, in seconds.

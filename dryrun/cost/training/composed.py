@@ -6,12 +6,12 @@ than fitting a polynomial to whole-step wall times. The value over the polynomia
 is attributability: a prediction error is a sum of per-op errors rather than a residual,
 so a systematic miss points to a named op rather than to an unexplained coefficient.
 
-Attention backward is priced as a scalar multiple of forward. The cuDNN FusedAttention
-benchmark (measured on H20, 4096 tokens, 1024-12288 token range) shows backward costs
-approximately the same as forward (measured ratio 0.83x-0.99x across the full token range),
-so the default multiplier is 1.0. A per-shape backward table (B1) would improve this, but
-the current prediction is in the right range and is explicit rather than absorbed into
-an unexplained coefficient.
+Attention is priced from the `attention_training` family, both directions measured. It
+does **not** read the rollout `context_attention` table, which describes vLLM's prefill
+kernel over a BSHD batch where training runs TE's FlashAttention over a THD pack. The
+substitution was wrong in both directions at once: the forward by 1.59-1.84x and the
+backward (previously approximated at 1.0x of forward) by 2.24-2.42x, for a combined
+2.35-2.60x understatement of the attention term. See `ops/attention_training.py`.
 
 The optimizer step is a measured kernel like any other, priced from the `optimizer_step`
 table against the parameter shard one rank updates. It is the only term with no token axis,
@@ -20,13 +20,25 @@ Measured on H20: 14.1 ms for a Qwen3-8B rank at tp=2, pp=3, which is 0.02-1.3% o
 validation set's step times. It is charged because an unmeasured term cannot be ruled out,
 and ruling it out turned out to be the result.
 
-What the composition is still missing, stated because the decomposition is what makes a
-kernel sum worth having: the residual against the 22 THD records is a uniform
-under-prediction of ~17%, and it scales with work rather than being a fixed per-step cost
-(10-39% of prediction across a 192x token range). So the gap is in a per-token term, not in
-anything charged once per step. The leading candidates are the GEMM table being measured
-with `torch.nn.functional.linear` where TE dispatches its own kernels, and the attention
-table being vLLM's FlashAttention where TE dispatches cuDNN FusedAttention on sm90.
+Scores MRE 7.62% with signed mean +0.30% on the 22 out-of-sample Megatron THD records,
+against the fitted polynomial's 2.73% in-sample. The signed mean is the figure that matters
+more than the absolute one: it sat at -17% for as long as attention was mispriced, which is
+the signature of a missing additive term rather than a noisy one, and that is what located
+the attention bug. A residual that is scatter around zero has no single missing term left.
+
+What is still approximate, stated because the decomposition is what makes a kernel sum worth
+having over a fit:
+
+- The two residual adds are not charged. Megatron fuses each into one
+  `bias_dropout_add_fused_train` kernel and the elementwise table holds only the four kinds
+  vLLM runs, so the elementwise term (1.4% of a step) is under-counted by roughly 2/9.
+- Attention over a multi-sequence pack is over-charged, because the SOL's quadratic term uses
+  the pack's total tokens where attention does not cross a `cu_seqlens` boundary. Harmless
+  for the records scored here (all one-sequence packs, which is what the sweep measures) and
+  a factor of the sequence count otherwise.
+- Compute/communication overlap is not modelled; the sum is a plain sum.
+
+`docs/reference/limitations.md` carries these with their fixes.
 """
 
 from __future__ import annotations
@@ -58,8 +70,6 @@ class ComposedTraining(TrainingLatencyModel):
     Args:
         database: Kernel tables for the target GPU.
         ops: Per-microbatch op list, sharded for the intended TP degree.
-        attn_bwd_fwd_ratio: Attention backward latency as a multiple of forward. Default 1.0
-            (measured 0.83-0.99x for cuDNN FusedAttention on H20). Set to 0 to omit.
         charge_optimizer: Whether to price the fused Adam step from the `optimizer_step`
             table. Default True. Set False to score a configuration whose optimizer table
             has not been swept; the term is then absent from the decomposition rather than
@@ -82,12 +92,10 @@ class ComposedTraining(TrainingLatencyModel):
         database: KernelDatabase,
         ops: TrainingOps,
         *,
-        attn_bwd_fwd_ratio: float = 1.0,
         charge_optimizer: bool = True,
     ) -> None:
         self._db = database
         self._ops = ops
-        self._attn_bwd_fwd_ratio = attn_bwd_fwd_ratio
         self._charge_optimizer = charge_optimizer
 
     @classmethod
@@ -103,7 +111,6 @@ class ComposedTraining(TrainingLatencyModel):
         gradient_dtype: str = "float32",
         distributed_optimizer: bool = True,
         utility_surface: str = "pchip",
-        attn_bwd_fwd_ratio: float = 1.0,
         charge_optimizer: bool = True,
         base_dir: Path | None = None,
     ) -> ComposedTraining:
@@ -118,12 +125,7 @@ class ComposedTraining(TrainingLatencyModel):
             distributed_optimizer=distributed_optimizer,
             base_dir=base_dir,
         )
-        return cls(
-            db,
-            ops,
-            attn_bwd_fwd_ratio=attn_bwd_fwd_ratio,
-            charge_optimizer=charge_optimizer,
-        )
+        return cls(db, ops, charge_optimizer=charge_optimizer)
 
     def predict(
         self,
@@ -237,8 +239,9 @@ class ComposedTraining(TrainingLatencyModel):
 
         Returns:
             dict[str, float]: Seconds per term. Keys are ``gemm_fwd``, ``gemm_bwd``,
-                ``attn_fwd``, ``attn_bwd``, ``elementwise``, ``tp_collective``, ``logits``,
-                and ``optimizer``. Summing them gives `predict_microbatches`.
+                ``attn_fwd``, ``attn_bwd``, ``elementwise``, ``tp_collective``,
+                ``pp_comm``, ``logits`` and ``optimizer``. Summing them gives
+                `predict_microbatches`.
 
         Raises:
             KernelCoverageError: If any query falls outside the measured tables.
@@ -277,12 +280,19 @@ class ComposedTraining(TrainingLatencyModel):
         }
 
         # Attention forward is measured once and charged for each forward-shaped pass, so
-        # the recompute replay cannot drift from the GEMM path's own doubling.
-        attn_fwd_single = self._db.query_attention(
-            self._ops.attention_query(token_count=token_count)
+        # the recompute replay cannot drift from the GEMM path's own doubling. Backward is
+        # its own measured table rather than a multiple of forward: the measured ratio is
+        # 2.24-2.42 and drifts with sequence length, so no single scalar is right.
+        attn_fwd_single = self._db.query_training_attention(
+            self._ops.attention_query(token_count=token_count, direction="forward")
         )
         terms["attn_fwd"] = attn_fwd_single * self._ops.attention_passes() * layers
-        terms["attn_bwd"] = attn_fwd_single * self._attn_bwd_fwd_ratio * layers
+        terms["attn_bwd"] = (
+            self._db.query_training_attention(
+                self._ops.attention_query(token_count=token_count, direction="backward")
+            )
+            * layers
+        )
 
         # Logits run once per step on the last pipeline stage, over every token rather than
         # one per request. A missing dgrad slice is skipped rather than clamped onto a
@@ -295,9 +305,20 @@ class ComposedTraining(TrainingLatencyModel):
             except KernelCoverageError:
                 pass
 
+        # Pipeline sends are per *microbatch*, not per layer, so they are charged outside
+        # the per-layer scaling and against the microbatch count rather than the slot count:
+        # the bubble slots carry no microbatch and so send nothing.
+        pp_comm = sum(
+            self._db.query_comm(query) * mult
+            for query, mult in self._ops.pp_comm_queries(
+                token_count, pipeline_parallel=parallelism.pp
+            )
+        ) * len(microbatches)
+
         # Every per-layer term is charged once per slot; logits and the optimizer are
         # per-step and are not.
         scaled = {name: value * slots for name, value in terms.items()}
+        scaled["pp_comm"] = pp_comm
         scaled["logits"] = logits
         scaled["optimizer"] = self._optimizer_latency(parallelism)
         return scaled

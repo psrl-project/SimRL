@@ -115,6 +115,30 @@ def test_without_recompute_the_collective_count_drops_by_the_forward_pass():
     assert by_op == {"all_gather": 6 * 36, "reduce_scatter": 4 * 36}
 
 
+def test_pipeline_sends_cross_every_boundary_in_both_directions():
+    """Under 1F1B each microbatch crosses `pp - 1` boundaries forward and the same back."""
+    ops = _ops()
+    queries = ops.pp_comm_queries(4096, pipeline_parallel=3)
+    assert len(queries) == 1
+    query, multiplier = queries[0]
+    assert query.op == "p2p"
+    assert multiplier == 2 * (3 - 1)
+
+
+def test_the_pipeline_send_carries_the_sequence_parallel_shard():
+    """The handoff tensor is sequence-sharded under SP, so each rank sends tokens/tp rows."""
+    token_count = 8192
+    tp = 2
+    ops = _ops(tensor_parallel=tp)
+    (query, _), = ops.pp_comm_queries(token_count, pipeline_parallel=2)
+    assert query.message_bytes == (token_count // tp) * 4096 * 2
+
+
+def test_a_single_stage_pipeline_sends_nothing():
+    """There is no boundary to cross, so the term must be absent rather than zero-valued."""
+    assert _ops().pp_comm_queries(4096, pipeline_parallel=1) == ()
+
+
 def test_tp1_issues_no_tensor_parallel_collectives():
     assert _ops(tensor_parallel=1).tp_comm_queries(4096) == ()
 

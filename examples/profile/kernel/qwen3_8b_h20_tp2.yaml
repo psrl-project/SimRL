@@ -28,6 +28,25 @@ attention:
 elementwise:
   token_counts: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 
+attention_training:
+  # THD-packed attention as Transformer Engine runs it, both directions. Separate from the
+  # `attention:` grid above, which measures vLLM's prefill kernel over a BSHD batch: a
+  # packed training microbatch is one row with `cu_seqlens`, so there is no batch dimension
+  # to sweep and `total_tokens` is the axis. Reading the rollout table for a training query
+  # understated the forward by 1.59-1.84x.
+  #
+  # The token grid includes the non-power-of-two `sum_tokens` from the THD validation
+  # records (7510, 10240, 11264, 12288, 22528) for the same reason the gemm grid does: a
+  # query between measured points interpolates, but one outside the frontier clamps.
+  total_tokens: [512, 1024, 2048, 3072, 4096, 6144, 7510, 8192, 10240, 11264, 12288,
+     16384, 22528, 32768]
+  # Per-rank query head counts. 32 is tp=1, 16 is tp=2, 8 is tp=4, 4 is tp=8. The KV head
+  # count is derived in the same ratio, matching `rank_head_counts` on the cost side.
+  num_heads: [4, 8, 16, 32]
+  # `padding_causal` only: TE asserts `"padding" in attn_mask_type` for qkv_format="thd",
+  # so plain `causal` raises rather than selecting a different kernel.
+  mask_types: [padding_causal]
+
 optimizer:
   # Parameter counts, not token counts: an Adam step reads and writes the optimizer state
   # once per step regardless of how many tokens produced the gradients. The grid brackets

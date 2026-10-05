@@ -15,11 +15,11 @@ from __future__ import annotations
 import pytest
 
 from dryrun.cost.kernel.database import (
-    AttentionQuery,
     CommQuery,
     ElementwiseQuery,
     GemmQuery,
     OptimizerQuery,
+    TrainingAttentionQuery,
 )
 from dryrun.cost.kernel.interp import KernelCoverageError
 from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
@@ -50,11 +50,13 @@ class _StubDatabase:
     every attribute would also answer a method `ComposedTraining` should not be calling.
     """
 
-    def __init__(self, *, gemm: float = _UNIT, attention: float = _UNIT,
-                 elementwise: float = _UNIT, comm: float = _UNIT,
-                 optimizer: float = _UNIT, missing_logits_dgrad: bool = False) -> None:
+    def __init__(self, *, gemm: float = _UNIT, attention_forward: float = _UNIT,
+                 attention_backward: float = _UNIT, elementwise: float = _UNIT,
+                 comm: float = _UNIT, optimizer: float = _UNIT,
+                 missing_logits_dgrad: bool = False) -> None:
         self._costs = {
-            "gemm": gemm, "attention": attention, "elementwise": elementwise,
+            "gemm": gemm, "attention_forward": attention_forward,
+            "attention_backward": attention_backward, "elementwise": elementwise,
             "comm": comm, "optimizer": optimizer,
         }
         self._missing_logits_dgrad = missing_logits_dgrad
@@ -68,9 +70,12 @@ class _StubDatabase:
         self.calls.append(("gemm", query))
         return self._costs["gemm"]
 
-    def query_attention(self, query: AttentionQuery) -> float:
-        self.calls.append(("attention", query))
-        return self._costs["attention"]
+    def query_training_attention(self, query: TrainingAttentionQuery) -> float:
+        # Keyed on direction, because forward and backward read separate measured tables
+        # and a single cost would hide a composition charging the wrong one.
+        family = f"attention_{query.direction}"
+        self.calls.append((family, query))
+        return self._costs[family]
 
     def query_elementwise(self, query: ElementwiseQuery) -> float:
         self.calls.append(("elementwise", query))
@@ -89,8 +94,11 @@ class _StubDatabase:
         return sum(1 for name, _ in self.calls if name == family)
 
 
-_DB_KEYS = ("gemm", "attention", "elementwise", "comm", "optimizer", "missing_logits_dgrad")
-_MODEL_KEYS = ("attn_bwd_fwd_ratio", "charge_optimizer")
+_DB_KEYS = (
+    "gemm", "attention_forward", "attention_backward", "elementwise", "comm", "optimizer",
+    "missing_logits_dgrad",
+)
+_MODEL_KEYS = ("charge_optimizer",)
 
 
 def _model(**kwargs: object) -> tuple[ComposedTraining, _StubDatabase]:
@@ -114,14 +122,14 @@ def _plan(*sum_tokens: int) -> tuple[SequenceStats, ...]:
 def _token_counts(db: _StubDatabase) -> set[int]:
     """Return the token counts the model priced, read off the attention queries.
 
-    The attention query's `seq_len` is the unambiguous carrier: a GEMM's `m` is the token
-    count for a forward or dgrad call but is `n_fwd` for a wgrad, so a set of `m` values
-    cannot distinguish "priced 4096 tokens" from "priced a projection 4096 wide".
+    The attention query's `total_tokens` is the unambiguous carrier: a GEMM's `m` is the
+    token count for a forward or dgrad call but is `n_fwd` for a wgrad, so a set of `m`
+    values cannot distinguish "priced 4096 tokens" from "priced a projection 4096 wide".
     """
     return {
-        query.seq_len
+        query.total_tokens
         for name, query in db.calls
-        if name == "attention" and isinstance(query, AttentionQuery)
+        if isinstance(query, TrainingAttentionQuery)
     }
 
 
@@ -245,27 +253,26 @@ def test_a_missing_logits_slice_is_skipped_rather_than_taking_a_neighbours_curve
     assert terms["gemm_fwd"] > 0.0
 
 
-def test_attention_backward_is_charged_as_a_multiple_of_the_measured_forward():
-    """Measured 0.83-0.99x for cuDNN FusedAttention on H20, so the default is 1.0.
+def test_attention_reads_its_own_measured_table_in_each_direction():
+    """Backward is a separate table, not a multiple of forward.
 
-    A zero ratio must remove the term entirely rather than falling back to a default, since
-    that is how a caller states that backward is unmeasured.
+    The measured bwd/fwd ratio is 2.24-2.42 and drifts with sequence length, so no scalar
+    is right; `ComposedTraining` previously used 1.0 and understated the term. With unit
+    costs per direction, the forward is charged twice (recompute replays it) and the
+    backward once, so `attn_fwd == 2 * attn_bwd` here. The point of the assertion is that
+    the two come from *different* queries: a composition reading the forward table for both
+    would still satisfy a ratio check but would price the wrong kernel.
     """
     parallelism = TrainingParallelism(tp=2, pp=3, dp=1)
-    plan = _plan(4096)
-    default = ComposedTraining(
-        _StubDatabase(), TrainingOps(_MODEL, tensor_parallel=2, recompute="full")
-    ).decompose_microbatches(plan, parallelism)
-    assert default["attn_bwd"] == pytest.approx(default["attn_fwd"] / 2.0), (
-        "forward is charged twice under full recompute, backward once"
-    )
+    model, db = _model(attention_forward=1.0, attention_backward=4.0)
+    terms = model.decompose_microbatches(_plan(4096), parallelism)
 
-    omitted = ComposedTraining(
-        _StubDatabase(),
-        TrainingOps(_MODEL, tensor_parallel=2, recompute="full"),
-        attn_bwd_fwd_ratio=0.0,
-    ).decompose_microbatches(plan, parallelism)
-    assert omitted["attn_bwd"] == 0.0
+    directions = {
+        query.direction for _, query in db.calls if isinstance(query, TrainingAttentionQuery)
+    }
+    assert directions == {"forward", "backward"}
+    # 2 forward passes at 1.0 against 1 backward pass at 4.0.
+    assert terms["attn_bwd"] == pytest.approx(2.0 * terms["attn_fwd"])
 
 
 def test_the_elementwise_term_is_present_and_removable():
@@ -284,6 +291,28 @@ def test_the_elementwise_term_is_present_and_removable():
         TrainingOps(_MODEL, tensor_parallel=2, recompute="full"),
     ).decompose_microbatches(_plan(4096), TrainingParallelism(tp=2, pp=3, dp=1))
     assert zeroed["elementwise"] == 0.0
+
+
+def test_pipeline_sends_scale_with_microbatches_not_with_slots():
+    """The bubble slots carry no microbatch, so they send nothing.
+
+    Every per-layer term is charged once per slot including the bubble, because a stage is
+    idle during the bubble but the slot is still on the critical path. A p2p send is
+    different: it exists only because a microbatch crossed a boundary.
+    """
+    model, _ = _model()
+    parallelism = TrainingParallelism(tp=2, pp=3, dp=1)
+    one = model.decompose_microbatches(_plan(4096), parallelism)
+    three = model.decompose_microbatches(_plan(4096, 4096, 4096), parallelism)
+    # 3 microbatches against 1, so 3x the sends; but 5 slots against 3, so 5/3 the gemms.
+    assert three["pp_comm"] == pytest.approx(3.0 * one["pp_comm"])
+    assert three["gemm_fwd"] == pytest.approx(5.0 / 3.0 * one["gemm_fwd"])
+
+
+def test_a_single_stage_pipeline_charges_no_sends():
+    model, _ = _model()
+    terms = model.decompose_microbatches(_plan(4096), TrainingParallelism(tp=2, pp=1, dp=1))
+    assert terms["pp_comm"] == 0.0
 
 
 def test_tp1_contributes_no_collective_term():
@@ -317,4 +346,6 @@ def test_recompute_raises_the_prediction_without_touching_the_backward_gemms():
     assert with_replay["attn_fwd"] == pytest.approx(2.0 * without["attn_fwd"])
     assert with_replay["gemm_bwd"] == pytest.approx(without["gemm_bwd"])
     assert with_replay["attn_bwd"] == pytest.approx(without["attn_bwd"])
+    # The backward table is read once per layer whatever the recompute mode: the replay
+    # re-runs the forward, not the backward.
     assert sum(with_replay.values()) > sum(without.values())

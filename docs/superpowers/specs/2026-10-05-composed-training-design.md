@@ -1,9 +1,91 @@
 # Spec B: Kernel-Composed Training Latency
 
 **Date:** 2026-10-05
-**Status:** design under review
+**Status:** implemented. B0-B5 delivered; B4's DP term remains unvalidated by design (§3 B8).
 **Repo:** `/apdcephfs_zwfy/share_303760348/lhy/DryRun-RL`
 **Depends on:** `2026-10-04-collective-ops-design.md` (Spec A), implemented and gated.
+
+## 0. Result, and where this design was wrong
+
+`ComposedTraining` predicts the 22 out-of-sample Megatron THD step times at **MRE 7.62%**,
+signed mean **+0.30%**, median ratio 0.9997, against the fitted polynomial's 2.73% in-sample.
+No fitted coefficients. `tests/test_training_composed_accuracy.py` pins it.
+
+The path there, because the terms that mattered were not the terms this design predicted:
+
+| MRE | signed | change |
+|---|---|---|
+| 18.85% | -18.85% | GEMM + rollout attention + collectives |
+| 17.46% | -17.46% | + elementwise (-1.39pp) |
+| 17.23% | -17.23% | + optimizer step (-0.23pp) |
+| 7.63% | +0.27% | + measured THD attention, both directions (**-9.60pp**) |
+| **7.62%** | **+0.30%** | + pipeline p2p sends (-0.01pp) |
+
+Elementwise and the optimizer step are the two terms §2 identifies as missing, and together
+they closed 1.6pp of a 19pp gap. The gap was almost entirely **attention priced from the
+wrong table**, and §1.2(c) of this document is the reason it was priced that way.
+
+**§1.2(c) is wrong for the layout training uses.** The claim — cuDNN FusedAttention on
+Hopper+, not flash — came from calling TE's selector with `attn_mask_type="causal"`. THD
+requires `padding_causal` (`DotProductAttention.forward` asserts `"padding" in
+attn_mask_type`), and a probe built with `causal` reports *every* backend unavailable, which
+reads as a statement about the hardware. Measured with the real module and real packed
+inputs, TE logs `Running with FlashAttention backend (version 2.8.3)` and disables
+FusedAttention with "no backend supports the provided input". All 112 rows of the new table
+carry `kernel_source=FlashAttention`.
+
+Two consequences, both measured on H20 at tp=2 (16 query heads, 4 KV heads, head_dim 128):
+
+- **The forward was 1.59-1.84x low.** The rollout `context_attention` table measures vLLM's
+  prefill kernel over a BSHD batch; its grid varies a batch dimension a THD pack does not
+  have, so every training query sat at the edge of the measured surface. 0.566 ms vs 1.040 ms
+  at 4096 tokens; 15.113 ms vs 24.058 ms at 22528.
+- **The backward was 2.24-2.42x low.** B3's `attn_bwd_fwd_ratio=1.0` rested on a cuDNN
+  benchmark for a layout that is not run here. The real ratio exceeds 2 because the backward
+  computes dQ, dK and dV against the forward's single output and FlashAttention
+  re-materializes the probabilities rather than storing them. It also drifts with sequence
+  length, so no scalar is right and the backward gets its own measured table.
+
+Combined, the attention term was understated 2.35-2.60x while being 15.2% of the prediction.
+
+**What found it was the signed error, not the magnitude.** For as long as every one of the
+22 records under-predicted, the signed and absolute means were equal — the signature of a
+missing additive term rather than a noisy one. The per-term decomposition then said which
+terms were large enough to be it, and the residual's proportionality to work across a 192x
+token range excluded everything charged once per step. That is the §3 B7 decision doing the
+job it was added for, and it is the strongest argument in this document for a kernel sum
+over a fitted polynomial: a 17% residual on a fit is a coefficient to adjust, while a 17%
+residual here named the op.
+
+**One measurement nearly went in wrong twice.** A `.post1` flash-attn wheel is rejected by
+TE's `<= 2.8.3` upper bound (PEP 440 orders `2.8.3.post1` *above* it), TE falls back to
+`UnfusedDotProductAttention`, and the only signal is a debug-level log line. The first run
+of the new sweep measured that fallback. `_normalize_flash_attn_version` is the existing fix;
+the profiler now calls it before importing TE and refuses to write a table whose
+`kernel_source` is the unfused path.
+
+Also corrected: the optimizer sweep's 4.096B-parameter grid point recorded a kernel that
+never ran. Its state needs ~115 GiB against H20's 95 GiB, the allocating `step()` OOM'd
+inside TE, the exception was swallowed, and the timed step iterated an empty state list in
+0.60 ms where 2.048B parameters took 21.56 ms — an implied 190 TB/s on a 4.0 TB/s card.
+Nothing downstream rejects a *fast* row: a floor fit accepts it and the holdout MRE
+improves, because the point is easy to interpolate. The profiler now verifies the state
+allocation.
+
+Final per-term shares, which is what a future change should be compared against rather than
+the pooled MRE:
+
+| term | share | term | share |
+|---|---|---|---|
+| `gemm_bwd` | 30.3% | `tp_collective` | 6.9% |
+| `gemm_fwd` | 30.2% | `logits` | 1.5% |
+| `attn_bwd` | 16.0% | `elementwise` | 1.4% |
+| `attn_fwd` | 13.5% | `optimizer` | 0.2% |
+| | | `pp_comm` | 0.03% |
+
+Holdouts for the three new ops: `training_attention_forward` 5.66% (48 points),
+`training_attention_backward` 3.83% (48), `optimizer_step` 2.84% (12). `gemm` holds at
+3.72% and the end-to-end rollout numbers are unchanged, so the rollout path is untouched.
 
 ## 1. Context
 
@@ -53,14 +135,27 @@ which is why nothing caught it: it was a lookup into the wrong slice, not an imp
 cost. Confirmed against `F.linear`: at `o_proj` tp=2 the old triple yields a `[4096, 4096]`
 output where `dW` is `[4096, 2048]`. Two of Qwen3-8B's four projections were affected.
 
-**(c) Attention on this hardware is cuDNN, not flash.** Transformer Engine disables
-FlashAttention on Hopper+ deliberately
+**(c) Attention on this hardware is cuDNN, not flash.** ⚠️ **This is wrong for THD, and
+§0 records the correction and what it cost.** The claim below is retained because it is the
+reasoning that produced a 9.6pp error, and the failure mode — a backend probe built with
+reconstructed parameters that disagree with the real call — generalizes past this instance.
+
+The original text: Transformer Engine disables FlashAttention on Hopper+ deliberately
 (`dot_product_attention/utils.py:923`: "give FusedAttention preference on Hopper+ for
 performance reasons"). Verified by calling TE's own selector with Megatron's THD attention
 parameters: `flash=False`, `cc=(9,0)`. So the attention ops to measure are
 `fused_attn_fwd` / `fused_attn_bwd`, and measuring `flash_attn_varlen_*` would time a
 kernel this machine never runs. This is the same class of error as the one
 `docs/profiling/tensor-parallel.md` records for `torch.distributed.all_reduce`.
+
+What was actually wrong: "Megatron's THD attention parameters" were reconstructed by hand
+for the probe, and used `attn_mask_type="causal"` where THD requires `padding_causal`. With
+that mask TE reports `flash=False` **and** `fused=False` — no backend at all, which reads as
+a hardware fact rather than as an invalid parameter set. Run against the real module with
+real packed inputs, TE selects FlashAttention 2.8.3. The lesson the design should have
+carried: a selector probe is only evidence if the call it describes is one that runs, so the
+backend is now read from TE's own `_attention_backends` dict *after* a real forward, and the
+sweep refuses to write a table whose backend is the unfused fallback.
 
 (a) and (b) are fixed as prerequisite work, since no composition can be built on a table
 that refuses three quarters of its backward queries.
@@ -199,14 +294,20 @@ microbatch plan, and `ComposedTraining` prices each plan entry. No simulator cha
 
 ## 5. Phasing
 
-| Phase | Scope | Gate |
-|---|---|---|
-| B0 | Fix wgrad triple, add dgrad shapes, re-sweep GEMM | `gemm` holdout within +-0.5pp of 3.9019%; all 12 fwd/dgrad/wgrad queries resolve for Qwen3-8B tp=2 |
-| B1 | `attention_backward` op (cuDNN) + measurement | Holdout MRE reported with `point_count > 0`; `kernel_source` names cuDNN |
-| B2 | `optimizer_step` op + measurement | Holdout MRE reported; floor fitted |
-| B3 | `TrainingOps` + `ComposedTraining`, no DP term | Per-term decomposition and MRE on the 22 THD records, against the fitted model's 2.73% |
-| B4 | DP collective terms, flagged unvalidated | Constructs and predicts at `dp>1`; `dp=1` numbers unchanged |
-| B5 | Docs | Every figure traces to a B0-B4 command |
+| Phase | Scope | Gate | Outcome |
+|---|---|---|---|
+| B0 | Fix wgrad triple, add dgrad shapes, re-sweep GEMM | `gemm` holdout within +-0.5pp of 3.9019%; all 12 fwd/dgrad/wgrad queries resolve for Qwen3-8B tp=2 | done, `9a2dd9d`. Holdout 3.72% over 174 points (62 before; the old table's 43-of-51 junk slices were the artifact of the wgrad bug) |
+| B3 | `TrainingOps` + `ComposedTraining`, no DP term | Per-term decomposition and MRE on the 22 THD records, against the fitted model's 2.73% | done, `bc0d64e`. Shipped at 17.46% with attention mispriced; see B1 |
+| B2 | `optimizer_step` op + measurement | Holdout MRE reported; floor fitted | done, `60045bf`. Holdout 2.84% over 12 points, floor 12us. Closed 0.23pp: the term is 0.2% of a step, which is the result |
+| B1 | `attention_backward` op + measurement | Holdout MRE reported with `point_count > 0`; `kernel_source` names the backend TE selects | done. Both directions measured as the `attention_training` family: forward 5.66%, backward 3.83%, 48 points each, `kernel_source=FlashAttention`. **Closed 9.60pp** |
+| B4 | DP collective terms, flagged unvalidated | Constructs and predicts at `dp>1`; `dp=1` numbers unchanged | `dp_comm_queries` raises `NotImplementedError` rather than returning a guess. No `dp>1` THD record exists, so an implemented-but-unscored term would be indistinguishable from a validated one |
+| B5 | Docs | Every figure traces to a B0-B4 command | done: §0 of this file, and the pinned figures live in `tests/test_training_composed_accuracy.py` so they cannot drift from the tables silently |
+
+B0 was strictly first, as planned. The rest did not run in order: B3 shipped before B1 and
+B2 on the assumption that attention was adequately priced by the rollout table, and B1 then
+turned out to carry 9.6 of the remaining 17.2pp. Running B3 early is what surfaced that, so
+the inversion was productive rather than a mistake — but the design's phase ordering
+implies B1 and B2 are refinements of a working composition, and B1 was a correctness fix.
 
 B0 is strictly first: it is a correctness fix to committed code, and the accuracy numbers in
 `tests/test_collective_baseline_regression.py` must be re-pinned from the corrected sweep

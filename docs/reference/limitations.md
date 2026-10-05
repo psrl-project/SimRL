@@ -74,6 +74,44 @@ See {doc}`../profiling/kernels` for the canonical regenerated table.
 These are cases where the model is built and working but its accuracy on certain inputs is
 known to be limited.
 
+**`ComposedTraining` is 7.63% against measured steps, and three terms are approximate.**
+The kernel-composed Megatron latency model scores MRE 7.63% with signed mean +0.27% on the
+22 out-of-sample THD records, against the fitted polynomial's 2.73% in-sample. The residual
+is scatter rather than bias, so there is no single missing term, but three approximations
+are known and each is attributable:
+
+- **The two residual adds are not charged.** Megatron fuses each into one
+  `bias_dropout_add_fused_train` kernel, and the measured elementwise table holds only the
+  four kinds vLLM runs. They are omitted rather than priced against `rms_norm`'s curve at
+  the same element count, which would be plausible and unverifiable. Two kernels against the
+  seven charged, so the elementwise term (1.4% of a step) is under-counted by roughly 2/9.
+  Fix: extend the elementwise sweep with the fused bias-dropout-add kernel.
+- **Attention over a multi-sequence pack is over-charged.** The SOL's quadratic term uses the
+  pack's `total_tokens`, but attention does not cross a `cu_seqlens` boundary: a pack of two
+  11264-token sequences does `2 * 11264^2 / 2` work, not `22528^2 / 2`. The over-estimate is
+  a factor of the sequence count. It is absorbed by the fitted utility only because the sweep
+  measures the same one-sequence packs the SOL assumes. Fix: sweep multi-sequence packs and
+  key the axis on `sum_squared_tokens`, which `SequenceStats` already carries.
+- **Compute/communication overlap is not modelled.** The sum is a plain sum. Megatron's
+  `overlap_grad_reduce` and `overlap_param_gather` make this a real question at `dp>1`; at
+  `dp=1` the only overlappable terms are the TP collectives (6.9% of a step) and the
+  pipeline sends. Were overlap dominant the composition would over-predict, and the signed
+  mean is +0.30%. Fix: compare against a run with the overlap flags explicitly off.
+
+The dispatch floor for both training attention directions is fitted to the candidate grid's
+top value (80 us) where the measured flat region implies ~195 us, so shapes entirely below
+~3072 tokens are under-predicted. The smallest real training microbatch in the validation
+set is 4096 tokens, already past the flat region. Fix: extend `candidates_us` past 80 us,
+which re-fits every floor-taking op and so requires re-pinning
+`tests/test_collective_baseline_regression.py`.
+
+**`ComposedTraining` at `dp>1` is not implemented.**
+`TrainingOps.dp_comm_queries` raises `NotImplementedError` rather than returning a gradient
+collective cost. Every THD validation record is `dp=1`, so the term could be written but not
+scored, and an implemented-but-unvalidated term is indistinguishable from a validated one at
+the call site. Spec A's tables cover the required collectives in `float32`. Fix: profile a
+`dp>1` training candidate, then implement the term against it.
+
 **`ComposedRollout` mixed steps.**
 A mixed step (prefill and decode tokens in the same batch) is approximated as context
 attention plus generation attention at the step's batch size. Only the two pure phases were

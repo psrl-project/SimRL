@@ -60,11 +60,11 @@ from ...profiler.kernels.config import model_head_dim, model_intermediate_size
 from ...profiler.kernels.shapes import logits_gemm_shape, transformer_gemm_shapes
 from ...profiler.schema import ModelDescriptor, ProfileValidationError
 from ..kernel.database import (
-    AttentionQuery,
     CommQuery,
     ElementwiseQuery,
     GemmQuery,
     OptimizerQuery,
+    TrainingAttentionQuery,
 )
 from ..kernel.hardware import dtype_bytes
 
@@ -374,30 +374,51 @@ class TrainingOps:
             for kind, n_elements in kernels
         )
 
-    def attention_query(self, *, token_count: int, backend: str | None = None) -> AttentionQuery:
+    def attention_query(
+        self,
+        *,
+        token_count: int,
+        direction: str = "forward",
+        backend: str | None = None,
+    ) -> TrainingAttentionQuery:
         """
-        Return the attention query for one microbatch.
+        Return the THD attention query for one microbatch, in one direction.
 
-        Training uses THD packing (one variably-sized row per packed sequence group).
-        The forward shape is ``(batch=1, seq_len=token_count)`` on the vllm backend, which
-        holds the cuDNN FusedAttention tables measured under Megatron's THD layout.
+        Reads the `attention_training` family, not the rollout `context_attention` table.
+        The two describe different kernels on different layouts, and the substitution was
+        wrong in both directions at once. Measured on H20 at tp=2:
+
+        - Forward, rollout table vs TE: 1.84x low at 4096 tokens, 1.59x at 22528.
+        - Backward, the previous 1.0x-of-forward approximation vs measured: 2.24-2.42x low.
+
+        Together the attention term was understated by 2.35-2.60x. The cause is that a
+        packed microbatch is one row with ``cu_seqlens`` while the rollout grid varies a
+        batch dimension a packed layout does not have, so every training query landed at
+        the edge of the measured surface; and that TE dispatches FlashAttention for THD
+        rather than the cuDNN FusedAttention the design doc assumed.
 
         Args:
-            token_count (int): Total tokens in the packed microbatch.
-            backend (str | None): Override the database default backend.
+            token_count (int): Total tokens in the packed microbatch, which is
+                ``sum_tokens`` rather than ``max_tokens``.
+            direction (str): ``"forward"`` or ``"backward"``.
+            backend (str | None): Override the query's own ``megatron`` default. Left unset
+                it is *not* forwarded, because `None` means "use the database default",
+                which is `vllm` and names a directory this family does not have.
 
         Returns:
-            AttentionQuery: Ready to pass to ``KernelDatabase.query_attention``.
+            TrainingAttentionQuery: Ready for ``KernelDatabase.query_training_attention``.
         """
-        return AttentionQuery(
-            phase="context",
-            batch_size=1,
+        fields = dict(
+            direction=direction,
             num_heads=self._num_heads,
+            total_tokens=token_count,
             num_kv_heads=self._num_kv_heads,
             head_dim=self._head_dim,
-            seq_len=token_count,
-            backend=backend,
+            attn_dtype=self._dtype,
         )
+        if backend is not None:
+            fields["backend"] = backend
+        return TrainingAttentionQuery(**fields)  # type: ignore[arg-type]
 
     def tp_comm_queries(
         self, token_count: int
@@ -447,6 +468,46 @@ class TrainingOps:
             (ag_query, ag_per_layer * self._num_layers),
             (rs_query, rs_per_layer * self._num_layers),
         )
+
+    def pp_comm_queries(
+        self, token_count: int, *, pipeline_parallel: int
+    ) -> tuple[tuple[CommQuery, int], ...]:
+        """
+        Return the pipeline send/recv queries for one microbatch slot.
+
+        Under 1F1B each microbatch crosses every stage boundary once going forward and once
+        coming back, so a `pp`-stage pipeline charges ``2 * (pp - 1)`` transfers per
+        microbatch. The payload is one stage's activation handoff: under sequence
+        parallelism the tensor is sequence-sharded, so each rank sends
+        ``token_count / tp * hidden_size`` elements.
+
+        Small but not zero: 57-270 us per crossing at 4096-22528 tokens against step times
+        of 1.06-72 s in the validation set, so under 0.1% of a step. Charged because the
+        table exists and an omitted term cannot be distinguished from a term measured at
+        zero.
+
+        Args:
+            token_count (int): Tokens in the microbatch, before SP sharding.
+            pipeline_parallel (int): PP degree. The ops describe one microbatch's kernels,
+                so PP is a property of the schedule rather than of the sharding.
+
+        Returns:
+            tuple[tuple[CommQuery, int], ...]: ``(query, multiplier)`` pairs. Empty at
+                ``pp <= 1``, where there is no boundary to cross.
+        """
+        if pipeline_parallel <= 1:
+            return ()
+        sp_tokens = max(token_count // self._tensor_parallel, 1)
+        message_bytes = sp_tokens * self._hidden_size * self._element_bytes
+        query = CommQuery(
+            op="p2p",
+            world_size=2,
+            nodes=1,
+            message_bytes=message_bytes,
+            dtype=self._dtype,
+            backend="nccl",
+        )
+        return ((query, 2 * (pipeline_parallel - 1)),)
 
     def optimizer_query(self, *, pipeline_parallel: int) -> OptimizerQuery | None:
         """

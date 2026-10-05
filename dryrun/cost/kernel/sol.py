@@ -85,11 +85,29 @@ FALLBACK_FLOORS_S: dict[str, dict[str, float]] = {
     # uses, and `nccl` times `torch.distributed.all_reduce` as a control. Both need a floor,
     # because a launch cost dominates entirely at the message sizes a decode step produces.
     "nccl": dict(_COLLECTIVE_FALLBACK_S),
-    # `megatron` names the framework whose optimizer is timed: TE's `FusedAdam`, which is
-    # what `megatron/core/optimizer/__init__.py` imports in preference to torch's. The
-    # floor matters least of any op here, since a real shard is 10^8-10^9 parameters and the
-    # measured step is bandwidth-bound at 2703 GB/s well before a launch cost is visible.
-    "megatron": {"optimizer_step": 2e-6},
+    # `megatron` names the framework whose kernels are timed: TE's `FusedAdam` and its
+    # `DotProductAttention`, which is what megatron-core calls. vLLM has neither.
+    "megatron": {
+        # Least consequential floor in the tree: a real shard is 10^8-10^9 parameters and
+        # the measured step is bandwidth-bound at 2703 GB/s well before a launch cost shows.
+        "optimizer_step": 2e-6,
+        # Both directions fit to the candidate grid's **top** value, 80 us, which means the
+        # true floor is above the grid rather than at its edge. The measured evidence is
+        # unambiguous: at 4 heads the forward takes 200.1, 199.6 and 193.8 us at 512, 1024
+        # and 2048 tokens, i.e. flat across 16x more work, and only starts scaling at 3072.
+        # So ~195 us is the real dispatch cost of a TE attention call on this machine,
+        # roughly 2.4x the fitted value.
+        #
+        # Extending `candidates_us` past 80 us is the correct fix and is deliberately not
+        # done here: the candidate grid is shared by every floor-taking op, and widening it
+        # would re-fit the attention, elementwise and collective floors that
+        # `tests/test_collective_baseline_regression.py` pins. The consequence is bounded
+        # and in the safe direction - a floor fitted too low under-predicts only shapes
+        # that are entirely dispatch-bound, and the smallest real training microbatch in
+        # the validation set is 4096 tokens, already past the flat region.
+        "training_attention_forward": 80e-6,
+        "training_attention_backward": 80e-6,
+    },
 }
 
 
