@@ -25,6 +25,7 @@ from .measurements import PerfTableWriter
 from .shapes import (
     GemmShape,
     gemm_all_shapes,
+    gemm_dgrad_shapes,
     gemm_sweep_shapes,
     gemm_wgrad_shapes,
     logits_gemm_shape,
@@ -35,6 +36,7 @@ from .shapes import (
 __all__ = [
     "GemmShape",
     "gemm_all_shapes",
+    "gemm_dgrad_shapes",
     "gemm_sweep_shapes",
     "gemm_wgrad_shapes",
     "logits_gemm_shape",

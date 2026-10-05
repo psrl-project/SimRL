@@ -13,6 +13,7 @@ from dryrun.profiler.hf import model_descriptor_from_yaml
 from dryrun.profiler.kernels.config import GemmSweep, KernelProfileConfig
 from dryrun.profiler.kernels.gemm import (
     gemm_all_shapes,
+    gemm_dgrad_shapes,
     gemm_sweep_shapes,
     gemm_wgrad_shapes,
     logits_gemm_shape,
@@ -109,17 +110,40 @@ def test_sweep_shapes_cross_tokens_with_shapes_and_deduplicate(model):
 
 
 def test_wgrad_shapes_are_derived_from_forward_projections(model):
-    # For each forward (n_fwd, k_fwd) and token count m, the wgrad GEMM is
-    # (m_wgrad, n_wgrad, k_wgrad) = (n_fwd, m, k_fwd).  Verify presence for a
-    # representative (n_fwd=6144, k_fwd=4096) projection with m=1024.
+    # The table row (m, n, k) means F.linear(A[m,k], W[n,k]) -> C[m,n], which is what
+    # gemm.py times. dW has the weight's shape [n_fwd, k_fwd] and is dY^T @ X, so the
+    # contracted length is the token count: (m, n, k) = (n_fwd, k_fwd, tokens).
+    #
+    # These expectations were (n_fwd, m, k_fwd) until 2026-10-05, matching a bug in
+    # gemm_wgrad_shapes. The FLOP count is identical either way because the product is
+    # symmetric, so neither the code nor this test could catch it by cost; the test below
+    # pins the convention against F.linear's actual output shape instead.
     sweep = GemmSweep(token_counts=(64, 1024), logits_request_counts=(1, 64))
     shapes = gemm_wgrad_shapes(model, sweep, tensor_parallel=1)
     assert len(shapes) == len(set(shapes))
-    # qkv_proj forward (n=6144, k=4096) → wgrad (6144, 64, 4096) and (6144, 1024, 4096)
-    assert (6144, 64, 4096) in shapes
-    assert (6144, 1024, 4096) in shapes
-    # down_proj forward (n=4096, k=12288) → wgrad (4096, 64, 12288)
-    assert (4096, 64, 12288) in shapes
+    # qkv_proj forward (n=6144, k=4096) → wgrad (6144, 4096, 64) and (6144, 4096, 1024)
+    assert (6144, 4096, 64) in shapes
+    assert (6144, 4096, 1024) in shapes
+    # down_proj forward (n=4096, k=12288) → wgrad (4096, 12288, 64)
+    assert (4096, 12288, 64) in shapes
+
+
+def test_the_wgrad_triple_produces_the_weight_gradients_own_shape():
+    """Pin the convention against the kernel being timed, not against FLOP arithmetic.
+
+    This is the check that would have caught the swapped triple. A wgrad row must, when
+    run as the table's own call, produce a tensor the shape of the weight it gradients.
+    FLOPs cannot distinguish the orderings; output shape can.
+    """
+    import torch
+
+    token_count, n_fwd, k_fwd = 4096, 4096, 2048  # o_proj at tp=2, where n_fwd != k_fwd
+    reference = (torch.randn(token_count, n_fwd).T @ torch.randn(token_count, k_fwd)).shape
+    assert tuple(reference) == (n_fwd, k_fwd)
+
+    m, n, k = n_fwd, k_fwd, token_count  # the triple gemm_wgrad_shapes emits
+    produced = torch.nn.functional.linear(torch.randn(m, k), torch.randn(n, k)).shape
+    assert tuple(produced) == tuple(reference)
 
 
 def test_wgrad_shapes_cover_all_forward_projections(model):
@@ -129,21 +153,50 @@ def test_wgrad_shapes_cover_all_forward_projections(model):
     wgrad = set(gemm_wgrad_shapes(model, sweep, tensor_parallel=1))
     for shape in forward:
         for m in sweep.token_counts:
-            expected = (shape.n, m, shape.k)
+            expected = (shape.n, shape.k, m)
             assert expected in wgrad, (
                 f"Wgrad shape {expected} missing for forward projection "
                 f"{shape.name} (n={shape.n}, k={shape.k}) at token count {m}."
             )
 
 
-def test_gemm_all_shapes_is_union_of_forward_wgrad_and_logits(model):
+def test_gemm_all_shapes_is_union_of_forward_dgrad_wgrad_and_logits(model):
     sweep = GemmSweep(token_counts=(64, 1024), logits_request_counts=(1, 64))
     forward = set(gemm_sweep_shapes(model, sweep, tensor_parallel=1))
+    dgrad = set(gemm_dgrad_shapes(model, sweep, tensor_parallel=1))
     wgrad = set(gemm_wgrad_shapes(model, sweep, tensor_parallel=1))
     logits = set(logits_sweep_shapes(model, sweep, tensor_parallel=1))
     combined = gemm_all_shapes(model, sweep, tensor_parallel=1)
-    assert set(combined) == forward | wgrad | logits
+    assert set(combined) == forward | dgrad | wgrad | logits
     assert len(combined) == len(set(combined))  # deduplicated
+
+
+def test_dgrad_shapes_swap_the_forward_n_and_k(model):
+    """dgrad is dY @ W, so the forward's n and k exchange roles.
+
+    That swap is why backward is not free: per-(n, k) slicing makes (k_fwd, n_fwd) a
+    different slice from (n_fwd, k_fwd), and three of Qwen3-8B's four projections land in
+    a slice no forward sweep writes. Measured before this was added: qkv_proj, gate_up_proj
+    and down_proj dgrads all raised KernelCoverageError.
+    """
+    sweep = GemmSweep(token_counts=(64, 1024), logits_request_counts=(1, 64))
+    dgrad = set(gemm_dgrad_shapes(model, sweep, tensor_parallel=1))
+    for shape in transformer_gemm_shapes(model, tensor_parallel=1):
+        for m in sweep.token_counts:
+            assert (m, shape.k, shape.n) in dgrad, (
+                f"Dgrad shape {(m, shape.k, shape.n)} missing for {shape.name}."
+            )
+
+
+def test_dgrad_output_has_the_activation_gradients_shape():
+    """Same convention check as wgrad: validate against the call, not against FLOPs."""
+    import torch
+
+    token_count, n_fwd, k_fwd = 4096, 3072, 4096  # qkv_proj at tp=2
+    # dX has the activation's shape [tokens, k_fwd], from dY[tokens, n_fwd] @ W[n_fwd, k_fwd].
+    m, n, k = token_count, k_fwd, n_fwd
+    produced = torch.nn.functional.linear(torch.randn(m, k), torch.randn(n, k)).shape
+    assert tuple(produced) == (token_count, k_fwd)
 
 
 @pytest.mark.skipif(not _CUDA, reason="CUDA device is not available.")
@@ -174,8 +227,12 @@ def test_profile_gemm_writes_a_loadable_table(tmp_path, model):
     )
     path = profile_gemm(model, config, writer=writer)
     table = KernelTable.load(path, GEMM_OP)
-    # 8 forward shapes + 8 wgrad shapes (no overlaps for these token counts) + 2 logits shapes.
-    assert table.row_count == 18
+    # 8 forward + 8 dgrad + 8 wgrad (no overlaps at these token counts) + 2 logits = 26,
+    # minus the 2 forward/dgrad coincidences where a projection's n equals its k
+    # (o_proj at tp=1 is 4096x4096, so its dgrad triple is its forward triple).
+    expected = len(gemm_all_shapes(model, config.sweep("gemm"), tensor_parallel=1))
+    assert table.row_count == expected
+    assert expected == 24
     # With per-(n,k) slicing each projection's rows live in a distinct slice; sample one.
     latencies_qkv = dict(table.rows(("bfloat16", 6144, 4096)))
     assert all(value > 0.0 for value in latencies_qkv.values())

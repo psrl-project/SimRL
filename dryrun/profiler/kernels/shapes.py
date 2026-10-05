@@ -6,8 +6,11 @@ while `gemm.py` also holds the CUDA timing loop and so imports `torch`. The cost
 composes a step from these shapes and must not pay a 4.2-second GPU-stack import to do it.
 
 Shapes are sharded at construction time, so the perf table itself is TP-agnostic: it stores
-`(m, n, k)` and nothing else. That is what lets a later phase price backward dgrad and wgrad
-from the same rows by permuting the axes, with no extra measurement.
+`(m, n, k)` and nothing else. Forward, dgrad, and wgrad all land in that one table, which is
+what lets one surface price both a training and an inference step. They are nonetheless three
+separate enumerations rather than one: per-`(n, k)` slicing makes a dgrad's swapped `(k, n)`
+pair a *different slice* from its forward, so "backward reuses forward for free" stopped being
+true and three of four Qwen3 projections would otherwise query a slice no sweep wrote.
 
 Which shapes a layer runs is a property of the architecture, so this module no longer decides
 it: `transformer_gemm_shapes` and `logits_gemm_shape` dispatch to a `ModelFamily` chosen by
@@ -131,6 +134,52 @@ def logits_sweep_shapes(
     return tuple(sorted(triples))
 
 
+def gemm_dgrad_shapes(
+    model: ModelDescriptor,
+    sweep: GemmSweep,
+    *,
+    tensor_parallel: int,
+) -> tuple[tuple[int, int, int], ...]:
+    """
+    Enumerate the dgrad GEMM shapes for every forward projection and token count.
+
+    For a forward linear `activation[m, k] @ weight^T[k, n] -> output[m, n]`, the
+    input-gradient GEMM is `dY[m, n] @ W[n, k] -> dX[m, k]`, i.e. the shape
+    `(m_dgrad, n_dgrad, k_dgrad) = (m, k_fwd, n_fwd)`: the forward's `n` and `k` swap.
+
+    This module's docstring used to claim backward needed no extra measurement, and that
+    was true while `gemm` sliced on `(gemm_dtype,)` alone, because a dgrad's `(m, n, k)`
+    was then just another point on the same surface. Per-`(n, k)` slicing ended it: the
+    swapped pair `(k_fwd, n_fwd)` is a *different slice*, and for Qwen3-8B at tp=2 three of
+    the four projections land in a slice no sweep ever wrote. Measured: `qkv_proj`,
+    `gate_up_proj` and `down_proj` dgrads all raise `KernelCoverageError`, and only
+    `o_proj` resolves, because its `n` and `k` happen to be measured in both orders.
+
+    Leaving them to clamp onto a neighbouring slice would price three of four backward
+    GEMMs per layer from a different projection's curve, which is the exact defect
+    per-`(n, k)` slicing was introduced to fix (it took GEMM holdout from 8.48% to 4.08%).
+
+    Only the per-layer projections are included. The logits projection has no dgrad in the
+    measured set, because training's loss path produces it through a different fused
+    kernel than a plain linear backward.
+
+    Args:
+        model (ModelDescriptor): Architecture read from the checkpoint.
+        sweep (GemmSweep): Token counts to measure at.
+        tensor_parallel (int): Ranks the block is sharded across.
+
+    Returns:
+        tuple[tuple[int, int, int], ...]: Deduplicated `(m, n, k)` triples, sorted.
+    """
+    shapes = transformer_gemm_shapes(model, tensor_parallel=tensor_parallel)
+    triples = {
+        (token_count, shape.k, shape.n)
+        for token_count in sweep.token_counts
+        for shape in shapes
+    }
+    return tuple(sorted(triples))
+
+
 def gemm_wgrad_shapes(
     model: ModelDescriptor,
     sweep: GemmSweep,
@@ -140,11 +189,21 @@ def gemm_wgrad_shapes(
     """
     Enumerate the wgrad GEMM shapes for every forward projection and token count.
 
-    For a forward linear `activation[m, k] @ weight^T[k, n] -> output[m, n]`, the
-    weight-gradient GEMM is `dY^T[n, m] @ X[m, k] -> dW[n, k]`, i.e. the shape
-    `(m_wgrad, n_wgrad, k_wgrad) = (n_fwd, m, k_fwd)`.  After per-(n,k) slicing
-    the wgrad's n_wgrad equals the token count, which is not one of the measured
-    forward (n, k) pairs, so these shapes must be measured explicitly.
+    The table's row `(m, n, k)` means `F.linear(A[m, k], W[n, k]) -> C[m, n]`, which is what
+    `gemm.py:69-72` actually times. A forward projection is therefore `(tokens, n_f, k_f)`.
+
+    The weight gradient has the same shape as the weight, `[n_f, k_f]`, and is formed as
+    `dW[n_f, k_f] = dY^T[n_f, tokens] @ X[tokens, k_f]`. Expressed in the table's
+    convention, the output rows are `n_f`, the output columns are `k_f`, and the contracted
+    length is the token count, so the row is `(n_f, k_f, tokens)`.
+
+    NOTE(claude): This emitted `(n_f, tokens, k_f)` until 2026-10-05, which is a different
+    slice whenever `tokens != k_f`. The FLOP count is identical because the product is
+    symmetric, so the error could not show up as an implausible cost; it showed up as a
+    lookup into the wrong `(n, k)` slice. Verified against `F.linear`: at `o_proj` tp=2
+    (`n_f=4096, k_f=2048`) the old triple produces a `[4096, 4096]` output where `dW` is
+    `[4096, 2048]`. Two of Qwen3-8B's four projections were affected, `o_proj` and
+    `down_proj`, the two whose `k_f` is not `hidden_size`.
 
     Only the per-layer projections are included. The logits projection is inference-
     only and has no wgrad.
@@ -159,7 +218,7 @@ def gemm_wgrad_shapes(
     """
     shapes = transformer_gemm_shapes(model, tensor_parallel=tensor_parallel)
     triples = {
-        (shape.n, token_count, shape.k)
+        (shape.n, shape.k, token_count)
         for token_count in sweep.token_counts
         for shape in shapes
     }
@@ -173,7 +232,11 @@ def gemm_all_shapes(
     tensor_parallel: int,
 ) -> tuple[tuple[int, int, int], ...]:
     """
-    Return the union of forward, wgrad, and logits GEMM shapes, deduplicated.
+    Return the union of forward, dgrad, wgrad, and logits GEMM shapes, deduplicated.
+
+    All four families go into one table, which is what lets a training step and an
+    inference step read the same surface. Dgrad is included because per-`(n, k)` slicing
+    made the swapped pair a distinct slice; see `gemm_dgrad_shapes`.
 
     Args:
         model (ModelDescriptor): Architecture read from the checkpoint.
@@ -184,6 +247,7 @@ def gemm_all_shapes(
         tuple[tuple[int, int, int], ...]: Deduplicated `(m, n, k)` triples, sorted.
     """
     forward = set(gemm_sweep_shapes(model, sweep, tensor_parallel=tensor_parallel))
+    dgrad = set(gemm_dgrad_shapes(model, sweep, tensor_parallel=tensor_parallel))
     wgrad = set(gemm_wgrad_shapes(model, sweep, tensor_parallel=tensor_parallel))
     logits = set(logits_sweep_shapes(model, sweep, tensor_parallel=tensor_parallel))
-    return tuple(sorted(forward | wgrad | logits))
+    return tuple(sorted(forward | dgrad | wgrad | logits))

@@ -41,10 +41,6 @@ _CHECKPOINT = "/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B"
 # `examples/profile/kernel/TP2_VALIDATION.md` derives this.
 _BASELINE = _REPO / "outputs" / "baseline_a0" / "vllm_tp2_spliced.jsonl"
 
-# Tolerances. Compute is untouched, so it must be exact; collectives are re-swept.
-_EXACT_PP = 0.01
-_RESWEEP_PP = 0.5
-
 pytestmark = pytest.mark.skipif(
     not _TABLES.is_dir() or not _BASELINE.is_file(),
     reason="Measured perf tables and the spliced tp=2 baseline are machine-local.",
@@ -52,13 +48,34 @@ pytestmark = pytest.mark.skipif(
 
 # (op_name, backend) -> (mre_percent, point_count). Compute families: must be exact.
 _HOLDOUT_COMPUTE = {
-    ("gemm", "vllm"): (3.9019, 62),
+    # gemm was re-swept 2026-10-05 when `gemm_wgrad_shapes` was corrected and
+    # `gemm_dgrad_shapes` added, so it moved from 3.9019% on 62 points. The rise is a
+    # denser and more honest surface, not a regression: see the note below.
+    ("gemm", "vllm"): (4.6436, 120),
     ("context_attention", "vllm"): (6.6801, 59),
     ("generation_attention", "vllm"): (4.5715, 72),
     ("context_attention", "flashinfer"): (9.9274, 59),
     ("generation_attention", "flashinfer"): (6.3715, 72),
     ("elementwise", "vllm"): (9.3544, 52),
 }
+
+# NOTE(claude): The 2026-10-05 gemm re-sweep moved end-to-end decode from 9.792% to 9.204%,
+# i.e. 0.588pp BETTER and just outside the +-0.5pp band this file otherwise enforces. The
+# cause is a corrected bug rather than noise, so the values are re-pinned rather than the
+# band widened.
+#
+# `gemm_wgrad_shapes` emitted `(n_fwd, tokens, k_fwd)` where the table's row means
+# `F.linear(A[m,k], W[n,k])`, so the correct triple is `(n_fwd, k_fwd, tokens)`. The old
+# table therefore contained 32 wgrad rows filed under slices like `(n=1, k=2048)` and
+# `(n=4, k=4096)`, where `n` was really a token count: 43 of its 51 slices were such
+# artifacts. Those junk slices sat in log2 space next to the real projections, so a
+# legitimate decode query could take a neighbour from a slice describing different work.
+#
+# Removing them is why the holdout MRE rose (120 real points against 62 partly-fictional
+# ones, a harder and denser surface) while end-to-end accuracy improved. Both moving in
+# that direction together is the signature of a fixed indexing bug, not of a degraded model.
+_EXACT_PP = 0.01
+_RESWEEP_PP = 0.5
 
 # Collective families, re-measured under the `nodes` schema on 2026-10-04. The A0 values
 # (all_reduce/vllm 6.0122% and nccl 4.9606%, 13 points each) were reproduced by the new
@@ -101,16 +118,16 @@ _SUPERSEDED_DEGREE_TREES = (4, 8)
 # +0.076, +0.282 and +0.099 pp, all inside the +-0.5pp tolerance. Re-pinned to the
 # post-sweep values so the gate compares against data that exists.
 _VALIDATE_WHOLE_GRID = {
-    "prefill": (3.673, 29),
-    "decode": (9.792, 204),
-    "mixed": (3.742, 7),
+    "prefill": (3.699, 29),
+    "decode": (9.204, 204),
+    "mixed": (3.834, 7),
 }
 
 # The figure the documentation headlines, excluding the small-batch decode region whose
 # over-prediction is a known model error rather than a parallelism effect: a composed step
 # sums 253 per-call floors that CUDA graph replay removes in the real server.
-# A0 value 2.957; the A1 re-sweep gives 3.071, i.e. +0.114pp.
-_VALIDATE_DECODE_REQS_GE_5 = (3.071, 137)
+# A0 value 2.957; A1 gave 3.071; the B0 gemm re-sweep gives 3.439.
+_VALIDATE_DECODE_REQS_GE_5 = (3.439, 137)
 
 # Fitted floors. The attention and elementwise values are **unchanged** by the A1 re-sweep,
 # which is further evidence of neutrality: those tables were not re-measured, so their
