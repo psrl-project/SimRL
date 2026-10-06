@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from ..component.rollout.engine import Request
@@ -219,3 +220,35 @@ class SimResult:
             return 0.0
         total_tokens = sum(r.generated for r in self.consumed)
         return total_tokens / self.sim_time
+
+    def scg(self, s: int) -> float:
+        """Trajectories consumed with staleness_true <= s, per simulated second.
+
+        Uses staleness_true (v_min of segments), not staleness_reported (v_max).
+        The two differ on any trajectory interrupted by a weight update, and using
+        v_max would understate staleness on exactly those partial-rollout cases.
+        """
+        if self.sim_time <= 0.0:
+            return 0.0
+        count = sum(1 for r in self.consumed if r.staleness_true() <= s)
+        return count / self.sim_time
+
+    def scg_curve(self, s_values: Sequence[int] | None = None) -> dict[int, float]:
+        """SCG(S) for each S in s_values.
+
+        Defaults to 0..max_staleness_true inclusive, which covers the full curve
+        without requiring the caller to know the range in advance.
+        """
+        if s_values is None:
+            max_s = self.max_staleness_true
+            s_values = range(max_s + 1)
+        return {s: self.scg(s) for s in s_values}
+
+    def scg_w(self, w: Callable[[int], float]) -> float:
+        """SCG_w = sum_k w(staleness_true(k)) / sim_time (§4.4 of the design spec).
+
+        w(s) = 1[s <= S] recovers the hard-constraint SCG(S).
+        """
+        if self.sim_time <= 0.0:
+            return 0.0
+        return sum(w(r.staleness_true()) for r in self.consumed) / self.sim_time
