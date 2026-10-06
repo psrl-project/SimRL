@@ -8,9 +8,13 @@ to the lowest index, which is instance id order, so a run is reproducible and
 from __future__ import annotations
 
 import random
+from typing import TYPE_CHECKING
 
 from ..engine import InstanceView, Request
 from .strategy import register_strategy
+
+if TYPE_CHECKING:
+    from dryrun.simulator.water_filling import FleetPlan
 
 
 @register_strategy("request_num_balance")
@@ -155,3 +159,92 @@ class ThroughputBalance:
 
     def select(self, req: Request, candidates: list[InstanceView]) -> int | None:
         return min(range(len(candidates)), key=lambda i: candidates[i].step_time_delta(req))
+
+
+@register_strategy("cohort_affinity")
+class CohortAffinity:
+    """Route old-version requests to the high-TP cohort; new to the low-TP cohort.
+
+    Cohort assignment is determined by comparing v_traj against each cohort's
+    max_version predicate from the FleetPlan.  Falls back to request_num_balance
+    across all candidates when the preferred cohort has no eligible instances,
+    so the fleet split never strands a request.
+
+    Requires a FleetPlan to be set via `update_plan` before the first dispatch.
+    HeterogeneousFleet calls this immediately after rebuilding instances.
+    """
+
+    name = "cohort_affinity"
+
+    def __init__(self, plan: "FleetPlan | None" = None) -> None:
+        self._plan: FleetPlan | None = plan
+        self._fallback = RequestNumBalance()
+        self.n_cohort_leaks: int = 0
+        """Count of requests that leaked to a non-preferred cohort due to capacity."""
+
+    def update_plan(self, plan: "FleetPlan") -> None:
+        """Replace the cohort layout after a fleet rebuild.
+
+        Args:
+            plan: The new fleet layout. Called by HeterogeneousFleet immediately
+                after it rebuilds its instance list so strategy and fleet agree.
+        """
+        self._plan = plan
+
+    def _preferred_cohort_id(self, req: "Request") -> int:
+        """Return the cohort index this request belongs to per the current plan.
+
+        Walks cohorts in order and returns the first whose max_version predicate
+        accepts the request's v_traj.  A cohort with max_version=None is a
+        catch-all and always accepts.  When no plan has been set yet (before the
+        first fleet build) every request is treated as cohort 0, which is the
+        only safe default when cohort counts and version bounds are unknown.
+
+        Args:
+            req: The request being routed.
+
+        Returns:
+            The index of the cohort that should serve this request.
+        """
+        if self._plan is None:
+            return 0
+        for i, cohort in enumerate(self._plan.cohorts):
+            if cohort.max_version is None or req.v_traj <= cohort.max_version:
+                return i
+        return len(self._plan.cohorts) - 1  # catch-all
+
+    def select(self, req: "Request", candidates: list[InstanceView]) -> int | None:
+        """Choose an instance, preferring the cohort that matches req.v_traj.
+
+        Narrows the candidate list to instances in the preferred cohort and
+        applies request_num_balance within that subset.  When no preferred-cohort
+        instance is present — because all are at capacity and were filtered by the
+        admission gate — the strategy falls back to request_num_balance over the
+        whole candidate list and increments n_cohort_leaks.  Stranding the request
+        instead would livelock the simulator: if the fleet is heterogeneous and
+        old-version requests can only go to one instance, a single busy instance
+        would block all old-version work indefinitely.
+
+        Args:
+            req: The request to place.
+            candidates: Instances that passed the admission gate, in instance
+                id order.
+
+        Returns:
+            An index into candidates, or None to leave the request queued.
+        """
+        preferred = self._preferred_cohort_id(req)
+        narrowed = [i for i, v in enumerate(candidates) if v.cohort_id == preferred]
+        if narrowed:
+            # Within the preferred cohort, use request_num_balance so ties
+            # still resolve deterministically (lowest index wins).
+            sub = [candidates[i] for i in narrowed]
+            local_idx = self._fallback.select(req, sub)
+            if local_idx is not None:
+                return narrowed[local_idx]
+        # Preferred cohort full — fall back to the whole candidate list.  A high
+        # n_cohort_leaks rate in the results means the measured cohort effect is
+        # attenuated: old-version requests ran on new-version instances, which
+        # reduces any TP-mismatch signal the experiment was designed to observe.
+        self.n_cohort_leaks += 1
+        return self._fallback.select(req, candidates)

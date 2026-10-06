@@ -58,6 +58,8 @@ class InstanceLoad:
     n_running: int
     kv_utilization: float
     total_ctx: int
+    cohort_id: int = 0
+    """Cohort this instance serves. Set by HeterogeneousFleet; 0 when homogeneous."""
 
     @property
     def n_active(self) -> int:
