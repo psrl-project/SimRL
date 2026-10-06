@@ -223,12 +223,30 @@ class WaterFillingSolver:
                     continue
                 n_new = remaining // tp_new
                 # Skip plans that leave new requests unservable.
+                # Note: the n_old==0 case does NOT have a symmetric guard because
+                # the catch-all cohort (max_version=None) absorbs old requests when
+                # there is no dedicated old cohort.  New requests are always routed
+                # to the catch-all, so n_new==0 with r_new>0 would leave them
+                # truly unroutable — hence the asymmetry is correct.
                 if n_new == 0 and r_new > 0:
                     continue
 
-                score = self._score(r_old, d_old, tp_old, n_old) + self._score(
-                    r_new, d_new, tp_new, n_new
-                )
+                # When n_old==0, there is no dedicated old cohort; the catch-all
+                # (new cohort) absorbs ALL in-flight requests — both old and new.
+                # Score the new cohort with the combined load so that single-cohort
+                # plans are not priced more cheaply than two-cohort plans that
+                # together serve the same requests.  Depth is request-weighted to
+                # avoid pricing a mix of 10 deep + 90 shallow as if all 100 were
+                # shallow.
+                if n_old == 0 and r_old > 0:
+                    r_new_eff = r_old + r_new
+                    d_new_eff = int((d_old * r_old + d_new * r_new) / r_new_eff)
+                else:
+                    r_new_eff, d_new_eff = r_new, d_new
+
+                score = self._score(
+                    r_old if n_old > 0 else 0, d_old, tp_old, n_old
+                ) + self._score(r_new_eff, d_new_eff, tp_new, n_new)
                 # Count only cohorts that would actually be emitted (n > 0).
                 n_cohorts = (1 if n_old > 0 else 0) + (1 if n_new > 0 else 0)
                 key = (score, -n_cohorts)
