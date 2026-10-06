@@ -304,6 +304,52 @@ class RolloutConfig:
 
 
 @dataclass
+class HeterogeneousRolloutConfig:
+    """Heterogeneous TP cohort configuration.
+
+    When ``enabled=False`` (the default) the homogeneous path runs unchanged
+    and all fields below are ignored.  When ``enabled=True`` the rollout fleet
+    is rebuilt at each weight update by the WaterFillingSolver, and
+    ``routing_strategy`` must be ``"cohort_affinity"``.
+    """
+
+    enabled: bool = False
+    n_gpus: int = 4
+    """Total GPUs available to the rollout fleet.
+
+    The invariant ``sum(tp * n_instances) == n_gpus`` is enforced by
+    ``FleetPlan``, not here. This field declares the budget the solver
+    reasons against.
+    """
+    tp_candidates: list = field(default_factory=lambda: [1, 2])
+    """TP degrees the solver may allocate.
+
+    Each degree must have a profiled kernel table; ``{1, 2}`` is what exists
+    today. Adding a degree without a matching table will cause a lookup miss
+    at fleet-construction time, not a silent inaccuracy.
+    """
+    strategy: str = "search"
+    """How the fleet is chosen at each weight update.
+
+    ``"search"`` enumerates all legal partitions of ``n_gpus`` into cohorts
+    drawn from ``tp_candidates`` and takes the argmax of the scoring
+    function.  ``"fixed"`` uses ``cohorts`` verbatim and ignores the request
+    snapshot entirely. The two homogeneous baselines (4xTP=1 and 2xTP=2)
+    use ``"fixed"`` so they run through the identical heterogeneous code path;
+    any measured difference versus a ``"search"`` run cannot be an artefact
+    of the plumbing.
+    """
+    cohorts: list = field(default_factory=list)
+    """Fleet specification, read only when ``strategy == "fixed"``.
+
+    Each entry is a dict with keys ``tp`` and ``n_instances``, e.g.
+    ``{tp: 1, n_instances: 4}``.  The list is consumed verbatim; it is not
+    validated against ``tp_candidates`` because a fixed fleet may intentionally
+    pin a single degree that is not in the solver's search space.
+    """
+
+
+@dataclass
 class SimulateConfig:
     """Top-level simulation configuration."""
 
@@ -315,6 +361,9 @@ class SimulateConfig:
     recompute_cost: RecomputeCostConfig = field(default_factory=RecomputeCostConfig)
     job: JobConfig = field(default_factory=JobConfig)
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
+    heterogeneous: HeterogeneousRolloutConfig = field(
+        default_factory=HeterogeneousRolloutConfig
+    )
     output_dir: str = "outputs"
     log_telemetry: bool = True
     log_level: str = "INFO"
