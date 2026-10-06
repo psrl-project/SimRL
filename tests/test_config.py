@@ -67,6 +67,39 @@ class TestStructuredConfigs:
         assert cfg.workload.prompt.name == "fixed"
         assert cfg.workload.prompt.lo == 512
 
+    def test_heterogeneous_defaults_are_inert(self):
+        cfg = SimulateConfig()
+        assert cfg.heterogeneous.enabled is False
+        assert cfg.heterogeneous.n_gpus == 4
+        assert list(cfg.heterogeneous.tp_candidates) == [1, 2]
+        assert cfg.heterogeneous.strategy == "search"
+        assert list(cfg.heterogeneous.cohorts) == []
+
+    def test_heterogeneous_is_present_in_the_composed_config(self):
+        """The CLI reads the COMPOSED config, not the dataclass.
+
+        simulate.yaml enumerates its own top-level keys, so a dataclass field
+        with no matching YAML block is absent from what Hydra composes and
+        `cfg.heterogeneous.enabled` raises ConfigAttributeError at runtime while
+        every dataclass-level test still passes. Measured: that was the state
+        until the YAML block was added.
+        """
+        import os
+
+        from hydra import compose, initialize_config_dir
+
+        from dryrun.config import register_configs
+
+        register_configs()
+        config_dir = os.path.abspath("dryrun/config/defaults")
+        with initialize_config_dir(config_dir=config_dir, version_base=None):
+            cfg = compose(config_name="simulate")
+            assert cfg.heterogeneous.enabled is False
+            assert cfg.heterogeneous.n_gpus == 4
+            assert list(cfg.heterogeneous.tp_candidates) == [1, 2]
+            assert cfg.heterogeneous.strategy == "search"
+            assert list(cfg.heterogeneous.cohorts) == []
+
     def test_rollout_cost_defaults(self):
         cfg = RolloutCostConfig()
         assert cfg.name == "roofline"

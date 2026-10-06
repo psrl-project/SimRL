@@ -129,6 +129,38 @@ rollout:
   # Safety cap on engine iterations per generate call.
   max_engine_iters: 10000
 
+# Heterogeneous tensor-parallel cohorts for the rollout fleet.
+#
+# When enabled, the fleet is rebuilt at every weight update into cohorts that
+# may run at different TP degrees: typically a high-TP cohort for the
+# trajectories carried over from before the update and a low-TP, more-replicas
+# cohort for freshly admitted ones. Which split wins depends on cohort size --
+# a small cohort cannot fill a low-TP fleet's batches, so concentrating it is
+# faster, while a large cohort already saturates every replica.
+#
+# Defaults are inert: enabled=false runs the existing homogeneous fleet and
+# nothing below is read.
+heterogeneous:
+  # Whether to rebuild the fleet into cohorts at each weight update.
+  enabled: false
+
+  # GPUs available to the rollout fleet. Every plan must satisfy
+  # sum(tp * n_instances) == n_gpus; FleetPlan enforces it.
+  n_gpus: 4
+
+  # TP degrees the solver may allocate. Each needs profiled kernel tables, and
+  # only 1 and 2 have them today (tp4/tp8 have collective tables but no GEMM or
+  # attention slices).
+  tp_candidates: [1, 2]
+
+  # search = enumerate every legal fleet and take the argmax of predicted
+  # throughput. fixed = use `cohorts` verbatim and ignore the request snapshot,
+  # which is how the homogeneous baselines run through this same code path.
+  strategy: search
+
+  # Read only when strategy=fixed. Entries look like {tp: 1, n_instances: 4}.
+  cohorts: []
+
 # Directory for plots and simulation outputs.
 output_dir: outputs
 
