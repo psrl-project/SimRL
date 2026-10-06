@@ -267,3 +267,58 @@ def test_solver_score_r_less_than_n_instances():
     plan = solver.solve(snapshot, rollout_version=1)
     # Must satisfy GPU budget (and not crash)
     assert sum(c.tp * c.n_instances for c in plan.cohorts) == 4
+
+
+def test_absorbed_cohort_depth_is_request_weighted():
+    """
+    When the catch-all absorbs old requests, the new cohort's DEPTH must become
+    the request-weighted mean of the two partitions, not the new partition's own.
+
+    `test_solver_search_n_old_zero_load_absorbed` cannot catch this: it gives
+    every request ctx=5000, so the weighted mean equals `d_new` and a trivial
+    `d_new_eff = d_new` passes it. Attention cost is quadratic in sequence
+    length, so pricing 10 trajectories at 50k context as if they were 100
+    tokens understates the cohort by orders of magnitude -- exactly the class
+    of silent mis-scoring the absorption fix exists to prevent.
+
+    Asserts on the depth actually handed to the cost model rather than on the
+    chosen plan, because the plan can coincide for unrelated reasons.
+    """
+    queried: list[tuple[int, float]] = []
+
+    def _recording_models() -> dict[int, MagicMock]:
+        models: dict[int, MagicMock] = {}
+        for tp in (1, 2):
+            model = MagicMock()
+
+            def step_time(n_tokens, t2, ctxsum, n_reqs, _tp=tp):
+                queried.append((n_reqs, ctxsum))
+                return 0.010 / _tp
+
+            model.step_time.side_effect = step_time
+            models[tp] = model
+        return models
+
+    solver = WaterFillingSolver(
+        cost_models=_recording_models(),
+        n_gpus=4,
+        tp_candidates=(1, 2),
+        strategy="search",
+        fixed_cohorts=[],
+        max_concurrency=None,
+    )
+    # 10 deep + 90 shallow. Weighted mean = (50000*10 + 100*90) / 100 = 5090.
+    snapshot = (
+        [_snap(v_traj=0, ctx=50_000) for _ in range(10)]
+        + [_snap(v_traj=1, ctx=100) for _ in range(90)]
+    )
+    solver.solve(snapshot, rollout_version=1)
+
+    per_request_depths = {
+        round(ctxsum / n_reqs) for n_reqs, ctxsum in queried if n_reqs > 0
+    }
+    assert 5090 in per_request_depths, (
+        "The absorbed cohort was never priced at the request-weighted mean depth "
+        f"5090; depths queried were {sorted(per_request_depths)}. A trivial "
+        "d_new_eff = d_new would query 100 instead."
+    )
