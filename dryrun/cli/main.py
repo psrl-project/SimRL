@@ -153,6 +153,75 @@ def build_policy(cfg: DictConfig, max_staleness: int) -> StalenessPolicy:
     raise ValueError(f"Unknown policy: {name!r}.")
 
 
+def build_cohort_models(
+    cfg: DictConfig,
+) -> "tuple[dict[int, RolloutCostModel], dict[int, int], WaterFillingSolver]":
+    """Build one cost model and KV capacity per TP candidate, plus the solver.
+
+    Returns `(cost_models, kv_blocks_per_tp, solver)`. `Simulator` builds the fleet
+    itself from these, because the router the fleet rebinds is the one `Simulator`
+    constructs.
+
+    Args:
+        cfg: The full resolved Hydra config, containing `heterogeneous`, `rollout_cost`,
+            and `rollout` sub-configs.
+
+    Returns:
+        A tuple of (cost_models, kv_blocks_per_tp, solver) ready to pass to `Simulator`.
+
+    Raises:
+        ValueError: If the router strategy is not `cohort_affinity`, since any other
+            strategy ignores `cohort_id` and silently defeats the fleet split.
+    """
+    from omegaconf import OmegaConf
+
+    from ..simulator.water_filling import WaterFillingSolver
+
+    h = cfg.heterogeneous
+    strategy_name = cfg.rollout.router.get("strategy", "request_num_balance")
+    if strategy_name != "cohort_affinity":
+        raise ValueError(
+            f"heterogeneous.enabled=true requires rollout.router.strategy=cohort_affinity, "
+            f"got {strategy_name!r}. Any other strategy ignores cohort_id, so old-version "
+            f"requests would land on low-TP instances and the fleet split would measure "
+            f"nothing."
+        )
+
+    tp_candidates = tuple(int(tp) for tp in h.tp_candidates)
+    if not tp_candidates:
+        raise ValueError("heterogeneous.tp_candidates must not be empty.")
+
+    # One cost model per TP. `rollout_cost.parallelism.tp` is overridden per candidate:
+    # ComposedRollout shards its ModelOps at construction, so a TP=2 cohort needs its
+    # own model built at tp=2 rather than the tp=1 one with a scale factor.
+    cost_models: dict[int, RolloutCostModel] = {}
+    base = OmegaConf.to_container(cfg.rollout_cost, resolve=True)
+    for tp in tp_candidates:
+        per_tp = OmegaConf.create(base)
+        per_tp.parallelism.tp = tp
+        cost_models[tp] = build_rollout_cost(per_tp)
+
+    # KV capacity per TP. Sharding the weights across more ranks frees memory for
+    # cache, so this genuinely differs per TP (31294 blocks at tp=1 against 69532 at
+    # tp=2 for Qwen3-8B on an H20) and must not be collapsed to one number.
+    kv_blocks_per_tp: dict[int, int] = {}
+    for tp in tp_candidates:
+        per_tp_rollout = OmegaConf.create(OmegaConf.to_container(cfg.rollout, resolve=True))
+        if per_tp_rollout.get("kv_cache_sizing", None) is not None:
+            per_tp_rollout.kv_cache_sizing.tp_size = tp
+        kv_blocks_per_tp[tp] = resolve_kv_blocks(per_tp_rollout)
+
+    solver = WaterFillingSolver(
+        cost_models=cost_models,
+        n_gpus=int(h.n_gpus),
+        tp_candidates=tp_candidates,
+        strategy=str(h.strategy),
+        fixed_cohorts=[dict(c) for c in h.cohorts],
+        max_concurrency=cfg.rollout.get("max_concurrency", None),
+    )
+    return cost_models, kv_blocks_per_tp, solver
+
+
 def build_distribution(cfg: DictConfig) -> list[int]:
     """Generate a list of lengths from a single distribution config."""
     name = cfg.get("name", "uniform")
@@ -436,6 +505,12 @@ def run_simulate(cfg: DictConfig) -> None:
     sync_cost = build_sync_cost(cfg.sync_cost)
     recompute_cost = build_recompute_cost(cfg.recompute_cost, training_cost)
 
+    cohort_cost_models = None
+    kv_blocks_per_tp = None
+    solver = None
+    if cfg.get("heterogeneous", None) is not None and cfg.heterogeneous.enabled:
+        cohort_cost_models, kv_blocks_per_tp, solver = build_cohort_models(cfg)
+
     dryrun_logger.info(
         f"Starting simulation: policy={policy.name}, n_versions={sim_cfg.n_versions}, "
         f"n_instances={sim_cfg.n_instances}, batch_size={sim_cfg.batch_size} groups "
@@ -457,6 +532,9 @@ def run_simulate(cfg: DictConfig) -> None:
         sync_cost=sync_cost,
         recompute_cost=recompute_cost,
         store=store,
+        cohort_cost_models=cohort_cost_models,
+        kv_blocks_per_tp=kv_blocks_per_tp,
+        solver=solver,
     )
     result = sim.run()
 

@@ -8,6 +8,7 @@ driver but with the multi-instance event coordinator infrastructure.
 from __future__ import annotations
 
 import heapq
+from typing import TYPE_CHECKING
 
 from tqdm import tqdm
 
@@ -27,6 +28,11 @@ from ..policy.base import CompleteAction, SimState, StalenessPolicy
 from ..telemetry.store import JsonlStore
 from ..telemetry.writer import SimTelemetry
 from .config import SimConfig, SimResult, clip_total_length
+from .water_filling import RequestSnapshot
+
+if TYPE_CHECKING:
+    from .fleet import HeterogeneousFleet
+    from .water_filling import FleetPlan, WaterFillingSolver
 
 
 class Simulator:
@@ -46,6 +52,9 @@ class Simulator:
         sync_cost: SyncCostModel | None = None,
         recompute_cost: RecomputeCostModel | None = None,
         store: JsonlStore | None = None,
+        cohort_cost_models: dict[int, RolloutCostModel] | None = None,
+        kv_blocks_per_tp: dict[int, int] | None = None,
+        solver: "WaterFillingSolver | None" = None,
     ):
         self.rollout_cost = rollout_cost
         self.policy = policy
@@ -122,6 +131,43 @@ class Simulator:
         # commit-only bookkeeping (all the logging logic lives there, not
         # here, so this class only ever calls high-level telemetry methods).
         self.telemetry = SimTelemetry(store, enabled=cfg.log_telemetry)
+
+        # Heterogeneous fleet: replaces the homogeneous instances built above with
+        # cohorts chosen by the solver. Built here rather than passed in because the
+        # router this fleet rebinds is the one constructed above; a caller-built fleet
+        # would hold a different Router than the one this Simulator dispatches through.
+        self._solver = solver
+        self._fleet: HeterogeneousFleet | None = None
+        if solver is not None:
+            if cohort_cost_models is None or kv_blocks_per_tp is None:
+                raise ValueError(
+                    "A heterogeneous solver needs cohort_cost_models and kv_blocks_per_tp; "
+                    "the fleet cannot price a cohort or size its KV pool without them."
+                )
+            from .fleet import HeterogeneousFleet
+
+            initial_plan = solver.solve([], self.rollout_version)
+            self._fleet = HeterogeneousFleet(
+                cost_models=cohort_cost_models,
+                router=self.router,
+                initial_plan=initial_plan,
+                kv_blocks_per_tp=kv_blocks_per_tp,
+                instance_cfg=dict(
+                    token_budget=cfg.token_budget,
+                    block_size=cfg.block_size,
+                    max_running=cfg.max_concurrent,
+                    max_concurrency=cfg.max_concurrency,
+                    reject_if_kv_full=cfg.reject_if_kv_full,
+                    reject_if_waiting=cfg.reject_if_waiting,
+                    reject_if_running_full=cfg.reject_if_running_full,
+                    enable_prefix_caching=cfg.enable_prefix_caching,
+                ),
+                t=0.0,
+            )
+            # The fleet owns the instance list now; the homogeneous one built above
+            # is discarded. Rebinding rather than keeping both is what stops the
+            # engine loop from advancing instances the router never dispatches to.
+            self.instances = self._fleet.instances
 
     def _state(self) -> SimState:
         return SimState(
@@ -590,15 +636,24 @@ class Simulator:
         self.rollout_version = self.policy.rollout_version_after_train(self._state())
         weights_changed = self.rollout_version != previous_rollout_version
         if weights_changed and self.cfg.partial_rollout and self.inflight:
-            # Aborted requests go back to the router rather than staying on the
-            # instance that was serving them. The real gateway re-routes 58.5%
-            # of them elsewhere, so pinning them here is not a neutral
-            # simplification. This is also what puts the spike in the router
-            # queue row: the whole fleet lands in the queue at once and drains
-            # over the following dispatches.
-            aborted: list[Request] = []
-            for inst in self.instances:
-                aborted.extend(inst.abort_all(requeue=False))
+            if self._fleet is not None and self._solver is not None:
+                # Heterogeneous path: solver picks the new fleet layout, fleet
+                # aborts in-flight requests and rebuilds instances.
+                snapshot = [
+                    RequestSnapshot(v_traj=r.v_traj, ctx=r.ctx, instance_id=r.instance_id)
+                    for r in self.inflight
+                ]
+                plan = self._solver.solve(snapshot, self.rollout_version)
+                aborted = self._fleet.rebuild(plan, self.t)
+                # The fleet may have constructed new instance objects, so rebind.
+                # `self.instances` is what the engine loop iterates and what
+                # `_align_instances` asserts clocks against.
+                self.instances = self._fleet.instances
+            else:
+                # Existing homogeneous path — unchanged.
+                aborted: list[Request] = []
+                for inst in self.instances:
+                    aborted.extend(inst.abort_all(requeue=False))
             self.router.enqueue(aborted, self.t)
             self.policy.on_interrupt(list(self.inflight), self._state())
             self.telemetry.emit_instance_all(self.instances)
