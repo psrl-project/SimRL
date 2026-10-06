@@ -62,20 +62,35 @@ class FleetPlan:
     """
     The complete cohort layout for one weight-update interval.
 
-    Invariant: at most one cohort may have ``max_version=None``.  A second
-    catch-all is unreachable by the version-predicate router and wastes GPU
-    budget on instances that will never receive requests.
+    Invariants enforced in ``__post_init__``:
+
+    1. **GPU budget**: ``sum(c.tp * c.n_instances for c in cohorts)`` must equal
+       ``n_gpus`` exactly.  The solver enumerates candidates arithmetically; this
+       assertion catches an off-by-one in that enumeration before it can produce
+       plausible-but-wrong numbers.
+
+    2. **Catch-all uniqueness**: at most one cohort may have ``max_version=None``.
+       A second catch-all is unreachable by the version-predicate router and
+       wastes GPU budget on instances that will never receive requests.
     """
 
     cohorts: tuple[CohortPlan, ...]
+    n_gpus: int
 
     def __post_init__(self) -> None:
+        used = sum(c.tp * c.n_instances for c in self.cohorts)
+        if used != self.n_gpus:
+            raise ValueError(
+                f"GPU budget violated: cohorts consume {used} GPU-ranks "
+                f"but n_gpus={self.n_gpus}."
+            )
         n_catchall = sum(1 for c in self.cohorts if c.max_version is None)
         if n_catchall > 1:
             raise ValueError(
-                f"GPU budget violated: {n_catchall} cohorts have max_version=None "
-                f"(catch-all), but the version-predicate router can reach at most one. "
-                f"Every extra catch-all is unreachable and squanders GPU budget."
+                f"Routing invariant violated: {n_catchall} cohorts have "
+                f"max_version=None (catch-all), but the version-predicate router "
+                f"can reach at most one.  Every extra catch-all is unreachable "
+                f"and idles its GPU-ranks."
             )
 
 
@@ -172,13 +187,7 @@ class WaterFillingSolver:
             )
             for c in self._fixed_cohorts
         )
-        used = sum(c.tp * c.n_instances for c in cohorts)
-        if used != self._n_gpus:
-            raise ValueError(
-                f"GPU budget violated: fixed_cohorts consume {used} GPU-ranks "
-                f"but n_gpus={self._n_gpus}."
-            )
-        return FleetPlan(cohorts=cohorts)
+        return FleetPlan(cohorts=cohorts, n_gpus=self._n_gpus)
 
     # --- Search strategy ---
 
@@ -238,7 +247,7 @@ class WaterFillingSolver:
                             n_instances=n_new,
                             max_version=None,
                         ))
-                    best_plan = FleetPlan(cohorts=tuple(cohorts))
+                    best_plan = FleetPlan(cohorts=tuple(cohorts), n_gpus=self._n_gpus)
 
         assert best_plan is not None, (
             "WaterFillingSolver found no valid plan.  Check that n_gpus and "

@@ -27,14 +27,29 @@ def _snap(v_traj: int, ctx: int = 5000) -> RequestSnapshot:
 
 def test_fleet_plan_budget_invariant():
     plan = FleetPlan(cohorts=(CohortPlan(tp=2, n_instances=1, max_version=0),
-                               CohortPlan(tp=1, n_instances=2, max_version=None)))
+                               CohortPlan(tp=1, n_instances=2, max_version=None)),
+                     n_gpus=4)
     assert sum(c.tp * c.n_instances for c in plan.cohorts) == 4
 
 
 def test_fleet_plan_budget_violated():
+    # tp=2,n=2 + tp=1,n=2 => 6 GPU-ranks, but n_gpus=4 => budget error.
+    # Distinct max_version values ensure the budget check fires, not the catch-all check.
     with pytest.raises(ValueError, match="GPU budget"):
-        FleetPlan(cohorts=(CohortPlan(tp=2, n_instances=2, max_version=None),
-                            CohortPlan(tp=1, n_instances=2, max_version=None)))
+        FleetPlan(cohorts=(CohortPlan(tp=2, n_instances=2, max_version=0),
+                            CohortPlan(tp=1, n_instances=2, max_version=None)),
+                  n_gpus=4)
+
+
+def test_fleet_plan_catchall_independent_of_budget():
+    # Budget is correct (tp=2,n=1 + tp=1,n=2 = 4), but two catch-alls => routing error.
+    # Message must NOT mention "GPU budget".
+    with pytest.raises(ValueError) as exc_info:
+        FleetPlan(cohorts=(CohortPlan(tp=2, n_instances=1, max_version=None),
+                            CohortPlan(tp=1, n_instances=2, max_version=None)),
+                  n_gpus=4)
+    assert "GPU budget" not in str(exc_info.value)
+    assert "catch-all" in str(exc_info.value)
 
 
 def test_solver_fixed_strategy():
