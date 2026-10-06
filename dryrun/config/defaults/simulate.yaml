@@ -161,6 +161,16 @@ heterogeneous:
   # Read only when strategy=fixed. Entries look like {tp: 1, n_instances: 4}.
   cohorts: []
 
+  # Per-TP kernel table root, required when rollout_cost.name=composed. The measured
+  # GEMM and attention tables are sharded per TP degree, so one path cannot serve
+  # every cohort: a tp=2 model needs slices only the tp=2 sweep contains. Pointing a
+  # tp=2 model at tp=1 tables raises KernelCoverageError rather than mispricing it.
+  # Example:
+  #   kernel_table_roots:
+  #     1: outputs/profile/qwen3_8b/kernel_tp1/kernel
+  #     2: outputs/profile/qwen3_8b/kernel_tp2/kernel
+  kernel_table_roots: {}
+
 # Directory for plots and simulation outputs.
 output_dir: outputs
 

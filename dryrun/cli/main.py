@@ -153,6 +153,57 @@ def build_policy(cfg: DictConfig, max_staleness: int) -> StalenessPolicy:
     raise ValueError(f"Unknown policy: {name!r}.")
 
 
+# TP degrees with profiled GEMM and attention tables. kernel_tp4 and kernel_tp8 exist
+# but carry collective tables only, so a composed model built at those degrees would
+# query GEMM and attention shapes that were never measured.
+_PROFILED_TP_DEGREES = frozenset({1, 2})
+
+
+def _cohort_table_roots(
+    heterogeneous: DictConfig,
+    tp_candidates: tuple[int, ...],
+    rollout_cost_name: str,
+) -> dict[int, str]:
+    """Return the per-TP kernel table root for each candidate TP degree.
+
+    Only the composed cost model reads kernel tables; every other model is fitted and
+    ignores them, so an empty mapping is valid there and this returns `{}`.
+
+    Args:
+        heterogeneous: The `heterogeneous` config subtree.
+        tp_candidates: TP degrees the solver may allocate.
+        rollout_cost_name: `rollout_cost.name`, which decides whether tables are needed.
+
+    Returns:
+        TP degree -> table root. Empty when the cost model does not read tables.
+
+    Raises:
+        ValueError: If the composed model is in use and any candidate TP has no entry.
+            Falling back to the single `rollout_cost.kernel_table_root` is deliberately
+            not done: that path is correct for at most one TP degree, and the others
+            would fail later with a KernelCoverageError naming a shape rather than the
+            missing configuration.
+    """
+    if rollout_cost_name != "composed":
+        return {}
+    # Keys arrive as ints from a dataclass default but as strings through a Hydra
+    # override (`kernel_table_roots.2=...`), so normalise both.
+    configured = {
+        int(tp): str(root)
+        for tp, root in dict(heterogeneous.get("kernel_table_roots", {}) or {}).items()
+    }
+    missing = [tp for tp in tp_candidates if tp not in configured]
+    if missing:
+        raise ValueError(
+            f"heterogeneous.kernel_table_roots is missing an entry for TP "
+            f"{sorted(missing)}. The composed cost model reads measured GEMM and "
+            f"attention tables that are sharded per TP degree, so each candidate needs "
+            f"its own root (e.g. 1: .../kernel_tp1/kernel, 2: .../kernel_tp2/kernel). "
+            f"Configured: {sorted(configured)}."
+        )
+    return configured
+
+
 def build_cohort_models(
     cfg: DictConfig,
 ) -> "tuple[dict[int, RolloutCostModel], dict[int, int], WaterFillingSolver]":
@@ -190,15 +241,35 @@ def build_cohort_models(
     tp_candidates = tuple(int(tp) for tp in h.tp_candidates)
     if not tp_candidates:
         raise ValueError("heterogeneous.tp_candidates must not be empty.")
+    # Only TP 1 and 2 have profiled GEMM and attention tables. tp4/tp8 have collective
+    # tables only, so a model built at those degrees would query shapes that were never
+    # measured. Refusing here names the configuration; letting it through surfaces a
+    # KernelCoverageError about a GEMM shape much further from the cause.
+    if unsupported := sorted(set(tp_candidates) - _PROFILED_TP_DEGREES):
+        raise ValueError(
+            f"heterogeneous.tp_candidates contains unprofiled TP degrees "
+            f"{unsupported}. Only {sorted(_PROFILED_TP_DEGREES)} have measured GEMM and "
+            f"attention tables; tp4/tp8 carry collective tables only. Profile the "
+            f"missing families to widen this set."
+        )
 
     # One cost model per TP. `rollout_cost.parallelism.tp` is overridden per candidate:
     # ComposedRollout shards its ModelOps at construction, so a TP=2 cohort needs its
     # own model built at tp=2 rather than the tp=1 one with a scale factor.
+    #
+    # The composed model also needs a per-TP *table* root. Measured GEMM and attention
+    # tables are sharded by TP degree, so one path cannot serve every cohort: a tp=2
+    # model queries `(n, k)` slices and `num_kv_heads` values that only the tp=2 sweep
+    # contains. Reading the wrong table raises KernelCoverageError rather than returning
+    # a plausible wrong number, so the failure is loud -- but it has to be configured.
     cost_models: dict[int, RolloutCostModel] = {}
     base = OmegaConf.to_container(cfg.rollout_cost, resolve=True)
+    table_roots = _cohort_table_roots(h, tp_candidates, str(base.get("name", "roofline")))
     for tp in tp_candidates:
         per_tp = OmegaConf.create(base)
         per_tp.parallelism.tp = tp
+        if tp in table_roots:
+            per_tp.kernel_table_root = table_roots[tp]
         cost_models[tp] = build_rollout_cost(per_tp)
 
     # KV capacity per TP. Sharding the weights across more ranks frees memory for

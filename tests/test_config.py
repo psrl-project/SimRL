@@ -391,3 +391,74 @@ class TestWorkloadConfigGroups:
         with initialize_config_dir(config_dir=config_dir, version_base=None):
             cfg = compose(config_name="simulate", overrides=["workload=dapo_trace"])
         assert cfg.workload.source == "trace"
+
+
+class TestCohortTableRoots:
+    """Per-TP kernel table roots for the heterogeneous fleet.
+
+    The composed cost model reads measured GEMM and attention tables that are sharded
+    per TP degree, so one `rollout_cost.kernel_table_root` cannot serve every cohort.
+    Pointing a tp=2 model at tp=1 tables raises KernelCoverageError rather than
+    returning a wrong number, so the failure is loud -- but it must be configured.
+    """
+
+    @staticmethod
+    def _hetero(**overrides):
+        from omegaconf import OmegaConf
+
+        base = {
+            "enabled": True,
+            "n_gpus": 4,
+            "tp_candidates": [1, 2],
+            "strategy": "search",
+            "cohorts": [],
+            "kernel_table_roots": {},
+        }
+        base.update(overrides)
+        return OmegaConf.create(base)
+
+    def test_non_composed_models_need_no_tables(self):
+        from dryrun.cli.main import _cohort_table_roots
+
+        assert _cohort_table_roots(self._hetero(), (1, 2), "roofline") == {}
+
+    def test_composed_requires_a_root_for_every_candidate(self):
+        import pytest
+
+        from dryrun.cli.main import _cohort_table_roots
+
+        partial = self._hetero(kernel_table_roots={1: "a/tp1"})
+        with pytest.raises(ValueError, match="kernel_table_roots"):
+            _cohort_table_roots(partial, (1, 2), "composed")
+
+    def test_composed_accepts_int_and_string_keys(self):
+        from dryrun.cli.main import _cohort_table_roots
+
+        # A dataclass default yields int keys; a Hydra override
+        # (`kernel_table_roots.2=...`) yields strings. Both must resolve.
+        ints = self._hetero(kernel_table_roots={1: "a/tp1", 2: "a/tp2"})
+        strs = self._hetero(kernel_table_roots={"1": "a/tp1", "2": "a/tp2"})
+        expected = {1: "a/tp1", 2: "a/tp2"}
+        assert _cohort_table_roots(ints, (1, 2), "composed") == expected
+        assert _cohort_table_roots(strs, (1, 2), "composed") == expected
+
+    def test_unprofiled_tp_degree_is_refused(self):
+        """tp4/tp8 carry collective tables only, so they cannot price a step.
+
+        Refusing at config time names the setting; letting it through surfaces a
+        KernelCoverageError about a GEMM shape much further from the cause.
+        """
+        import pytest
+        from omegaconf import OmegaConf
+
+        from dryrun.cli.main import build_cohort_models
+
+        cfg = OmegaConf.create(
+            {
+                "heterogeneous": self._hetero(tp_candidates=[1, 4]),
+                "rollout_cost": {"name": "roofline", "parallelism": {"tp": 1}},
+                "rollout": {"router": {"strategy": "cohort_affinity"}},
+            }
+        )
+        with pytest.raises(ValueError, match="unprofiled TP degrees"):
+            build_cohort_models(cfg)

@@ -340,6 +340,19 @@ class HeterogeneousRolloutConfig:
     of the plumbing.
     """
     cohorts: list = field(default_factory=list)
+    kernel_table_roots: dict = field(default_factory=dict)
+    """Per-TP kernel table root for the composed cost model, e.g.
+    `{1: ".../kernel_tp1/kernel", 2: ".../kernel_tp2/kernel"}`.
+
+    Required when `rollout_cost.name == "composed"`, because the measured GEMM and
+    attention tables are sharded per TP degree: a tp=2 model needs `(n, k)` slices and
+    `num_kv_heads` values that only the tp=2 sweep contains. The single
+    `rollout_cost.kernel_table_root` cannot express that, and pointing a tp=2 model at
+    tp=1 tables raises KernelCoverageError rather than returning a wrong number.
+
+    Keys may be ints or strings; both are normalised. An entry is required for every
+    value in `tp_candidates`.
+    """
     """Fleet specification, read only when ``strategy == "fixed"``.
 
     Each entry is a dict with keys ``tp`` and ``n_instances``, e.g.
