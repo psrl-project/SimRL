@@ -359,6 +359,85 @@ class SimPlotter:
         plt.close(fig)
         return path
 
+    @staticmethod
+    def _scg_curve_data(
+        staleness_values: list[int],
+        span: float,
+    ) -> tuple[list[int], list[float]]:
+        """Compute the SCG step curve given a list of per-trajectory staleness values.
+
+        SCG(S) = count(staleness_true <= S) / span for S in [0, max(staleness_values)].
+
+        Factored out so tests can assert on exact numeric values without parsing a PNG.
+
+        Args:
+            staleness_values: One integer staleness per consumed trajectory.
+            span: Total simulation time in seconds (the rate denominator).
+
+        Returns:
+            xs: S values 0..max inclusive.
+            ys: Corresponding SCG(S) rates.
+        """
+        if not staleness_values or span <= 0:
+            return [], []
+        max_s = max(staleness_values)
+        xs = list(range(max_s + 1))
+        ys = [sum(1 for v in staleness_values if v <= s) / span for s in xs]
+        return xs, ys
+
+    def plot_scg_curve(self) -> Path:
+        """Plot SCG(S): consumed trajectories with staleness ≤ S per simulated second.
+
+        SCG(S) is a non-decreasing step function of the integer staleness budget S.
+        The denominator is ``max(complete_time)`` over all consume rows — the same
+        time axis ``plot_throughput`` uses — so the rates are directly comparable
+        across the two plots.
+
+        Returns:
+            Path to the saved PNG.
+        """
+        path = self.output_dir / "scg_curve.png"
+        rows = self._consume_rows()
+
+        # Rows from runs predating the staleness_true field are skipped rather
+        # than falling back to v_min arithmetic, so the curve only reflects data
+        # we can trust. If none survive the filter we fall through to placeholder.
+        staleness_values = [
+            int(r["staleness_true"])
+            for r in rows
+            if r.get("staleness_true") is not None
+        ]
+        if not staleness_values:
+            return self._empty_placeholder(path, "No staleness data to plot SCG curve")
+
+        complete_times = [
+            float(r["complete_time"])
+            for r in rows
+            if r.get("complete_time") is not None
+        ]
+        # Fall back to the event timestamp when complete_time is absent everywhere.
+        span = max(complete_times) if complete_times else max(float(r["t"]) for r in rows)
+        if span <= 0:
+            span = 1.0  # guard: avoid division by zero on pathological input
+
+        xs, ys = self._scg_curve_data(staleness_values, span)
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        # step(where='post') is the correct representation: SCG(S) holds constant
+        # from integer S until the next integer, which is what 'post' draws.
+        # Scatter markers make each defined S value explicit.
+        ax.step(xs, ys, where="post", color="steelblue", linewidth=2)
+        ax.scatter(xs, ys, color="steelblue", s=40, zorder=3)
+        ax.set_xlabel("Staleness budget S (weight updates)")
+        ax.set_ylabel("SCG(S)  [trajectories / s]")
+        ax.set_title("Staleness-Constrained Goodput")
+        ax.set_xticks(xs)
+        ax.grid(True, axis="y", alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        return path
+
     def plot_all(self) -> list[Path]:
         return [
             self.plot_instance_load(),
@@ -366,4 +445,5 @@ class SimPlotter:
             self.plot_staleness_distribution(),
             self.plot_request_timeline(),
             self.plot_throughput(),
+            self.plot_scg_curve(),
         ]

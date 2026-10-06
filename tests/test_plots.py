@@ -33,11 +33,11 @@ def _simulate_into_store(tmp_path, n_instances=2):
 
 
 class TestPlotAllFromRealRun:
-    def test_plot_all_produces_five_pngs(self, tmp_path):
+    def test_plot_all_produces_six_pngs(self, tmp_path):
         store = _simulate_into_store(tmp_path)
         plotter = SimPlotter(store, tmp_path / "plots")
         paths = plotter.plot_all()
-        assert len(paths) == 5
+        assert len(paths) == 6
         for p in paths:
             assert p.exists()
             assert p.stat().st_size > 0
@@ -113,7 +113,7 @@ class TestPlotAllFromFixtureStore:
         store = self._build_fixture(tmp_path)
         plotter = SimPlotter(store, tmp_path / "plots")
         paths = plotter.plot_all()
-        assert len(paths) == 5
+        assert len(paths) == 6
         for p in paths:
             assert p.exists()
             assert p.stat().st_size > 0
@@ -136,7 +136,7 @@ class TestEmptyStore:
         store = JsonlStore(tmp_path / "logs")
         plotter = SimPlotter(store, tmp_path / "plots")
         paths = plotter.plot_all()
-        assert len(paths) == 5
+        assert len(paths) == 6
         for p in paths:
             assert p.exists()
 
@@ -211,4 +211,96 @@ class TestGatewayRow:
         plotter = SimPlotter(self._store(tmp_path, with_gateway=True), tmp_path / "plots")
         assert len(plotter._gateway_rows()) == 1
         assert plotter.plot_instance_load().exists()
+
+
+class TestSCGCurve:
+    """SCG(S) curve: exact values, monotonicity, and graceful empty-data handling."""
+
+    def _store_with_staleness(self, tmp_path, staleness_list: list[int]) -> JsonlStore:
+        """Build a store with consume rows at the given staleness_true values."""
+        store = JsonlStore(tmp_path / "logs")
+        for i, s in enumerate(staleness_list):
+            store.write(
+                "request",
+                t=float(i + 1),
+                event="consume",
+                rid=i,
+                instance_id=0,
+                admit_time=0.0,
+                dispatch_time=0.0,
+                complete_time=float(i + 1),
+                consume_version=s,
+                prompt_len=512,
+                target_len=50,
+                generated=50,
+                ctx=562,
+                v_traj=0,
+                v_min=0,
+                v_max=0,
+                staleness_true=s,
+                staleness_reported=s,
+                num_preemptions=0,
+                num_aborts=0,
+            )
+        store.close()
+        return store
+
+    def test_curve_values_are_exact(self, tmp_path):
+        # staleness = [0, 0, 1, 2], max complete_time = 4.0
+        # SCG(0) = 2/4 = 0.5, SCG(1) = 3/4 = 0.75, SCG(2) = 4/4 = 1.0
+        xs, ys = SimPlotter._scg_curve_data([0, 0, 1, 2], span=4.0)
+        assert xs == [0, 1, 2]
+        assert ys == [0.5, 0.75, 1.0]
+
+    def test_curve_is_non_decreasing_on_mixed_staleness(self, tmp_path):
+        store = self._store_with_staleness(tmp_path, [0, 2, 1, 0, 3, 1])
+        plotter = SimPlotter(store, tmp_path / "plots")
+        path = plotter.plot_scg_curve()
+        assert path.exists() and path.stat().st_size > 0
+
+        # Verify monotonicity directly on the helper.
+        staleness = [0, 2, 1, 0, 3, 1]
+        xs, ys = plotter._scg_curve_data(staleness, span=float(len(staleness)))
+        assert xs == list(range(max(staleness) + 1))
+        for a, b in zip(ys, ys[1:]):
+            assert b >= a, f"SCG curve not non-decreasing: {ys}"
+
+    def test_no_consume_rows_produces_placeholder_not_exception(self, tmp_path):
+        store = JsonlStore(tmp_path / "logs")
+        store.close()
+        plotter = SimPlotter(store, tmp_path / "plots")
+        path = plotter.plot_scg_curve()
+        # _empty_placeholder writes a file; the important thing is no exception.
+        assert path.exists()
+        assert path.name == "scg_curve.png"
+
+    def test_consume_rows_without_staleness_true_produce_placeholder(self, tmp_path):
+        """Rows missing staleness_true are skipped; if none survive, a placeholder is returned."""
+        store = JsonlStore(tmp_path / "logs")
+        store.write(
+            "request",
+            t=1.0,
+            event="consume",
+            rid=0,
+            instance_id=0,
+            admit_time=0.0,
+            dispatch_time=0.0,
+            complete_time=1.0,
+            consume_version=2,
+            prompt_len=512,
+            target_len=50,
+            generated=50,
+            ctx=562,
+            v_traj=0,
+            v_min=0,
+            v_max=1,
+            num_preemptions=0,
+            num_aborts=0,
+            # staleness_true intentionally absent — simulates a pre-feature log
+        )
+        store.close()
+        plotter = SimPlotter(store, tmp_path / "plots")
+        path = plotter.plot_scg_curve()
+        assert path.exists()
+        assert path.name == "scg_curve.png"
 
