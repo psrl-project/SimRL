@@ -200,6 +200,14 @@ class CohortAffinity:
         first fleet build) every request is treated as cohort 0, which is the
         only safe default when cohort counts and version bounds are unknown.
 
+        The final ``return len(self._plan.cohorts) - 1`` is a last-resort
+        fallback for hand-built plans that have no catch-all cohort: if every
+        cohort has a finite max_version and req.v_traj exceeds them all, the
+        last cohort is used so the request degrades gracefully rather than
+        raising.  A well-formed plan produced by the solver always ends in a
+        catch-all cohort (max_version=None), so this branch is unreachable in
+        normal use.
+
         Args:
             req: The request being routed.
 
