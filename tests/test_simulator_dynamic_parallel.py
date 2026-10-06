@@ -1,4 +1,4 @@
-"""Simulator-level integration of the heterogeneous TP fleet.
+"""Simulator-level integration of the dynamic-parallel fleet.
 
 `tests/test_fleet.py` covers `HeterogeneousFleet` in isolation and
 `tests/test_water_filling.py` covers the solver, but nothing exercised the two through
@@ -20,7 +20,7 @@ from dryrun.cost import UnifiedRoofline
 from dryrun.policy.psrl import PSRLPolicy
 from dryrun.simulator.config import SimConfig
 from dryrun.simulator.simulator import Simulator
-from dryrun.simulator.water_filling import CohortPlan, FleetPlan, WaterFillingSolver
+from dryrun.simulator.dynamic_parallel import FleetPlan, ParallelismSolver
 from dryrun.workload.grouped import GroupedWorkload
 
 
@@ -46,20 +46,20 @@ def _config(**overrides) -> SimConfig:
         # so it is unrelated to the fleet. See .superpowers/sdd/progress.md.
         kv_blocks=2000,
         token_budget=1000,
-        routing_strategy="cohort_affinity",
+        routing_strategy="version_aware_tp",
     )
     base.update(overrides)
     return SimConfig(**base)
 
 
-def _solver(strategy: str = "search", n_gpus: int = 2) -> WaterFillingSolver:
+def _solver(strategy: str = "search", n_gpus: int = 2) -> ParallelismSolver:
     cost = _cost()
-    return WaterFillingSolver(
+    return ParallelismSolver(
         cost_models={1: cost, 2: cost},
         n_gpus=n_gpus,
         tp_candidates=(1, 2),
         strategy=strategy,
-        fixed_cohorts=[{"tp": 1, "n_instances": n_gpus}],
+        fixed_tp_per_instance=(1,) * n_gpus,
         max_concurrency=None,
     )
 
@@ -70,7 +70,7 @@ def _simulator(**cfg_overrides) -> Simulator:
         rollout_cost=cost,
         policy=PSRLPolicy(),
         cfg=_config(**cfg_overrides),
-        cohort_cost_models={1: cost, 2: cost},
+        parallel_cost_models={1: cost, 2: cost},
         # Equal capacities: the per-TP difference is real (31294 vs 69532 on the
         # measured model) but a larger pool hits the pre-existing assertion above, so
         # these tests hold KV fixed and vary only the fleet shape.
@@ -92,7 +92,7 @@ def test_solver_absent_leaves_the_homogeneous_path_untouched():
 def test_partial_cohort_inputs_are_refused():
     """A solver without its cost models would build a fleet that cannot price a step."""
     cost = _cost()
-    with pytest.raises(ValueError, match="cohort_cost_models"):
+    with pytest.raises(ValueError, match="parallel_cost_models"):
         Simulator(
             rollout_cost=cost,
             policy=PSRLPolicy(),
@@ -147,7 +147,7 @@ def test_the_fleet_is_rebuilt_at_weight_updates_not_only_at_construction():
     original = sim._fleet.rebuild
 
     def counting_rebuild(plan, t):
-        rebuilds.append(len(plan.cohorts))
+        rebuilds.append(plan.n_instances)
         return original(plan, t)
 
     sim._fleet.rebuild = counting_rebuild
@@ -197,19 +197,19 @@ def test_scg_curve_is_monotone_and_bounded_by_total_throughput():
 def test_fixed_strategy_reproduces_its_configured_fleet():
     """The baselines run through this path, so `fixed` must be honoured exactly."""
     cost = _cost()
-    solver = WaterFillingSolver(
+    solver = ParallelismSolver(
         cost_models={1: cost, 2: cost},
         n_gpus=2,
         tp_candidates=(1, 2),
         strategy="fixed",
-        fixed_cohorts=[{"tp": 2, "n_instances": 1}],
+        fixed_tp_per_instance=(2,),
         max_concurrency=None,
     )
     sim = Simulator(
         rollout_cost=cost,
         policy=PSRLPolicy(),
         cfg=_config(),
-        cohort_cost_models={1: cost, 2: cost},
+        parallel_cost_models={1: cost, 2: cost},
         kv_blocks_per_tp={1: 2000, 2: 3000},
         solver=solver,
     )
@@ -239,26 +239,6 @@ def test_every_instance_clock_stays_behind_global_time_across_rebuilds():
 # tests/test_water_filling.py::test_solver_no_stranded_old_cohort_batch_sensitive.
 
 
-def test_requests_reach_the_cohort_their_version_belongs_to():
-    """End-to-end check that routing honours the split the solver chose.
-
-    `tests/test_cohort_routing.py` proves the strategy maps a request to a cohort; this
-    proves the composed system does, with a real solver, a real fleet and a real router.
-    """
-    sim = _simulator()
-    sim.run()
-    plan = sim._fleet.plan if hasattr(sim._fleet, "plan") else None
-    if plan is None or len(plan.cohorts) < 2:
-        pytest.skip("The solver chose a homogeneous fleet, so there is no split to check.")
-    cohort_of = {inst.instance_id: inst.cohort_id for inst in sim.instances}
-    for inst in sim.instances:
-        for req in inst.running + inst.waiting:
-            expected = sim.router.strategy._preferred_cohort_id(req)
-            assert cohort_of[inst.instance_id] == expected or (
-                sim.router.strategy.n_cohort_leaks > 0
-            ), f"Request v_traj={req.v_traj} on cohort {cohort_of[inst.instance_id]}"
-
-
 def test_a_group_is_never_split_across_a_rebuild():
     """GRPO scores a response against its group, so a half-consumed group is untrainable."""
     sim = _simulator(group_size=1)
@@ -276,7 +256,7 @@ def test_fleet_plan_respects_the_gpu_budget_at_every_rebuild():
     original = sim._fleet.rebuild
 
     def checking_rebuild(plan: FleetPlan, t: float):
-        budgets.append(sum(c.tp * c.n_instances for c in plan.cohorts))
+        budgets.append(sum(plan.tp_per_instance))
         return original(plan, t)
 
     sim._fleet.rebuild = checking_rebuild
@@ -327,9 +307,7 @@ def test_a_request_is_an_identity_not_a_value_across_the_rebuild():
     cost = _cost()
     req = Request(rid=9_999, prompt_len=50, target_len=100, v_traj=0)
     sim._fleet.instances[0].waiting.append(req)
-    plan = FleetPlan(
-        cohorts=(CohortPlan(tp=1, n_instances=2, max_version=None),), n_gpus=2
-    )
+    plan = FleetPlan.uniform(tp=1, n_gpus=2)
     aborted = sim._fleet.rebuild(plan, t=1.0)
     assert any(item is req for item in aborted)
     assert cost is not None

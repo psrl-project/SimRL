@@ -58,7 +58,13 @@ class InstanceLoad:
     n_running: int
     kv_utilization: float
     total_ctx: int
-    cohort_id: int = 0
+    tp: int = 1
+    """Tensor-parallel degree of this instance.
+
+    What a TP-aware routing strategy ranks on. Carried on the load snapshot rather
+    than looked up from a plan so a strategy stays a pure function of what it is
+    shown, and so instance -- not group -- is the unit of placement.
+    """
     """Cohort this instance serves. Set by HeterogeneousFleet; 0 when homogeneous."""
 
     @property

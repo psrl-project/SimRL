@@ -161,98 +161,97 @@ class ThroughputBalance:
         return min(range(len(candidates)), key=lambda i: candidates[i].step_time_delta(req))
 
 
-@register_strategy("cohort_affinity")
-class CohortAffinity:
-    """Route old-version requests to the high-TP cohort; new to the low-TP cohort.
+@register_strategy("version_aware_tp")
+class VersionAwareTp:
+    """Prefer high-TP instances for the old-version tail; balance everything else.
 
-    Cohort assignment is determined by comparing v_traj against each cohort's
-    max_version predicate from the FleetPlan.  Falls back to request_num_balance
-    across all candidates when the preferred cohort has no eligible instances,
-    so the fleet split never strands a request.
+    The placement rule dynamic heterogeneous parallelism needs, expressed where it
+    belongs: at instance granularity, as a *soft* preference, re-decided at every
+    dispatch.
 
-    Requires a FleetPlan to be set via `update_plan` before the first dispatch.
-    HeterogeneousFleet calls this immediately after rebuilding instances.
+    **Why soft.** The trajectories still in flight after a weight update are a
+    shrinking tail, and they are the ones worth concentrating onto a high-TP
+    instance: few requests cannot fill a low-TP fleet's batches, so concentration
+    is where they run fastest. But a hard rule -- "high-TP instances accept only
+    old-version work" -- load-balances badly for exactly that reason. Once the
+    tail drains to a handful, those instances have nothing left to admit and idle
+    while the low-TP ones queue. So the preference only orders candidates; it never
+    refuses one, and fresh work is free to occupy high-TP capacity the tail no
+    longer needs.
+
+    **The rule.**
+
+    - A request from before the current rollout version prefers the highest TP
+      degree available, breaking ties by fewest in-flight requests.
+    - A request at the current version ignores TP entirely and balances by request
+      count across the whole fleet, which is `request_num_balance`.
+
+    `reference_version` is supplied by the simulator at every weight publish. Until
+    it is, every request looks current and this degrades exactly to
+    `request_num_balance` -- the right default, since with no version information
+    there is no tail to concentrate.
+
+    Nothing here can strand a request: both paths always return a candidate. The
+    router already holds work no instance will take and re-offers it at the next
+    capacity release, so a request that would rather wait for a high-TP instance
+    does not need this strategy to keep it waiting.
     """
 
-    name = "cohort_affinity"
+    name = "version_aware_tp"
 
-    def __init__(self, plan: "FleetPlan | None" = None) -> None:
-        self._plan: FleetPlan | None = plan
-        self._fallback = RequestNumBalance()
-        self.n_cohort_leaks: int = 0
-        """Count of requests that leaked to a non-preferred cohort due to capacity."""
+    def __init__(self, reference_version: int = 0) -> None:
+        """
+        Args:
+            reference_version: Requests with ``v_traj`` below this are the
+                old-version tail. The simulator advances it at each weight publish.
+        """
+        self._reference_version = int(reference_version)
+        self._balance = RequestNumBalance()
+        self.n_old_to_high_tp = 0
+        """Old-version placements that landed on a strictly-above-minimum TP degree."""
+        self.n_old_placements = 0
+        """Old-version placements in total, so the ratio above is interpretable."""
 
-    def update_plan(self, plan: "FleetPlan") -> None:
-        """Replace the cohort layout after a fleet rebuild.
+    def set_reference_version(self, version: int) -> None:
+        """Update which version counts as current.
 
         Args:
-            plan: The new fleet layout. Called by HeterogeneousFleet immediately
-                after it rebuilds its instance list so strategy and fleet agree.
+            version: The newly published rollout version.
         """
-        self._plan = plan
+        self._reference_version = int(version)
 
-    def _preferred_cohort_id(self, req: "Request") -> int:
-        """Return the cohort index this request belongs to per the current plan.
+    def update_plan(self, plan) -> None:
+        """Accept a new fleet layout.
 
-        Walks cohorts in order and returns the first whose max_version predicate
-        accepts the request's v_traj.  A cohort with max_version=None is a
-        catch-all and always accepts.  When no plan has been set yet (before the
-        first fleet build) every request is treated as cohort 0, which is the
-        only safe default when cohort counts and version bounds are unknown.
-
-        The final ``return len(self._plan.cohorts) - 1`` is a last-resort
-        fallback for hand-built plans that have no catch-all cohort: if every
-        cohort has a finite max_version and req.v_traj exceeds them all, the
-        last cohort is used so the request degrades gracefully rather than
-        raising.  A well-formed plan produced by the solver always ends in a
-        catch-all cohort (max_version=None), so this branch is unreachable in
-        normal use.
-
-        Args:
-            req: The request being routed.
-
-        Returns:
-            The index of the cohort that should serve this request.
+        The strategy reads TP off each candidate rather than from the plan, so the
+        layout itself is not needed. Implemented so a fleet can notify any strategy
+        uniformly without knowing which ones care.
         """
-        if self._plan is None:
-            return 0
-        for i, cohort in enumerate(self._plan.cohorts):
-            if cohort.max_version is None or req.v_traj <= cohort.max_version:
-                return i
-        return len(self._plan.cohorts) - 1  # catch-all
 
     def select(self, req: "Request", candidates: list[InstanceView]) -> int | None:
-        """Choose an instance, preferring the cohort that matches req.v_traj.
-
-        Narrows the candidate list to instances in the preferred cohort and
-        applies request_num_balance within that subset.  When no preferred-cohort
-        instance is present — because all are at capacity and were filtered by the
-        admission gate — the strategy falls back to request_num_balance over the
-        whole candidate list and increments n_cohort_leaks.  Stranding the request
-        instead would livelock the simulator: if the fleet is heterogeneous and
-        old-version requests can only go to one instance, a single busy instance
-        would block all old-version work indefinitely.
+        """Choose an instance for `req`.
 
         Args:
             req: The request to place.
-            candidates: Instances that passed the admission gate, in instance
-                id order.
+            candidates: Instances that passed the admission gate, in instance-id
+                order. Never empty.
 
         Returns:
-            An index into candidates, or None to leave the request queued.
+            An index into `candidates`.
         """
-        preferred = self._preferred_cohort_id(req)
-        narrowed = [i for i, v in enumerate(candidates) if v.cohort_id == preferred]
-        if narrowed:
-            # Within the preferred cohort, use request_num_balance so ties
-            # still resolve deterministically (lowest index wins).
-            sub = [candidates[i] for i in narrowed]
-            local_idx = self._fallback.select(req, sub)
-            if local_idx is not None:
-                return narrowed[local_idx]
-        # Preferred cohort full — fall back to the whole candidate list.  A high
-        # n_cohort_leaks rate in the results means the measured cohort effect is
-        # attenuated: old-version requests ran on new-version instances, which
-        # reduces any TP-mismatch signal the experiment was designed to observe.
-        self.n_cohort_leaks += 1
-        return self._fallback.select(req, candidates)
+        if req.v_traj >= self._reference_version:
+            # Current-version work: no TP preference at all. Concentrating fresh
+            # work would compete with the tail for the capacity that helps it most.
+            return self._balance.select(req, candidates)
+
+        self.n_old_placements += 1
+        best_tp = max(view.tp for view in candidates)
+        # Narrow to the highest TP on offer, then balance within it. Both steps are
+        # needed: the first is the preference, the second stops a stream of tail
+        # requests piling onto one instance when several share that degree.
+        narrowed = [i for i, view in enumerate(candidates) if view.tp == best_tp]
+        local = self._balance.select(req, [candidates[i] for i in narrowed])
+        chosen = narrowed[local if local is not None else 0]
+        if candidates[chosen].tp > min(view.tp for view in candidates):
+            self.n_old_to_high_tp += 1
+        return chosen

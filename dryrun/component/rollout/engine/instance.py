@@ -32,7 +32,6 @@ class NativeInstance:
         max_concurrency: int | None = None,
         chunk_cap: int | None = None,
         instance_id: int = 0,
-        cohort_id: int = 0,
         tp: int = 1,
         reject_if_kv_full: bool = True,
         reject_if_waiting: bool = False,
@@ -50,10 +49,13 @@ class NativeInstance:
         self.reject_if_kv_full = reject_if_kv_full
         self.reject_if_waiting = reject_if_waiting
         self.reject_if_running_full = reject_if_running_full
-        self.cohort_id = cohort_id
-        """Cohort this instance serves. Set by HeterogeneousFleet; 0 when homogeneous."""
         self.tp = tp
-        """Tensor-parallel degree. What HeterogeneousFleet keys instance reuse on."""
+        """Tensor-parallel degree this instance runs at.
+
+        Recorded here rather than derived from the cost model because only
+        ComposedRollout carries a TP degree; the fitted models do not. A TP-aware
+        router reads it, and `DynamicParallelFleet` keys instance reuse on it.
+        """
         self.enable_prefix_caching = enable_prefix_caching
 
         # Occupancy, hit lookup, and eviction all live in the pool. Disabling
@@ -87,7 +89,7 @@ class NativeInstance:
             n_running=len(self.running),
             kv_utilization=self.blocks_used() / max(1, self.kv_blocks),
             total_ctx=sum(r.ctx for r in self.running),
-            cohort_id=self.cohort_id,
+            tp=self.tp,
         )
 
     def blocks_used(self) -> int:

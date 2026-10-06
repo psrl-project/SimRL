@@ -159,122 +159,114 @@ def build_policy(cfg: DictConfig, max_staleness: int) -> StalenessPolicy:
 _PROFILED_TP_DEGREES = frozenset({1, 2})
 
 
-def _cohort_table_roots(
-    heterogeneous: DictConfig,
+def _table_roots_per_tp(
+    dynamic: DictConfig,
     tp_candidates: tuple[int, ...],
     rollout_cost_name: str,
 ) -> dict[int, str]:
-    """Return the per-TP kernel table root for each candidate TP degree.
+    """Return the kernel table root for each candidate TP degree.
 
-    Only the composed cost model reads kernel tables; every other model is fitted and
-    ignores them, so an empty mapping is valid there and this returns `{}`.
+    Only the composed cost model reads kernel tables; the fitted models ignore them,
+    so an empty mapping is correct there.
 
     Args:
-        heterogeneous: The `heterogeneous` config subtree.
-        tp_candidates: TP degrees the solver may allocate.
-        rollout_cost_name: `rollout_cost.name`, which decides whether tables are needed.
+        dynamic: The `dynamic_parallel` config subtree.
+        tp_candidates: TP degrees the solver may use.
+        rollout_cost_name: `rollout_cost.name`, which decides whether tables matter.
 
     Returns:
-        TP degree -> table root. Empty when the cost model does not read tables.
+        TP degree -> table root, empty when the cost model reads no tables.
 
     Raises:
-        ValueError: If the composed model is in use and any candidate TP has no entry.
-            Falling back to the single `rollout_cost.kernel_table_root` is deliberately
-            not done: that path is correct for at most one TP degree, and the others
-            would fail later with a KernelCoverageError naming a shape rather than the
-            missing configuration.
+        ValueError: If the composed model is in use and any candidate TP has no
+            entry. There is deliberately no fallback to the single
+            `rollout_cost.kernel_table_root`: it is correct for at most one degree,
+            and the others would fail later with a KernelCoverageError naming a GEMM
+            shape rather than the missing setting.
     """
     if rollout_cost_name != "composed":
         return {}
-    # Keys arrive as ints from a dataclass default but as strings through a Hydra
-    # override (`kernel_table_roots.2=...`), so normalise both.
+    # Keys arrive as ints from the dataclass default but as strings through a Hydra
+    # override (`+dynamic_parallel.kernel_table_roots.2=...`), so normalise both.
     configured = {
         int(tp): str(root)
-        for tp, root in dict(heterogeneous.get("kernel_table_roots", {}) or {}).items()
+        for tp, root in dict(dynamic.get("kernel_table_roots", {}) or {}).items()
     }
     missing = [tp for tp in tp_candidates if tp not in configured]
     if missing:
         raise ValueError(
-            f"heterogeneous.kernel_table_roots is missing an entry for TP "
-            f"{sorted(missing)}. The composed cost model reads measured GEMM and "
-            f"attention tables that are sharded per TP degree, so each candidate needs "
-            f"its own root (e.g. 1: .../kernel_tp1/kernel, 2: .../kernel_tp2/kernel). "
+            f"dynamic_parallel.kernel_table_roots has no entry for TP {sorted(missing)}. "
+            f"The composed model reads measured GEMM and attention tables sharded per "
+            f"TP degree, so each candidate needs its own root (e.g. "
+            f"1: .../kernel_tp1/kernel, 2: .../kernel_tp2/kernel). "
             f"Configured: {sorted(configured)}."
         )
     return configured
 
 
-def build_cohort_models(
+def build_dynamic_parallel(
     cfg: DictConfig,
-) -> "tuple[dict[int, RolloutCostModel], dict[int, int], WaterFillingSolver]":
-    """Build one cost model and KV capacity per TP candidate, plus the solver.
+) -> tuple[dict[int, RolloutCostModel], dict[int, int], "ParallelismSolver"]:
+    """Build the per-TP cost models, the per-TP KV capacities, and the solver.
 
-    Returns `(cost_models, kv_blocks_per_tp, solver)`. `Simulator` builds the fleet
-    itself from these, because the router the fleet rebinds is the one `Simulator`
-    constructs.
+    `Simulator` constructs the fleet itself from these, because the router the fleet
+    rebinds is the one `Simulator` builds.
 
     Args:
-        cfg: The full resolved Hydra config, containing `heterogeneous`, `rollout_cost`,
-            and `rollout` sub-configs.
+        cfg: The resolved Hydra config.
 
     Returns:
-        A tuple of (cost_models, kv_blocks_per_tp, solver) ready to pass to `Simulator`.
+        `(cost_models, kv_blocks_per_tp, solver)`.
 
     Raises:
-        ValueError: If the router strategy is not `cohort_affinity`, since any other
-            strategy ignores `cohort_id` and silently defeats the fleet split.
+        ValueError: If `tp_candidates` is empty or names an unprofiled degree.
     """
     from omegaconf import OmegaConf
 
-    from ..simulator.water_filling import WaterFillingSolver
+    from ..simulator.dynamic_parallel import ParallelismSolver
 
-    h = cfg.heterogeneous
-    strategy_name = cfg.rollout.router.get("strategy", "request_num_balance")
-    if strategy_name != "cohort_affinity":
-        raise ValueError(
-            f"heterogeneous.enabled=true requires rollout.router.strategy=cohort_affinity, "
-            f"got {strategy_name!r}. Any other strategy ignores cohort_id, so old-version "
-            f"requests would land on low-TP instances and the fleet split would measure "
-            f"nothing."
-        )
-
-    tp_candidates = tuple(int(tp) for tp in h.tp_candidates)
+    dynamic = cfg.dynamic_parallel
+    tp_candidates = tuple(int(tp) for tp in dynamic.tp_candidates)
     if not tp_candidates:
-        raise ValueError("heterogeneous.tp_candidates must not be empty.")
-    # Only TP 1 and 2 have profiled GEMM and attention tables. tp4/tp8 have collective
-    # tables only, so a model built at those degrees would query shapes that were never
-    # measured. Refusing here names the configuration; letting it through surfaces a
-    # KernelCoverageError about a GEMM shape much further from the cause.
+        raise ValueError("dynamic_parallel.tp_candidates must not be empty.")
+    # Only TP 1 and 2 have profiled GEMM and attention tables; kernel_tp4/tp8 carry
+    # collective tables only. Refusing here names the setting, where letting it through
+    # surfaces a shape-coverage error much further from the cause.
     if unsupported := sorted(set(tp_candidates) - _PROFILED_TP_DEGREES):
         raise ValueError(
-            f"heterogeneous.tp_candidates contains unprofiled TP degrees "
-            f"{unsupported}. Only {sorted(_PROFILED_TP_DEGREES)} have measured GEMM and "
-            f"attention tables; tp4/tp8 carry collective tables only. Profile the "
-            f"missing families to widen this set."
+            f"dynamic_parallel.tp_candidates contains unprofiled TP degrees "
+            f"{unsupported}. Only {sorted(_PROFILED_TP_DEGREES)} have measured GEMM "
+            f"and attention tables. Profile the missing families to widen this set."
         )
 
-    # One cost model per TP. `rollout_cost.parallelism.tp` is overridden per candidate:
-    # ComposedRollout shards its ModelOps at construction, so a TP=2 cohort needs its
-    # own model built at tp=2 rather than the tp=1 one with a scale factor.
-    #
-    # The composed model also needs a per-TP *table* root. Measured GEMM and attention
-    # tables are sharded by TP degree, so one path cannot serve every cohort: a tp=2
-    # model queries `(n, k)` slices and `num_kv_heads` values that only the tp=2 sweep
-    # contains. Reading the wrong table raises KernelCoverageError rather than returning
-    # a plausible wrong number, so the failure is loud -- but it has to be configured.
-    cost_models: dict[int, RolloutCostModel] = {}
+    strategy = cfg.rollout.router.get("strategy", "request_num_balance")
+    if strategy != "version_aware_tp":
+        # Not fatal: the fleet still re-shapes and the run is valid, but no strategy
+        # other than version_aware_tp ranks instances by TP, so the old-version tail
+        # spreads evenly and the heterogeneity has no routing consequence to measure.
+        dryrun_logger.warning(
+            f"dynamic_parallel.enabled=true with rollout.router.strategy={strategy!r}. "
+            f"Only 'version_aware_tp' prefers high-TP instances for the old-version "
+            f"tail; with any other strategy the fleet is re-shaped but placement "
+            f"ignores TP, so the measured effect will be close to homogeneous."
+        )
+
     base = OmegaConf.to_container(cfg.rollout_cost, resolve=True)
-    table_roots = _cohort_table_roots(h, tp_candidates, str(base.get("name", "roofline")))
+    roots = _table_roots_per_tp(dynamic, tp_candidates, str(base.get("name", "roofline")))
+
+    # One cost model per TP. A model shards its ops at construction, so a TP=2
+    # instance genuinely needs its own model rather than a scaled TP=1 one.
+    cost_models: dict[int, RolloutCostModel] = {}
     for tp in tp_candidates:
         per_tp = OmegaConf.create(base)
         per_tp.parallelism.tp = tp
-        if tp in table_roots:
-            per_tp.kernel_table_root = table_roots[tp]
+        if tp in roots:
+            per_tp.kernel_table_root = roots[tp]
         cost_models[tp] = build_rollout_cost(per_tp)
 
-    # KV capacity per TP. Sharding the weights across more ranks frees memory for
-    # cache, so this genuinely differs per TP (31294 blocks at tp=1 against 69532 at
-    # tp=2 for Qwen3-8B on an H20) and must not be collapsed to one number.
+    # KV capacity per TP. Sharding weights across more ranks frees memory for cache,
+    # so this rises with TP (31294 blocks at tp=1 against 69532 at tp=2 for Qwen3-8B
+    # on an H20) and must not be collapsed to one number.
     kv_blocks_per_tp: dict[int, int] = {}
     for tp in tp_candidates:
         per_tp_rollout = OmegaConf.create(OmegaConf.to_container(cfg.rollout, resolve=True))
@@ -282,13 +274,14 @@ def build_cohort_models(
             per_tp_rollout.kv_cache_sizing.tp_size = tp
         kv_blocks_per_tp[tp] = resolve_kv_blocks(per_tp_rollout)
 
-    solver = WaterFillingSolver(
+    solver = ParallelismSolver(
         cost_models=cost_models,
-        n_gpus=int(h.n_gpus),
+        n_gpus=int(dynamic.n_gpus),
         tp_candidates=tp_candidates,
-        strategy=str(h.strategy),
-        fixed_cohorts=[dict(c) for c in h.cohorts],
+        strategy=str(dynamic.strategy),
+        fixed_tp_per_instance=tuple(int(tp) for tp in dynamic.tp_per_instance),
         max_concurrency=cfg.rollout.get("max_concurrency", None),
+        high_tp_bias=float(dynamic.get("high_tp_bias", 1.0)),
     )
     return cost_models, kv_blocks_per_tp, solver
 
@@ -576,11 +569,12 @@ def run_simulate(cfg: DictConfig) -> None:
     sync_cost = build_sync_cost(cfg.sync_cost)
     recompute_cost = build_recompute_cost(cfg.recompute_cost, training_cost)
 
-    cohort_cost_models = None
+    parallel_cost_models = None
     kv_blocks_per_tp = None
     solver = None
-    if cfg.get("heterogeneous", None) is not None and cfg.heterogeneous.enabled:
-        cohort_cost_models, kv_blocks_per_tp, solver = build_cohort_models(cfg)
+    dynamic = cfg.get("dynamic_parallel", None)
+    if dynamic is not None and dynamic.enabled:
+        parallel_cost_models, kv_blocks_per_tp, solver = build_dynamic_parallel(cfg)
 
     dryrun_logger.info(
         f"Starting simulation: policy={policy.name}, n_versions={sim_cfg.n_versions}, "
@@ -603,7 +597,7 @@ def run_simulate(cfg: DictConfig) -> None:
         sync_cost=sync_cost,
         recompute_cost=recompute_cost,
         store=store,
-        cohort_cost_models=cohort_cost_models,
+        parallel_cost_models=parallel_cost_models,
         kv_blocks_per_tp=kv_blocks_per_tp,
         solver=solver,
     )

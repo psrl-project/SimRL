@@ -67,20 +67,20 @@ class TestStructuredConfigs:
         assert cfg.workload.prompt.name == "fixed"
         assert cfg.workload.prompt.lo == 512
 
-    def test_heterogeneous_defaults_are_inert(self):
+    def test_dynamic_parallel_defaults_are_inert(self):
         cfg = SimulateConfig()
-        assert cfg.heterogeneous.enabled is False
-        assert cfg.heterogeneous.n_gpus == 4
-        assert list(cfg.heterogeneous.tp_candidates) == [1, 2]
-        assert cfg.heterogeneous.strategy == "search"
-        assert list(cfg.heterogeneous.cohorts) == []
+        assert cfg.dynamic_parallel.enabled is False
+        assert cfg.dynamic_parallel.n_gpus == 4
+        assert list(cfg.dynamic_parallel.tp_candidates) == [1, 2]
+        assert cfg.dynamic_parallel.strategy == "search"
+        assert list(cfg.dynamic_parallel.tp_per_instance) == []
 
-    def test_heterogeneous_is_present_in_the_composed_config(self):
+    def test_dynamic_parallel_is_present_in_the_composed_config(self):
         """The CLI reads the COMPOSED config, not the dataclass.
 
         simulate.yaml enumerates its own top-level keys, so a dataclass field
         with no matching YAML block is absent from what Hydra composes and
-        `cfg.heterogeneous.enabled` raises ConfigAttributeError at runtime while
+        `cfg.dynamic_parallel.enabled` raises ConfigAttributeError at runtime while
         every dataclass-level test still passes. Measured: that was the state
         until the YAML block was added.
         """
@@ -94,11 +94,11 @@ class TestStructuredConfigs:
         config_dir = os.path.abspath("dryrun/config/defaults")
         with initialize_config_dir(config_dir=config_dir, version_base=None):
             cfg = compose(config_name="simulate")
-            assert cfg.heterogeneous.enabled is False
-            assert cfg.heterogeneous.n_gpus == 4
-            assert list(cfg.heterogeneous.tp_candidates) == [1, 2]
-            assert cfg.heterogeneous.strategy == "search"
-            assert list(cfg.heterogeneous.cohorts) == []
+            assert cfg.dynamic_parallel.enabled is False
+            assert cfg.dynamic_parallel.n_gpus == 4
+            assert list(cfg.dynamic_parallel.tp_candidates) == [1, 2]
+            assert cfg.dynamic_parallel.strategy == "search"
+            assert list(cfg.dynamic_parallel.tp_per_instance) == []
 
     def test_rollout_cost_defaults(self):
         cfg = RolloutCostConfig()
@@ -393,7 +393,7 @@ class TestWorkloadConfigGroups:
         assert cfg.workload.source == "trace"
 
 
-class TestCohortTableRoots:
+class TestDynamicParallelTableRoots:
     """Per-TP kernel table roots for the heterogeneous fleet.
 
     The composed cost model reads measured GEMM and attention tables that are sharded
@@ -411,36 +411,36 @@ class TestCohortTableRoots:
             "n_gpus": 4,
             "tp_candidates": [1, 2],
             "strategy": "search",
-            "cohorts": [],
+            "tp_per_instance": [],
             "kernel_table_roots": {},
         }
         base.update(overrides)
         return OmegaConf.create(base)
 
     def test_non_composed_models_need_no_tables(self):
-        from dryrun.cli.main import _cohort_table_roots
+        from dryrun.cli.main import _table_roots_per_tp
 
-        assert _cohort_table_roots(self._hetero(), (1, 2), "roofline") == {}
+        assert _table_roots_per_tp(self._hetero(), (1, 2), "roofline") == {}
 
     def test_composed_requires_a_root_for_every_candidate(self):
         import pytest
 
-        from dryrun.cli.main import _cohort_table_roots
+        from dryrun.cli.main import _table_roots_per_tp
 
         partial = self._hetero(kernel_table_roots={1: "a/tp1"})
         with pytest.raises(ValueError, match="kernel_table_roots"):
-            _cohort_table_roots(partial, (1, 2), "composed")
+            _table_roots_per_tp(partial, (1, 2), "composed")
 
     def test_composed_accepts_int_and_string_keys(self):
-        from dryrun.cli.main import _cohort_table_roots
+        from dryrun.cli.main import _table_roots_per_tp
 
         # A dataclass default yields int keys; a Hydra override
         # (`kernel_table_roots.2=...`) yields strings. Both must resolve.
         ints = self._hetero(kernel_table_roots={1: "a/tp1", 2: "a/tp2"})
         strs = self._hetero(kernel_table_roots={"1": "a/tp1", "2": "a/tp2"})
         expected = {1: "a/tp1", 2: "a/tp2"}
-        assert _cohort_table_roots(ints, (1, 2), "composed") == expected
-        assert _cohort_table_roots(strs, (1, 2), "composed") == expected
+        assert _table_roots_per_tp(ints, (1, 2), "composed") == expected
+        assert _table_roots_per_tp(strs, (1, 2), "composed") == expected
 
     def test_unprofiled_tp_degree_is_refused(self):
         """tp4/tp8 carry collective tables only, so they cannot price a step.
@@ -451,14 +451,14 @@ class TestCohortTableRoots:
         import pytest
         from omegaconf import OmegaConf
 
-        from dryrun.cli.main import build_cohort_models
+        from dryrun.cli.main import build_dynamic_parallel
 
         cfg = OmegaConf.create(
             {
-                "heterogeneous": self._hetero(tp_candidates=[1, 4]),
+                "dynamic_parallel": self._hetero(tp_candidates=[1, 4]),
                 "rollout_cost": {"name": "roofline", "parallelism": {"tp": 1}},
-                "rollout": {"router": {"strategy": "cohort_affinity"}},
+                "rollout": {"router": {"strategy": "version_aware_tp"}},
             }
         )
         with pytest.raises(ValueError, match="unprofiled TP degrees"):
-            build_cohort_models(cfg)
+            build_dynamic_parallel(cfg)

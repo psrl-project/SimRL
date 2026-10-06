@@ -8,7 +8,7 @@
 #   tp2_x2   2 x TP=2, static            baseline: maximum concentration
 #   search   re-solved at every update   treatment (contribution C4)
 #
-# All three run with heterogeneous.enabled=true and cohort_affinity routing, so the two
+# All three run with dynamic_parallel.enabled=true and version_aware_tp routing, so the two
 # baselines traverse the SAME fleet/rebuild/routing code as the treatment. A measured
 # difference therefore cannot be an artefact of the new plumbing -- which is the whole
 # reason the baselines are expressed as `strategy=fixed` rather than by turning the
@@ -112,15 +112,17 @@ export EXTRAPOLATE="${EXTRAPOLATE:-[tokens,activation_bytes,pipeline_slots,sum_s
 # required-field check; the per-cohort roots below are what the fleet actually reads.
 export KERNEL_ROOT="${TP1_ROOT}"
 
-HETERO_COMMON=(
-    "heterogeneous.enabled=true"
-    "heterogeneous.n_gpus=${N_GPUS}"
-    "heterogeneous.tp_candidates=[1,2]"
+DYNAMIC_COMMON=(
+    "dynamic_parallel.enabled=true"
+    "dynamic_parallel.n_gpus=${N_GPUS}"
+    "dynamic_parallel.tp_candidates=[1,2]"
     # `+` prefix: kernel_table_roots defaults to an empty dict, which OmegaConf treats as
     # a struct, so adding keys to it is an append rather than an override. Without the
     # prefix Hydra refuses with "Key '1' is not in struct".
-    "+heterogeneous.kernel_table_roots={1:'${TP1_ROOT}',2:'${TP2_ROOT}'}"
-    "rollout.router.strategy=cohort_affinity"
+    "+dynamic_parallel.kernel_table_roots={1:'${TP1_ROOT}',2:'${TP2_ROOT}'}"
+    # The placement rule. Only this strategy ranks instances by TP, so the
+    # old-version tail prefers high TP while current work balances fleet-wide.
+    "rollout.router.strategy=version_aware_tp"
     "rollout.max_concurrency=${MAX_CONCURRENCY}"
     "workload.trace.path=${TRACE}"
 )
@@ -142,16 +144,16 @@ run_config() {
         export KERNEL_ROOT="${TP1_ROOT}"
     fi
     export OUTPUT_DIR="${OUTPUT_BASE}/${label}"
-    export EXTRA_OVERRIDES="${HETERO_COMMON[*]} ${overrides}"
+    export EXTRA_OVERRIDES="${DYNAMIC_COMMON[*]} ${overrides}"
     bash "${SCRIPT_DIR}/simulate.sh"
 }
 
 #            label      overrides                                                              inst  tp
-run_config "tp1_x4" "heterogeneous.strategy=fixed heterogeneous.cohorts=[{tp:1,n_instances:${N_GPUS}}]" "${N_GPUS}" 1
-run_config "tp2_x2" "heterogeneous.strategy=fixed heterogeneous.cohorts=[{tp:2,n_instances:$((N_GPUS / 2))}]" "$((N_GPUS / 2))" 2
+run_config "tp1_x4" "dynamic_parallel.strategy=fixed dynamic_parallel.tp_per_instance=[$(for i in $(seq ${N_GPUS}); do printf '1,'; done | sed 's/,$//')]" "${N_GPUS}" 1
+run_config "tp2_x2" "dynamic_parallel.strategy=fixed dynamic_parallel.tp_per_instance=[$(for i in $(seq $((N_GPUS / 2))); do printf '2,'; done | sed 's/,$//')]" "$((N_GPUS / 2))" 2
 # `search` may pick either degree, so its pre-fleet model is the tp=1 one; the solver
 # builds a correctly-rooted model per cohort regardless.
-run_config "search" "heterogeneous.strategy=search" "${N_GPUS}" 1
+run_config "search" "dynamic_parallel.strategy=search" "${N_GPUS}" 1
 
 echo ""
 echo "================ SCG(S) comparison ================"

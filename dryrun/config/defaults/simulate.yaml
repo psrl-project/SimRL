@@ -129,42 +129,43 @@ rollout:
   # Safety cap on engine iterations per generate call.
   max_engine_iters: 10000
 
-# Heterogeneous tensor-parallel cohorts for the rollout fleet.
+# Dynamic heterogeneous tensor parallelism for the rollout fleet.
 #
-# When enabled, the fleet is rebuilt at every weight update into cohorts that
-# may run at different TP degrees: typically a high-TP cohort for the
-# trajectories carried over from before the update and a low-TP, more-replicas
-# cohort for freshly admitted ones. Which split wins depends on cohort size --
-# a small cohort cannot fill a low-TP fleet's batches, so concentrating it is
-# faster, while a large cohort already saturates every replica.
+# Opt-in. With enabled=false the fleet keeps the single shape rollout.n_instances
+# describes and nothing under dryrun/simulator/dynamic_parallel/ is reached.
 #
-# Defaults are inert: enabled=false runs the existing homogeneous fleet and
-# nothing below is read.
-heterogeneous:
-  # Whether to rebuild the fleet into cohorts at each weight update.
+# When enabled, the fleet is re-shaped at every weight update: the solver decides
+# each instance's TP degree, and the ROUTER decides which request goes where.
+# Those are deliberately separate. The solver does not partition requests, so a
+# high-TP instance is never reserved for one kind of work -- once the old-version
+# tail drains, fresh work is free to use that capacity instead of leaving it idle.
+# Pair this with rollout.router.strategy=version_aware_tp.
+dynamic_parallel:
+  # Master switch. false = the existing static homogeneous fleet, unchanged.
   enabled: false
 
-  # GPUs available to the rollout fleet. Every plan must satisfy
-  # sum(tp * n_instances) == n_gpus; FleetPlan enforces it.
+  # GPUs the rollout fleet may spend. Every plan spends it exactly.
   n_gpus: 4
 
-  # TP degrees the solver may allocate. Each needs profiled kernel tables, and
-  # only 1 and 2 have them today (tp4/tp8 have collective tables but no GEMM or
-  # attention slices).
+  # TP degrees the solver may use. Each needs profiled GEMM and attention tables;
+  # only 1 and 2 have them today (kernel_tp4/tp8 carry collective tables only).
   tp_candidates: [1, 2]
 
-  # search = enumerate every legal fleet and take the argmax of predicted
-  # throughput. fixed = use `cohorts` verbatim and ignore the request snapshot,
-  # which is how the homogeneous baselines run through this same code path.
+  # search = enumerate every legal fleet and take the argmax of predicted token
+  # rate. fixed = use tp_per_instance verbatim, which is how a static baseline
+  # runs through this same code path.
   strategy: search
 
-  # Read only when strategy=fixed. Entries look like {tp: 1, n_instances: 4}.
-  cohorts: []
+  # Only read when strategy=fixed. One TP degree per instance, e.g. [2, 1, 1].
+  tp_per_instance: []
 
-  # Per-TP kernel table root, required when rollout_cost.name=composed. The measured
-  # GEMM and attention tables are sharded per TP degree, so one path cannot serve
-  # every cohort: a tp=2 model needs slices only the tp=2 sweep contains. Pointing a
-  # tp=2 model at tp=1 tables raises KernelCoverageError rather than mispricing it.
+  # How strongly the solver assumes the router steers the old-version tail toward
+  # high TP, in [0, 1]. version_aware_tp always prefers the highest available TP
+  # for that work, so 1.0 is the matching value.
+  high_tp_bias: 1.0
+
+  # Per-TP kernel table root, required when rollout_cost.name=composed. Measured
+  # tables are sharded per TP degree, so one path cannot serve every instance.
   # Example:
   #   kernel_table_roots:
   #     1: outputs/profile/qwen3_8b/kernel_tp1/kernel

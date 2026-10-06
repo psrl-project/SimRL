@@ -304,61 +304,47 @@ class RolloutConfig:
 
 
 @dataclass
-class HeterogeneousRolloutConfig:
-    """Heterogeneous TP cohort configuration.
+class DynamicParallelConfig:
+    """Dynamic heterogeneous tensor parallelism for the rollout fleet.
 
-    When ``enabled=False`` (the default) the homogeneous path runs unchanged
-    and all fields below are ignored.  When ``enabled=True`` the rollout fleet
-    is rebuilt at each weight update by the WaterFillingSolver, and
-    ``routing_strategy`` must be ``"cohort_affinity"``.
+    Opt-in and inert by default: with ``enabled=False`` the fleet keeps the single
+    shape `rollout.n_instances` describes and nothing in
+    `dryrun.simulator.dynamic_parallel` is imported or run.
+
+    When enabled, the fleet is re-shaped at every weight update. Placement is NOT
+    partitioned: the solver only decides each instance's TP degree, and which
+    request goes where stays the router's decision. Pair this with
+    ``rollout.router.strategy=version_aware_tp`` so the old-version tail prefers
+    high-TP instances while current work balances across the whole fleet.
     """
 
     enabled: bool = False
     n_gpus: int = 4
-    """Total GPUs available to the rollout fleet.
-
-    The invariant ``sum(tp * n_instances) == n_gpus`` is enforced by
-    ``FleetPlan``, not here. This field declares the budget the solver
-    reasons against.
-    """
+    """GPUs the rollout fleet may spend. Every plan spends it exactly."""
     tp_candidates: list = field(default_factory=lambda: [1, 2])
-    """TP degrees the solver may allocate.
-
-    Each degree must have a profiled kernel table; ``{1, 2}`` is what exists
-    today. Adding a degree without a matching table will cause a lookup miss
-    at fleet-construction time, not a silent inaccuracy.
-    """
+    """TP degrees the solver may use. Each needs profiled kernel tables."""
     strategy: str = "search"
-    """How the fleet is chosen at each weight update.
+    """search = enumerate legal fleets and take the argmax. fixed = use `tp_per_instance`."""
+    tp_per_instance: list = field(default_factory=list)
+    """Only read when strategy == "fixed": one TP degree per instance, e.g. [2, 1, 1].
 
-    ``"search"`` enumerates all legal partitions of ``n_gpus`` into cohorts
-    drawn from ``tp_candidates`` and takes the argmax of the scoring
-    function.  ``"fixed"`` uses ``cohorts`` verbatim and ignores the request
-    snapshot entirely. The two homogeneous baselines (4xTP=1 and 2xTP=2)
-    use ``"fixed"`` so they run through the identical heterogeneous code path;
-    any measured difference versus a ``"search"`` run cannot be an artefact
-    of the plumbing.
+    How a static homogeneous baseline runs through the identical dynamic code path,
+    so a measured difference cannot be an artefact of the new plumbing.
     """
-    cohorts: list = field(default_factory=list)
+    high_tp_bias: float = 1.0
+    """How strongly the solver assumes the router steers the tail to high TP, in [0, 1].
+
+    Must match the router's behaviour. `version_aware_tp` always prefers the highest
+    available TP for old-version work, so 1.0 is the matching value; lowering it
+    models a weaker preference and is only useful when comparing against one.
+    """
     kernel_table_roots: dict = field(default_factory=dict)
-    """Per-TP kernel table root for the composed cost model, e.g.
-    `{1: ".../kernel_tp1/kernel", 2: ".../kernel_tp2/kernel"}`.
+    """Per-TP kernel table root, required when ``rollout_cost.name == "composed"``.
 
-    Required when `rollout_cost.name == "composed"`, because the measured GEMM and
-    attention tables are sharded per TP degree: a tp=2 model needs `(n, k)` slices and
-    `num_kv_heads` values that only the tp=2 sweep contains. The single
-    `rollout_cost.kernel_table_root` cannot express that, and pointing a tp=2 model at
-    tp=1 tables raises KernelCoverageError rather than returning a wrong number.
-
-    Keys may be ints or strings; both are normalised. An entry is required for every
-    value in `tp_candidates`.
-    """
-    """Fleet specification, read only when ``strategy == "fixed"``.
-
-    Each entry is a dict with keys ``tp`` and ``n_instances``, e.g.
-    ``{tp: 1, n_instances: 4}``.  The list is consumed verbatim; it is not
-    validated against ``tp_candidates`` because a fixed fleet may intentionally
-    pin a single degree that is not in the solver's search space.
+    Measured GEMM and attention tables are sharded per TP degree, so one path cannot
+    serve every instance: a TP=2 model queries slices only the TP=2 sweep contains.
+    Keys may be ints or strings. Example:
+    ``{1: .../kernel_tp1/kernel, 2: .../kernel_tp2/kernel}``
     """
 
 
@@ -374,8 +360,8 @@ class SimulateConfig:
     recompute_cost: RecomputeCostConfig = field(default_factory=RecomputeCostConfig)
     job: JobConfig = field(default_factory=JobConfig)
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
-    heterogeneous: HeterogeneousRolloutConfig = field(
-        default_factory=HeterogeneousRolloutConfig
+    dynamic_parallel: DynamicParallelConfig = field(
+        default_factory=DynamicParallelConfig
     )
     output_dir: str = "outputs"
     log_telemetry: bool = True

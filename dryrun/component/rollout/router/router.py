@@ -127,7 +127,7 @@ class Router:
             n_running=load.n_running,
             kv_utilization=load.kv_utilization,
             total_ctx=load.total_ctx,
-            cohort_id=load.cohort_id,
+            tp=load.tp,
             free_blocks=inst.free_blocks(),
             committed_blocks=inst.committed_blocks(),
             prefix_hit_tokens=inst.kv.peek_hit_tokens,

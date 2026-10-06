@@ -28,11 +28,9 @@ from ..policy.base import CompleteAction, SimState, StalenessPolicy
 from ..telemetry.store import JsonlStore
 from ..telemetry.writer import SimTelemetry
 from .config import SimConfig, SimResult, clip_total_length
-from .water_filling import RequestSnapshot
 
 if TYPE_CHECKING:
-    from .fleet import HeterogeneousFleet
-    from .water_filling import FleetPlan, WaterFillingSolver
+    from .dynamic_parallel import DynamicParallelFleet, FleetPlan, ParallelismSolver
 
 
 class Simulator:
@@ -52,7 +50,7 @@ class Simulator:
         sync_cost: SyncCostModel | None = None,
         recompute_cost: RecomputeCostModel | None = None,
         store: JsonlStore | None = None,
-        cohort_cost_models: dict[int, RolloutCostModel] | None = None,
+        parallel_cost_models: dict[int, RolloutCostModel] | None = None,
         kv_blocks_per_tp: dict[int, int] | None = None,
         solver: "WaterFillingSolver | None" = None,
     ):
@@ -133,25 +131,29 @@ class Simulator:
         self.telemetry = SimTelemetry(store, enabled=cfg.log_telemetry)
 
         # Heterogeneous fleet: replaces the homogeneous instances built above with
-        # cohorts chosen by the solver. Built here rather than passed in because the
         # router this fleet rebinds is the one constructed above; a caller-built fleet
         # would hold a different Router than the one this Simulator dispatches through.
+        # Dynamic heterogeneous parallelism. Opt-in: with no solver the fleet keeps
+        # the single shape built above and nothing in `dynamic_parallel` is reached.
+        #
+        # Built here rather than passed in because the router it rebinds is the one
+        # constructed above. A caller-built fleet would hold a different Router than
+        # this Simulator dispatches through, and the rebind would be a silent no-op.
         self._solver = solver
-        self._fleet: HeterogeneousFleet | None = None
+        self._fleet: DynamicParallelFleet | None = None
         if solver is not None:
-            if cohort_cost_models is None or kv_blocks_per_tp is None:
+            if parallel_cost_models is None or kv_blocks_per_tp is None:
                 raise ValueError(
-                    "A heterogeneous solver needs cohort_cost_models and kv_blocks_per_tp; "
-                    "the fleet cannot price a cohort or size its KV pool without them."
+                    "A parallelism solver needs parallel_cost_models and "
+                    "kv_blocks_per_tp: the fleet cannot price a step or size a KV pool "
+                    "for a TP degree it has no model and no capacity for."
                 )
-            from .fleet import HeterogeneousFleet
+            from .dynamic_parallel import DynamicParallelFleet
 
-            initial_plan = solver.solve([], self.rollout_version)
-            self._fleet = HeterogeneousFleet(
-                cost_models=cohort_cost_models,
-                router=self.router,
-                initial_plan=initial_plan,
+            self._fleet = DynamicParallelFleet(
+                cost_models=parallel_cost_models,
                 kv_blocks_per_tp=kv_blocks_per_tp,
+                router=self.router,
                 instance_cfg=dict(
                     token_budget=cfg.token_budget,
                     block_size=cfg.block_size,
@@ -162,11 +164,12 @@ class Simulator:
                     reject_if_running_full=cfg.reject_if_running_full,
                     enable_prefix_caching=cfg.enable_prefix_caching,
                 ),
+                initial_plan=solver.solve([], self.rollout_version),
                 t=0.0,
             )
-            # The fleet owns the instance list now; the homogeneous one built above
-            # is discarded. Rebinding rather than keeping both is what stops the
-            # engine loop from advancing instances the router never dispatches to.
+            # The fleet owns the instance list now; the uniform one built above is
+            # discarded. Rebinding rather than keeping both is what stops the engine
+            # loop advancing instances the router never dispatches to.
             self.instances = self._fleet.instances
 
     def _state(self) -> SimState:
@@ -637,14 +640,26 @@ class Simulator:
         weights_changed = self.rollout_version != previous_rollout_version
         if weights_changed and self.cfg.partial_rollout and self.inflight:
             if self._fleet is not None and self._solver is not None:
-                # Heterogeneous path: solver picks the new fleet layout, fleet
-                # aborts in-flight requests and rebuilds instances.
+                # Dynamic-parallel path: the solver picks the new layout, the fleet
+                # aborts everything in flight and re-shapes the instances.
+                # Imported here, not at module scope: with dynamic parallelism off
+                # the package must stay untouched, which is what "opt-in" means.
+                from .dynamic_parallel import RequestSnapshot
+
                 snapshot = [
-                    RequestSnapshot(v_traj=r.v_traj, ctx=r.ctx, instance_id=r.instance_id)
-                    for r in self.inflight
+                    RequestSnapshot(v_traj=r.v_traj, ctx=r.ctx) for r in self.inflight
                 ]
                 plan = self._solver.solve(snapshot, self.rollout_version)
                 aborted = self._fleet.rebuild(plan, self.t)
+                # Tell the router which version now counts as current, so the
+                # trajectories that just became the old-version tail are the ones it
+                # steers toward high TP. Without this the strategy keeps comparing
+                # against a stale version and treats the whole fleet as current work.
+                set_reference = getattr(
+                    self.router.strategy, "set_reference_version", None
+                )
+                if callable(set_reference):
+                    set_reference(self.rollout_version)
                 # The fleet may have constructed new instance objects, so rebind.
                 # `self.instances` is what the engine loop iterates and what
                 # `_align_instances` asserts clocks against.

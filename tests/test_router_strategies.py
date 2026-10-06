@@ -53,7 +53,7 @@ class TestRegistry:
             "kv_cache_aware",
             "prefix_aware",
             "throughput_balance",
-            "cohort_affinity",
+            "version_aware_tp",
         }
 
     def test_an_unknown_name_lists_the_known_ones(self):
