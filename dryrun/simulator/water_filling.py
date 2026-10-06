@@ -230,6 +230,18 @@ class WaterFillingSolver:
                 # truly unroutable — hence the asymmetry is correct.
                 if n_new == 0 and r_new > 0:
                     continue
+                # Skip plans that allocate GPUs to an old cohort when there are no
+                # old requests.  The old cohort has max_version=rollout_version-1;
+                # no request satisfies that predicate when r_old==0, so every GPU
+                # assigned to it is stranded for the entire interval.
+                #
+                # The symmetric guard (n_new>0 and r_new==0) is intentionally
+                # absent.  The new cohort is the catch-all (max_version=None); it
+                # also receives old requests when n_old==0, and will receive newly
+                # admitted requests that arrive during the interval.  Stranding the
+                # catch-all is therefore not possible in the same sense.
+                if n_old > 0 and r_old == 0:
+                    continue
 
                 # When n_old==0, there is no dedicated old cohort; the catch-all
                 # (new cohort) absorbs ALL in-flight requests — both old and new.

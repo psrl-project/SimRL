@@ -85,7 +85,15 @@ def test_solver_fixed_two_cohorts():
 
 
 def test_solver_search_degenerate_no_old():
-    """When all requests are new-version, solver returns a single homogeneous cohort."""
+    """When all requests are new-version, solver returns a single homogeneous cohort.
+
+    NOTE: this test passes even without the r_old==0 guard because the mock's
+    step_time (0.010/tp) is batch-insensitive: concentration buys nothing, so
+    the degenerate plan collapses to the right answer by accident.  The test
+    that actually guards the fix is
+    ``test_solver_no_stranded_old_cohort_batch_sensitive`` below, which uses a
+    batch-superlinear model where concentration genuinely outscores spreading.
+    """
     models = _mock_cost_models()
     solver = WaterFillingSolver(
         cost_models=models,
@@ -322,3 +330,72 @@ def test_absorbed_cohort_depth_is_request_weighted():
         f"5090; depths queried were {sorted(per_request_depths)}. A trivial "
         "d_new_eff = d_new would query 100 instead."
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: r_old==0 must not produce an old cohort (stranded GPUs)
+# ---------------------------------------------------------------------------
+
+def test_solver_no_stranded_old_cohort_batch_sensitive():
+    """
+    Regression for the stranded-GPU defect: when r_old==0, no cohort with a
+    finite max_version may be emitted, regardless of how the cost model scores
+    different batch sizes.
+
+    Root cause: with a batch-superlinear cost model (step_time inversely
+    proportional to reqs*tp), concentrating all requests on one instance gives
+    a higher token rate than splitting them across two.  Before the fix, the
+    solver would emit:
+
+        [(tp=2, n=1, max_version=0), (tp=2, n=1, max_version=None)]
+
+    The first cohort (max_version=0) can never receive a request because all
+    requests have v_traj=1 == rollout_version; its 2 GPUs are stranded.  The
+    solver chose it anyway because (score=72) > (score=36) for the two-instance
+    alternative, paying for concentration with idle GPUs.
+
+    The fix adds ``if n_old > 0 and r_old == 0: continue`` in _search_plan.
+
+    Why NOT add the symmetric guard (n_new>0 and r_new==0):
+        The new cohort is the catch-all (max_version=None).  When n_old==0 it
+        also absorbs old requests; more importantly, new requests will arrive
+        during the interval as the simulator admits work.  The catch-all is
+        never stranded in the same structural sense as an old cohort whose
+        version predicate can never be satisfied.
+
+    This test intentionally uses a batch-sensitive (superlinear) mock.
+    ``test_solver_search_degenerate_no_old`` uses a batch-insensitive mock and
+    passes for the wrong reason; this test is the effective guard.
+    """
+    models: dict = {}
+    for tp in (1, 2):
+        m = MagicMock()
+        # step_time = 1 / (reqs * tp): throughput-per-instance scales as reqs^2*tp,
+        # so a larger batch on fewer instances always outscores smaller batches on
+        # more instances.  This reproduces the real-model behaviour at small batch
+        # sizes where GPU utilisation is memory-bandwidth-bound and larger batches
+        # amortize per-step fixed costs.
+        m.step_time.side_effect = lambda n, t2, ctx, reqs, _tp=tp: 1.0 / (reqs * _tp)
+        models[tp] = m
+    solver = WaterFillingSolver(
+        cost_models=models,
+        n_gpus=4,
+        tp_candidates=(1, 2),
+        strategy="search",
+        fixed_cohorts=[],
+        max_concurrency=None,
+    )
+    # r_old==0: every request is at the current rollout version.
+    snapshot = [RequestSnapshot(v_traj=1, ctx=2000, instance_id=0) for _ in range(6)]
+    plan = solver.solve(snapshot, rollout_version=1)
+
+    # With r_old==0, every emitted cohort must be able to serve at least one
+    # request.  The only cohort that can do so is the catch-all (max_version=None);
+    # any finite max_version < rollout_version would match no request.
+    for cohort in plan.cohorts:
+        assert cohort.max_version is None, (
+            f"Stranded cohort emitted: max_version={cohort.max_version!r} but "
+            f"r_old==0 so no request satisfies v_traj<={cohort.max_version}.  "
+            f"Full plan: {plan.cohorts}"
+        )
+    assert sum(c.tp * c.n_instances for c in plan.cohorts) == 4
