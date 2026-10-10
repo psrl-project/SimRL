@@ -1,0 +1,5 @@
+// dryrun/component/rollout/engine_cpp/src/request.cc
+#include "engine/request.h"
+#include "engine/event.h"
+
+// Translation unit anchor — definitions are in the headers.
