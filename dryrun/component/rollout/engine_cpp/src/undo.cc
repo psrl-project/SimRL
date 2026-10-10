@@ -1,6 +1,8 @@
 // dryrun/component/rollout/engine_cpp/src/undo.cc
 #include "engine/undo.h"
 #include "engine/free_list.h"
+#include "engine/kv_manager.h"
+#include "engine/pool.h"
 
 namespace dryrun::engine {
 
@@ -63,46 +65,69 @@ void RequestSnapshot::restore() {
   }
 }
 
-// --- Deferred restore implementations (Task 4 types not yet defined) ---
+// --- FieldSnapshot3: kEvictionCount and kCounters are Task 4, kInstanceScalars is Task 5 ---
 
 void FieldSnapshot3::restore() {
-  // TODO: implemented in Task 4 when NativeInstance/BlockPool/KvCacheManager
-  // are defined.
-  throw std::runtime_error(
-      "FieldSnapshot3::restore() not yet implemented — requires Task 4 types.");
+  switch (kind) {
+    case Kind::kEvictionCount: {
+      auto* pool = static_cast<BlockPool*>(target);
+      pool->eviction_count = i0;
+      break;
+    }
+    case Kind::kCounters: {
+      auto* mgr = static_cast<KvCacheManager*>(target);
+      mgr->queries = i0;
+      mgr->hits = i1;
+      break;
+    }
+    case Kind::kInstanceScalars:
+      throw std::runtime_error(
+          "FieldSnapshot3::restore(kInstanceScalars) not yet implemented "
+          "— requires NativeInstance (Task 5).");
+  }
 }
 
 void VectorRestore::restore() {
-  // TODO: implemented in Task 4 when NativeInstance is defined.
+  // TODO: implemented in Task 5 when NativeInstance is defined.
   throw std::runtime_error(
-      "VectorRestore::restore() not yet implemented — requires Task 4 types.");
+      "VectorRestore::restore() not yet implemented — requires Task 5 types.");
 }
 
 void VectorTruncate::restore() {
-  // TODO: implemented in Task 4 when NativeInstance is defined.
+  // TODO: implemented in Task 5 when NativeInstance is defined.
   throw std::runtime_error(
-      "VectorTruncate::restore() not yet implemented — requires Task 4 types.");
+      "VectorTruncate::restore() not yet implemented — requires Task 5 types.");
 }
 
 void HashMapBulkRestore::restore() {
-  // TODO: implemented in Task 4 when BlockPool is defined.
-  throw std::runtime_error(
-      "HashMapBulkRestore::restore() not yet implemented — requires Task 4 "
-      "types.");
+  // Merge old entries back into the pool's map (Python: dict.update).
+  for (auto& [hash, block] : old_map) {
+    pool->hash_to_block_[hash] = block;
+  }
+  // Restore each block's own hash field.
+  for (auto& [hash, block] : old_map) {
+    block->reset_hash();
+    block->set_hash(hash);
+  }
 }
 
 void HeldBlocksRestore::restore() {
-  // TODO: implemented in Task 4 when KvCacheManager is defined.
-  throw std::runtime_error(
-      "HeldBlocksRestore::restore() not yet implemented — requires Task 4 "
-      "types.");
+  if (existed) {
+    manager->held_[rid] = std::move(old_blocks);
+  } else {
+    manager->held_.erase(rid);
+  }
+  if (old_n_cached.has_value()) {
+    manager->n_cached_[rid] = old_n_cached.value();
+  } else {
+    manager->n_cached_.erase(rid);
+  }
 }
 
 void CachedCountsRestore::restore() {
-  // TODO: implemented in Task 4 when KvCacheManager is defined.
-  throw std::runtime_error(
-      "CachedCountsRestore::restore() not yet implemented — requires Task 4 "
-      "types.");
+  for (auto& [k, v] : old_counts) {
+    manager->n_cached_[k] = v;
+  }
 }
 
 }  // namespace dryrun::engine

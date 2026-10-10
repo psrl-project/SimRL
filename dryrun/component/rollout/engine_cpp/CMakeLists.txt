@@ -13,6 +13,8 @@ pybind11_add_module(_engine_cpp
   src/request.cc
   src/undo.cc
   src/free_list.cc
+  src/pool.cc
+  src/kv_manager.cc
   bindings.cc
 )
 
