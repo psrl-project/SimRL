@@ -15,6 +15,8 @@ pybind11_add_module(_engine_cpp
   src/free_list.cc
   src/pool.cc
   src/kv_manager.cc
+  src/cost_model.cc
+  src/instance.cc
   bindings.cc
 )
 

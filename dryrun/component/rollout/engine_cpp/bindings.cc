@@ -1,9 +1,11 @@
 // dryrun/component/rollout/engine_cpp/bindings.cc
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include "engine/version.h"
-#include "engine/request.h"
+#include "engine/cost_model.h"
 #include "engine/event.h"
+#include "engine/instance.h"
+#include "engine/request.h"
+#include "engine/version.h"
 
 namespace py = pybind11;
 
@@ -89,4 +91,137 @@ PYBIND11_MODULE(_engine_cpp, m) {
       .def_readwrite("t", &dryrun::engine::EngineEvent::t)
       .def_readwrite("completed", &dryrun::engine::EngineEvent::completed)
       .def_readwrite("preempted", &dryrun::engine::EngineEvent::preempted);
+
+  // --- Cost models ---
+
+  py::class_<dryrun::engine::RolloutCostModel,
+             std::shared_ptr<dryrun::engine::RolloutCostModel>>(
+      m, "CppRolloutCostModel")
+      .def("step_time", &dryrun::engine::RolloutCostModel::step_time,
+           py::arg("n_tokens"), py::arg("t2"), py::arg("ctxsum"),
+           py::arg("n_reqs") = 0, py::arg("prefill_ctx") = 0.0)
+      .def("decode_segment_time",
+           &dryrun::engine::RolloutCostModel::decode_segment_time)
+      .def("decode_steps_within",
+           &dryrun::engine::RolloutCostModel::decode_steps_within);
+
+  py::class_<dryrun::engine::PsrlCostModel,
+             dryrun::engine::RolloutCostModel,
+             std::shared_ptr<dryrun::engine::PsrlCostModel>>(
+      m, "PsrlCostModel")
+      .def(py::init<double, double, double, double, double, double, double,
+                    double, double, double>(),
+           py::arg("prefill_attn_b"), py::arg("prefill_attn_k"),
+           py::arg("prefill_other_floor"), py::arg("prefill_other_b"),
+           py::arg("prefill_other_k"), py::arg("decode_attn_b"),
+           py::arg("decode_attn_k"), py::arg("decode_other_floor"),
+           py::arg("decode_other_b"), py::arg("decode_other_k"));
+
+  py::class_<dryrun::engine::UnifiedRooflineCostModel,
+             dryrun::engine::RolloutCostModel,
+             std::shared_ptr<dryrun::engine::UnifiedRooflineCostModel>>(
+      m, "UnifiedRooflineCostModel")
+      .def(py::init<double, double, double, double, double, int>(),
+           py::arg("F"), py::arg("W") = 0.0, py::arg("G") = 0.0,
+           py::arg("A_p") = 0.0, py::arg("A_d") = 0.0, py::arg("b") = 16);
+
+  // --- Advance module functions ---
+
+  m.def("crossing_step", &dryrun::engine::crossing_step, py::arg("F"),
+        py::arg("alpha"), py::arg("beta"), py::arg("k_cap") = -1);
+  m.def("elapsed", &dryrun::engine::elapsed, py::arg("F"), py::arg("alpha"),
+        py::arg("beta"), py::arg("k"));
+  m.def("steps_within", &dryrun::engine::steps_within, py::arg("F"),
+        py::arg("alpha"), py::arg("beta"), py::arg("budget"));
+  m.def("next_completion", &dryrun::engine::next_completion,
+        py::arg("remaining"));
+
+  // --- Instance ---
+
+  py::class_<dryrun::engine::InstanceLoad>(m, "CppInstanceLoad")
+      .def_readwrite("instance_id",
+                     &dryrun::engine::InstanceLoad::instance_id)
+      .def_readwrite("n_waiting", &dryrun::engine::InstanceLoad::n_waiting)
+      .def_readwrite("n_running", &dryrun::engine::InstanceLoad::n_running)
+      .def_readwrite("kv_utilization",
+                     &dryrun::engine::InstanceLoad::kv_utilization)
+      .def_readwrite("total_ctx", &dryrun::engine::InstanceLoad::total_ctx)
+      .def_readwrite("tp", &dryrun::engine::InstanceLoad::tp)
+      .def_property_readonly("n_active",
+                             &dryrun::engine::InstanceLoad::n_active);
+
+  py::class_<dryrun::engine::NativeInstance>(m, "CppInstance")
+      .def(py::init([](std::shared_ptr<dryrun::engine::RolloutCostModel> cost,
+                       int token_budget, int kv_blocks, int block_size,
+                       int max_concurrency, bool enable_prefix_caching,
+                       int instance_id, int tp, int max_running,
+                       int chunk_cap, bool reject_if_kv_full,
+                       bool reject_if_waiting,
+                       bool reject_if_running_full) {
+             return std::make_unique<dryrun::engine::NativeInstance>(
+                 std::move(cost), token_budget, kv_blocks, block_size,
+                 max_running, max_concurrency, chunk_cap, instance_id, tp,
+                 reject_if_kv_full, reject_if_waiting, reject_if_running_full,
+                 enable_prefix_caching);
+           }),
+           py::arg("cost"), py::arg("token_budget"), py::arg("kv_blocks"),
+           py::arg("block_size") = 16, py::arg("max_concurrency") = -1,
+           py::arg("enable_prefix_caching") = true,
+           py::arg("instance_id") = 0, py::arg("tp") = 1,
+           py::arg("max_running") = -1, py::arg("chunk_cap") = -1,
+           py::arg("reject_if_kv_full") = false,
+           py::arg("reject_if_waiting") = false,
+           py::arg("reject_if_running_full") = false)
+      .def_property_readonly("t_local",
+                             &dryrun::engine::NativeInstance::t_local)
+      .def_property_readonly("instance_id",
+                             &dryrun::engine::NativeInstance::instance_id)
+      .def_property_readonly("tp", &dryrun::engine::NativeInstance::tp)
+      .def_property_readonly("n_preemptions",
+                             &dryrun::engine::NativeInstance::n_preemptions)
+      .def_property_readonly("kv_queries",
+                             &dryrun::engine::NativeInstance::kv_queries)
+      .def_property_readonly("kv_hits",
+                             &dryrun::engine::NativeInstance::kv_hits)
+      .def_property_readonly("waiting",
+                             &dryrun::engine::NativeInstance::waiting)
+      .def_property_readonly("running",
+                             &dryrun::engine::NativeInstance::running)
+      .def_property_readonly("completed",
+                             &dryrun::engine::NativeInstance::completed)
+      .def("blocks_used", &dryrun::engine::NativeInstance::blocks_used)
+      .def("free_blocks", &dryrun::engine::NativeInstance::free_blocks)
+      .def("committed_blocks",
+           &dryrun::engine::NativeInstance::committed_blocks)
+      .def("get_load", &dryrun::engine::NativeInstance::get_load)
+      .def("step_time_delta",
+           &dryrun::engine::NativeInstance::step_time_delta)
+      .def("add_request", &dryrun::engine::NativeInstance::add_request,
+           py::arg("req"), py::arg("t"))
+      .def(
+          "advance_one_event",
+          [](dryrun::engine::NativeInstance& self,
+             int version) -> py::object {
+            auto ev = self.advance_one_event(version);
+            if (!ev.has_value()) return py::none();
+            return py::cast(*ev);
+          },
+          py::arg("version"))
+      .def("commit_last_event",
+           &dryrun::engine::NativeInstance::commit_last_event)
+      .def("undo_last_event",
+           &dryrun::engine::NativeInstance::undo_last_event)
+      .def("abort_all", &dryrun::engine::NativeInstance::abort_all,
+           py::arg("requeue") = true)
+      .def("cancel", &dryrun::engine::NativeInstance::cancel,
+           py::arg("reqs"), py::arg("keep_tokens") = true,
+           py::arg("requeue") = true)
+      .def(
+          "advance_to",
+          [](dryrun::engine::NativeInstance& self, double t_limit, int version,
+             int max_steps) {
+            return self.advance_to(t_limit, version, max_steps);
+          },
+          py::arg("t_limit"), py::arg("version"),
+          py::arg("max_steps") = 100000);
 }

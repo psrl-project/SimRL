@@ -1,6 +1,7 @@
 // dryrun/component/rollout/engine_cpp/src/undo.cc
 #include "engine/undo.h"
 #include "engine/free_list.h"
+#include "engine/instance.h"
 #include "engine/kv_manager.h"
 #include "engine/pool.h"
 
@@ -80,23 +81,39 @@ void FieldSnapshot3::restore() {
       mgr->hits = i1;
       break;
     }
-    case Kind::kInstanceScalars:
-      throw std::runtime_error(
-          "FieldSnapshot3::restore(kInstanceScalars) not yet implemented "
-          "— requires NativeInstance (Task 5).");
+    case Kind::kInstanceScalars: {
+      auto* inst = static_cast<NativeInstance*>(target);
+      // Fields stored: d0 = t_local_, i0 = n_preemptions_,
+      // b0 = last_decode_blocked_.
+      inst->t_local_ = d0;
+      inst->n_preemptions_ = i0;
+      inst->last_decode_blocked_ = b0;
+      break;
+    }
   }
 }
 
 void VectorRestore::restore() {
-  // TODO: implemented in Task 5 when NativeInstance is defined.
-  throw std::runtime_error(
-      "VectorRestore::restore() not yet implemented — requires Task 5 types.");
+  auto* inst = static_cast<NativeInstance*>(instance);
+  if (which == Which::kWaiting) {
+    inst->waiting_ = std::move(old_list);
+  } else {
+    inst->running_ = std::move(old_list);
+  }
 }
 
 void VectorTruncate::restore() {
-  // TODO: implemented in Task 5 when NativeInstance is defined.
-  throw std::runtime_error(
-      "VectorTruncate::restore() not yet implemented — requires Task 5 types.");
+  auto* inst = static_cast<NativeInstance*>(target);
+  if (which == Which::kCompleted) {
+    inst->completed_.resize(old_size);
+  } else if (which == Which::kStepStats) {
+    inst->step_stats_.resize(old_size);
+  } else {
+    // kSegments is handled by RequestSnapshot::restore.
+    throw std::runtime_error(
+        "VectorTruncate::restore(kSegments) should be handled by "
+        "RequestSnapshot.");
+  }
 }
 
 void HashMapBulkRestore::restore() {
