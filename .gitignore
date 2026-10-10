@@ -68,6 +68,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+# Allow the committed pybind11 extension module
+!dryrun/_engine_cpp*.so
 
 
 # =========================================================================
