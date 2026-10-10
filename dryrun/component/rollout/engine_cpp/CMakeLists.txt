@@ -11,6 +11,8 @@ find_package(pybind11 CONFIG REQUIRED)
 pybind11_add_module(_engine_cpp
   src/smoke.cc
   src/request.cc
+  src/undo.cc
+  src/free_list.cc
   bindings.cc
 )
 
