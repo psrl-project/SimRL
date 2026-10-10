@@ -6,6 +6,7 @@ import inspect
 import os
 from collections import Counter
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import hydra
 from omegaconf import DictConfig
@@ -25,7 +26,12 @@ from ..cost.rollout import (
     RolloutCostModel,
     UnifiedRoofline,
 )
-from ..cost.rollout.kv_cache import KvCacheGeometry, kv_blocks_from_memory
+from ..cost.rollout.kv_cache import (
+    KvCacheGeometry,
+    kv_blocks_from_memory,
+    parameter_bytes_from_checkpoint,
+)
+from ..cost.rollout.kv_probe import probe_kv_capacity
 from ..cost.training import (
     TRAINING_MODEL_REGISTRY,
     AnalyticalTrainingCost,
@@ -38,14 +44,19 @@ from ..policy.areal import ArealPolicy
 from ..policy.base import StalenessPolicy
 from ..policy.psrl import PSRLPolicy
 from ..policy.roll import RollPolicy
+from ..policy.roll_doom import RollDoomPolicy
 from ..policy.slime import SlimePolicy
 from ..policy.verl import VerlPolicy
+from ..profiler.hf import load_hf_model_descriptor
 from ..profiler.schema import Parallelism, mib_to_bytes
 from ..simulator import SimConfig, Simulator
 from ..telemetry.store import JsonlStore
 from ..visualizer.plots import SimPlotter
 from ..workload.distributions import bimodal, fixed, lognormal, normal, powerlaw, uniform
 from ..workload.grouped import GroupedWorkload
+
+if TYPE_CHECKING:
+    from ..simulator.dynamic_parallel import ParallelismSolver
 
 register_configs()
 
@@ -135,6 +146,17 @@ def build_policy(cfg: DictConfig, max_staleness: int) -> StalenessPolicy:
         return ArealPolicy(max_inflight=cfg.get("max_inflight", None))
     if name == "roll":
         return RollPolicy(max_inflight=cfg.get("max_inflight", None))
+    if name == "roll_doom":
+        return RollDoomPolicy(
+            max_inflight=cfg.get("max_inflight", None),
+            abandon=cfg.get("abandon", True),
+            safety_margin=cfg.get("safety_margin", 1.0),
+            min_generated=cfg.get("min_generated", 256),
+            training_cycle_s=cfg.get("training_cycle_s", 0.0),
+            require_observed_waste=cfg.get("require_observed_waste", True),
+            aggressive_margin=cfg.get("aggressive_margin", 0.7),
+            waste_rate_trusted=cfg.get("waste_rate_trusted", 0.15),
+        )
     if name == "slime":
         return SlimePolicy(
             update_weights_interval=cfg.get("update_weights_interval", 1),
@@ -240,15 +262,17 @@ def build_dynamic_parallel(
         )
 
     strategy = cfg.rollout.router.get("strategy", "request_num_balance")
-    if strategy != "version_aware_tp":
-        # Not fatal: the fleet still re-shapes and the run is valid, but no strategy
-        # other than version_aware_tp ranks instances by TP, so the old-version tail
-        # spreads evenly and the heterogeneity has no routing consequence to measure.
+    if strategy != "version_capped_tp":
         dryrun_logger.warning(
             f"dynamic_parallel.enabled=true with rollout.router.strategy={strategy!r}. "
-            f"Only 'version_aware_tp' prefers high-TP instances for the old-version "
-            f"tail; with any other strategy the fleet is re-shaped but placement "
-            f"ignores TP, so the measured effect will be close to homogeneous."
+            f"Only 'version_capped_tp' enforces version tiers under an active cap. "
+            f"Other strategies do not model the placement used by the dynamic solver."
+        )
+    active_cap = int(cfg.rollout.router.get("max_concurrent_seqs_per_instance", 0))
+    if strategy == "version_capped_tp" and active_cap <= 0:
+        raise ValueError(
+            "rollout.router.max_concurrent_seqs_per_instance must be positive "
+            "with version_capped_tp."
         )
 
     base = OmegaConf.to_container(cfg.rollout_cost, resolve=True)
@@ -272,7 +296,7 @@ def build_dynamic_parallel(
         per_tp_rollout = OmegaConf.create(OmegaConf.to_container(cfg.rollout, resolve=True))
         if per_tp_rollout.get("kv_cache_sizing", None) is not None:
             per_tp_rollout.kv_cache_sizing.tp_size = tp
-        kv_blocks_per_tp[tp] = resolve_kv_blocks(per_tp_rollout)
+        kv_blocks_per_tp[tp] = resolve_kv_blocks(per_tp_rollout, cfg.job, cfg.rollout_cost)
 
     solver = ParallelismSolver(
         cost_models=cost_models,
@@ -281,7 +305,11 @@ def build_dynamic_parallel(
         strategy=str(dynamic.strategy),
         fixed_tp_per_instance=tuple(int(tp) for tp in dynamic.tp_per_instance),
         max_concurrency=cfg.rollout.get("max_concurrency", None),
-        high_tp_bias=float(dynamic.get("high_tp_bias", 1.0)),
+        active_cap=active_cap if active_cap > 0 else None,
+        objective=str(dynamic.get("objective", "scg")),
+        training_cycle_s=float(dynamic.get("training_cycle_s", 60.0)),
+        future_discount=float(dynamic.get("future_discount", 1.0)),
+        drain_weight=float(dynamic.get("drain_weight", 1.0)),
     )
     return cost_models, kv_blocks_per_tp, solver
 
@@ -423,9 +451,76 @@ def build_sync_cost(cfg: DictConfig) -> SyncCostModel:
     raise ValueError(f"Unknown sync cost model: {name!r}.")
 
 
+def _recompute_geometry(
+    training_cost: TrainingCostModel,
+    model_path: str,
+) -> tuple[int, int, int]:
+    """Return `(hidden_size, vocab_size, parameter_count)` for the forward share.
+
+    These describe the model whose fitted training curve `training_forward`
+    scales, so they are read from that fit rather than configured. A configured
+    triple is a per-model constant that survives a model change in silence: the
+    unembedding correction would then describe one architecture while the curve
+    it multiplies describes another.
+
+    The artifact is preferred because it is the curve being corrected. The
+    checkpoint is the fallback for a training model with no fit behind it
+    (`fixed`, `analytical`, `linear`), where there is no artifact to read and the
+    actor's checkpoint is the same model either way.
+
+    Args:
+        training_cost: The model pricing the optimizer step.
+        model_path: Checkpoint the run already names, used only when the
+            training model carries no descriptor.
+
+    Raises:
+        ValueError: If neither source is available, or either one is missing a
+            field. Never defaults: a wrong geometry here is silent.
+    """
+    descriptor = training_cost.model
+    source = "the training artifact"
+    if descriptor is None:
+        if not model_path:
+            raise ValueError(
+                "recompute_cost.name=training_forward needs the model's geometry, and "
+                f"{type(training_cost).__name__} carries no architecture descriptor. "
+                "Either fit the training cost from an artifact, or name a checkpoint "
+                "under rollout_cost.model_path or rollout.kv_cache_sizing.model_path."
+            )
+        descriptor = load_hf_model_descriptor(model_path)
+        source = f"the checkpoint at {model_path}"
+
+    hidden_size = descriptor.hidden_size
+    vocab_size = descriptor.extra.get("vocab_size")
+    parameter_count = descriptor.parameter_count
+    missing = [
+        name
+        for name, value in (
+            ("hidden_size", hidden_size),
+            ("vocab_size", vocab_size),
+            ("parameter_count", parameter_count),
+        )
+        if not value
+    ]
+    if missing:
+        raise ValueError(
+            f"{source} does not carry {', '.join(missing)}, which the training_forward "
+            "model needs to correct the forward share for the unembedding."
+        )
+    dryrun_logger.info(
+        "Log-prob forward share from %s: hidden_size=%d, vocab_size=%d, parameters=%d.",
+        source,
+        hidden_size,
+        vocab_size,
+        parameter_count,
+    )
+    return int(hidden_size), int(vocab_size), int(parameter_count)
+
+
 def build_recompute_cost(
     cfg: DictConfig,
     training_cost: TrainingCostModel,
+    model_path: str = "",
 ) -> RecomputeCostModel:
     """Instantiate a recompute cost model from config.
 
@@ -434,6 +529,8 @@ def build_recompute_cost(
         training_cost: The model pricing the optimizer step. The
             `training_forward` model prices the log-prob pass as a fraction of
             it, so the two cannot disagree about topology or sequence lengths.
+        model_path: Checkpoint to read the architecture from when the training
+            model carries no descriptor of its own.
     """
     name = cfg.get("name", "fixed")
     if name == "fixed":
@@ -445,17 +542,15 @@ def build_recompute_cost(
             overhead_factor=cfg.get("overhead_factor", 1.1),
         )
     if name == "training_forward":
-        for required in ("hidden_size", "vocab_size", "parameter_count"):
-            if not cfg.get(required, 0):
-                raise ValueError(
-                    f"recompute_cost.{required} is required for the training_forward model, "
-                    f"which corrects the forward share for the unembedding."
-                )
+        hidden_size, vocab_size, parameter_count = _recompute_geometry(
+            training_cost,
+            model_path,
+        )
         return TrainingForwardRecomputeCost(
             training_cost=training_cost,
-            hidden_size=int(cfg.hidden_size),
-            vocab_size=int(cfg.vocab_size),
-            parameter_count=int(cfg.parameter_count),
+            hidden_size=hidden_size,
+            vocab_size=vocab_size,
+            parameter_count=parameter_count,
         )
     raise ValueError(f"Unknown recompute cost model: {name!r}.")
 
@@ -466,7 +561,34 @@ def _length_cap(value) -> int | None:
     return int(value)
 
 
-def resolve_kv_blocks(rollout: DictConfig) -> int:
+def _max_model_len(job: DictConfig | None) -> int:
+    """The longest sequence the engine must hold, from the job's own limits.
+
+    vLLM sizes its activation peak against `max_model_len`, so this has to be the
+    deployment's value rather than a separately configured one. Falls back to
+    vLLM's own 32768 default when the job leaves its limits open.
+    """
+    if job is None:
+        return 32768
+    prompt = job.get("max_prompt_length", None)
+    output = job.get("max_output_length", None)
+    if prompt is None or output is None:
+        return 32768
+    return int(prompt) + int(output)
+
+
+def _rollout_dtype(rollout_cost: DictConfig | None) -> str:
+    """Weight dtype of the simulated engine, defaulting to bf16."""
+    if rollout_cost is None:
+        return "bfloat16"
+    return str(rollout_cost.get("dtype", "bfloat16"))
+
+
+def resolve_kv_blocks(
+    rollout: DictConfig,
+    job: DictConfig | None = None,
+    rollout_cost: DictConfig | None = None,
+) -> int:
     """Return the KV capacity in blocks, computed from the model when configured.
 
     `rollout.kv_blocks` is a literal placeholder by default. Naming a
@@ -482,18 +604,65 @@ def resolve_kv_blocks(rollout: DictConfig) -> int:
     if not model_path:
         return int(rollout.kv_blocks)
 
-    geometry = KvCacheGeometry.from_hf_config(model_path)
-    parameter_count = sizing.get("parameter_count", None)
-    if not parameter_count:
-        raise ValueError(
-            "rollout.kv_cache_sizing.model_path needs parameter_count as well, since the weight "
-            "footprint cannot be derived from the architecture fields alone."
+    # Ask a real engine and cache the answer. The arithmetic below cannot derive
+    # vLLM's measured peak-activation and non-torch memory, nor a hybrid model's
+    # page alignment, so outside a plain dense model its error is unbounded and
+    # silent.
+    if bool(sizing.get("probe", True)):
+        # Engine parameters come from the simulation config rather than being
+        # configured twice, so they cannot describe a different deployment.
+        capacity = probe_kv_capacity(
+            model_path,
+            tensor_parallel=int(sizing.get("tp_size", 1)),
+            gpu_memory_utilization=float(sizing.get("gpu_memory_utilization", 0.9)),
+            max_model_len=_max_model_len(job),
+            dtype=_rollout_dtype(rollout_cost),
+            block_size=int(rollout.get("block_size", 16)),
+            max_num_batched_tokens=int(rollout.get("token_budget", 0) or 0),
+            max_num_seqs=int(rollout.get("max_concurrency", 0) or 0),
+            gpu_name=str(sizing.get("gpu_name", "unknown")),
         )
+        dryrun_logger.info(
+            "KV capacity from %s: %d blocks x %d tokens = %d tokens (tp=%d).",
+            capacity.source,
+            capacity.num_gpu_blocks,
+            capacity.block_size,
+            capacity.total_tokens,
+            int(sizing.get("tp_size", 1)),
+        )
+        return capacity.num_gpu_blocks
+
+    geometry = KvCacheGeometry.from_hf_config(model_path)
+    # The checkpoint is authoritative for the weight footprint: a configured
+    # `parameter_count` is a per-model constant that silently survives a model
+    # change.
+    weight_bytes_total = parameter_bytes_from_checkpoint(model_path)
+    parameter_count = sizing.get("parameter_count", None)
+    if weight_bytes_total is None and not parameter_count:
+        raise ValueError(
+            f"Cannot determine the weight footprint for {model_path!s}: it has no "
+            "model.safetensors.index.json, and rollout.kv_cache_sizing.parameter_count "
+            "is unset. The weight size is the largest subtraction in the KV budget, so "
+            "it cannot be defaulted."
+        )
+    if weight_bytes_total is not None and parameter_count:
+        configured = int(parameter_count) * 2
+        # Flag rather than fail: a quantized or partially-tied checkpoint has a
+        # legitimate gap. A 2x one does not.
+        if not 0.5 <= configured / weight_bytes_total <= 2.0:
+            dryrun_logger.warning(
+                "rollout.kv_cache_sizing.parameter_count implies %.2f GiB of weights but "
+                "the checkpoint holds %.2f GiB. Using the checkpoint. A configured count "
+                "left over from another model is the usual cause.",
+                configured / 1024**3,
+                weight_bytes_total / 1024**3,
+            )
     return kv_blocks_from_memory(
         geometry,
         gpu_memory_mib=int(sizing.get("gpu_memory_mib", 97_871)),
         gpu_memory_utilization=float(sizing.get("gpu_memory_utilization", 0.9)),
-        parameter_count=int(parameter_count),
+        parameter_count=int(parameter_count) if parameter_count else None,
+        weight_bytes_total=weight_bytes_total,
         block_size=int(rollout.block_size),
         tp_size=int(sizing.get("tp_size", 1)),
         non_kv_overhead_bytes=int(sizing.get("non_kv_overhead_bytes", 0)),
@@ -525,6 +694,7 @@ def run_simulate(cfg: DictConfig) -> None:
         max_staleness=job.max_staleness,
         n_versions=job.n_versions,
         sync_time=cfg.sync_cost.get("sync_time", 0.0),
+        weight_load_time=cfg.sync_cost.get("weight_load_time", 0.0),
 
         training_tp=training_parallelism.tp,
         training_pp=training_parallelism.pp,
@@ -540,11 +710,11 @@ def run_simulate(cfg: DictConfig) -> None:
         training_gpu_memory_bytes=None if memory_mib is None else mib_to_bytes(int(memory_mib)),
         partial_rollout=rollout.partial_rollout,
         token_budget=rollout.token_budget,
-        kv_blocks=resolve_kv_blocks(rollout),
+        kv_blocks=resolve_kv_blocks(rollout, cfg.job, cfg.rollout_cost),
         block_size=rollout.block_size,
         enable_prefix_caching=rollout.get("enable_prefix_caching", True),
         max_concurrency=rollout.get("max_concurrency", None),
-        reject_if_kv_full=admit.get("reject_if_kv_full", True),
+        reject_if_kv_full=admit.get("reject_if_kv_full", False),
         reject_if_waiting=admit.get("reject_if_waiting", False),
         reject_if_running_full=admit.get("reject_if_running_full", False),
         routing_strategy=router.get("strategy", "request_num_balance"),
@@ -552,6 +722,9 @@ def run_simulate(cfg: DictConfig) -> None:
         router_sort_key=router.get("sort_key", "short_length"),
         max_concurrent_seqs_per_instance=router.get("max_concurrent_seqs_per_instance", 0),
         router_reject_on_waiting=router.get("reject_on_waiting", False),
+        router_reject_preempted_on_waiting=router.get(
+            "reject_preempted_on_waiting", False
+        ),
         enable_group_sticky=router.get("enable_group_sticky", False),
         max_waiting_after_preempt=router.get("max_waiting_after_preempt", None),
         n_instances=rollout.n_instances,
@@ -567,7 +740,17 @@ def run_simulate(cfg: DictConfig) -> None:
     policy = build_policy(cfg.policy, job.max_staleness)
     training_cost = build_training_cost(cfg.training_cost)
     sync_cost = build_sync_cost(cfg.sync_cost)
-    recompute_cost = build_recompute_cost(cfg.recompute_cost, training_cost)
+    # The checkpoint is only consulted when the training model carries no fitted
+    # descriptor. Either key names the actor, which is one model per run.
+    recompute_cost = build_recompute_cost(
+        cfg.recompute_cost,
+        training_cost,
+        model_path=str(
+            cfg.rollout_cost.get("model_path", "")
+            or rollout.get("kv_cache_sizing", {}).get("model_path", "")
+            or ""
+        ),
+    )
 
     parallel_cost_models = None
     kv_blocks_per_tp = None
@@ -589,6 +772,8 @@ def run_simulate(cfg: DictConfig) -> None:
     # logging is switched on; `log_telemetry=False` must not touch disk.
     store = JsonlStore(output_dir / "logs", overwrite=True) if log_telemetry else None
 
+    backend = os.environ.get("DRYRUN_BACKEND", "auto")
+
     sim = Simulator(
         rollout_cost=rollout_cost,
         policy=policy,
@@ -600,6 +785,7 @@ def run_simulate(cfg: DictConfig) -> None:
         parallel_cost_models=parallel_cost_models,
         kv_blocks_per_tp=kv_blocks_per_tp,
         solver=solver,
+        backend=backend,
     )
     result = sim.run()
 
@@ -614,6 +800,31 @@ def run_simulate(cfg: DictConfig) -> None:
         for staleness, count in sorted(staleness_counts.items()):
             percentage = count / result.n_consumed * 100
             print(f"    {staleness}: {count} requests ({percentage:.2f}%)")
+
+        # Staleness-constrained goodput: tokens from trajectories consumed with
+        # staleness_true <= S, per simulated second. `SimResult.scg` has always
+        # computed this but nothing printed it, so every comparison script
+        # re-derived it from logs/request.jsonl by hand -- six copies of the same
+        # arithmetic, and a metric nobody could see without opening a plot.
+        #
+        # Tokens rather than a trajectory count, so the row is directly comparable
+        # with `Throughput:` above: the last S equals it by construction, and the
+        # ratio at any lower S is the fraction of generated work that arrived fresh
+        # enough to train on.
+        #
+        # The whole curve rather than one number: the optimal fleet shape is
+        # S-dependent (measured: a configuration can gain 1.9x at S=0 while
+        # losing at S=2), so a single S hides exactly the trade being made.
+        #
+        # ⚠️ SCG is a RATE, so it is only comparable across runs that consumed the
+        # same number of trajectories. A run that ended early divides a smaller
+        # total by a smaller span and scores arbitrarily well. `Consumed:` above
+        # is printed first for that reason: check it matches before comparing.
+        print("  SCG(S) = tokens from trajectories with staleness <= S, per second:")
+        for staleness, value in sorted(result.scg_curve().items()):
+            marker = "  <- job.max_staleness" if staleness == cfg.job.max_staleness else ""
+            share = value / result.throughput * 100 if result.throughput > 0 else 0.0
+            print(f"    S={staleness}: {value:>9.1f} tok/s ({share:>5.1f}% of throughput){marker}")
     if result.livelocked:
         print("  WARNING: Simulation livelocked!")
 
