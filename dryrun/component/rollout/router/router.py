@@ -1,8 +1,8 @@
 """The router: where a request waits, and how it is placed.
 
-The simulator admits into the router rather than onto an instance, so a request
-that no instance can take dwells here instead of being rolled back. That is
-what the real gateway does, and it is what makes the router queue depth a
+The simulator stages work in the router and admits a whole group when its first
+response reaches an instance. A request that cannot be placed dwells here
+without consuming policy inventory. That is what makes router queue depth a
 signal rather than a constant zero.
 
 **When dispatch runs.** A dispatch attempt can only succeed if KV capacity was
@@ -24,10 +24,16 @@ analogue.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 from ..engine import InstanceView, NativeInstance, Request
 from .request_queue import RouterQueue, SortKey
-from .strategy import RoutingStrategy
+from .strategy import (
+    RoutingContext,
+    RoutingStrategy,
+    allows_version_bypass,
+    narrow_candidates,
+)
 
 
 @dataclass
@@ -44,13 +50,23 @@ class AdmissionGate:
     """Cap on requests one instance may hold. 0 disables the limb."""
     reject_on_waiting: bool = False
     """Refuse an instance that already has a queue of its own."""
+    reject_preempted_on_waiting: bool = False
+    """Apply the waiting-queue refusal only to preemption loopbacks."""
 
-    def reject_reason(self, view: InstanceView) -> str | None:
+    def reject_reason(
+        self,
+        view: InstanceView,
+        *,
+        is_preempt_loopback: bool = False,
+    ) -> str | None:
         """Why `view` cannot be offered work, or None if it can."""
         cap = self.max_concurrent_seqs_per_instance
         if cap > 0 and view.n_active >= cap:
             return "count_cap"
-        if self.reject_on_waiting and view.n_waiting > 0:
+        reject_waiting = self.reject_on_waiting or (
+            self.reject_preempted_on_waiting and is_preempt_loopback
+        )
+        if reject_waiting and view.n_waiting > 0:
             return "waiting_queue"
         return None
 
@@ -76,12 +92,22 @@ class Router:
         self.strategy = strategy
         self.instances = instances
         self.gate = gate or AdmissionGate()
+        if (
+            getattr(strategy, "requires_active_cap", False)
+            and self.gate.max_concurrent_seqs_per_instance <= 0
+        ):
+            raise ValueError(
+                "This routing strategy requires "
+                "max_concurrent_seqs_per_instance to be positive."
+            )
         self.queue = RouterQueue(sort_key)
         self.enable_group_sticky = enable_group_sticky
         self.max_waiting_after_preempt = max_waiting_after_preempt
 
         self._group_pin: dict[int, int] = {}
         """Group id -> instance id, written once at the group's first placement."""
+        self._preempt_loopbacks: set[int] = set()
+        """Object ids whose current router dwell came from preemption overflow."""
 
         self.n_routed = 0
         self.n_reroutes = 0
@@ -96,6 +122,11 @@ class Router:
     def queue_len(self) -> int:
         return len(self.queue)
 
+    @property
+    def queue_depths(self) -> dict[int, int]:
+        """Return queued requests grouped by trajectory version."""
+        return self.queue.depths()
+
     def enqueue(self, reqs: list[Request], t: float) -> None:
         for req in reqs:
             self.queue.push(req, t)
@@ -106,7 +137,13 @@ class Router:
         A discarded request must leave, or a later dispatch would place work
         the simulator has already written off.
         """
-        return self.queue.remove(reqs)
+        removed = self.queue.remove(reqs)
+        self._preempt_loopbacks.difference_update(id(req) for req in removed)
+        return removed
+
+    def rekey(self, reqs: list[Request]) -> None:
+        """Move queued requests to the layer matching their current version."""
+        self.queue.rekey(reqs)
 
     def release_group_pins(self, group_ids: set[int]) -> None:
         """Forget the sticky pin for finished or dropped groups.
@@ -130,11 +167,15 @@ class Router:
             tp=load.tp,
             free_blocks=inst.free_blocks(),
             committed_blocks=inst.committed_blocks(),
-            prefix_hit_tokens=inst.kv.peek_hit_tokens,
+            prefix_hit_tokens=inst.peek_hit_tokens,
             step_time_delta=lambda req, i=inst: i.step_time_delta(req),
         )
 
-    def _candidates(self, req: Request) -> list[tuple[int, InstanceView]]:
+    def _candidates(
+        self,
+        req: Request,
+        context: RoutingContext,
+    ) -> list[tuple[int, InstanceView]]:
         """Eligible instances for `req`, as `(instance_id, view)` pairs.
 
         A group-sticky pin narrows the set but never empties it: SMG treats the
@@ -142,11 +183,24 @@ class Router:
         a hard pin here would dwell a request behind one busy instance while
         others idle.
         """
+        all_views = [(inst.instance_id, self._view(inst)) for inst in self.instances]
+        is_preempt_loopback = id(req) in self._preempt_loopbacks
         views = [
-            (inst.instance_id, self._view(inst))
-            for inst in self.instances
-            if self.gate.reject_reason(self._view(inst)) is None
+            pair
+            for pair in all_views
+            if self.gate.reject_reason(
+                pair[1],
+                is_preempt_loopback=is_preempt_loopback,
+            )
+            is None
         ]
+        allowed = narrow_candidates(
+            self.strategy,
+            req,
+            [view for _, view in views],
+            context,
+        )
+        views = [views[index] for index in allowed]
         if self.enable_group_sticky:
             pinned = self._group_pin.get(req.group_id)
             if pinned is not None:
@@ -155,9 +209,14 @@ class Router:
                     return narrowed
         return views
 
-    def _place(self, req: Request, t: float) -> int | None:
+    def _place(
+        self,
+        req: Request,
+        t: float,
+        context: RoutingContext,
+    ) -> int | None:
         """Try to put `req` on an instance now. Returns the instance id or None."""
-        candidates = self._candidates(req)
+        candidates = self._candidates(req, context)
         if not candidates:
             return None
         index = self.strategy.select(req, [view for _, view in candidates])
@@ -168,6 +227,7 @@ class Router:
         if not self.instances[instance_id].add_request(req, t):
             return None
 
+        self._preempt_loopbacks.discard(id(req))
         if self.enable_group_sticky:
             self._group_pin.setdefault(req.group_id, instance_id)
         self.n_routed += 1
@@ -178,32 +238,61 @@ class Router:
                 self.n_cross_instance_reroutes += 1
         return instance_id
 
-    def dispatch(self, t: float) -> list[tuple[Request, int]]:
+    def dispatch(
+        self,
+        t: float,
+        *,
+        can_admit: Callable[[Request], bool] | None = None,
+        on_placed: Callable[[Request, int], None] | None = None,
+    ) -> list[tuple[Request, int]]:
         """Place as many queued requests as the instances will take.
 
-        Walks the queue in priority order and stops at the first request
-        nothing can take, rather than skipping it to try the next. That is
-        SMG's peek-then-pop shape, and it is what stops a long request being
-        starved by a stream of short ones that keep fitting into the gap it
-        needs.
+        Tries version queues from oldest to newest. After a blocked head, the
+        strategy decides whether dispatch stops or continues to the next
+        version. A successful placement restarts from the oldest version, so
+        the router supplies ordering while the strategy owns bypass policy.
 
         Returns:
             `(request, instance_id)` for each placement, in dispatch order.
         """
-        assert all(inst._snapshot is None for inst in self.instances), (
+        assert all(not inst.has_pending_event for inst in self.instances), (
             "Router dispatch ran inside a speculative engine event. Dispatch must "
             "only happen after an event commits, or the placement could be rolled "
             "back while the router still believes it happened."
         )
         placed: list[tuple[Request, int]] = []
         while self.queue:
-            req = self.queue.peek()
-            instance_id = self._place(req, t)
-            if instance_id is None:
+            blocked_versions: list[int] = []
+            placed_one = False
+            for version in self.queue.versions():
+                req = self.queue.peek_version(version)
+                assert req is not None, "A nonempty version layer must have a first request."
+                if can_admit is not None and not can_admit(req):
+                    return placed
+                context = self._routing_context(blocked_versions)
+                instance_id = self._place(req, t, context)
+                if instance_id is not None:
+                    self.queue.pop_version(version)
+                    placed.append((req, instance_id))
+                    if on_placed is not None:
+                        on_placed(req, instance_id)
+                    placed_one = True
+                    break
+                if not allows_version_bypass(self.strategy, req, context):
+                    return placed
+                blocked_versions.append(version)
+            if not placed_one:
                 break
-            self.queue.pop()
-            placed.append((req, instance_id))
         return placed
+
+    def _routing_context(self, blocked_versions: list[int]) -> RoutingContext:
+        """Build the strategy context for one version-queue attempt."""
+        tps = [inst.tp for inst in self.instances]
+        return RoutingContext(
+            blocked_versions=tuple(blocked_versions),
+            fleet_min_tp=min(tps),
+            fleet_max_tp=max(tps),
+        )
 
     def has_dispatchable(self) -> bool:
         """Whether a dispatch pass could place anything right now.
@@ -214,8 +303,6 @@ class Router:
         an instance just freed capacity.
         """
         return bool(self.queue)
-
-    # --- loopback --------------------------------------------------------
 
     def reclaim_preempted(self, t: float) -> list[Request]:
         """Take back waiters from instances whose queue has run too deep.
@@ -244,5 +331,6 @@ class Router:
             if victims:
                 reclaimed.extend(inst.cancel(victims, keep_tokens=True, requeue=False))
         for req in reclaimed:
+            self._preempt_loopbacks.add(id(req))
             self.queue.push(req, t)
         return reclaimed

@@ -102,11 +102,17 @@ class NativeInstance {
 
   // Expose the Python-side attribute names.
   double t_local() const { return t_local_; }
+  void set_t_local(double t) { t_local_ = t; }
   int instance_id() const { return instance_id_; }
   int tp() const { return tp_; }
+  int kv_blocks() const { return kv_blocks_; }
   int n_preemptions() const { return n_preemptions_; }
   int kv_queries() const { return kv_.queries; }
   int kv_hits() const { return kv_.hits; }
+  bool has_pending_event() const { return log_ != nullptr; }
+  int peek_hit_tokens(const RequestPtr& req) const {
+    return kv_.peek_hit_tokens(*req);
+  }
 
   const std::vector<RequestPtr>& waiting() const { return waiting_; }
   const std::vector<RequestPtr>& running() const { return running_; }

@@ -1,6 +1,9 @@
 // dryrun/component/rollout/engine_cpp/bindings.cc
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
 #include "engine/cost_model.h"
 #include "engine/event.h"
 #include "engine/instance.h"
@@ -58,7 +61,33 @@ PYBIND11_MODULE(_engine_cpp, m) {
       .def_readwrite("dispatch_time", &dryrun::engine::Request::dispatch_time)
       .def_readwrite("generated", &dryrun::engine::Request::generated)
       .def_readwrite("prefilled", &dryrun::engine::Request::prefilled)
-      .def_readwrite("status", &dryrun::engine::Request::status)
+      // Accept both the C++ ReqStatus and the Python ReqStatus by name.
+      .def_property("status",
+          [](const dryrun::engine::Request& self) { return self.status; },
+          [](dryrun::engine::Request& self, py::object val) {
+            try {
+              self.status = val.cast<dryrun::engine::ReqStatus>();
+              return;
+            } catch (py::cast_error&) {}
+            static const std::unordered_map<std::string,
+                                            dryrun::engine::ReqStatus>
+                name_map = {
+                    {"QUEUED", dryrun::engine::ReqStatus::kQueued},
+                    {"WAITING", dryrun::engine::ReqStatus::kWaiting},
+                    {"RUNNING", dryrun::engine::ReqStatus::kRunning},
+                    {"PREEMPTED", dryrun::engine::ReqStatus::kPreempted},
+                    {"RECOMPUTING", dryrun::engine::ReqStatus::kRecomputing},
+                    {"DONE", dryrun::engine::ReqStatus::kDone},
+                    {"CONSUMED", dryrun::engine::ReqStatus::kConsumed},
+                    {"DROPPED", dryrun::engine::ReqStatus::kDropped},
+                };
+            auto name = val.attr("name").cast<std::string>();
+            auto it = name_map.find(name);
+            if (it == name_map.end()) {
+              throw py::value_error("Unknown ReqStatus: " + name);
+            }
+            self.status = it->second;
+          })
       .def_readwrite("complete_time", &dryrun::engine::Request::complete_time)
       .def_readwrite("consume_version",
                      &dryrun::engine::Request::consume_version)
@@ -77,7 +106,21 @@ PYBIND11_MODULE(_engine_cpp, m) {
       .def_property_readonly("ctx", &dryrun::engine::Request::ctx)
       .def_property_readonly("v_min", &dryrun::engine::Request::v_min)
       .def_property_readonly("v_max", &dryrun::engine::Request::v_max)
-      .def("add_tokens", &dryrun::engine::Request::add_tokens);
+      .def("add_tokens", &dryrun::engine::Request::add_tokens)
+      .def("staleness_true",
+           [](const dryrun::engine::Request& self) -> int {
+             if (!self.consume_version.has_value()) {
+               throw std::runtime_error("Request was never consumed.");
+             }
+             return *self.consume_version - self.v_min();
+           })
+      .def("staleness_reported",
+           [](const dryrun::engine::Request& self) -> int {
+             if (!self.consume_version.has_value()) {
+               throw std::runtime_error("Request was never consumed.");
+             }
+             return *self.consume_version - self.v_max();
+           });
 
   py::enum_<dryrun::engine::EventKind>(m, "EventKind")
       .value("ITERATION_DONE", dryrun::engine::EventKind::kIterationDone)
@@ -91,6 +134,25 @@ PYBIND11_MODULE(_engine_cpp, m) {
       .def_readwrite("t", &dryrun::engine::EngineEvent::t)
       .def_readwrite("completed", &dryrun::engine::EngineEvent::completed)
       .def_readwrite("preempted", &dryrun::engine::EngineEvent::preempted);
+
+  // --- StepStat ---
+
+  py::class_<dryrun::engine::StepStat>(m, "CppStepStat")
+      .def(py::init<>())
+      .def_readwrite("n_tokens", &dryrun::engine::StepStat::n_tokens)
+      .def_readwrite("n_decode", &dryrun::engine::StepStat::n_decode)
+      .def_readwrite("n_prefill", &dryrun::engine::StepStat::n_prefill)
+      .def_readwrite("saturated", &dryrun::engine::StepStat::saturated)
+      .def_readwrite("steps", &dryrun::engine::StepStat::steps)
+      .def_readwrite("saturated_steps",
+                     &dryrun::engine::StepStat::saturated_steps)
+      .def_readwrite("dt", &dryrun::engine::StepStat::dt)
+      .def_readwrite("phase", &dryrun::engine::StepStat::phase)
+      .def_readwrite("t", &dryrun::engine::StepStat::t)
+      .def_readwrite("n_prefill_hit",
+                     &dryrun::engine::StepStat::n_prefill_hit)
+      .def_readwrite("n_prefill_computed",
+                     &dryrun::engine::StepStat::n_prefill_computed);
 
   // --- Cost models ---
 
@@ -172,23 +234,30 @@ PYBIND11_MODULE(_engine_cpp, m) {
            py::arg("reject_if_kv_full") = false,
            py::arg("reject_if_waiting") = false,
            py::arg("reject_if_running_full") = false)
-      .def_property_readonly("t_local",
-                             &dryrun::engine::NativeInstance::t_local)
+      .def_property("t_local",
+                    &dryrun::engine::NativeInstance::t_local,
+                    &dryrun::engine::NativeInstance::set_t_local)
       .def_property_readonly("instance_id",
                              &dryrun::engine::NativeInstance::instance_id)
       .def_property_readonly("tp", &dryrun::engine::NativeInstance::tp)
+      .def_property_readonly("kv_blocks",
+                             &dryrun::engine::NativeInstance::kv_blocks)
       .def_property_readonly("n_preemptions",
                              &dryrun::engine::NativeInstance::n_preemptions)
       .def_property_readonly("kv_queries",
                              &dryrun::engine::NativeInstance::kv_queries)
       .def_property_readonly("kv_hits",
                              &dryrun::engine::NativeInstance::kv_hits)
+      .def_property_readonly("has_pending_event",
+                             &dryrun::engine::NativeInstance::has_pending_event)
       .def_property_readonly("waiting",
                              &dryrun::engine::NativeInstance::waiting)
       .def_property_readonly("running",
                              &dryrun::engine::NativeInstance::running)
       .def_property_readonly("completed",
                              &dryrun::engine::NativeInstance::completed)
+      .def_property_readonly("step_stats",
+                             &dryrun::engine::NativeInstance::step_stats)
       .def("blocks_used", &dryrun::engine::NativeInstance::blocks_used)
       .def("free_blocks", &dryrun::engine::NativeInstance::free_blocks)
       .def("committed_blocks",
@@ -196,6 +265,9 @@ PYBIND11_MODULE(_engine_cpp, m) {
       .def("get_load", &dryrun::engine::NativeInstance::get_load)
       .def("step_time_delta",
            &dryrun::engine::NativeInstance::step_time_delta)
+      .def("peek_hit_tokens",
+           &dryrun::engine::NativeInstance::peek_hit_tokens,
+           py::arg("req"))
       .def("add_request", &dryrun::engine::NativeInstance::add_request,
            py::arg("req"), py::arg("t"))
       .def(

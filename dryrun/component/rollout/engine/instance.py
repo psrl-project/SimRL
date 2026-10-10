@@ -12,7 +12,7 @@ from .kv import KvCacheManager
 from .request import ReqStatus, Request
 from .snapshot import InstanceSnapshot
 from .state import InstanceLoad, StepStat
-from .undo import NULL_RECORDER, AttrSnapshot
+from .undo import NULL_RECORDER
 
 
 def blocks_for(n_tokens: int, block_size: int) -> int:
@@ -33,7 +33,7 @@ class NativeInstance:
         chunk_cap: int | None = None,
         instance_id: int = 0,
         tp: int = 1,
-        reject_if_kv_full: bool = True,
+        reject_if_kv_full: bool = False,
         reject_if_waiting: bool = False,
         reject_if_running_full: bool = False,
         enable_prefix_caching: bool = True,
@@ -73,6 +73,12 @@ class NativeInstance:
         self.step_stats: list[StepStat] = []
         self.n_preemptions: int = 0
         self.completed: list[Request] = []
+        self._last_decode_blocked: bool = False
+        """Whether the last prefill step's decode pass was refused a block.
+
+        The authority on whether the batch is stuck. A full pool is not enough:
+        a request mid-block decodes without asking for anything.
+        """
         self._snapshot: InstanceSnapshot | None = None
         # The recorder every mutating pool call receives. Swapped for a real
         # log only while a speculative event is in flight.
@@ -110,6 +116,15 @@ class NativeInstance:
         committed = sum(r.ctx for r in self.waiting + self.running)
         return blocks_for(committed, self.block_size)
 
+    @property
+    def has_pending_event(self) -> bool:
+        """Whether a speculative event is open."""
+        return self._snapshot is not None
+
+    def peek_hit_tokens(self, req: Request) -> int:
+        """Tokens a prefix cache hit would cover, without recording a query."""
+        return self.kv.peek_hit_tokens(req)
+
     def _apply_prefix_hit(self, req: Request) -> int:
         """Advance `req.prefilled` over whatever the cache already holds.
 
@@ -133,9 +148,8 @@ class NativeInstance:
         if not self.kv.can_allocate(req, n_tokens=1, hit_blocks=hit_blocks):
             return 0
         self.kv.allocate(req, n_tokens=0, hit_blocks=hit_blocks, recorder=self._recorder)
-        self._recorder.record_once(
-            ("hit", id(req)),
-            lambda: AttrSnapshot.capture(req, "prefilled", "prefix_hit_tokens"),
+        self._recorder.record_attrs_once(
+            ("hit", id(req)), req, "prefilled", "prefix_hit_tokens"
         )
         req.prefilled = hit_tokens
         req.prefix_hit_tokens += hit_tokens
@@ -192,10 +206,9 @@ class NativeInstance:
         if self.reject_if_running_full and not self._can_schedule_new():
             return False
         if self.reject_if_kv_full:
-            # vLLM's admission gate reserves `request.num_tokens`: the tokens it
-            # knows about so far, not the sampling cap. Reserving
-            # `prompt + target_len` instead charges every request its worst case up
-            # front, which admits materially fewer requests than the real engine.
+            # Off by default. vLLM admits into the waiting queue and lets
+            # `_engine_step` decide what fits, so this gate duplicates
+            # that limit earlier and counts queued context as already committed.
             committed = sum(r.ctx for r in self.waiting + self.running)
             if blocks_for(committed + req.prompt_len, self.block_size) > self.kv_blocks:
                 return False
@@ -275,24 +288,73 @@ class NativeInstance:
             stepped.append(r)
         return stepped, blocked
 
-    def _prefill_budget_step(self, version: int):
+    def _prefill_chunk(self, req: Request, prefilled: int, budget: int, free: int) -> int:
+        """Tokens of `req` the next prefill would compute, or 0 for none.
+
+        The one place chunk sizing lives, so the step and its non-mutating twin
+        cannot answer differently. Reads the pool but never writes, which is
+        what lets `_step_time_estimate` call it.
+
+        Args:
+            req: The request about to be prefilled.
+            prefilled: Tokens already computed. The twin tracks this locally
+                rather than reading `req.prefilled`, which it must not advance.
+            budget: Tokens the step has left.
+            free: Blocks the caller believes are free, as a running tally.
+
+        Returns:
+            The chunk size, clamped by the budget, the chunk cap, the blocks
+            the tally allows, and finally by what the pool will actually grant.
+        """
+        chunk = min(req.prompt_len + req.generated - prefilled, budget)
+        if self.chunk_cap:
+            chunk = min(chunk, self.chunk_cap)
+        have = blocks_for(prefilled, self.block_size)
+        chunk = min(chunk, (have + max(0, free)) * self.block_size - prefilled)
+        # The pool is the authority on capacity, not the running `free` tally:
+        # a hit may have revived blocks, and the tally cannot see sharing.
+        # Shrinking here rather than advancing past what the pool grants is
+        # what stops the two from disagreeing and overcommitting the cache.
+        while chunk > 0 and not self.kv.can_allocate(req, chunk, []):
+            chunk -= self.block_size
+        return max(0, chunk)
+
+    def _engine_step(self, version: int):
+        """Run one engine iteration: decode the running batch, then prefill.
+
+        One iteration, in vLLM's sense of one forward pass. It decodes every
+        running request by a token and spends whatever token budget is left
+        admitting and prefilling from the queue, so it is not a "prefill step"
+        even though only this path prefills. On an oversubscribed pool the
+        prefill half usually admits nothing.
+
+        The order is load-bearing. Prefilling first takes the blocks decode
+        then needs, so the step overflows, preempts the request it just
+        admitted, and repeats at one block of progress. Serving decode first
+        means a full pool simply stops admitting.
+
+        Returns:
+            `(dt, newly_done)`. `dt` is the iteration's latency. `newly_done`
+            are requests the decode pass finished, left for the caller to
+            retire so it can shape the event.
+        """
         n_d = len(self.running)
         n_decode = min(n_d, self.M)
         budget = self.M - n_decode
         t2 = 0
+
+        prefill_ctx = 0
         prefill_tokens = 0
         n_prefill_reqs = 0
+        # Blocks and slots promised to admissions made in this step. They hold
+        # nothing yet, so `free_blocks()` cannot see them.
+        admitted_blocks = 0
+        admitted_count = 0
         finished_prefill: list[Request] = []
         n_in_batch = self._n_in_batch()
 
-        # The running batch is served first, and the waiting queue only gets
-        # what is left. This is vLLM's order ("First, schedule the RUNNING
-        # requests" then "Next, schedule the WAITING requests",
-        # `vllm/v1/core/sched/scheduler.py`), and the order is load-bearing
-        # rather than cosmetic: prefilling first takes the blocks the decode
-        # then needs, so the step overflows, preempts the request it just
-        # admitted, and repeats forever at one block of progress. Serving decode
-        # first means a full pool simply stops admitting instead.
+        # vLLM's order: "First, schedule the RUNNING requests" then "Next,
+        # schedule the WAITING requests" (`vllm/v1/core/sched/scheduler.py`).
         stepped, decode_blocked = self._decode_running_once(version)
         newly_done = [r for r in stepped if r.remaining <= 0]
 
@@ -302,7 +364,12 @@ class NativeInstance:
         # (`if not preempted_reqs:` guards its waiting loop). A pool too full to
         # fund one decode token per running request is in no position to take on
         # new work either.
-        for req in sorted(self.waiting, key=lambda r: (r.dispatch_time, r.rid)):
+        # List order is the queue policy, not an accident: `_preempt_one`
+        # prepends its victim so the next step readmits it first, as vLLM's
+        # `waiting.prepend_request` does. Re-sorting by dispatch time discarded
+        # that, so an evicted request went to the back and the step evicted
+        # another instead, walking the batch from newest to oldest.
+        for req in list(self.waiting):
             if budget <= 0:
                 break
             if req.prefilled == 0:
@@ -338,13 +405,23 @@ class NativeInstance:
                 # and was not set in the run being matched. That knob reserves a
                 # fraction of the whole pool to make preemption rarer; this is
                 # the structural admission test that holds even with it off.
-                if self.running:
+                if self.running or admitted_blocks:
                     want = req.prompt_len + req.generated
-                    headroom = len(self.running) * self.block_size
+                    # Earlier admissions in THIS step hold no blocks yet: nothing
+                    # is prefilled until below, so `free_blocks()` still reports
+                    # the value the first of them saw. Charging them here is what
+                    # vLLM gets from `allocate_slots` reserving per request, and
+                    # without it a whole backlog passes one gate reading: 129
+                    # requests admitted against 1420 free blocks, then evicted one
+                    # per step for the rest of the segment.
+                    residents = len(self.running) + admitted_count
+                    headroom = residents * self.block_size
                     if blocks_for(want, self.block_size) + blocks_for(
                         headroom, self.block_size
-                    ) > self.free_blocks():
+                    ) > self.free_blocks() - admitted_blocks:
                         break
+                    admitted_blocks += blocks_for(want, self.block_size)
+                    admitted_count += 1
                 n_in_batch += 1
                 prefill_hit += self._apply_prefix_hit(req)
                 free = self.free_blocks()
@@ -352,20 +429,8 @@ class NativeInstance:
             if need <= 0:
                 finished_prefill.append(req)
                 continue
-            chunk = min(need, budget)
-            if self.chunk_cap:
-                chunk = min(chunk, self.chunk_cap)
             have = blocks_for(req.prefilled, self.block_size)
-            chunk = min(chunk, (have + max(0, free)) * self.block_size - req.prefilled)
-            if chunk <= 0:
-                break
-            # The pool is the authority on capacity, not the running `free`
-            # tally: a hit may have revived blocks, and the tally cannot see
-            # sharing. Shrink to what the pool will actually grant rather than
-            # advancing `prefilled` past it, which would leave the two
-            # disagreeing and silently overcommit the cache.
-            while chunk > 0 and not self.kv.can_allocate(req, chunk, []):
-                chunk -= self.block_size
+            chunk = self._prefill_chunk(req, req.prefilled, budget, free)
             if chunk <= 0:
                 break
             granted = self.kv.allocate(
@@ -376,10 +441,16 @@ class NativeInstance:
                 f"after can_allocate approved them."
             )
             free -= blocks_for(req.prefilled + chunk, self.block_size) - have
+            # A chunk attends over the keys already written for this request as
+            # well as its own, so the extent is `prefilled + chunk`. Charging
+            # `chunk` alone prices a resume as if its context were absent, which
+            # understates a 12800-token step by 18% at an 11k context.
+            extent = req.prefilled + chunk
+            prefill_ctx += extent
             req.prefilled += chunk
             prefill_tokens += chunk
             n_prefill_reqs += 1
-            t2 += chunk * chunk
+            t2 += extent * extent
             budget -= chunk
             if req.prefilled >= req.prompt_len + req.generated:
                 finished_prefill.append(req)
@@ -387,7 +458,7 @@ class NativeInstance:
         ctxsum = sum(r.ctx for r in self.running)
         n_tokens = n_decode + prefill_tokens
         n_reqs = n_d + n_prefill_reqs
-        dt = self.cost.step_time(n_tokens, t2, ctxsum, n_reqs)
+        dt = self.cost.step_time(n_tokens, t2, ctxsum, n_reqs, prefill_ctx)
         assert dt > 0, f"Cost model returned non-positive step time: {dt!r}."
         self.step_stats.append(
             StepStat(
@@ -399,7 +470,7 @@ class NativeInstance:
                 n_prefill_computed=prefill_tokens,
                 steps=1,
                 dt=dt,
-                phase="prefill",
+                phase="mixed",
                 # self.t_local is not yet incremented by the caller at this point.
                 t=self.t_local + dt,
             )
@@ -411,6 +482,7 @@ class NativeInstance:
             self.waiting.remove(req)
             req.status = ReqStatus.RUNNING
             self.running.append(req)
+        self._last_decode_blocked = decode_blocked
         return dt, newly_done
 
     def _decode_batch(self):
@@ -499,72 +571,117 @@ class NativeInstance:
         """
         Compute the step time for the next prefill iteration without mutating state.
 
-        Uses the same allocation logic as `_prefill_budget_step` but tracks
+        Uses the same allocation logic as `_engine_step` but tracks
         `prefilled` deltas locally so no request field is modified.
         """
         n_d = len(self.running)
         n_decode = min(n_d, self.M)
         budget = self.M - n_decode
         t2 = 0
+        prefill_ctx = 0
         prefill_tokens = 0
         free = self.free_blocks()
         effective: dict[int, int] = {}  # id(req) -> effective prefilled
         n_prefill_reqs = 0
+        admitted_blocks = 0
+        admitted_count = 0
         n_in_batch = self._n_in_batch()
 
-        for req in sorted(self.waiting, key=lambda r: (r.dispatch_time, r.rid)):
+        # List order is the queue policy, not an accident: `_preempt_one`
+        # prepends its victim so the next step readmits it first, as vLLM's
+        # `waiting.prepend_request` does. Re-sorting by dispatch time discarded
+        # that, so an evicted request went to the back and the step evicted
+        # another instead, walking the batch from newest to oldest.
+        for req in list(self.waiting):
             if budget <= 0:
                 break
             if req.prefilled == 0:
+                # The same two gates `_engine_step` applies, in the same order.
+                # Without them this priced a full 12800-token chunk the step
+                # then refuses, reading 0.857 s against a real 0.055 s on a
+                # blocked queue, and `advance_to` advanced its clock by that.
+                if self._last_decode_blocked:
+                    break
                 if self.max_concurrency is not None and n_in_batch >= self.max_concurrency:
                     break
+                if self.running or admitted_blocks:
+                    want = req.prompt_len + req.generated
+                    residents = len(self.running) + admitted_count
+                    headroom = residents * self.block_size
+                    # `free` rather than `self.free_blocks()`: the real step
+                    # re-reads a pool its own allocations have drained, while
+                    # nothing here writes, so the live value would still report
+                    # the blocks earlier requests in this same loop consumed.
+                    # The twin then admitted one request more than the step
+                    # does, pricing 12800 tokens against a real 5452.
+                    if blocks_for(want, self.block_size) + blocks_for(
+                        headroom, self.block_size
+                    ) > free - admitted_blocks:
+                        break
+                    admitted_blocks += blocks_for(want, self.block_size)
+                    admitted_count += 1
                 n_in_batch += 1
             eff = effective.get(id(req), req.prefilled)
             if eff == 0:
                 eff = self.kv.peek_hit_tokens(req)
                 effective[id(req)] = eff
+                # A hit costs blocks in the real step, where `_apply_prefix_hit`
+                # allocates them. Peeking alone leaves the tally believing that
+                # room is still free, and the twin then prices a chunk the step
+                # cannot take: 12800 tokens against a real 1024 on a 5296-token
+                # hit, which is 362% of the step.
+                free -= blocks_for(eff, self.block_size)
             need = req.prompt_len + req.generated - eff
             if need <= 0:
                 continue
-            chunk = min(need, budget)
-            if self.chunk_cap:
-                chunk = min(chunk, self.chunk_cap)
             have = blocks_for(eff, self.block_size)
-            chunk = min(chunk, (have + max(0, free)) * self.block_size - eff)
+            chunk = self._prefill_chunk(req, eff, budget, free)
             if chunk <= 0:
                 break
             free -= blocks_for(eff + chunk, self.block_size) - have
             effective[id(req)] = eff + chunk
+            # Mirrors `_engine_step`: the chunk attends over the keys
+            # already written for this request as well as its own.
+            extent = eff + chunk
+            prefill_ctx += extent
             prefill_tokens += chunk
             n_prefill_reqs += 1
-            t2 += chunk * chunk
+            t2 += extent * extent
             budget -= chunk
 
         ctxsum = sum(r.ctx for r in self.running)
         n_tokens = n_decode + prefill_tokens
-        return self.cost.step_time(n_tokens, t2, ctxsum, n_d + n_prefill_reqs)
+        return self.cost.step_time(
+            n_tokens, t2, ctxsum, n_d + n_prefill_reqs, prefill_ctx
+        )
 
-    def _prefill_one_event(self, version: int) -> EngineEvent:
-        """Execute one prefill step and return the resulting event."""
-        dt, newly = self._prefill_budget_step(version)
+    def _iteration_event(self, version: int) -> EngineEvent:
+        """Run one engine iteration and report what it did."""
+        dt, newly = self._engine_step(version)
         self.t_local += dt
         if newly:
             done = self._retire(newly)
+            # Retiring frees blocks, so a step that completes may no longer be
+            # stuck. Ask again rather than assuming either way, and report both
+            # outcomes: the kind the engine loop dispatches on is the
+            # completion, but the eviction still happened.
+            evicted = self._preempt_for_progress() if self._deadlocked() else []
             return EngineEvent(
                 kind=EventKind.REQUEST_COMPLETE,
                 instance_id=self.instance_id,
                 t=self.t_local,
                 completed=done,
+                preempted=evicted,
             )
         if self._deadlocked():
-            self._preempt_for_progress()
             return EngineEvent(
-                kind=EventKind.DEADLOCK_PREEMPT,
+                kind=EventKind.PREEMPT,
                 instance_id=self.instance_id,
                 t=self.t_local,
+                preempted=self._preempt_for_progress(),
             )
         return EngineEvent(
-            kind=EventKind.PREFILL_STEP,
+            kind=EventKind.ITERATION_DONE,
             instance_id=self.instance_id,
             t=self.t_local,
         )
@@ -595,7 +712,7 @@ class NativeInstance:
             r.add_tokens(version, k)
             r.prefilled += k
 
-    def _decode_one_event(self, version: int) -> EngineEvent:
+    def _decode_segment_event(self, version: int) -> EngineEvent:
         """Advance one full decode segment (until completion or KV exhaustion) and return the event."""
         n_d, ctxsum = self._decode_batch()
         k_done, _ = advance.next_completion([r.remaining for r in self.running])
@@ -628,11 +745,11 @@ class NativeInstance:
             )
 
         if kv_bound:
-            self._preempt_one()
             return EngineEvent(
-                kind=EventKind.KV_PREEMPT,
+                kind=EventKind.PREEMPT,
                 instance_id=self.instance_id,
                 t=self.t_local,
+                preempted=self._preempt_until_decodable(),
             )
 
         newly = [r for r in self.running if r.remaining <= 0]
@@ -655,6 +772,20 @@ class NativeInstance:
         exactly while an uncommitted event is in flight. Without that, an undo
         following an idle call would rewind to whichever event came before,
         rather than being a no-op.
+
+        A non-empty queue takes the iteration path even when nothing in it can
+        be admitted, which on an oversubscribed plateau is 99% of iterations.
+        Collapsing those into a decode segment is sound for one instance and
+        was measured so: identical completions and preemptions, `t_local`
+        within 0.016%, 28x fewer events, and the whole aligned run 10x faster.
+
+        It still moves the fleet. `REQUEST_COMPLETE` drives `_undo_and_align`,
+        which advances every *other* instance to that moment, so a coarser
+        event grid relocates those points and the instances interleave
+        differently. Span went +2.3% to +5.2% against the matched run, both
+        before and after `_step_time_estimate` was corrected, so the estimate
+        was not the cause. Event granularity is part of the multi-instance
+        timing model here, not only a cost.
         """
         self._promote_ready()
         if not self.running and not self.waiting:
@@ -663,8 +794,8 @@ class NativeInstance:
             return None
         self._save_snapshot()
         if self.waiting:
-            return self._prefill_one_event(version)
-        return self._decode_one_event(version)
+            return self._iteration_event(version)
+        return self._decode_segment_event(version)
 
     def run_until(self, t_limit: float, version: int) -> list[Request]:
         done = []
@@ -698,7 +829,7 @@ class NativeInstance:
                 if self.t_local + dt > t_limit:
                     self.t_local = t_limit
                     return done, True
-                _, newly = self._prefill_budget_step(version)
+                _, newly = self._engine_step(version)
                 self.t_local += dt
                 done.extend(self._retire(newly))
                 if newly:
@@ -716,7 +847,7 @@ class NativeInstance:
             n_d, ctxsum = self._decode_batch()
             k_done, _ = advance.next_completion([r.remaining for r in self.running])
             k_kv = self._kv_exhaustion_steps()
-            # One short of the first overflowing step, as in `_decode_one_event`:
+            # One short of the first overflowing step, as in `_decode_segment_event`:
             # the pool is authoritative, so the segment must not advance into a
             # block it was never granted.
             kv_bound = k_kv is not None and k_kv <= k_done
@@ -745,7 +876,7 @@ class NativeInstance:
                 )
 
             if self.blocks_used() > self.kv_blocks:
-                self._preempt_one()
+                self._preempt_until_decodable()
                 return done, False
 
             if k == k_budget and k < k_int:
@@ -757,7 +888,7 @@ class NativeInstance:
                 done.extend(self._retire(newly))
                 return done, False
             if kv_bound and k >= k_int:
-                self._preempt_one()
+                self._preempt_until_decodable()
                 return done, False
             if k == 0:
                 self.t_local = t_limit
@@ -772,38 +903,27 @@ class NativeInstance:
         decode throughput is only the mid-block requests, and the boundary ones
         are stalled.
 
-        The test is "some request is stalled", not "every request is stalled".
-        Requiring unanimity never fires at realistic batch sizes -- with 254
-        running requests at staggered lengths, the chance of all of them landing
-        on a boundary in the same step is negligible -- so the engine would keep
-        emitting steps that advance a shrinking subset while the stalled ones
-        wait forever. The loopback-fix workload is 2.6x oversubscribed against
-        both instances' pools combined, and the real engine resolves exactly
-        this by preempting (383 of its 1663 requests finish with
-        `finish_reason="abort"`), so stalling instead would be the wrong model.
+        The test is whether the pool actually refused a decode token, not
+        whether some request *could* need one. Asking the latter makes a full
+        pool look deadlocked whenever any resident sits on a block boundary,
+        which at 175 running has probability 1.0: it fired on 96% of the
+        plateau's prefill steps, every one of which decoded 93-182 tokens.
+        Each false positive preempted a request, which is the oscillation.
+
+        `_decode_running_once` already reports the real answer, since it is the
+        code that asks the pool for those blocks.
         """
         if not self.running or self.free_blocks() > 0:
             return False
-        decode_stalled = any(
-            (r.prefilled % self.block_size) == 0 for r in self.running
-        )
         prefill_blocked = any(
             r.prompt_len + r.generated - r.prefilled > 0 for r in self.waiting
         )
         # A full pool with nothing waiting is still stalled if every running
         # request needs a block it cannot get; preemption is the only way out.
-        return decode_stalled and (prefill_blocked or len(self.running) > 1)
+        return self._last_decode_blocked and (prefill_blocked or len(self.running) > 1)
 
-    def _preempt_for_progress(self) -> bool:
-        if not self.running:
-            return False
-        oldest = min(self.running + self.waiting, key=lambda r: (r.dispatch_time, r.rid))
-        victims = [r for r in self.running if r is not oldest]
-        if not victims:
-            return False
-        victim = max(victims, key=lambda r: (r.dispatch_time, r.rid))
-        self._preempt_one(victim)
-        return True
+    def _preempt_for_progress(self) -> list[Request]:
+        return self._preempt_until_decodable()
 
     def _retire(self, reqs: list[Request]) -> list[Request]:
         out = []
@@ -831,6 +951,42 @@ class NativeInstance:
         self.waiting.insert(0, victim)
         self.n_preemptions += 1
         return victim
+
+    def _preempt_until_decodable(self) -> list[Request]:
+        """Evict until the resident batch can fund its next decode token.
+
+        vLLM preempts inside `allocate_slots`'s retry loop, so one scheduler
+        step evicts as many requests as the allocation needs rather than one
+        (`v1/core/sched/scheduler.py`, the `while True` around `allocate_slots`).
+        The headroom asked for is one block per resident sitting on a block
+        boundary, which is what the next decode step consumes.
+
+        Returns:
+            The requests evicted, in eviction order.
+        """
+        evicted: list[Request] = []
+        while self.running:
+            needed = sum(
+                1
+                for r in self.running
+                if (r.prefilled % self.block_size) == 0
+            )
+            if self.free_blocks() >= needed:
+                break
+            # The oldest request is never a victim: it is the one guaranteed to
+            # finish and release, so evicting it is how a pool-bound instance
+            # livelocks.
+            oldest = min(
+                self.running + self.waiting, key=lambda r: (r.dispatch_time, r.rid)
+            )
+            victims = [r for r in self.running if r is not oldest]
+            if not victims:
+                break
+            victim = self._preempt_one(max(victims, key=lambda r: (r.dispatch_time, r.rid)))
+            if victim is None:
+                break
+            evicted.append(victim)
+        return evicted
 
     def _release(self, req: Request, keep_tokens: bool = True) -> None:
         req.num_aborts += 1

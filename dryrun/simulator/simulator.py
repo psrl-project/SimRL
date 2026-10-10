@@ -30,7 +30,7 @@ from ..telemetry.writer import SimTelemetry
 from .config import SimConfig, SimResult, clip_total_length
 
 if TYPE_CHECKING:
-    from .dynamic_parallel import DynamicParallelFleet, FleetPlan, ParallelismSolver
+    from .dynamic_parallel import DynamicParallelFleet, ParallelismSolver
 
 
 class Simulator:
@@ -52,12 +52,14 @@ class Simulator:
         store: JsonlStore | None = None,
         parallel_cost_models: dict[int, RolloutCostModel] | None = None,
         kv_blocks_per_tp: dict[int, int] | None = None,
-        solver: "WaterFillingSolver | None" = None,
+        solver: ParallelismSolver | None = None,
+        backend: str = "native",
     ):
         self.rollout_cost = rollout_cost
         self.policy = policy
         self.workload = cfg.workload
         self.cfg = cfg
+        self._backend = backend
         self.training_cost = training_cost or TrainingCostModel(
             FixedTrainingLatency(1.0),
             FixedTrainingMemory(0),
@@ -73,23 +75,43 @@ class Simulator:
         # loop always has one, so an aligned run must pass one explicitly.
         self.recompute_cost = recompute_cost or FixedRecomputeCost(0.0)
 
-        self.instances: list[NativeInstance] = []
-        for i in range(cfg.n_instances):
-            self.instances.append(
-                NativeInstance(
-                    rollout_cost,
-                    token_budget=cfg.token_budget,
-                    kv_blocks=cfg.kv_blocks,
-                    block_size=cfg.block_size,
-                    max_running=cfg.max_concurrent,
-                    max_concurrency=cfg.max_concurrency,
-                    instance_id=i,
-                    reject_if_kv_full=cfg.reject_if_kv_full,
-                    reject_if_waiting=cfg.reject_if_waiting,
-                    reject_if_running_full=cfg.reject_if_running_full,
-                    enable_prefix_caching=cfg.enable_prefix_caching,
+        if self._backend == "auto":
+            try:
+                from dryrun._engine_cpp import CppInstance  # noqa: F401
+
+                self._backend = "cpp"
+            except ImportError:
+                self._backend = "native"
+
+        if self._backend == "cpp":
+            self._Request = _cpp_request_class()
+            cpp_cost = _make_cpp_cost(rollout_cost)
+            self.instances: list[NativeInstance] = []
+            for i in range(cfg.n_instances):
+                self.instances.append(
+                    _make_cpp_instance(
+                        cpp_cost, cfg, instance_id=i,
+                    )
                 )
-            )
+        else:
+            self._Request = Request
+            self.instances: list[NativeInstance] = []
+            for i in range(cfg.n_instances):
+                self.instances.append(
+                    NativeInstance(
+                        rollout_cost,
+                        token_budget=cfg.token_budget,
+                        kv_blocks=cfg.kv_blocks,
+                        block_size=cfg.block_size,
+                        max_running=cfg.max_concurrent,
+                        max_concurrency=cfg.max_concurrency,
+                        instance_id=i,
+                        reject_if_kv_full=cfg.reject_if_kv_full,
+                        reject_if_waiting=cfg.reject_if_waiting,
+                        reject_if_running_full=cfg.reject_if_running_full,
+                        enable_prefix_caching=cfg.enable_prefix_caching,
+                    )
+                )
 
         self.router = Router(
             strategy=build_strategy(cfg.routing_strategy, **cfg.routing_strategy_args),
@@ -97,6 +119,7 @@ class Simulator:
             gate=AdmissionGate(
                 max_concurrent_seqs_per_instance=cfg.max_concurrent_seqs_per_instance,
                 reject_on_waiting=cfg.router_reject_on_waiting,
+                reject_preempted_on_waiting=cfg.router_reject_preempted_on_waiting,
             ),
             sort_key=SortKey(cfg.router_sort_key),
             enable_group_sticky=cfg.enable_group_sticky,
@@ -109,6 +132,9 @@ class Simulator:
         self.next_rid: int = 0
         self.next_group_id: int = 0
         self.inflight: list[Request] = []
+        self._staged_groups: dict[int, list[Request]] = {}
+        self._admitted_group_ids: set[int] = set()
+        self._ingress_group_credits = (cfg.max_staleness + 1) * cfg.batch_size
         self.pending: dict[int, list[Request]] = {}
         """Finished responses whose group is not complete yet, by group id.
 
@@ -247,48 +273,57 @@ class Simulator:
         Returns:
             How many requests were placed.
         """
-        placed = self.router.dispatch(self.t)
+        placed = self.router.dispatch(
+            self.t,
+            can_admit=self._can_place_from_router,
+            on_placed=self._commit_router_placement,
+        )
         if not placed:
             return 0
-        st = self._state()
-        for req, instance_id in placed:
-            self.policy.on_route(req, instance_id, st)
         self.telemetry.emit_instance_all(self.instances)
         self.telemetry.emit_gateway(self.t, self.router, self.instances)
         return len(placed)
 
-    def _admit(self, quota: int | None = None) -> int:
-        """Admit whole prompt groups into the router, up to a response `quota`.
+    def _can_place_from_router(self, req: Request) -> bool:
+        """Whether placement may atomically admit `req`'s staged group."""
+        if req.group_id in self._admitted_group_ids:
+            return True
+        return self.policy.admit_quota(self._state()) >= self.cfg.group_size
 
-        A group is admitted all-or-nothing, because a half-admitted group can
-        never be consumed and its finished responses would hold KV until the
-        run ends. The quota is a response count, rounded down to a whole group.
+    def _commit_router_placement(self, req: Request, instance_id: int) -> None:
+        """Commit first-placement admission, then report this placement."""
+        if req.group_id not in self._admitted_group_ids:
+            group = self._staged_groups.pop(req.group_id)
+            for member in group:
+                member.v_traj = self.rollout_version
+                member.admit_time = self.t
+            self.router.rekey(group)
+            self._admitted_group_ids.add(req.group_id)
+            self.inflight.extend(group)
+            self.n_admitted += len(group)
+            self.policy.on_admit(group, self._state())
+            for member in group:
+                self.telemetry.write_request("admit", self.t, member)
+        self.policy.on_route(req, instance_id, self._state())
 
-        Admission no longer touches an instance. The router accepts
-        unconditionally and places the request when some instance can take it,
-        so a busy fleet produces dwell rather than the rollback this used to
-        do. What bounds admission is the policy's own quota, which is what
-        bounded it before: the engine refusal was a secondary gate.
-        """
-        st = self._state()
-        if quota is None:
-            quota = self.policy.admit_quota(st)
-        group_size = self.cfg.group_size
-        admitted = 0
-        while admitted + group_size <= quota:
-            admitted += len(self._admit_one_group(st))
-        if admitted:
+    def _stage(self) -> int:
+        """Offer credited dataset groups to the router without admitting them."""
+        staged = 0
+        while self._ingress_group_credits > 0:
+            staged += len(self._stage_one_group())
+            self._ingress_group_credits -= 1
+        if staged:
             self.telemetry.emit_gateway(self.t, self.router, self.instances)
             self._dispatch_router()
-        return admitted
+        return staged
 
-    def _admit_one_group(self, st: SimState) -> list[Request]:
-        """Create one whole prompt group and hand it to the router."""
+    def _stage_one_group(self) -> list[Request]:
+        """Create one prompt group and expose it to placement admission."""
         group: list[Request] = []
         group_id = self.next_group_id
         for index in range(self.cfg.group_size):
             source_group_id, prompt_len, target_len = self._next_request_shape()
-            req = Request(
+            req = self._Request(
                 rid=self.next_rid,
                 group_id=group_id,
                 group_index=index,
@@ -296,18 +331,15 @@ class Simulator:
                 prompt_len=prompt_len,
                 target_len=target_len,
                 v_traj=self.rollout_version,
-                admit_time=self.t,
             )
             self.next_rid += 1
-            self.inflight.append(req)
-            self.n_admitted += 1
             group.append(req)
 
         self.next_group_id += 1
+        self._staged_groups[group_id] = group
         self.router.enqueue(group, self.t)
-        self.policy.on_admit(group, st)
         for req in group:
-            self.telemetry.write_request("admit", self.t, req)
+            self.telemetry.write_request("enqueue", self.t, req)
         return group
 
     def run(self) -> SimResult:
@@ -320,12 +352,12 @@ class Simulator:
         )
         try:
             while self.train_version < self.cfg.n_versions:
-                self._admit()
+                self._stage()
 
                 batch = self.policy.take_batch(self._state())
                 if batch is None:
                     self.policy.on_batch_unavailable(self._state())
-                    if not self.inflight and self._admit() == 0:
+                    if not self.inflight and self._stage() == 0:
                         has_waiting = (
                             any(inst.waiting for inst in self.instances)
                             or bool(self.router)
@@ -370,6 +402,7 @@ class Simulator:
                     member.status = ReqStatus.DROPPED
                     self.dropped.append(member)
                     self.telemetry.write_request("drop", self.t, member)
+                self._grant_drop_replacements([group])
             else:
                 self.ready_groups.append(group)
                 self.ready.extend(group)
@@ -389,11 +422,14 @@ class Simulator:
             seen.add(id(req))
             unique_reqs.append(req)
 
-        self.policy.on_discard(unique_reqs, self._state())
-
         dropped_groups = {req.group_id for req in unique_reqs}
+        committed = [
+            req for req in unique_reqs if req.group_id in self._admitted_group_ids
+        ]
+        self.policy.on_discard(committed, self._state())
         for group_id in dropped_groups:
             self.pending.pop(group_id, None)
+            self._staged_groups.pop(group_id, None)
         self.ready_groups = [
             group for group in self.ready_groups if group[0].group_id not in dropped_groups
         ]
@@ -421,6 +457,21 @@ class Simulator:
                     [r for r in to_cancel if r.instance_id == inst.instance_id],
                     keep_tokens=False,
                 )
+        groups = [
+            [req for req in unique_reqs if req.group_id == group_id]
+            for group_id in dropped_groups
+        ]
+        self._grant_drop_replacements(groups)
+        self._stage()
+
+    def _grant_drop_replacements(self, groups: list[list[Request]]) -> None:
+        """Credit policy-requested dataset replacements exactly once per group."""
+        if not groups:
+            return
+        self._ingress_group_credits += self.policy.replacement_groups_on_drop(
+            groups,
+            self._state(),
+        )
 
     def _expand_to_groups(self, reqs: list[Request]) -> list[Request]:
         """Add every still-live sibling of the given requests."""
@@ -428,10 +479,11 @@ class Simulator:
             return list(reqs)
         wanted = {req.group_id for req in reqs}
         pending = [req for gid in wanted for req in self.pending.get(gid, ())]
+        staged = [req for gid in wanted for req in self._staged_groups.get(gid, ())]
         live = [
             req for req in (*self.inflight, *self.ready) if req.group_id in wanted
         ]
-        return [*reqs, *pending, *live]
+        return [*reqs, *pending, *staged, *live]
 
     def _is_cross_instance(self, event: EngineEvent) -> bool:
         """Whether this event can move work between instances.
@@ -447,11 +499,11 @@ class Simulator:
         """
         if self.router.max_waiting_after_preempt is None:
             return False
-        if event.kind not in (EventKind.KV_PREEMPT, EventKind.DEADLOCK_PREEMPT):
+        if not event.preempted:
             return False
-        return any(
-            len(inst.waiting) > self.router.max_waiting_after_preempt
-            for inst in self.instances
+        return (
+            len(self.instances[event.instance_id].waiting)
+            > self.router.max_waiting_after_preempt
         )
 
     def _undo_events(self, events: dict[int, EngineEvent]) -> None:
@@ -465,17 +517,20 @@ class Simulator:
 
         Alignment is a committed advance, so any undo log still open is closed
         first. `advance_to` would otherwise record committed mutations into a
-        log belonging to an event that has already been decided.
+        log belonging to an event that has already been decided. Another
+        instance may complete at exactly the alignment time; that completion
+        is committed too and must be collected rather than discarded.
         """
+        self.t = max(self.t, t)
         for inst in self.instances:
             inst.commit_last_event()
         for inst in self.instances:
             assert inst.t_local <= t, "Instance time must be less than or equal to the target time."
             extra_done, _ = inst.advance_to(t, self.rollout_version)
-            assert not extra_done, "No extra completions expected."
+            if extra_done:
+                self._collect(extra_done)
             if force_align_t_local:
                 inst.t_local = t
-        self.t = max(self.t, t)
 
     def _undo_and_align(
         self,
@@ -556,8 +611,9 @@ class Simulator:
                 self.telemetry.sync_all(self.instances)
                 break
 
-            # --- Cross-instance event: commit on owning instance, align others, re-seed ---
-            if self._is_cross_instance(event):
+            # --- Cross-instance event: commit on owning instance and align others ---
+            cross_instance = self._is_cross_instance(event)
+            if cross_instance:
                 # The event is already committed on `inst` at t_event. The clock
                 # has to move before the others are aligned to it, otherwise
                 # `_align_instances` would assert against a stale global time.
@@ -572,23 +628,22 @@ class Simulator:
                 if reclaimed:
                     self._dispatch_router()
                     self.telemetry.sync_all(self.instances)
-                self._seed_events(events, queue)
-                continue
-
-            # Event is committed. Update global clock and close its undo log,
-            # so a later router dispatch can tell a live speculative event from
-            # a finished one.
-            self.t = max(self.t, t_event)
-            inst.commit_last_event()
-            self.telemetry.sync(inst)
+            else:
+                # Event is committed. Update global clock and close its undo
+                # log, so a later router dispatch can tell a live speculative
+                # event from a finished one.
+                self.t = max(self.t, t_event)
+                inst.commit_last_event()
+                self.telemetry.sync(inst)
 
             # --- Process completions ---
-            if event.kind == EventKind.REQUEST_COMPLETE and event.completed:
+            if event.kind.name == "REQUEST_COMPLETE" and event.completed:
                 self._collect(event.completed)
 
                 if stop_on_batch:
                     if self.policy.peek_batch(self._state()) is not None:
-                        self._undo_and_align(events, queue, t_event)
+                        if not cross_instance:
+                            self._undo_and_align(events, queue, t_event)
                         self.telemetry.sync_all(self.instances)
                         break
 
@@ -600,15 +655,18 @@ class Simulator:
                 # quota alone would leave a non-empty router queue untouched
                 # whenever the policy is saturated, even though this very
                 # completion just made room on an instance.
-                quota = self.policy.admit_quota(self._state())
-                if quota > 0 or self.router.has_dispatchable():
-                    self._undo_and_align(events, queue, t_event)
+                if self.router.has_dispatchable() or self._ingress_group_credits > 0:
+                    if not cross_instance:
+                        self._undo_and_align(events, queue, t_event)
                     self.telemetry.sync_all(self.instances)
-                    self._dispatch_router()
-                    if quota > 0:
-                        self._admit(quota)
+                    if not self._stage():
+                        self._dispatch_router()
                     self._seed_events(events, queue)
                     continue
+
+            if cross_instance:
+                self._seed_events(events, queue)
+                continue
 
             # --- Produce next event from this instance ---
             if inst.running or inst.waiting:
@@ -631,35 +689,39 @@ class Simulator:
 
         `train_version` advances here, after recompute/train/sync actually
         finished. Rollout then loads the new weights, aborts in-flight partials,
-        and the policy is asked for a new admit quota.
+        rebases unstarted staged groups, and opens one new dataset batch.
         """
         previous_rollout_version = self.rollout_version
         self.train_version += 1
         self.policy.on_train_version_advance(self.train_version, self._state())
         self.rollout_version = self.policy.rollout_version_after_train(self._state())
         weights_changed = self.rollout_version != previous_rollout_version
+        if weights_changed and self._staged_groups:
+            staged = [req for group in self._staged_groups.values() for req in group]
+            for req in staged:
+                assert req.generated == 0
+                req.v_traj = self.rollout_version
+            self.router.rekey(staged)
         if weights_changed and self.cfg.partial_rollout and self.inflight:
             if self._fleet is not None and self._solver is not None:
                 # Dynamic-parallel path: the solver picks the new layout, the fleet
                 # aborts everything in flight and re-shapes the instances.
                 # Imported here, not at module scope: with dynamic parallelism off
                 # the package must stay untouched, which is what "opt-in" means.
-                from .dynamic_parallel import RequestSnapshot
+                from .dynamic_parallel import RichRequestSnapshot
 
+                # `remaining` is carried so the SCG objective can price completion
+                # time against the training deadline. It is exact here because the
+                # trace fixes every target length; a real scheduler would pass an
+                # estimate, which is what `RichRequestSnapshot` documents.
                 snapshot = [
-                    RequestSnapshot(v_traj=r.v_traj, ctx=r.ctx) for r in self.inflight
+                    RichRequestSnapshot(
+                        v_traj=r.v_traj, ctx=r.ctx, remaining=max(1, r.remaining)
+                    )
+                    for r in self.inflight
                 ]
                 plan = self._solver.solve(snapshot, self.rollout_version)
                 aborted = self._fleet.rebuild(plan, self.t)
-                # Tell the router which version now counts as current, so the
-                # trajectories that just became the old-version tail are the ones it
-                # steers toward high TP. Without this the strategy keeps comparing
-                # against a stale version and treats the whole fleet as current work.
-                set_reference = getattr(
-                    self.router.strategy, "set_reference_version", None
-                )
-                if callable(set_reference):
-                    set_reference(self.rollout_version)
                 # The fleet may have constructed new instance objects, so rebind.
                 # `self.instances` is what the engine loop iterates and what
                 # `_align_instances` asserts clocks against.
@@ -669,12 +731,31 @@ class Simulator:
                 aborted: list[Request] = []
                 for inst in self.instances:
                     aborted.extend(inst.abort_all(requeue=False))
+            set_reference = getattr(self.router.strategy, "set_reference_version", None)
+            if callable(set_reference):
+                set_reference(self.rollout_version)
             self.router.enqueue(aborted, self.t)
             self.policy.on_interrupt(list(self.inflight), self._state())
             self.telemetry.emit_instance_all(self.instances)
             self.telemetry.emit_gateway(self.t, self.router, self.instances)
+        if weights_changed and self.cfg.weight_load_time > 0:
+            load_t = self.cfg.weight_load_time
+            self.t += load_t
+            for inst in self.instances:
+                inst.t_local = max(inst.t_local, self.t)
+            self.telemetry.emit_instance_all(self.instances)
+            # No dispatch here: `_stage` below enqueues the batch this update
+            # unlocks and dispatches once, so both cohorts are in the queue
+            # together. SMG polls its routing loop every 500 ms and the matched
+            # run shows them arriving within one tick, reaching 444 = 256 newly
+            # unlocked + 188 aborted before placing any of them. Placing the
+            # aborted set first empties the queue before the new batch exists,
+            # which leaves the version-layered priority nothing to arbitrate.
+        self._ingress_group_credits += self.cfg.batch_size
+        # `_stage` dispatches only when it enqueued something, so keep the
+        # fallback for an externally configured zero-credit update.
+        if not self._stage():
             self._dispatch_router()
-        self._admit()  # emits router/instance telemetry itself if it admits anything.
 
     def _train(self, batch: list[Request]) -> None:
         """Consume `batch`, expire against the expected version, train, then publish.
@@ -742,6 +823,10 @@ class Simulator:
         total_duration = train_time + sync_time + recompute_time
         deadline = self.t + total_duration
         self._run_engine(deadline=deadline)
+        # Feed the measured cycle back to the solver so it prices the next solve
+        # against the actual training cost, not the configured seed value.
+        if self._solver is not None and hasattr(self._solver, "observe_training_cycle"):
+            self._solver.observe_training_cycle(total_duration)
         self._publish_weights()
 
         self.train_timestamps.append((train_start, self.t))
@@ -784,3 +869,62 @@ class Simulator:
             train_timestamps=self.train_timestamps,
             train_peak_memory_bytes=self.train_peak_memory_bytes,
         )
+
+
+# --- C++ backend helpers ---
+
+
+def _cpp_request_class() -> type:
+    """Return the CppRequest class for use as a Request factory."""
+    from dryrun._engine_cpp import CppRequest
+
+    return CppRequest
+
+
+def _make_cpp_cost(py_cost: RolloutCostModel):
+    """Build a C++ cost model from a Python one, extracting its coefficients."""
+    from dryrun._engine_cpp import PsrlCostModel, UnifiedRooflineCostModel
+
+    from ..cost.rollout import PSRLFitted, UnifiedRoofline
+
+    if isinstance(py_cost, UnifiedRoofline):
+        return UnifiedRooflineCostModel(
+            F=py_cost.F, W=py_cost.W, G=py_cost.G,
+            A_p=py_cost.A_p, A_d=py_cost.A_d, b=py_cost.b,
+        )
+    if isinstance(py_cost, PSRLFitted):
+        return PsrlCostModel(
+            prefill_attn_b=py_cost.prefill_attn_b,
+            prefill_attn_k=py_cost.prefill_attn_k,
+            prefill_other_floor=py_cost.prefill_other_floor,
+            prefill_other_b=py_cost.prefill_other_b,
+            prefill_other_k=py_cost.prefill_other_k,
+            decode_attn_b=py_cost.decode_attn_b,
+            decode_attn_k=py_cost.decode_attn_k,
+            decode_other_floor=py_cost.decode_other_floor,
+            decode_other_b=py_cost.decode_other_b,
+            decode_other_k=py_cost.decode_other_k,
+        )
+    raise TypeError(
+        f"No C++ cost model equivalent for {type(py_cost).__name__!r}. "
+        f"Supported types: UnifiedRoofline, PSRLFitted."
+    )
+
+
+def _make_cpp_instance(cpp_cost, cfg: SimConfig, instance_id: int):
+    """Build a CppInstance with the same parameters as the Python path."""
+    from dryrun._engine_cpp import CppInstance
+
+    return CppInstance(
+        cost=cpp_cost,
+        token_budget=cfg.token_budget,
+        kv_blocks=cfg.kv_blocks,
+        block_size=cfg.block_size,
+        max_running=-1 if cfg.max_concurrent is None else cfg.max_concurrent,
+        max_concurrency=-1 if cfg.max_concurrency is None else cfg.max_concurrency,
+        instance_id=instance_id,
+        reject_if_kv_full=cfg.reject_if_kv_full,
+        reject_if_waiting=cfg.reject_if_waiting,
+        reject_if_running_full=cfg.reject_if_running_full,
+        enable_prefix_caching=cfg.enable_prefix_caching,
+    )
