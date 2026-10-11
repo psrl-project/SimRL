@@ -772,7 +772,7 @@ def run_simulate(cfg: DictConfig) -> None:
     # logging is switched on; `log_telemetry=False` must not touch disk.
     store = JsonlStore(output_dir / "logs", overwrite=True) if log_telemetry else None
 
-    backend = os.environ.get("DRYRUN_BACKEND", "auto")
+    backend = os.environ.get("DRYRUN_BACKEND", "native")
 
     sim = Simulator(
         rollout_cost=rollout_cost,
@@ -793,6 +793,17 @@ def run_simulate(cfg: DictConfig) -> None:
     print(f"  Consumed: {result.n_consumed} requests")
     print(f"  Dropped: {len(result.dropped)} requests")
     print(f"  Throughput: {result.throughput:.1f} tokens/s")
+    # A strategy that decides admission rather than just placement can be inert:
+    # unready, or below the knee where no placement costs anything. Both look
+    # exactly like a null result in the SCG curve, so the breakdown is printed
+    # whenever the strategy keeps one.
+    strategy = sim.router.strategy
+    if hasattr(strategy, "n_declined"):
+        print(
+            f"  Router {strategy.name}: {strategy.n_admitted} priced, "
+            f"{strategy.n_declined} declined, {strategy.n_free} free, "
+            f"{strategy.n_fallback} fell back"
+        )
     if result.consumed:
         print(f"  Max staleness (true): {result.max_staleness_true}")
         staleness_counts = Counter(result.staleness_true_values)

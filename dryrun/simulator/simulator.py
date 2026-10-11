@@ -84,8 +84,18 @@ class Simulator:
                 self._backend = "native"
 
         if self._backend == "cpp":
+            try:
+                cpp_cost = _make_cpp_cost(rollout_cost)
+            except TypeError:
+                dryrun_logger.info(
+                    "C++ backend requested but the cost model %s is not "
+                    "supported; falling back to native.",
+                    type(rollout_cost).__name__,
+                )
+                self._backend = "native"
+
+        if self._backend == "cpp":
             self._Request = _cpp_request_class()
-            cpp_cost = _make_cpp_cost(rollout_cost)
             self.instances: list[NativeInstance] = []
             for i in range(cfg.n_instances):
                 self.instances.append(
@@ -124,6 +134,10 @@ class Simulator:
             sort_key=SortKey(cfg.router_sort_key),
             enable_group_sticky=cfg.enable_group_sticky,
             max_waiting_after_preempt=cfg.max_waiting_after_preempt,
+            # The Python model even on the C++ backend, which holds a translated
+            # copy and exposes no handle to it. A strategy pricing a hypothetical
+            # batch must reach the same coefficients the engine runs on.
+            cost_model=rollout_cost,
         )
 
         self.t: float = 0.0
@@ -134,7 +148,6 @@ class Simulator:
         self.inflight: list[Request] = []
         self._staged_groups: dict[int, list[Request]] = {}
         self._admitted_group_ids: set[int] = set()
-        self._ingress_group_credits = (cfg.max_staleness + 1) * cfg.batch_size
         self.pending: dict[int, list[Request]] = {}
         """Finished responses whose group is not complete yet, by group id.
 
@@ -306,12 +319,41 @@ class Simulator:
                 self.telemetry.write_request("admit", self.t, member)
         self.policy.on_route(req, instance_id, self._state())
 
+    def _ingress_capacity(self) -> int:
+        """Responses the policy would admit beyond what is already staged.
+
+        A group staged but not yet committed still occupies the quota it was
+        staged against, so it is subtracted here: without that, each call would
+        re-offer capacity the previous one already spoke for and the router queue
+        would grow without bound.
+        """
+        quota = self.policy.admit_quota(self._state())
+        uncommitted = sum(
+            len(group)
+            for group_id, group in self._staged_groups.items()
+            if group_id not in self._admitted_group_ids
+        )
+        return quota - uncommitted
+
     def _stage(self) -> int:
-        """Offer credited dataset groups to the router without admitting them."""
+        """Offer dataset groups the policy has capacity for to the router.
+
+        The policy's `admit_quota` is the only admission gate. `Simulator` used
+        to grant ingress from a counter of its own,
+        `(max_staleness + 1) * batch_size` groups refilled one batch per step,
+        which bounded in-flight work so tightly that no policy's quota ever
+        refused. That made `max_staleness` the simulator's guarantee rather than
+        each policy's, and policies whose admission rules genuinely differ
+        produced identical runs.
+
+        Returns:
+            Responses staged by this call. Zero means the policy is saturated or
+            the router already holds everything it granted, which `run` reads as
+            one of its livelock signals.
+        """
         staged = 0
-        while self._ingress_group_credits > 0:
+        while self._ingress_capacity() >= self.cfg.group_size:
             staged += len(self._stage_one_group())
-            self._ingress_group_credits -= 1
         if staged:
             self.telemetry.emit_gateway(self.t, self.router, self.instances)
             self._dispatch_router()
@@ -392,6 +434,7 @@ class Simulator:
                 self.inflight.remove(req)
             # complete_time is already set by _retire via t_local. Do not overwrite.
             self.telemetry.write_request("complete", self.t, req)
+            self._observe_completion(req)
             siblings = self.pending.setdefault(req.group_id, [])
             siblings.append(req)
             if len(siblings) < self.cfg.group_size:
@@ -402,10 +445,30 @@ class Simulator:
                     member.status = ReqStatus.DROPPED
                     self.dropped.append(member)
                     self.telemetry.write_request("drop", self.t, member)
-                self._grant_drop_replacements([group])
             else:
                 self.ready_groups.append(group)
                 self.ready.extend(group)
+
+    def _observe_completion(self, req: Request) -> None:
+        """Offer a finished trajectory to a strategy that learns from lengths.
+
+        Capability probe rather than a protocol method, matching
+        `set_reference_version` and `update_plan`. A strategy that does not
+        predict length is never asked.
+        """
+        observe = getattr(self.router.strategy, "observe_completion", None)
+        if callable(observe):
+            observe(req)
+
+    def _observe_train_cycle(self) -> None:
+        """Tell a value-based strategy that a weight version was published.
+
+        Called from `_publish_weights`, which is where the staleness clock the
+        deadline is denominated in actually ticks.
+        """
+        observe = getattr(self.router.strategy, "observe_train_cycle", None)
+        if callable(observe):
+            observe(self.train_version, self.t)
 
     def _discard(self, reqs: list[Request]) -> None:
         """Drop requests, widening to whole prompt groups.
@@ -457,21 +520,11 @@ class Simulator:
                     [r for r in to_cancel if r.instance_id == inst.instance_id],
                     keep_tokens=False,
                 )
-        groups = [
-            [req for req in unique_reqs if req.group_id == group_id]
-            for group_id in dropped_groups
-        ]
-        self._grant_drop_replacements(groups)
+        # Dropping releases the quota these groups held, so the policy will grant
+        # their replacements here on its own. There is no separate replacement
+        # credit: a policy that wants the dataset topped up after a drop says so
+        # by freeing quota, which is the same statement.
         self._stage()
-
-    def _grant_drop_replacements(self, groups: list[list[Request]]) -> None:
-        """Credit policy-requested dataset replacements exactly once per group."""
-        if not groups:
-            return
-        self._ingress_group_credits += self.policy.replacement_groups_on_drop(
-            groups,
-            self._state(),
-        )
 
     def _expand_to_groups(self, reqs: list[Request]) -> list[Request]:
         """Add every still-live sibling of the given requests."""
@@ -655,7 +708,7 @@ class Simulator:
                 # quota alone would leave a non-empty router queue untouched
                 # whenever the policy is saturated, even though this very
                 # completion just made room on an instance.
-                if self.router.has_dispatchable() or self._ingress_group_credits > 0:
+                if self.router.has_dispatchable() or self._ingress_capacity() >= self.cfg.group_size:
                     if not cross_instance:
                         self._undo_and_align(events, queue, t_event)
                     self.telemetry.sync_all(self.instances)
@@ -693,6 +746,7 @@ class Simulator:
         """
         previous_rollout_version = self.rollout_version
         self.train_version += 1
+        self._observe_train_cycle()
         self.policy.on_train_version_advance(self.train_version, self._state())
         self.rollout_version = self.policy.rollout_version_after_train(self._state())
         weights_changed = self.rollout_version != previous_rollout_version
@@ -751,9 +805,9 @@ class Simulator:
             # unlocked + 188 aborted before placing any of them. Placing the
             # aborted set first empties the queue before the new batch exists,
             # which leaves the version-layered priority nothing to arbitrate.
-        self._ingress_group_credits += self.cfg.batch_size
-        # `_stage` dispatches only when it enqueued something, so keep the
-        # fallback for an externally configured zero-credit update.
+        # Consuming a batch released the quota it held, so the policy grants the
+        # next batch's worth here by itself. `_stage` dispatches only when it
+        # enqueued something, so the fallback covers a saturated policy.
         if not self._stage():
             self._dispatch_router()
 
