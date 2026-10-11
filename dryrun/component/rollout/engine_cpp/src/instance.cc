@@ -532,6 +532,19 @@ std::optional<EngineEvent> NativeInstance::advance_one_event(int version) {
   return decode_segment_event(version);
 }
 
+std::optional<EngineEvent> NativeInstance::advance_one_event_committed(
+    int version) {
+  log_.reset();
+  promote_ready();
+  if (running_.empty() && waiting_.empty()) {
+    return std::nullopt;
+  }
+  if (!waiting_.empty()) {
+    return iteration_event(version);
+  }
+  return decode_segment_event(version);
+}
+
 bool NativeInstance::add_request(const RequestPtr& req, double t) {
   int need = blocks_for(req->prompt_len + req->target_len, block_size_);
   if (need > kv_blocks_) {

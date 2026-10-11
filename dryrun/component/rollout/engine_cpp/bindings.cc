@@ -283,6 +283,11 @@ PYBIND11_MODULE(_engine_cpp, m) {
       .def_property_readonly("tp", &dryrun::engine::NativeInstance::tp)
       .def_property_readonly("kv_blocks",
                              &dryrun::engine::NativeInstance::kv_blocks)
+      .def_property_readonly(
+          "block_size",
+          [](const dryrun::engine::NativeInstance& self) {
+            return self.block_size();
+          })
       .def_property_readonly("n_preemptions",
                              &dryrun::engine::NativeInstance::n_preemptions)
       .def_property_readonly("kv_queries",
@@ -316,6 +321,15 @@ PYBIND11_MODULE(_engine_cpp, m) {
           [](dryrun::engine::NativeInstance& self,
              int version) -> py::object {
             auto ev = self.advance_one_event(version);
+            if (!ev.has_value()) return py::none();
+            return py::cast(*ev);
+          },
+          py::arg("version"))
+      .def(
+          "advance_one_event_committed",
+          [](dryrun::engine::NativeInstance& self,
+             int version) -> py::object {
+            auto ev = self.advance_one_event_committed(version);
             if (!ev.has_value()) return py::none();
             return py::cast(*ev);
           },

@@ -279,6 +279,11 @@ class Simulator:
         Returns:
             How many requests were placed.
         """
+        # Pause before placing. A paused request frees bandwidth and rejoins the
+        # queue, so the dispatch below sees the corrected batch and may re-place
+        # it immediately. Running it after would place against a batch the
+        # router is about to change.
+        self.router.rebalance(self.t)
         placed = self.router.dispatch(
             self.t,
             can_admit=self._can_place_from_router,
@@ -564,9 +569,21 @@ class Simulator:
         )
 
     def _undo_events(self, events: dict[int, EngineEvent]) -> None:
-        """Undo all pending events (one per instance) and clear the events dict."""
+        """Undo all pending events (one per instance) and clear the events dict.
+
+        Instances whose last event was a committed advance (no snapshot) are
+        skipped — their mutations are permanent by design. Any completions they
+        produced must be collected here, because the normal collection path in
+        `_run_engine` will never see them (the event is being discarded).
+        """
         for iid in list(events):
-            self.instances[iid].undo_last_event()
+            inst = self.instances[iid]
+            if inst.has_pending_event:
+                inst.undo_last_event()
+            else:
+                event = events[iid]
+                if event.completed:
+                    self._collect(event.completed)
         events.clear()
 
     def _align_instances(self, t: float, force_align_t_local: bool = False) -> None:
@@ -577,12 +594,18 @@ class Simulator:
         log belonging to an event that has already been decided. Another
         instance may complete at exactly the alignment time; that completion
         is committed too and must be collected rather than discarded.
+
+        Instances whose clock is already past ``t`` (possible when selective
+        undo left a committed advance in place) are left alone and the global
+        clock is widened to include them.
         """
         self.t = max(self.t, t)
         for inst in self.instances:
             inst.commit_last_event()
         for inst in self.instances:
-            assert inst.t_local <= t, "Instance time must be less than or equal to the target time."
+            if inst.t_local > t:
+                self.t = max(self.t, inst.t_local)
+                continue
             extra_done, _ = inst.advance_to(t, self.rollout_version)
             if extra_done:
                 self._collect(extra_done)
@@ -727,7 +750,14 @@ class Simulator:
 
             # --- Produce next event from this instance ---
             if inst.running or inst.waiting:
-                next_event = inst.advance_one_event(self.rollout_version)
+                # If this event type is not undoable, the next event from this
+                # instance is produced without a snapshot — committed mode.
+                # This eliminates undo bookkeeping for the ~99% of events that
+                # are ITERATION_DONE / PREEMPT under KV pressure.
+                if event.kind.name.lower() not in self.cfg.undoable_events:
+                    next_event = inst.advance_one_event_committed(self.rollout_version)
+                else:
+                    next_event = inst.advance_one_event(self.rollout_version)
                 if next_event is not None:
                     events[inst.instance_id] = next_event
                     heapq.heappush(queue, (next_event.t, inst.instance_id))

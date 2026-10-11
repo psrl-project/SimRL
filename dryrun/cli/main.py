@@ -719,7 +719,7 @@ def run_simulate(cfg: DictConfig) -> None:
         reject_if_running_full=admit.get("reject_if_running_full", False),
         routing_strategy=router.get("strategy", "request_num_balance"),
         routing_strategy_args=dict(router.get("strategy_args", {}) or {}),
-        router_sort_key=router.get("sort_key", "short_length"),
+        router_sort_key=router.get("sort_key", "small_id"),
         max_concurrent_seqs_per_instance=router.get("max_concurrent_seqs_per_instance", 0),
         router_reject_on_waiting=router.get("reject_on_waiting", False),
         router_reject_preempted_on_waiting=router.get(
@@ -733,6 +733,12 @@ def run_simulate(cfg: DictConfig) -> None:
         max_output_length=_length_cap(job.get("max_output_length", None)),
         livelock_rounds=rollout.get("livelock_rounds", 50),
         max_engine_iters=rollout.get("max_engine_iters", 10_000),
+        undoable_events=frozenset(
+            os.environ.get(
+                "DRYRUN_UNDOABLE_EVENTS",
+                "request_complete,preempt,iteration_done",
+            ).split(",")
+        ),
         log_telemetry=log_telemetry,
     )
 
@@ -770,7 +776,20 @@ def run_simulate(cfg: DictConfig) -> None:
 
     # Only create the logs directory / JSONL files at all when telemetry
     # logging is switched on; `log_telemetry=False` must not touch disk.
-    store = JsonlStore(output_dir / "logs", overwrite=True) if log_telemetry else None
+    # `log_exclude` drops individual streams instead of all of them: a sweep
+    # that only plots from `request` can suppress the per-step `instance/*` and
+    # `rollout_step` streams, which are three orders of magnitude larger and
+    # have exhausted a shared quota mid-run.
+    log_exclude = [
+        name.strip() for name in str(cfg.get("log_exclude", "") or "").split(",") if name.strip()
+    ]
+    store = (
+        JsonlStore(output_dir / "logs", overwrite=True, exclude=log_exclude)
+        if log_telemetry
+        else None
+    )
+    if log_exclude:
+        dryrun_logger.info("Telemetry streams suppressed: %s.", ", ".join(log_exclude))
 
     backend = os.environ.get("DRYRUN_BACKEND", "auto")
 
@@ -800,8 +819,8 @@ def run_simulate(cfg: DictConfig) -> None:
     strategy = sim.router.strategy
     if hasattr(strategy, "n_declined"):
         print(
-            f"  Router {strategy.name}: {strategy.n_admitted} priced, "
-            f"{strategy.n_declined} declined, {strategy.n_free} free, "
+            f"  Router {strategy.name}: {strategy.n_admitted} admitted, "
+            f"{strategy.n_declined} declined, {strategy.n_paused} paused, "
             f"{strategy.n_fallback} fell back"
         )
     if result.consumed:

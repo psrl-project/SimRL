@@ -118,7 +118,7 @@ class SimConfig:
     enable_prefix_caching: bool = True
     max_concurrent: int | None = None
     max_concurrency: int | None = None
-    reject_if_kv_full: bool = True
+    reject_if_kv_full: bool = False
     reject_if_waiting: bool = False
     reject_if_running_full: bool = False
     routing_strategy: str = "request_num_balance"
@@ -126,18 +126,34 @@ class SimConfig:
 
     The default reproduces the former least-active selection exactly, so it is
     the behaviour-preserving choice as well as the one the matched PSRL run
-    uses. See `component/rollout/router/strategies.py`.
+    uses. See `component/rollout/router/strategies/`.
     """
     routing_strategy_args: dict = field(default_factory=dict)
     """Per-strategy keyword arguments, e.g. `cache_threshold` for prefix_aware."""
-    router_sort_key: str = "short_length"
-    """Tie-break among same-version requests: short_length, long_length, small_id."""
+    router_sort_key: str = "small_id"
+    """Tie-break among same-version requests: small_id, short_length, long_length.
+
+    Arrival order by default: a length key makes placement depend on how much
+    of the dataset is staged, which couples the result to an unrelated flow
+    limit.
+    """
     max_concurrent_seqs_per_instance: int = 0
     """Router-side cap on requests one instance may hold. 0 disables it."""
     router_reject_on_waiting: bool = False
     """Whether the router skips an instance that already has its own queue."""
+    router_reject_preempted_on_waiting: bool = False
+    """Whether preemption loopbacks skip instances with a local queue."""
     enable_group_sticky: bool = False
     """Pin a prompt group's responses to the instance that took the first one."""
+    weight_load_time: float = 0.0
+    """Rollout-side weight-load latency after a training step publishes.
+
+    The real system pauses rollout while vLLM executes `pull_model` and
+    `reset_prefix_cache`. Measured at 4-5 s on the matched PSRL run
+    (the gap between train-end and the first nonzero `num_running_reqs`).
+    This is separate from `sync_time`, which covers the NIXL transfer
+    to the training nodes.
+    """
     max_waiting_after_preempt: int | None = None
     """Instance queue depth past which preempted requests return to the router.
 
@@ -154,6 +170,17 @@ class SimConfig:
     n_instances: int = 1
     livelock_rounds: int = 50
     max_engine_iters: int = 10_000
+    undoable_events: frozenset[str] = frozenset(
+        {"request_complete", "preempt", "iteration_done"}
+    )
+    """Event types that get speculative undo in the engine loop.
+
+    Default: all three → full speculation (current behavior, exact).
+    Fast mode: ``{"request_complete"}`` → only completions are speculative;
+    PREEMPT and ITERATION_DONE are committed without snapshots, eliminating
+    the dominant undo bookkeeping cost. ``request_complete`` must always be
+    present.
+    """
     log_telemetry: bool = True
     """Whether to log rollout/train/request telemetry via `SimTelemetry`.
 
@@ -172,6 +199,11 @@ class SimConfig:
             raise ValueError(
                 f"group_size {self.group_size} does not match the workload's "
                 f"{self.workload.group_size}."
+            )
+        if "request_complete" not in self.undoable_events:
+            raise ValueError(
+                "undoable_events must contain 'request_complete': completions "
+                "determine batch collection order and must be speculative."
             )
 
     @property
@@ -222,11 +254,41 @@ class SimResult:
         return total_tokens / self.sim_time
 
     def scg(self, s: int) -> float:
-        """Trajectories consumed with staleness_true <= s, per simulated second.
+        """Tokens from trajectories consumed with staleness_true <= s, per second.
+
+        **Why tokens rather than a trajectory count.** SCG is goodput, and the
+        useful work a training step receives is tokens, not trajectories: a
+        dispersed workload's trajectories differ in length by more than an order
+        of magnitude (measured p99/p50 = 4.6 on the long-context trace), so a
+        count weights a 700-token response the same as a 30000-token one. Tokens
+        also make this directly comparable with `throughput`, which is the same
+        quantity without the staleness filter -- their ratio is the fraction of
+        generated work that arrived fresh enough to use.
 
         Uses staleness_true (v_min of segments), not staleness_reported (v_max).
         The two differ on any trajectory interrupted by a weight update, and using
         v_max would understate staleness on exactly those partial-rollout cases.
+
+        Args:
+            s: Staleness bound. A trajectory counts when every token it carries
+                was generated within `s` weight versions of its consumption.
+
+        Returns:
+            Tokens per simulated second. `scg(max_staleness_true)` equals
+            `throughput` by construction, since no trajectory is then excluded.
+        """
+        if self.sim_time <= 0.0:
+            return 0.0
+        tokens = sum(r.generated for r in self.consumed if r.staleness_true() <= s)
+        return tokens / self.sim_time
+
+    def scg_count(self, s: int) -> float:
+        """Trajectories consumed with staleness_true <= s, per simulated second.
+
+        The count-based form `scg` used to return. Kept because the solver's
+        value model reasons about completions rather than tokens, and because a
+        trajectory count is the right unit when comparing fleets on a workload
+        whose lengths are uniform.
         """
         if self.sim_time <= 0.0:
             return 0.0
@@ -234,7 +296,7 @@ class SimResult:
         return count / self.sim_time
 
     def scg_curve(self, s_values: Sequence[int] | None = None) -> dict[int, float]:
-        """SCG(S) for each S in s_values.
+        """SCG(S) in tokens/second for each S in s_values.
 
         Defaults to 0..max_staleness_true inclusive, which covers the full curve
         without requiring the caller to know the range in advance.

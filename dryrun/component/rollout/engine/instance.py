@@ -797,6 +797,28 @@ class NativeInstance:
             return self._iteration_event(version)
         return self._decode_segment_event(version)
 
+    def advance_one_event_committed(self, version: int) -> EngineEvent | None:
+        """Advance without recording undo state. The event cannot be rolled back.
+
+        Identical to `advance_one_event` in what it computes, but no snapshot is
+        taken and the recorder stays `NULL_RECORDER` throughout, so KV pool and
+        free-list mutations carry zero undo bookkeeping cost.
+
+        Use this when the caller knows it will commit this event unconditionally
+        — i.e., the event type is not in the undoable set. A later
+        `_undo_and_align` that encounters an instance in this state will skip it
+        (nothing to undo) and tolerate its clock being ahead of the alignment
+        target.
+        """
+        self._snapshot = None
+        self._recorder = NULL_RECORDER
+        self._promote_ready()
+        if not self.running and not self.waiting:
+            return None
+        if self.waiting:
+            return self._iteration_event(version)
+        return self._decode_segment_event(version)
+
     def run_until(self, t_limit: float, version: int) -> list[Request]:
         done = []
         while self.t_local < t_limit:

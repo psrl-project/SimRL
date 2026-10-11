@@ -110,6 +110,7 @@ class NativeInstance {
   int kv_queries() const { return kv_.queries; }
   int kv_hits() const { return kv_.hits; }
   bool has_pending_event() const { return log_ != nullptr; }
+  int block_size() const { return block_size_; }
   int peek_hit_tokens(const RequestPtr& req) const {
     return kv_.peek_hit_tokens(*req);
   }
@@ -125,6 +126,9 @@ class NativeInstance {
 
   // Returns the event, or nullopt if idle.
   std::optional<EngineEvent> advance_one_event(int version);
+
+  // Advance without recording undo state. Cannot be rolled back.
+  std::optional<EngineEvent> advance_one_event_committed(int version);
 
   void commit_last_event();
   void undo_last_event();
