@@ -772,7 +772,7 @@ def run_simulate(cfg: DictConfig) -> None:
     # logging is switched on; `log_telemetry=False` must not touch disk.
     store = JsonlStore(output_dir / "logs", overwrite=True) if log_telemetry else None
 
-    backend = os.environ.get("DRYRUN_BACKEND", "native")
+    backend = os.environ.get("DRYRUN_BACKEND", "auto")
 
     sim = Simulator(
         rollout_cost=rollout_cost,

@@ -84,18 +84,8 @@ class Simulator:
                 self._backend = "native"
 
         if self._backend == "cpp":
-            try:
-                cpp_cost = _make_cpp_cost(rollout_cost)
-            except TypeError:
-                dryrun_logger.info(
-                    "C++ backend requested but the cost model %s is not "
-                    "supported; falling back to native.",
-                    type(rollout_cost).__name__,
-                )
-                self._backend = "native"
-
-        if self._backend == "cpp":
             self._Request = _cpp_request_class()
+            cpp_cost = _make_cpp_cost(rollout_cost)
             self.instances: list[NativeInstance] = []
             for i in range(cfg.n_instances):
                 self.instances.append(
@@ -148,6 +138,9 @@ class Simulator:
         self.inflight: list[Request] = []
         self._staged_groups: dict[int, list[Request]] = {}
         self._admitted_group_ids: set[int] = set()
+        # A flow limit on dataset ingress, not a staleness bound. It must not
+        # depend on the policy: see `_stage` for what went wrong when it did.
+        self._ingress_group_credits = (cfg.max_staleness + 1) * cfg.batch_size
         self.pending: dict[int, list[Request]] = {}
         """Finished responses whose group is not complete yet, by group id.
 
@@ -319,41 +312,35 @@ class Simulator:
                 self.telemetry.write_request("admit", self.t, member)
         self.policy.on_route(req, instance_id, self._state())
 
-    def _ingress_capacity(self) -> int:
-        """Responses the policy would admit beyond what is already staged.
-
-        A group staged but not yet committed still occupies the quota it was
-        staged against, so it is subtracted here: without that, each call would
-        re-offer capacity the previous one already spoke for and the router queue
-        would grow without bound.
-        """
-        quota = self.policy.admit_quota(self._state())
-        uncommitted = sum(
-            len(group)
-            for group_id, group in self._staged_groups.items()
-            if group_id not in self._admitted_group_ids
-        )
-        return quota - uncommitted
-
     def _stage(self) -> int:
-        """Offer dataset groups the policy has capacity for to the router.
+        """Offer credited dataset groups to the router without admitting them.
 
-        The policy's `admit_quota` is the only admission gate. `Simulator` used
-        to grant ingress from a counter of its own,
-        `(max_staleness + 1) * batch_size` groups refilled one batch per step,
-        which bounded in-flight work so tightly that no policy's quota ever
-        refused. That made `max_staleness` the simulator's guarantee rather than
-        each policy's, and policies whose admission rules genuinely differ
-        produced identical runs.
+        Ingress is deliberately independent of the staleness policy. Staging
+        only decides how much of the dataset is visible to the router; the
+        policy gates admission one layer later, in `_can_place_from_router`,
+        and `v_traj` is not fixed until a placement commits. A group that waits
+        in the router is rebased to the current rollout version by
+        `_publish_weights`, so queue dwell costs it no staleness.
+
+        The credit is therefore a flow limit, and it has to stay a constant that
+        no policy influences. Deriving it from `admit_quota` was tried and
+        reverted: the per-version queue layer is ordered by `sort_key`, so the
+        number of staged groups is the size of the candidate set the router
+        chooses from, and a policy-dependent width leaks into which request gets
+        placed. Measured at `widen` 3/8/32 batches, the mean prompt length of
+        the first 48 admissions moved 92.5 -> 86.7 -> 85.0 and every run
+        differed. Worse, it manufactured a psrl/verl divergence that was an
+        artefact of the differing widths rather than of the admission rules: at
+        one fixed width the two policies agree byte for byte again.
 
         Returns:
-            Responses staged by this call. Zero means the policy is saturated or
-            the router already holds everything it granted, which `run` reads as
-            one of its livelock signals.
+            Responses staged by this call. Zero means no credit was left, which
+            `run` reads as one of its livelock signals.
         """
         staged = 0
-        while self._ingress_capacity() >= self.cfg.group_size:
+        while self._ingress_group_credits > 0:
             staged += len(self._stage_one_group())
+            self._ingress_group_credits -= 1
         if staged:
             self.telemetry.emit_gateway(self.t, self.router, self.instances)
             self._dispatch_router()
@@ -936,8 +923,16 @@ def _cpp_request_class() -> type:
 
 
 def _make_cpp_cost(py_cost: RolloutCostModel):
-    """Build a C++ cost model from a Python one, extracting its coefficients."""
-    from dryrun._engine_cpp import PsrlCostModel, UnifiedRooflineCostModel
+    """Build a C++ cost model from a Python one.
+
+    For models with known C++ equivalents (PSRLFitted, UnifiedRoofline), the
+    coefficients are extracted and a native C++ model is constructed — zero
+    Python callback overhead. For everything else (ComposedRollout, DistServe),
+    the Python model is wrapped in a trampoline that the C++ engine calls back
+    into. GIL overhead per call is ~0.5-1us; cost model calls are <1% of the
+    profile, so the trampoline is performance-neutral.
+    """
+    from dryrun._engine_cpp import PsrlCostModel, PyWrappedCostModel, UnifiedRooflineCostModel
 
     from ..cost.rollout import PSRLFitted, UnifiedRoofline
 
@@ -959,10 +954,7 @@ def _make_cpp_cost(py_cost: RolloutCostModel):
             decode_other_b=py_cost.decode_other_b,
             decode_other_k=py_cost.decode_other_k,
         )
-    raise TypeError(
-        f"No C++ cost model equivalent for {type(py_cost).__name__!r}. "
-        f"Supported types: UnifiedRoofline, PSRLFitted."
-    )
+    return PyWrappedCostModel(py_cost)
 
 
 def _make_cpp_instance(cpp_cost, cfg: SimConfig, instance_id: int):

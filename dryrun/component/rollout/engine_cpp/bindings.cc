@@ -1,6 +1,7 @@
 // dryrun/component/rollout/engine_cpp/bindings.cc
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <pybind11/functional.h>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -11,6 +12,40 @@
 #include "engine/version.h"
 
 namespace py = pybind11;
+
+// Trampoline: wraps any Python RolloutCostModel so C++ can call it.
+// GIL overhead per call is ~0.5-1us; cost model calls are <1% of the profile.
+class PyRolloutCostModel : public dryrun::engine::RolloutCostModel {
+ public:
+  PyRolloutCostModel(py::object py_cost) : py_cost_(std::move(py_cost)) {}
+
+  double predict(const std::string& phase, double n_tokens, double sum_l2,
+                 double ctxsum, int n_reqs, double prefill_ctx) override {
+    py::gil_scoped_acquire gil;
+    // Build a RolloutWorkload in Python and call predict.
+    py::object result = py_cost_.attr("step_time")(
+        n_tokens, sum_l2, ctxsum, n_reqs, prefill_ctx);
+    return result.cast<double>();
+  }
+
+  std::tuple<double, double, double> decode_coeffs(int n_d,
+                                                   double ctxsum) override {
+    py::gil_scoped_acquire gil;
+    py::tuple result = py_cost_.attr("decode_coeffs")(n_d, ctxsum);
+    return {result[0].cast<double>(), result[1].cast<double>(),
+            result[2].cast<double>()};
+  }
+
+  bool saturated(double n_tokens, double t2, double ctxsum,
+                 int n_reqs) override {
+    py::gil_scoped_acquire gil;
+    return py_cost_.attr("saturated")(n_tokens, t2, ctxsum, n_reqs)
+        .cast<bool>();
+  }
+
+ private:
+  py::object py_cost_;
+};
 
 PYBIND11_MODULE(_engine_cpp, m) {
   m.doc() = "C++ rollout engine backend for DryRun-RL";
@@ -166,6 +201,12 @@ PYBIND11_MODULE(_engine_cpp, m) {
            &dryrun::engine::RolloutCostModel::decode_segment_time)
       .def("decode_steps_within",
            &dryrun::engine::RolloutCostModel::decode_steps_within);
+
+  // Trampoline: wraps any Python RolloutCostModel so C++ NativeInstance can
+  // call it. Use this when no native C++ cost model exists (e.g., ComposedRollout).
+  py::class_<PyRolloutCostModel, dryrun::engine::RolloutCostModel,
+             std::shared_ptr<PyRolloutCostModel>>(m, "PyWrappedCostModel")
+      .def(py::init<py::object>(), py::arg("py_cost"));
 
   py::class_<dryrun::engine::PsrlCostModel,
              dryrun::engine::RolloutCostModel,
