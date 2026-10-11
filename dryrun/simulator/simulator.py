@@ -432,6 +432,7 @@ class Simulator:
                     member.status = ReqStatus.DROPPED
                     self.dropped.append(member)
                     self.telemetry.write_request("drop", self.t, member)
+                self._grant_drop_replacements([group])
             else:
                 self.ready_groups.append(group)
                 self.ready.extend(group)
@@ -507,11 +508,27 @@ class Simulator:
                     [r for r in to_cancel if r.instance_id == inst.instance_id],
                     keep_tokens=False,
                 )
-        # Dropping releases the quota these groups held, so the policy will grant
-        # their replacements here on its own. There is no separate replacement
-        # credit: a policy that wants the dataset topped up after a drop says so
-        # by freeing quota, which is the same statement.
+        groups = [
+            [req for req in unique_reqs if req.group_id == group_id]
+            for group_id in dropped_groups
+        ]
+        self._grant_drop_replacements(groups)
         self._stage()
+
+    def _grant_drop_replacements(self, groups: list[list[Request]]) -> None:
+        """Credit policy-requested dataset replacements exactly once per group.
+
+        This is a flow credit, not an admission decision: a policy that expires
+        work permanently (ROLL) would otherwise shrink the dataset in flight for
+        the rest of the run, because nothing else re-opens ingress for a group
+        that was dropped rather than consumed.
+        """
+        if not groups:
+            return
+        self._ingress_group_credits += self.policy.replacement_groups_on_drop(
+            groups,
+            self._state(),
+        )
 
     def _expand_to_groups(self, reqs: list[Request]) -> list[Request]:
         """Add every still-live sibling of the given requests."""
@@ -695,7 +712,7 @@ class Simulator:
                 # quota alone would leave a non-empty router queue untouched
                 # whenever the policy is saturated, even though this very
                 # completion just made room on an instance.
-                if self.router.has_dispatchable() or self._ingress_capacity() >= self.cfg.group_size:
+                if self.router.has_dispatchable() or self._ingress_group_credits > 0:
                     if not cross_instance:
                         self._undo_and_align(events, queue, t_event)
                     self.telemetry.sync_all(self.instances)
@@ -792,9 +809,9 @@ class Simulator:
             # unlocked + 188 aborted before placing any of them. Placing the
             # aborted set first empties the queue before the new batch exists,
             # which leaves the version-layered priority nothing to arbitrate.
-        # Consuming a batch released the quota it held, so the policy grants the
-        # next batch's worth here by itself. `_stage` dispatches only when it
-        # enqueued something, so the fallback covers a saturated policy.
+        self._ingress_group_credits += self.cfg.batch_size
+        # `_stage` dispatches only when it enqueued something, so keep the
+        # fallback for an externally configured zero-credit update.
         if not self._stage():
             self._dispatch_router()
 
@@ -923,37 +940,15 @@ def _cpp_request_class() -> type:
 
 
 def _make_cpp_cost(py_cost: RolloutCostModel):
-    """Build a C++ cost model from a Python one.
+    """Wrap a Python cost model so the C++ engine can call it.
 
-    For models with known C++ equivalents (PSRLFitted, UnifiedRoofline), the
-    coefficients are extracted and a native C++ model is constructed — zero
-    Python callback overhead. For everything else (ComposedRollout, DistServe),
-    the Python model is wrapped in a trampoline that the C++ engine calls back
-    into. GIL overhead per call is ~0.5-1us; cost model calls are <1% of the
-    profile, so the trampoline is performance-neutral.
+    All cost models go through the same trampoline: C++ calls back into the
+    Python object via pybind11 virtual dispatch. GIL overhead per call is
+    ~0.5-1us; cost model calls are <1% of the profile, so native C++
+    implementations for specific models are not worth the code-path divergence.
     """
-    from dryrun._engine_cpp import PsrlCostModel, PyWrappedCostModel, UnifiedRooflineCostModel
+    from dryrun._engine_cpp import PyWrappedCostModel
 
-    from ..cost.rollout import PSRLFitted, UnifiedRoofline
-
-    if isinstance(py_cost, UnifiedRoofline):
-        return UnifiedRooflineCostModel(
-            F=py_cost.F, W=py_cost.W, G=py_cost.G,
-            A_p=py_cost.A_p, A_d=py_cost.A_d, b=py_cost.b,
-        )
-    if isinstance(py_cost, PSRLFitted):
-        return PsrlCostModel(
-            prefill_attn_b=py_cost.prefill_attn_b,
-            prefill_attn_k=py_cost.prefill_attn_k,
-            prefill_other_floor=py_cost.prefill_other_floor,
-            prefill_other_b=py_cost.prefill_other_b,
-            prefill_other_k=py_cost.prefill_other_k,
-            decode_attn_b=py_cost.decode_attn_b,
-            decode_attn_k=py_cost.decode_attn_k,
-            decode_other_floor=py_cost.decode_other_floor,
-            decode_other_b=py_cost.decode_other_b,
-            decode_other_k=py_cost.decode_other_k,
-        )
     return PyWrappedCostModel(py_cost)
 
 
