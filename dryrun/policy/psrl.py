@@ -4,81 +4,21 @@ Delegates buffer management to `psrl.workers.ps.staleness_controller.StalenessIn
 so that the simulation faithfully reproduces the real system's reserve-at-worst-case,
 occupy-greedy-earliest, and cross-buffer entry-movement logic.
 
-The psrl package must be importable.  Install it with:
-    pip install --no-deps -e /path/to/psrl
-and ensure the psrl source root is on sys.path so the lightweight import succeeds
-(the staleness_controller module has no ray/torch dependency after the isolation fix).
+The psrl package must be installed: `pip install --no-deps -e /path/to/psrl --config-settings editable_mode=strict`.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
+from psrl.workers.ps.inventory_forecast import InventorySnapshot
+from psrl.workers.ps.staleness_controller import (
+    BufferStatus,
+    EntryCategory,
+    EntryInfo,
+    StalenessInventory,
+)
 
 from ..component.rollout.engine import Request
 from .base import CompleteAction, SimState, StalenessPolicy
-
-_PSRL_ROOT = "/apdcephfs_zwfy10_303541817/share_303541817/lhy/psrl"
-_CONTROLLER_NAME = "dryrun.policy._psrl_staleness_controller"
-# Optional imports the controller replaces with lightweight fallbacks when they are absent.
-_CONTROLLER_OPTIONAL = ("psrl.utils.logger", "psrl.workers.gen.utils")
-
-
-def _find_controller() -> Path | None:
-    """Locate `staleness_controller.py` without importing any psrl package."""
-    for root in (*sys.path, _PSRL_ROOT):
-        candidate = Path(root or ".") / "psrl" / "workers" / "ps" / "staleness_controller.py"
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def _load_controller():
-    """
-    Load PSRL's staleness controller as a standalone module.
-
-    An ordinary import runs package `__init__` chains that pull in Ray and torch, which the
-    controller never uses. It already falls back to lightweight substitutes when its two
-    optional imports are missing, so those are marked absent in `sys.modules` for the
-    duration of the load and restored afterwards. The file executed is PSRL's own, so the
-    inventory logic is unchanged.
-
-    Raises:
-        ImportError: If `staleness_controller.py` cannot be found.
-    """
-    if _CONTROLLER_NAME in sys.modules:
-        return sys.modules[_CONTROLLER_NAME]
-    path = _find_controller()
-    if path is None:
-        raise ImportError("psrl/workers/ps/staleness_controller.py was not found.")
-    spec = importlib.util.spec_from_file_location(_CONTROLLER_NAME, path)
-    module = importlib.util.module_from_spec(spec)
-    blocked = [name for name in _CONTROLLER_OPTIONAL if name not in sys.modules]
-    for name in blocked:
-        sys.modules[name] = None  # type: ignore[assignment]
-    # `dataclass` resolves annotations through `sys.modules[cls.__module__]`.
-    sys.modules[_CONTROLLER_NAME] = module
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        sys.modules.pop(_CONTROLLER_NAME, None)
-        raise
-    finally:
-        for name in blocked:
-            sys.modules.pop(name, None)
-    return module
-
-
-try:
-    _controller = _load_controller()
-    BufferStatus = _controller.BufferStatus
-    EntryCategory = _controller.EntryCategory
-    EntryInfo = _controller.EntryInfo
-    StalenessInventory = _controller.StalenessInventory
-    _HAS_PSRL = True
-except ImportError:
-    _HAS_PSRL = False
 
 
 class PSRLPolicy(StalenessPolicy):
@@ -103,12 +43,6 @@ class PSRLPolicy(StalenessPolicy):
         proactive_filter: bool = False,
         proactive_threshold: int = 0,
     ):
-        if not _HAS_PSRL:
-            raise ImportError(
-                "psrl package not found. "
-                f"Add {_PSRL_ROOT!r} to sys.path or install psrl with: "
-                f"pip install --no-deps -e {_PSRL_ROOT}"
-            )
         self.proactive_filter = proactive_filter
         self.proactive_threshold = proactive_threshold
 
@@ -144,6 +78,11 @@ class PSRLPolicy(StalenessPolicy):
         self._inventory.ensure_buffer_exists(max(st.train_version, st.rollout_version) + st.max_staleness)
         free_groups = self._inventory.get_empty_entries_total_num(max_bid)
         return free_groups * st.group_size
+
+    def inventory_snapshot(self, st: SimState) -> InventorySnapshot:
+        if self._inventory is None:
+            self._lazy_init(st)
+        return self._inventory.snapshot()
 
     def on_admit(self, group: list[Request], st: SimState) -> None:
         assert self._inventory is not None, "on_admit called before admit_quota."
