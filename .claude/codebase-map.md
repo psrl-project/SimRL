@@ -86,7 +86,9 @@ dryrun/
 │   ├── slime.py             # SlimePolicy (loop barrier)
 │   └── verl.py              # VerlPolicy (window + bounded queue)
 ├── forecast/
-│   └── length.py            # LengthPredictor, OracleLength, NoisyOracleLength, build_length_predictor
+│   ├── length.py            # LengthPredictor, OracleLength, NoisyOracleLength, build_length_predictor
+│   ├── snapshot.py          # Resident, Arrival, InstanceState (+ from_instance for both backends)
+│   └── drain.py             # InstanceForecast, DrainResult: analytic per-instance finish times and KV peak
 ├── cost/                    # Inference step time models (shared by all instances)
 │   ├── base.py              # CostModel ABC
 │   ├── analytical.py        # UnifiedRoofline, LinearLPS

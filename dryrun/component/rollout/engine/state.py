@@ -132,6 +132,12 @@ class TrajView:
     prompt_key: int
     v_traj: int
     admit_time: float
+    rid: int = -1
+    group_id: int = 0
+    prefilled: int = 0
+    """Tokens whose KV the instance has already computed, 0 after an abort or preemption."""
+    running: bool = False
+    """Whether the request is decoding, as opposed to queued or still prefilling."""
 
     @property
     def remaining(self) -> int:
@@ -152,4 +158,8 @@ def traj_view(req) -> TrajView:
         prompt_key=req.source_group_id,
         v_traj=req.v_traj,
         admit_time=req.admit_time,
+        rid=req.rid,
+        group_id=req.group_id,
+        prefilled=req.prefilled,
+        running=req.status.name == "RUNNING",
     )
