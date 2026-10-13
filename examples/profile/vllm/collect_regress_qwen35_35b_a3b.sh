@@ -9,7 +9,7 @@
 # scheduler-iteration record to a ProfileRecord, and writes a single JSONL.
 # The regress step fits one entry per (tp, pp, dp, cp) that appears in that JSONL,
 # so running collect on both the tp=1 and tp=2 raw outputs before regressing gives
-# a single artifact with both entries — exactly what build_dynamic_parallel needs.
+# a single artifact with both entries.
 #
 # USAGE
 #   bash examples/profile/vllm/collect_regress_qwen35_35b_a3b.sh

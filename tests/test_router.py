@@ -254,37 +254,44 @@ class TestStrategyHooks:
         assert max(offered) == 3
 
 
-class TestVersionCappedDispatch:
+class _TierStub:
+    """Stale versions enter only the highest TP tier, and a blocked version never stops a newer one."""
+
+    name = "tier_stub"
+
+    def __init__(self, reference_version: int) -> None:
+        self.reference_version = reference_version
+
+    def narrow_candidates(self, req, candidates, context):
+        if req.v_traj < self.reference_version:
+            return [i for i, view in enumerate(candidates) if view.tp == context.fleet_max_tp]
+        if context.blocked_versions and context.fleet_min_tp < context.fleet_max_tp:
+            return [i for i, view in enumerate(candidates) if view.tp == context.fleet_min_tp]
+        return list(range(len(candidates)))
+
+    def allow_version_bypass(self, req, context):
+        return True
+
+    def select(self, req, candidates):
+        return min(range(len(candidates)), key=lambda i: candidates[i].n_active)
+
+
+class TestNarrowedDispatch:
     @staticmethod
-    def _heterogeneous_router(cap: int = 2) -> tuple[Router, list[NativeInstance]]:
+    def _heterogeneous_router(reference_version: int, cap: int) -> tuple[Router, list[NativeInstance]]:
         instances = [
-            NativeInstance(
-                LinearLPS(),
-                token_budget=8192,
-                kv_blocks=1000,
-                instance_id=0,
-                tp=1,
-            ),
-            NativeInstance(
-                LinearLPS(),
-                token_budget=8192,
-                kv_blocks=1000,
-                instance_id=1,
-                tp=2,
-            ),
+            NativeInstance(LinearLPS(), token_budget=8192, kv_blocks=1000, instance_id=i, tp=tp)
+            for i, tp in enumerate((1, 2))
         ]
-        strategy = build_strategy("version_capped_tp")
-        strategy.set_reference_version(1)
         router = Router(
-            strategy,
+            _TierStub(reference_version),
             instances,
             gate=AdmissionGate(max_concurrent_seqs_per_instance=cap),
         )
         return router, instances
 
     def test_blocked_version_layers_are_bypassed_one_by_one(self):
-        router, instances = self._heterogeneous_router(cap=2)
-        router.strategy.set_reference_version(3)
+        router, instances = self._heterogeneous_router(reference_version=3, cap=2)
         oldest = [_req(rid, v_traj=0) for rid in range(3)]
         newer_stale = [_req(10 + rid, v_traj=1) for rid in range(2)]
         current = [_req(20 + rid, v_traj=3) for rid in range(3)]
@@ -299,7 +306,7 @@ class TestVersionCappedDispatch:
         assert all(inst.n_active <= 2 for inst in instances)
 
     def test_current_work_uses_high_tp_after_stale_queue_drains(self):
-        router, instances = self._heterogeneous_router(cap=3)
+        router, instances = self._heterogeneous_router(reference_version=1, cap=3)
         stale = _req(0, v_traj=0)
         current = [_req(10 + rid, v_traj=1) for rid in range(4)]
         router.enqueue([stale, *current], t=0.0)
@@ -309,10 +316,6 @@ class TestVersionCappedDispatch:
         assert 0 not in router.queue_depths
         assert any(req.v_traj == 1 for req in instances[1].waiting)
         assert all(inst.n_active <= 3 for inst in instances)
-
-    def test_version_capped_strategy_requires_an_active_cap(self):
-        with pytest.raises(ValueError, match="max_concurrent_seqs_per_instance"):
-            Router(build_strategy("version_capped_tp"), _instances(2))
 
 
 class TestRerouteAccounting:

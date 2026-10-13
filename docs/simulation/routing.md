@@ -24,14 +24,13 @@ dryrun rollout.router.strategy=kv_cache_aware rollout.n_instances=4
 | `kv_cache_aware` | Most KV headroom, counting committed-but-unallocated context |
 | `prefix_aware` | Whoever already holds this request's prefix, unless the fleet is skewed |
 | `throughput_balance` | Smallest predicted increase in step latency |
-| `version_aware_tp` | Soft preference for high TP on stale requests |
-| `version_capped_tp` | Stale requests use highest TP under the active cap |
-| `scg_admission` | Places only when the request's marginal value beats the dilution it causes |
 | `length_aware` | Orders whole prompt groups longest- or shortest-first inside a bounded block, places by predicted remaining load. Reads a `LengthPredictor` from `dryrun/forecast/length.py`, so it runs on the oracle or on a noisy one |
 
 `request_num_balance` reproduces the former selection exactly, so the default is
 behaviour-preserving: at `n_instances=1` every strategy must produce an identical run, which
 `tests/test_router_integration.py` asserts.
+
+The strategies that priced SCG value or TP tiers are archived under `deprecated/`, see its README.
 
 Adding a strategy means one module in `component/rollout/router/strategies/`, with
 one class under `@register_strategy`, and an import in that package's `__init__.py`.
@@ -43,13 +42,16 @@ next version queue when that head cannot be admitted.
 
 All are optional and duck-typed, so a strategy implements only what it needs.
 
-| Hook | Called | Used by |
+| Hook | Called | Implemented by |
 |---|---|---|
-| `narrow_candidates` | before `select`, per request | `version_capped_tp` |
-| `allow_version_bypass` | after a version head cannot be placed | `version_capped_tp` |
-| `select_context` | instead of `select`, with the clock | `scg_admission` |
-| `rank_queued(window, now)` | per placement, over `rollout.router.queue_window` queued requests of one version | `scg_admission`, `length_aware` |
+| `narrow_candidates(req, candidates, context)` | before `select`, per request | none built in |
+| `allow_version_bypass(req, context)` | after a version head cannot be placed | none built in |
+| `select_context(req, candidates, context)` | instead of `select`, with the clock | none built in |
+| `rank_queued(window, now)` | per placement, over `rollout.router.queue_window` queued requests of one version | `length_aware` |
+| `pick_queued(window, views)` | per placement, over the whole version layer, instead of `rank_queued` | none built in |
 | `observe_enqueue(reqs)` | when a prompt group is first queued | `length_aware` |
+
+`tests/test_router.py` covers `narrow_candidates` and `allow_version_bypass` through a stub strategy.
 
 `observe_enqueue` exists because admission is per group while placement is per request. A rule keyed
 on the group, such as its slowest member, has no other moment at which every member is known to be
@@ -64,43 +66,6 @@ ranks last. `window_groups` serves groups in consecutive blocks of that size in 
 reorders only within a block; one training batch of groups is the natural size, since it is the set
 sharing a consumption deadline. Any comparison must also report tokens per consumed group, which
 should match the baseline's. See `docs/design/psrl-scheduling-headroom.md` for what this buys and where.
-
-### `scg_admission` is the only strategy that refuses
-
-Every other strategy answers "which instance", never "whether". This one prices the
-placement and leaves the request in the router when the answer is no:
-
-```
-admit  <=>  G_new * rate_after  >  (sum of resident G) * (rate_before - rate_after)
-```
-
-`G` is the trajectories bought per extra token of generation budget, obtained by
-differencing a conditional length CDF, and both rates come from the same `step_time`
-the engine prices its own decode steps with. The result is a residency limit that
-moves with context depth and remaining slack, which is what a tuned
-`max_concurrent_seqs_per_instance` approximates with a constant. See
-`dryrun/value/` for the model and `examples/simulate/scg_admission_sweep.sh` for the
-comparison against that constant.
-
-Three things make it safe rather than merely clever. An idle instance is taken
-unconditionally, so a fleet whose whole queue prices at zero cannot refuse its way
-into the livelock bound. A length model that has not yet seen `min_samples`
-trajectories reports itself unready and the strategy falls back to load balancing,
-which is counted in `n_fallback` so an untested run is distinguishable from a null
-result. And it requires a cost model: the Router raises rather than pricing every
-dilution against `None`.
-
-```{warning}
-`strategy_args.max_staleness` must match `job.max_staleness`. The deadline is
-derived from it, so a mismatch misprices every budget in the same direction, and
-nothing checks the two agree.
-```
-
-Known limitation: a refusal stops the dispatch pass at that version head, so a
-low-value request can block a higher-value one behind it in the same layer. The
-queue is ordered by prompt length, which is the admission-selection rule this is
-supposed to use, so the ordering is not arbitrary. Reordering within a layer needs
-the router to peek deeper than one.
 
 ### Two warnings
 
@@ -132,16 +97,17 @@ All three default to permissive.
 The **engine's `add_request`** remains the authority on whether the request actually fits. It
 is not duplicated in the router: two places deciding admission is how the two drift apart.
 
-A request whose candidates all refuse stays queued. Ordinary strategies stop at the first
-version head nothing can take. The router itself does not know which versions are stale or
-what TP policy is active. It visits one queue per `v_traj`, oldest first, and asks the strategy
-about each head. `version_capped_tp` permits a blocked queue to be bypassed: every old version
-is still restricted to the highest TP tier, while the reference version can use the lowest TP
-tier after one or more older queues block.
+A request whose candidates all refuse stays queued. Strategies stop at the first version
+head nothing can take unless they say otherwise. The router itself does not know which versions
+are stale or what TP policy is active. It visits one queue per `v_traj`, oldest first, and asks
+the strategy about each head. A strategy that implements `allow_version_bypass` lets dispatch
+continue to the next version queue after a head blocks, and `narrow_candidates` can then
+restrict which instances that later version may use. The `RoutingContext` it receives lists the
+blocked versions and the fleet's smallest and largest TP degree.
 
 After every successful placement, dispatch restarts at the oldest nonempty version. This keeps
-older work first whenever its high-TP tier has capacity without coupling the router to
-`version_capped_tp`. Each version layer is a min-heap on `(sort_key, arrival)`. `sort_key`
+older work first whenever its instances have capacity, with the bypass policy owned by the
+strategy. Each version layer is a min-heap on `(sort_key, arrival)`. `sort_key`
 breaks ties:
 `short_length` (default), `long_length`, or `small_id`. The key uses the **original** prompt
 length even after a loopback, so a resumed request does not drift backwards every time it

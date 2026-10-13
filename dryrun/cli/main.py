@@ -6,7 +6,6 @@ import inspect
 import os
 from collections import Counter
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import hydra
 from omegaconf import DictConfig
@@ -44,7 +43,6 @@ from ..policy.areal import ArealPolicy
 from ..policy.base import StalenessPolicy
 from ..policy.psrl import PSRLPolicy
 from ..policy.roll import RollPolicy
-from ..policy.roll_doom import RollDoomPolicy
 from ..policy.slime import SlimePolicy
 from ..policy.verl import VerlPolicy
 from ..profiler.hf import load_hf_model_descriptor
@@ -54,9 +52,6 @@ from ..telemetry.store import JsonlStore
 from ..visualizer.plots import SimPlotter
 from ..workload.distributions import bimodal, fixed, lognormal, normal, powerlaw, uniform
 from ..workload.grouped import GroupedWorkload
-
-if TYPE_CHECKING:
-    from ..simulator.dynamic_parallel import ParallelismSolver
 
 register_configs()
 
@@ -146,17 +141,6 @@ def build_policy(cfg: DictConfig, max_staleness: int) -> StalenessPolicy:
         return ArealPolicy(max_inflight=cfg.get("max_inflight", None))
     if name == "roll":
         return RollPolicy(max_inflight=cfg.get("max_inflight", None))
-    if name == "roll_doom":
-        return RollDoomPolicy(
-            max_inflight=cfg.get("max_inflight", None),
-            abandon=cfg.get("abandon", True),
-            safety_margin=cfg.get("safety_margin", 1.0),
-            min_generated=cfg.get("min_generated", 256),
-            training_cycle_s=cfg.get("training_cycle_s", 0.0),
-            require_observed_waste=cfg.get("require_observed_waste", True),
-            aggressive_margin=cfg.get("aggressive_margin", 0.7),
-            waste_rate_trusted=cfg.get("waste_rate_trusted", 0.15),
-        )
     if name == "slime":
         return SlimePolicy(
             update_weights_interval=cfg.get("update_weights_interval", 1),
@@ -173,184 +157,6 @@ def build_policy(cfg: DictConfig, max_staleness: int) -> StalenessPolicy:
             max_inflight=cfg.get("max_inflight", None),
         )
     raise ValueError(f"Unknown policy: {name!r}.")
-
-
-# TP degrees with profiled GEMM and attention tables. kernel_tp4 and kernel_tp8 exist
-# but carry collective tables only, so a composed model built at those degrees would
-# query GEMM and attention shapes that were never measured.
-_PROFILED_TP_DEGREES = frozenset({1, 2})
-
-
-def _degrees_with_gemm_tables(cfg: DictConfig, dynamic: DictConfig) -> frozenset[int]:
-    """TP degrees whose configured kernel root actually holds GEMM tables.
-
-    Only the composed model reads tables, so every other model gets none. A degree
-    is judged by what is on disk rather than by a fixed list, so a newly profiled
-    TP4 or TP8 root is accepted without touching this module.
-    """
-    if str(cfg.rollout_cost.get("name", "roofline")) != "composed":
-        return frozenset()
-    gpu = str(cfg.rollout_cost.get("gpu", ""))
-    configured = dict(dynamic.get("kernel_table_roots", {}) or {})
-    return frozenset(
-        int(tp) for tp, root in configured.items() if (Path(str(root)) / gpu / "gemm").is_dir()
-    )
-
-
-def _table_roots_per_tp(
-    dynamic: DictConfig,
-    tp_candidates: tuple[int, ...],
-    rollout_cost_name: str,
-) -> dict[int, str]:
-    """Return the kernel table root for each candidate TP degree.
-
-    Only the composed cost model reads kernel tables; the fitted models ignore them,
-    so an empty mapping is correct there.
-
-    Args:
-        dynamic: The `dynamic_parallel` config subtree.
-        tp_candidates: TP degrees the solver may use.
-        rollout_cost_name: `rollout_cost.name`, which decides whether tables matter.
-
-    Returns:
-        TP degree -> table root, empty when the cost model reads no tables.
-
-    Raises:
-        ValueError: If the composed model is in use and any candidate TP has no
-            entry. There is deliberately no fallback to the single
-            `rollout_cost.kernel_table_root`: it is correct for at most one degree,
-            and the others would fail later with a KernelCoverageError naming a GEMM
-            shape rather than the missing setting.
-    """
-    if rollout_cost_name != "composed":
-        return {}
-    # Keys arrive as ints from the dataclass default but as strings through a Hydra
-    # override (`+dynamic_parallel.kernel_table_roots.2=...`), so normalise both.
-    configured = {
-        int(tp): str(root)
-        for tp, root in dict(dynamic.get("kernel_table_roots", {}) or {}).items()
-    }
-    missing = [tp for tp in tp_candidates if tp not in configured]
-    if missing:
-        raise ValueError(
-            f"dynamic_parallel.kernel_table_roots has no entry for TP {sorted(missing)}. "
-            f"The composed model reads measured GEMM and attention tables sharded per "
-            f"TP degree, so each candidate needs its own root (e.g. "
-            f"1: .../kernel_tp1/kernel, 2: .../kernel_tp2/kernel). "
-            f"Configured: {sorted(configured)}."
-        )
-    return configured
-
-
-def build_dynamic_parallel(
-    cfg: DictConfig,
-) -> tuple[dict[int, RolloutCostModel], dict[int, int], "ParallelismSolver"]:
-    """Build the per-TP cost models, the per-TP KV capacities, and the solver.
-
-    `Simulator` constructs the fleet itself from these, because the router the fleet
-    rebinds is the one `Simulator` builds.
-
-    Args:
-        cfg: The resolved Hydra config.
-
-    Returns:
-        `(cost_models, kv_blocks_per_tp, solver)`.
-
-    Raises:
-        ValueError: If `tp_candidates` is empty or names an unprofiled degree.
-    """
-    from omegaconf import OmegaConf
-
-    from ..simulator.dynamic_parallel import ParallelismSolver
-
-    dynamic = cfg.dynamic_parallel
-    tp_candidates = tuple(int(tp) for tp in dynamic.tp_candidates)
-    if not tp_candidates:
-        raise ValueError("dynamic_parallel.tp_candidates must not be empty.")
-    # Only TP 1 and 2 have profiled GEMM and attention tables; kernel_tp4/tp8 carry
-    # collective tables only. Refusing here names the setting, where letting it through
-    # surfaces a shape-coverage error much further from the cause.
-    profiled = _PROFILED_TP_DEGREES | _degrees_with_gemm_tables(cfg, dynamic)
-    if unsupported := sorted(set(tp_candidates) - profiled):
-        raise ValueError(
-            f"dynamic_parallel.tp_candidates contains unprofiled TP degrees "
-            f"{unsupported}. Only {sorted(profiled)} have measured GEMM "
-            f"and attention tables. Profile the missing families, or point "
-            f"dynamic_parallel.kernel_table_roots at a root that holds them."
-        )
-
-    strategy = cfg.rollout.router.get("strategy", "request_num_balance")
-    planner = str(dynamic.strategy) == "planner"
-    if planner and strategy != "planned_tier_tp":
-        dryrun_logger.warning(
-            f"dynamic_parallel.strategy=planner with rollout.router.strategy={strategy!r}. "
-            f"Only 'planned_tier_tp' follows the tiers the planner chooses."
-        )
-    elif not planner and strategy != "version_capped_tp":
-        dryrun_logger.warning(
-            f"dynamic_parallel.enabled=true with rollout.router.strategy={strategy!r}. "
-            f"Only 'version_capped_tp' enforces version tiers under an active cap. "
-            f"Other strategies do not model the placement used by the dynamic solver."
-        )
-    active_cap = int(cfg.rollout.router.get("max_concurrent_seqs_per_instance", 0))
-    if strategy == "version_capped_tp" and active_cap <= 0:
-        raise ValueError(
-            "rollout.router.max_concurrent_seqs_per_instance must be positive "
-            "with version_capped_tp."
-        )
-
-    base = OmegaConf.to_container(cfg.rollout_cost, resolve=True)
-    roots = _table_roots_per_tp(dynamic, tp_candidates, str(base.get("name", "roofline")))
-
-    # One cost model per TP. A model shards its ops at construction, so a TP=2
-    # instance genuinely needs its own model rather than a scaled TP=1 one.
-    cost_models: dict[int, RolloutCostModel] = {}
-    for tp in tp_candidates:
-        per_tp = OmegaConf.create(base)
-        per_tp.parallelism.tp = tp
-        if tp in roots:
-            per_tp.kernel_table_root = roots[tp]
-        cost_models[tp] = build_rollout_cost(per_tp)
-
-    # KV capacity per TP. Sharding weights across more ranks frees memory for cache,
-    # so this rises with TP (31294 blocks at tp=1 against 69532 at tp=2 for Qwen3-8B
-    # on an H20) and must not be collapsed to one number.
-    kv_blocks_per_tp: dict[int, int] = {}
-    for tp in tp_candidates:
-        per_tp_rollout = OmegaConf.create(OmegaConf.to_container(cfg.rollout, resolve=True))
-        if per_tp_rollout.get("kv_cache_sizing", None) is not None:
-            per_tp_rollout.kv_cache_sizing.tp_size = tp
-        kv_blocks_per_tp[tp] = resolve_kv_blocks(per_tp_rollout, cfg.job, cfg.rollout_cost)
-
-    if str(dynamic.strategy) == "planner":
-        from ..simulator.dynamic_parallel import PlannerSolver, TierPlanner
-
-        block_size = int(cfg.rollout.get("block_size", 16))
-        planner = TierPlanner(
-            cost_models=cost_models,
-            kv_tokens_per_tp={tp: kv_blocks_per_tp[tp] * block_size for tp in tp_candidates},
-            n_gpus=int(dynamic.n_gpus),
-            tp_candidates=tp_candidates,
-            algorithm=str(dynamic.get("algorithm", "pp")),
-            max_concurrency=int(cfg.rollout.get("max_concurrency", 1024) or 1024),
-            switch_margin=float(dynamic.get("switch_margin", 0.0)),
-        )
-        return cost_models, kv_blocks_per_tp, PlannerSolver(planner, max_staleness=int(cfg.job.max_staleness))
-
-    solver = ParallelismSolver(
-        cost_models=cost_models,
-        n_gpus=int(dynamic.n_gpus),
-        tp_candidates=tp_candidates,
-        strategy=str(dynamic.strategy),
-        fixed_tp_per_instance=tuple(int(tp) for tp in dynamic.tp_per_instance),
-        max_concurrency=cfg.rollout.get("max_concurrency", None),
-        active_cap=active_cap if active_cap > 0 else None,
-        objective=str(dynamic.get("objective", "scg")),
-        training_cycle_s=float(dynamic.get("training_cycle_s", 60.0)),
-        future_discount=float(dynamic.get("future_discount", 1.0)),
-        drain_weight=float(dynamic.get("drain_weight", 1.0)),
-    )
-    return cost_models, kv_blocks_per_tp, solver
 
 
 def build_distribution(cfg: DictConfig) -> list[int]:
@@ -799,13 +605,6 @@ def run_simulate(cfg: DictConfig) -> None:
         ),
     )
 
-    parallel_cost_models = None
-    kv_blocks_per_tp = None
-    solver = None
-    dynamic = cfg.get("dynamic_parallel", None)
-    if dynamic is not None and dynamic.enabled:
-        parallel_cost_models, kv_blocks_per_tp, solver = build_dynamic_parallel(cfg)
-
     dryrun_logger.info(
         f"Starting simulation: policy={policy.name}, n_versions={sim_cfg.n_versions}, "
         f"n_instances={sim_cfg.n_instances}, batch_size={sim_cfg.batch_size} groups "
@@ -839,9 +638,6 @@ def run_simulate(cfg: DictConfig) -> None:
         sync_cost=sync_cost,
         recompute_cost=recompute_cost,
         store=store,
-        parallel_cost_models=parallel_cost_models,
-        kv_blocks_per_tp=kv_blocks_per_tp,
-        solver=solver,
         backend=backend,
     )
     result = sim.run()
@@ -850,17 +646,6 @@ def run_simulate(cfg: DictConfig) -> None:
     print(f"  Consumed: {result.n_consumed} requests")
     print(f"  Dropped: {len(result.dropped)} requests")
     print(f"  Throughput: {result.throughput:.1f} tokens/s")
-    # A strategy that decides admission rather than just placement can be inert:
-    # unready, or below the knee where no placement costs anything. Both look
-    # exactly like a null result in the SCG curve, so the breakdown is printed
-    # whenever the strategy keeps one.
-    strategy = sim.router.strategy
-    if hasattr(strategy, "n_declined"):
-        print(
-            f"  Router {strategy.name}: {strategy.n_admitted} admitted, "
-            f"{strategy.n_declined} declined, {strategy.n_paused} paused, "
-            f"{strategy.n_fallback} fell back"
-        )
     if result.consumed:
         print(f"  Max staleness (true): {result.max_staleness_true}")
         staleness_counts = Counter(result.staleness_true_values)

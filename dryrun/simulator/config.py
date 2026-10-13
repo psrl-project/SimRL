@@ -124,7 +124,7 @@ class SimConfig:
     eviction_strategy: str = "vllm_lru"
     """Which resident pays when the KV pool cannot fund a decode step.
 
-    vllm_lru | longest_ctx | scg_value. Independent of the routing strategy on
+    vllm_lru | longest_ctx. Independent of the routing strategy on
     purpose: the two decisions are made by different components, and separating
     them is what lets an experiment move one and hold the other fixed.
     """
@@ -294,10 +294,8 @@ class SimResult:
     def scg_count(self, s: int) -> float:
         """Trajectories consumed with staleness_true <= s, per simulated second.
 
-        The count-based form `scg` used to return. Kept because the solver's
-        value model reasons about completions rather than tokens, and because a
-        trajectory count is the right unit when comparing fleets on a workload
-        whose lengths are uniform.
+        The count-based form of `scg`, the right unit when comparing fleets on a
+        workload whose lengths are uniform.
         """
         if self.sim_time <= 0.0:
             return 0.0

@@ -116,11 +116,6 @@ class DynamicParallelFleet:
         self.instances = rebuilt
         self.plan = plan
         self._router.instances = rebuilt
-        # The router's strategy may rank instances by TP, so it needs the new shape.
-        # Not every strategy does, hence the capability check rather than a hard call.
-        update = getattr(self._router.strategy, "update_plan", None)
-        if callable(update):
-            update(plan)
 
     def _new_instance(self, instance_id: int, tp: int) -> NativeInstance:
         """Construct one instance at the given TP degree."""

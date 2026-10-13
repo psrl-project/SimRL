@@ -102,31 +102,6 @@ class Router:
         its own translated model and exposes no handle to it. Taking it from the
         caller keeps both backends pricing through the same Python object.
         """
-        if getattr(strategy, "requires_cost_model", False) and cost_model is None:
-            raise ValueError(
-                "This routing strategy needs a cost model to predict decode "
-                "dilution, but none was passed to the Router."
-            )
-        if (
-            getattr(strategy, "requires_active_cap", False)
-            and self.gate.max_concurrent_seqs_per_instance <= 0
-        ):
-            raise ValueError(
-                "This routing strategy requires "
-                "max_concurrent_seqs_per_instance to be positive."
-            )
-        # An eviction strategy that prices trajectories needs the same valuator
-        # admission uses, or the two would answer differently about the same
-        # request. The routing strategy owns the length model, so it supplies it.
-        bind_rates = getattr(strategy, "bind_rates", None)
-        if callable(bind_rates) and cost_model is not None:
-            bind_rates(cost_model)
-
-        bind = getattr(strategy, "bind_eviction", None)
-        if callable(bind):
-            for inst in instances:
-                if inst.eviction is not None:
-                    bind(inst.eviction, self._prefill_throughput(inst))
 
         self.queue = RouterQueue(sort_key)
         self.queue_window = max(1, int(queue_window))
@@ -213,39 +188,12 @@ class Router:
             committed_blocks=inst.committed_blocks(),
             prefix_hit_tokens=inst.peek_hit_tokens,
             step_time_delta=lambda req, i=inst: i.step_time_delta(req),
-            # Waiting and running both, because `add_request` only queues: during
-            # a dispatch burst the running set stays empty however many requests
-            # pile up, so pricing against it alone reports no dilution for the
-            # whole burst. This is the set `committed_blocks` counts, for the
-            # same reason. Lazy, because only a value-based strategy pays for the
-            # walk and it is linear in batch size on every placement attempt.
-            decode_batch=lambda i=inst: (
-                len(i.waiting) + len(i.running),
-                float(sum(r.ctx for r in (*i.waiting, *i.running))),
-            ),
+            # Waiting and running both, since `add_request` only queues and `committed_blocks` counts the same set.
             residents=lambda i=inst: [traj_view(r) for r in (*i.waiting, *i.running)],
-            # Decoding only, and paired with the request itself: a strategy that
-            # pauses one has to name the object the engine holds, while a
-            # strategy that merely prices them must not reach past the view.
-            decoding=lambda i=inst: [(traj_view(r), r) for r in i.running],
             cost_model=self.cost_model,
             kv_blocks=inst.kv_blocks,
             block_size=inst.block_size,
-            prefill_throughput=lambda i=inst: self._prefill_throughput(i),
         )
-
-    def _prefill_throughput(self, inst: NativeInstance) -> float:
-        """Tokens per second this instance re-prefills a victim's context at.
-
-        Priced through the same cost model the engine charges prefill with, at a
-        representative chunk, so an eviction cost moves with the hardware rather
-        than with a constant.
-        """
-        if self.cost_model is None:
-            return 0.0
-        chunk = float(inst.block_size * 64)
-        seconds = self.cost_model.step_time(chunk, chunk * chunk, 0.0, 1, chunk)
-        return chunk / seconds if seconds > 0.0 else 0.0
 
     def _candidates(
         self,
@@ -402,43 +350,6 @@ class Router:
             return None
         chosen = rank(window, t)
         return chosen if chosen is not None else window[0]
-
-    def rebalance(self, t: float) -> list[Request]:
-        """Let the strategy pause residents whose bandwidth is worth more elsewhere.
-
-        Admission can only decline *new* work, so it cannot undo a batch that is
-        already too wide: measured on the aligned trace the value-priced router
-        still carried 70 resident requests where 49 was optimal, because the
-        excess was admitted early in a cycle when nothing was yet at risk.
-        Pausing is how that stock is corrected.
-
-        A paused request keeps its generated tokens and returns to this queue, so
-        this is a reordering rather than a discard. It pays a re-prefill, which
-        is what the strategy prices before choosing.
-
-        Returns:
-            The requests paused, already back in the queue.
-        """
-        choose = getattr(self.strategy, "choose_pause", None)
-        if not callable(choose):
-            return []
-        observe = getattr(self.strategy, "observe_fleet", None)
-        if callable(observe):
-            # A pause decision may depend on room elsewhere in the fleet, which one
-            # instance's view cannot show.
-            observe([self._view(inst) for inst in self.instances])
-        paused: list[Request] = []
-        for inst in self.instances:
-            if len(inst.running) < 2:
-                continue
-            victim = choose(self._view(inst), t)
-            if victim is None:
-                continue
-            taken = inst.cancel([victim], keep_tokens=True, requeue=False)
-            for req in taken:
-                self.queue.push(req, t)
-                paused.append(req)
-        return paused
 
     def has_dispatchable(self) -> bool:
         """Whether a dispatch pass could place anything right now.

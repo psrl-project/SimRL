@@ -141,7 +141,6 @@ def build(policy_name: str):
     """Construct a policy with the CLI's defaults, so the harness tests what users run."""
     from dryrun.policy.areal import ArealPolicy
     from dryrun.policy.roll import RollPolicy
-    from dryrun.policy.roll_doom import RollDoomPolicy
     from dryrun.policy.slime import SlimePolicy
 
     return {
@@ -149,7 +148,6 @@ def build(policy_name: str):
         "verl": lambda: VerlPolicy(staleness_threshold=2.0),
         "areal": lambda: ArealPolicy(),
         "roll": lambda: RollPolicy(),
-        "roll_doom": lambda: RollDoomPolicy(require_observed_waste=False, min_generated=16),
         "slime": lambda: SlimePolicy(),
     }[policy_name]()
 

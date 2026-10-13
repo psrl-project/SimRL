@@ -8,7 +8,9 @@ The simulation loop: admit → generate (closed-form) → complete → select ba
 
 Code is organised around the RL loop components. Everything that models a stage
 of the loop lives under `dryrun/component/` (rollout, training, sync, recompute),
-while `dryrun/simulator/` drives them and `dryrun/policy/` decides staleness.
+while `dryrun/simulator/` drives them and `dryrun/policy/` decides staleness. `dryrun/forecast/` holds
+what a scheduler may know about a trajectory, and `deprecated/` archives the abandoned SCG scheduling
+line (inert: not packaged, not collected, not importable).
 
 Configuration is Hydra-based: structured `@dataclass` configs in `schema.py`,
 YAML defaults in `config/defaults/`, CLI overrides via `dryrun key=value`.
@@ -29,11 +31,36 @@ dryrun/
 │   │   │   ├── instance.py      # NativeInstance (continuous batching, KV, preemption)
 │   │   │   ├── event.py         # EventKind, EngineEvent
 │   │   │   ├── state.py         # StepStat, InstanceLoad, InstanceView, TrajView/traj_view
-│   │   │   └── snapshot.py      # ReqSnapshot, InstanceSnapshot (event rollback)
+│   │   │   ├── snapshot.py      # ReqSnapshot, InstanceSnapshot (event rollback)
+│   │   │   ├── eviction/        # Who pays when a decode step cannot fund its next token
+│   │   │   │   ├── strategy.py      # EvictionStrategy protocol, EVICTION_REGISTRY, build_eviction
+│   │   │   │   ├── vllm_lru.py      # vllm_lru (default): newest dispatched pays
+│   │   │   │   └── longest_ctx.py   # longest_ctx: deepest context pays
+│   │   │   ├── kv/              # KV block pool, a state machine and not a cost model
+│   │   │   │   ├── block.py         # KVBlock (ref count, hash, free-list links)
+│   │   │   │   ├── free_list.py     # LRU queue of unheld blocks
+│   │   │   │   ├── lineage.py       # Block hashes from workload provenance
+│   │   │   │   ├── pool.py          # BlockPool (allocation, LRU reuse, eviction)
+│   │   │   │   └── manager.py       # KVCacheManager (what NativeInstance talks to)
+│   │   │   └── undo/            # Reversible mutations for speculative events
+│   │   │       ├── protocol.py      # What a reversible mutation is
+│   │   │       ├── entries.py       # Captured-old-value shapes
+│   │   │       └── log.py           # UndoLog for one event
+│   │   ├── engine_cpp/          # C++ engine (pybind11), built to dryrun/_engine_cpp*.so
+│   │   │   ├── CMakeLists.txt, bindings.cc
+│   │   │   ├── include/engine/  # block, cost_model, event, free_list, instance, kv_manager,
+│   │   │   │                    #   lineage, pool, request, undo, version headers
+│   │   │   └── src/             # cost_model, free_list, instance, kv_manager, pool, request,
+│   │   │                        #   smoke, undo
 │   │   └── router/              # Cross-instance routing: dwell queue + strategies
 │   │       ├── request_queue.py # RouterQueue, SortKey (one sort-key heap per version)
-│   │       ├── strategy.py      # RoutingStrategy protocol, STRATEGY_REGISTRY, build_strategy
+│   │       ├── strategy.py      # RoutingStrategy protocol, RoutingContext, STRATEGY_REGISTRY,
+│   │       │                    #   build_strategy, the optional-hook dispatch helpers
 │   │       ├── strategies/      # One module per built-in routing strategy
+│   │       │   ├── request_num_balance.py  # default
+│   │       │   ├── round_robin.py, random_choice.py
+│   │       │   ├── kv_cache_aware.py, prefix_aware.py, throughput_balance.py
+│   │       │   └── length_aware.py         # group ordering + predicted-load placement
 │   │       └── router.py        # Router (queue + gate + dispatch), AdmissionGate.
 │   │                            #   Dispatch runs ONLY after a committed capacity release
 │   │                            #   (complete / preempt / weight publish), never mid-segment
@@ -46,8 +73,11 @@ dryrun/
 │                            #   (training_forward prices the log-prob pass as a
 │                            #    FLOP-derived fraction of the fitted train step)
 ├── simulator/
-│   ├── config.py            # SimConfig, SimResult
-│   └── simulator.py         # Simulator (main driver)
+│   ├── config.py            # SimConfig, SimResult (scg/scg_count/scg_curve/scg_w metrics)
+│   ├── simulator.py         # Simulator (main driver)
+│   └── dynamic_parallel/    # Fleet shape primitives. Nothing in Simulator constructs them yet
+│       ├── plan.py          # FleetPlan (one TP degree per instance, GPU budget invariant)
+│       └── fleet.py         # DynamicParallelFleet (re-shape the instance list at a weight update)
 ├── policy/
 │   ├── base.py              # StalenessPolicy ABC, SimState, CompleteAction
 │   ├── psrl.py              # PSRLPolicy (Reserve/Occupy/Consume)
@@ -96,10 +126,11 @@ dryrun/
 │   ├── schema.py            # @dataclass structured configs (SimulateConfig, etc.)
 │   └── defaults/
 │       ├── simulate.yaml    # Top-level default config
-│       ├── cost_model/      # roofline.yaml, psrl_fitted.yaml, distserve.yaml
+│       ├── rollout_cost/    # roofline.yaml, psrl.yaml, distserve.yaml, composed.yaml
 │       ├── policy/          # psrl.yaml, areal.yaml, roll.yaml, slime.yaml, verl.yaml
-│       ├── workload/        # uniform.yaml, bimodal.yaml, lognormal.yaml, powerlaw.yaml
-│       └── train_cost/      # fixed.yaml, analytical.yaml, hydraulis.yaml, linear.yaml, fsdp.yaml
+│       ├── workload/        # uniform.yaml, normal.yaml, bimodal.yaml, lognormal.yaml,
+│       │                    #   powerlaw.yaml, dapo_trace.yaml
+│       └── training_cost/   # fixed.yaml, analytical.yaml, hydraulis.yaml, linear.yaml, fsdp.yaml
 ├── profiling/
 │   ├── __init__.py          # Public exports
 │   ├── schemas.py           # SweepPoint, FitResult, FitQuality, profile configs
@@ -158,6 +189,8 @@ dryrun/
 │   ├── fitting.py           # Dataset prompt deduplication and rendering
 │   ├── inference.py         # Joint group collection via a served engine
 │   ├── sharding.py          # Worker topology, shard merge, collection validation
+│   ├── prefix_probe.py      # vLLM prefix-cache counters, for validating the block pool
+│   ├── prefix_probe_run.py  # Four controlled prefix-cache scenarios against a server
 │   └── grouped.py           # GroupedWorkload (the simulator's request source)
 ├── buffer/
 │   └── queue.py             # CompletionBuffer, RecomputeQueue
@@ -173,7 +206,17 @@ dryrun/
     ├── psrl_plot.py         # Render instance_load from a real PSRL run's logs
     ├── compare.py           # dryrun-compare: quantify simulated-vs-real error
     ├── profile.py           # Profiling CLI: vllm, kernels, megatron, fsdp subcommands
-    └── regress.py           # Regression CLI: rollout, training (--latency-model hydraulis|fsdp)
+    ├── regress.py           # Regression CLI: rollout, training (--latency-model hydraulis|fsdp)
+    └── workload.py          # Collect and validate joint grouped workloads
+deprecated/                  # Archived SCG scheduling line. NOT packaged (pyproject packages dryrun*),
+│                            #   NOT collected (pytest testpaths=tests), NOT importable. See its README.md
+├── README.md                # What moved, why, and where the measurements live
+├── dryrun/                  # value/, abandoned router strategies and estimator, scg_value eviction,
+│                            #   dynamic_parallel solver/planner, roll_doom policy and its YAML
+├── tests/                   # Tests of the moved modules
+├── examples/                # SCG sweep scripts, READMEs, make_heavy_tail_trace.py
+├── outputs/                 # Comparison figures
+└── docs/                    # SCG design notes and the heterogeneous-TP plan and spec
 tests/
 ├── conftest.py
 ├── test_advance.py          # Closed-form advance correctness
@@ -214,6 +257,10 @@ The unit of work every component handles. Import it from the engine package:
   or a saturated policy strands the queue
 - `reclaim_preempted(t)`: vLLM's `preemption_notification_threshold`
 - `release_group_pins(group_ids)`
+- Strategies are duck-typed beyond `select`: `narrow_candidates`, `allow_version_bypass`,
+  `select_context`, `rank_queued`, `pick_queued`, `observe_enqueue`. The router reads them through
+  `getattr`, and `RoutingContext` carries the blocked versions, fleet TP bounds, and the clock.
+  `docs/simulation/routing.md` has the table
 
 ### StalenessPolicy (dryrun/policy/base.py)
 - `admit_quota(st: SimState) -> int`
@@ -245,7 +292,9 @@ The unit of work every component handles. Import it from the engine package:
 4. `cost.base` (no internal deps)
 5. `cost.analytical`, `cost.empirical` (depend on cost.base)
 6. `component.rollout.engine.event`, `.state`, `.snapshot` (depend on engine.request)
-7. `component.rollout.engine.instance` (depends on the other engine modules, cost.rollout.advance, cost.base)
+6a. `component.rollout.engine.undo` (no internal deps), `.kv` (depends on undo), `.eviction` (depends on
+     engine.request; importing the package registers every eviction strategy, the only registration path)
+7. `component.rollout.engine.instance` (depends on the other engine modules, `.kv`, `.undo`, cost.rollout.advance)
 7a. `forecast.length` (depends on engine.state for the `TrajView` annotation only)
 7b. `component.rollout.router.*` (depends on engine, forecast.length; importing the package registers every
      strategy, which is the only registration path)
@@ -254,7 +303,9 @@ The unit of work every component handles. Import it from the engine package:
 10. `workload.*` (depends on engine.request)
 11. `buffer.queue` (depends on engine.request)
 12. `simulator.config` (depends on engine.request, workload.grouped)
-13. `simulator.simulator` (depends on engine, policy, cost, component.*)
+13. `simulator.simulator` (depends on engine, engine.eviction, router, policy, cost, component.*)
+13a. `simulator.dynamic_parallel.{plan,fleet}` (depend on engine, and on the router under `TYPE_CHECKING`
+     only. Nothing in `simulator.simulator` imports them.)
 14. `config.schema` (no internal deps)
 15. `config.__init__` (depends on config.schema)
 16. `profiling.schemas`, `profiling.runner` (no internal deps)

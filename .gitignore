@@ -269,3 +269,4 @@ dmypy.json
 # Claude Code machine-local settings (proxy env, permission allowlists).
 # .claude/coding-style.md and codebase-map.md ARE tracked; only this file is local.
 .claude/settings.local.json
+deprecated/docs/

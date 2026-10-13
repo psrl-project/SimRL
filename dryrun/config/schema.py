@@ -260,7 +260,7 @@ class RouterConfig:
     """
 
     eviction: str = "vllm_lru"
-    """vllm_lru | longest_ctx | scg_value.
+    """vllm_lru | longest_ctx.
 
     Which resident the engine evicts when the KV pool cannot fund a decode
     step. Separate from `strategy` because the engine makes this call, not the
@@ -268,15 +268,10 @@ class RouterConfig:
     """
     strategy: str = "request_num_balance"
     """request_num_balance | round_robin | random | kv_cache_aware |
-    prefix_aware | throughput_balance | version_aware_tp | version_capped_tp |
-    scg_admission | length_aware.
+    prefix_aware | throughput_balance | length_aware.
 
     The default reproduces the former least-active selection exactly, so it is
     behaviour-preserving as well as what the matched PSRL run uses.
-
-    `scg_admission` is the only one that may refuse every instance, leaving the
-    request in the router rather than placing it. Set its `max_staleness` in
-    `strategy_args` to match `job.max_staleness`.
     """
     strategy_args: dict = field(default_factory=dict)
     """Per-strategy keyword arguments, e.g. cache_threshold for prefix_aware."""
@@ -352,82 +347,6 @@ class RolloutConfig:
 
 
 @dataclass
-class DynamicParallelConfig:
-    """Dynamic heterogeneous tensor parallelism for the rollout fleet.
-
-    Opt-in and inert by default: with ``enabled=False`` the fleet keeps the single
-    shape `rollout.n_instances` describes and nothing in
-    `dryrun.simulator.dynamic_parallel` is imported or run.
-
-    When enabled, the fleet is re-shaped at every weight update. Placement is NOT
-    partitioned by the solver. Pair this with
-    ``rollout.router.strategy=version_capped_tp`` and a positive router active
-    cap so placement matches the plan scorer.
-    """
-
-    enabled: bool = False
-    n_gpus: int = 4
-    """GPUs the rollout fleet may spend. Every plan spends it exactly."""
-    tp_candidates: list = field(default_factory=lambda: [1, 2])
-    """TP degrees the solver may use. Each needs profiled kernel tables."""
-    strategy: str = "search"
-    """search = enumerate legal fleets and take the argmax. fixed = use `tp_per_instance`.
-    planner = re-plan the shape and the length tiers from pending work at every update."""
-    algorithm: str = "pp"
-    """Planner solver, only read when strategy == "planner": dp, pp or twopool."""
-    switch_margin: float = 0.0
-    """Planner only: a heterogeneous plan must beat the best uniform fleet by this fraction."""
-    tp_per_instance: list = field(default_factory=list)
-    """Only read when strategy == "fixed": one TP degree per instance, e.g. [2, 1, 1].
-
-    How a static homogeneous baseline runs through the identical dynamic code path,
-    so a measured difference cannot be an artefact of the new plumbing.
-    """
-    kernel_table_roots: dict = field(default_factory=dict)
-    """Per-TP kernel table root, required when ``rollout_cost.name == "composed"``.
-
-    Measured GEMM and attention tables are sharded per TP degree, so one path cannot
-    serve every instance: a TP=2 model queries slices only the TP=2 sweep contains.
-    Keys may be ints or strings. Example:
-    ``{1: .../kernel_tp1/kernel, 2: .../kernel_tp2/kernel}``
-    """
-    objective: str = "scg"
-    """What the solver maximises: ``scg`` or ``throughput``.
-
-    ``throughput`` ranks plans by predicted aggregate token rate, which on a fixed
-    GPU budget always prefers the all-lowest-TP fleet: more instances means more
-    concurrency. It therefore never produces a heterogeneous plan and is kept only
-    as the ablation that isolates the objective as the lever.
-
-    ``scg`` ranks plans by expected trajectories completing inside one training
-    cycle, splitting the value into old-version drain and new-version throughput.
-    This is the objective that can prefer concentration: a higher TP degree lowers
-    per-step latency, so an old-version tail that would miss the staleness boundary
-    on TP=1 can finish in time on TP=2.
-    """
-    training_cycle_s: float = 60.0
-    """Seconds per training cycle, the deadline the SCG objective drains against.
-
-    Only a seed value. `Simulator` calls `ParallelismSolver.observe_training_cycle`
-    after every training step, so the solver scores against the measured cycle
-    rather than this estimate from the second update onward. It matters only for
-    the first solve, where no measurement exists yet.
-    """
-    future_discount: float = 1.0
-    """Weight on new-version completions relative to old-version drain, in [0, 1].
-
-    1.0 scores both populations at face value, which is plain SCG. Lowering it
-    makes the solver value the old-version tail more, since fresh work has a full
-    staleness budget and is in less danger of being dropped.
-    """
-    drain_weight: float = 1.0
-    """Multiplier on the old-version drain term. Must be >= 0.
-
-    Above 1.0 the solver trades fresh-work throughput for tail drain. This is the
-    knob that decides how aggressively heterogeneity is chosen, because the drain
-    term is the only one that rewards concentration.
-    """
-@dataclass
 class SimulateConfig:
     """Top-level simulation configuration."""
 
@@ -439,9 +358,6 @@ class SimulateConfig:
     recompute_cost: RecomputeCostConfig = field(default_factory=RecomputeCostConfig)
     job: JobConfig = field(default_factory=JobConfig)
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
-    dynamic_parallel: DynamicParallelConfig = field(
-        default_factory=DynamicParallelConfig
-    )
     output_dir: str = "outputs"
     log_telemetry: bool = True
     log_level: str = "INFO"

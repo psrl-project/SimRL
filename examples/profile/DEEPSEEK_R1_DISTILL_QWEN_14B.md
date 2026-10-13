@@ -313,7 +313,7 @@ fitter's own self-report — gives per-phase MRE:
 | roofline TP1 | 3.00% | 6.31% | 0.38% |
 | roofline TP2 | **49.41%** | 2.39% | 21.81% |
 
-**Use `psrl`.** It is what `examples/simulate/scg_verl.sh` reads (`${COST_DIR}/rollout_psrl.json`,
+**Use `psrl`.** It is what `examples/simulate/simulate.sh` reads by default (`${COST_DIR}/rollout_psrl.json`,
 hence the unsuffixed copy fitted at TP1), and it is the only family healthy at both degrees.
 Qwen3-8B's psrl baseline is 5.16% overall, so TP1 here is better and TP2 comparable.
 

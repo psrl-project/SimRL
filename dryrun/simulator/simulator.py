@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import heapq
 import math
-from typing import TYPE_CHECKING
 
 from tqdm import tqdm
 
@@ -31,9 +30,6 @@ from ..telemetry.store import JsonlStore
 from ..telemetry.writer import SimTelemetry
 from .config import SimConfig, SimResult, clip_total_length
 
-if TYPE_CHECKING:
-    from .dynamic_parallel import DynamicParallelFleet, ParallelismSolver
-
 
 class Simulator:
     """
@@ -52,9 +48,6 @@ class Simulator:
         sync_cost: SyncCostModel | None = None,
         recompute_cost: RecomputeCostModel | None = None,
         store: JsonlStore | None = None,
-        parallel_cost_models: dict[int, RolloutCostModel] | None = None,
-        kv_blocks_per_tp: dict[int, int] | None = None,
-        solver: ParallelismSolver | None = None,
         backend: str = "native",
     ):
         self.rollout_cost = rollout_cost
@@ -170,45 +163,6 @@ class Simulator:
         # here, so this class only ever calls high-level telemetry methods).
         self.telemetry = SimTelemetry(store, enabled=cfg.log_telemetry)
 
-        # Dynamic heterogeneous parallelism. Opt-in: with no solver the fleet keeps
-        # the single shape built above and nothing in `dynamic_parallel` is reached.
-        #
-        # Built here rather than passed in because the router it rebinds is the one
-        # constructed above. A caller-built fleet would hold a different Router than
-        # this Simulator dispatches through, and the rebind would be a silent no-op.
-        self._solver = solver
-        self._fleet: DynamicParallelFleet | None = None
-        if solver is not None:
-            if parallel_cost_models is None or kv_blocks_per_tp is None:
-                raise ValueError(
-                    "A parallelism solver needs parallel_cost_models and "
-                    "kv_blocks_per_tp: the fleet cannot price a step or size a KV pool "
-                    "for a TP degree it has no model and no capacity for."
-                )
-            from .dynamic_parallel import DynamicParallelFleet
-
-            self._fleet = DynamicParallelFleet(
-                cost_models=parallel_cost_models,
-                kv_blocks_per_tp=kv_blocks_per_tp,
-                router=self.router,
-                instance_cfg=dict(
-                    token_budget=cfg.token_budget,
-                    block_size=cfg.block_size,
-                    max_running=cfg.max_concurrent,
-                    max_concurrency=cfg.max_concurrency,
-                    reject_if_kv_full=cfg.reject_if_kv_full,
-                    reject_if_waiting=cfg.reject_if_waiting,
-                    reject_if_running_full=cfg.reject_if_running_full,
-                    enable_prefix_caching=cfg.enable_prefix_caching,
-                ),
-                initial_plan=solver.solve([], self.rollout_version),
-                t=0.0,
-            )
-            # The fleet owns the instance list now; the uniform one built above is
-            # discarded. Rebinding rather than keeping both is what stops the engine
-            # loop advancing instances the router never dispatches to.
-            self.instances = self._fleet.instances
-
     def _state(self) -> SimState:
         return SimState(
             now=self.t,
@@ -284,11 +238,6 @@ class Simulator:
         Returns:
             How many requests were placed.
         """
-        # Pause before placing. A paused request frees bandwidth and rejoins the
-        # queue, so the dispatch below sees the corrected batch and may re-place
-        # it immediately. Running it after would place against a batch the
-        # router is about to change.
-        self.router.rebalance(self.t)
         placed = self.router.dispatch(
             self.t,
             can_admit=self._can_place_from_router,
@@ -346,50 +295,6 @@ class Simulator:
                 self._dispatch_router()
         return staged
 
-    @property
-    def _plans_from_pending(self) -> bool:
-        """Whether the fleet is re-planned from in-flight and staged work at every update."""
-        return self._fleet is not None and bool(getattr(self._solver, "wants_pending", False))
-
-    def _replan_fleet(self) -> list[Request]:
-        """Plan the next interval from in-flight and soon-to-be-admitted work, then rebuild.
-
-        The in-flight requests are the partial rollouts. The staged groups are the
-        ones the policy will admit next. Both are visible to a real scheduler: the
-        first by their progress, the second by their prompts. Everything in flight
-        is aborted by the rebuild, which a weight update does anyway.
-
-        Returns:
-            The aborted requests, for the caller to re-enqueue.
-        """
-        from .dynamic_parallel import RichRequestSnapshot
-
-        reqs = list(self.inflight)
-        quota_groups = max(0, self.policy.admit_quota(self._state()) // self.cfg.group_size)
-        for group in list(self._staged_groups.values())[:quota_groups]:
-            reqs.extend(group)
-        # A strategy that learns lengths supplies estimates a scheduler could really
-        # have. Without one the trace's true remaining length is used.
-        estimate = getattr(self.router.strategy, "estimate_plan_remaining", None)
-        by_assignment = bool(getattr(self.router.strategy, "plans_by_assignment", False))
-        remaining = list(estimate(reqs)) if callable(estimate) else [float(r.remaining) for r in reqs]
-        snapshot = [
-            RichRequestSnapshot(
-                v_traj=r.v_traj,
-                ctx=r.ctx,
-                remaining=max(1, int(rem)),
-                rid=r.rid if (by_assignment or not callable(estimate)) else -1,
-            )
-            for r, rem in zip(reqs, remaining)
-        ]
-        plan = self._solver.solve(snapshot, self.rollout_version)
-        aborted = self._fleet.rebuild(plan, self.t)
-        self.instances = self._fleet.instances
-        set_reference = getattr(self.router.strategy, "set_reference_version", None)
-        if callable(set_reference):
-            set_reference(self.rollout_version)
-        return aborted
-
     def _stage_one_group(self) -> list[Request]:
         """Create one prompt group and expose it to placement admission."""
         group: list[Request] = []
@@ -424,10 +329,6 @@ class Simulator:
             dynamic_ncols=True,
         )
         try:
-            if self._plans_from_pending:
-                self._stage(dispatch=False)
-                self._replan_fleet()
-                self._dispatch_router()
             while self.train_version < self.cfg.n_versions:
                 self._stage()
 
@@ -486,21 +387,19 @@ class Simulator:
                 self.ready.extend(group)
 
     def _observe_completion(self, req: Request) -> None:
-        """Offer a finished trajectory to a strategy that learns from lengths.
+        """Offer a finished trajectory to a strategy that implements `observe_completion`.
 
-        Capability probe rather than a protocol method, matching
-        `set_reference_version` and `update_plan`. A strategy that does not
-        predict length is never asked.
+        A capability probe rather than a protocol method, so a strategy that does
+        not learn from completions is never asked.
         """
         observe = getattr(self.router.strategy, "observe_completion", None)
         if callable(observe):
             observe(req)
 
     def _observe_train_cycle(self) -> None:
-        """Tell a value-based strategy that a weight version was published.
+        """Tell a strategy that implements `observe_train_cycle` that a weight version was published.
 
-        Called from `_publish_weights`, which is where the staleness clock the
-        deadline is denominated in actually ticks.
+        Called from `_publish_weights`, which is where the staleness clock ticks.
         """
         observe = getattr(self.router.strategy, "observe_train_cycle", None)
         if callable(observe):
@@ -860,49 +759,10 @@ class Simulator:
                 assert req.generated == 0
                 req.v_traj = self.rollout_version
             self.router.rekey(staged)
-        staged_for_plan = False
-        if weights_changed and self._plans_from_pending:
-            self._ingress_group_credits += self.cfg.batch_size
-            self._stage(dispatch=False)
-            staged_for_plan = True
-            aborted = self._replan_fleet()
-            self.router.enqueue(aborted, self.t)
-            if self.inflight:
-                self.policy.on_interrupt(list(self.inflight), self._state())
-            self.telemetry.emit_instance_all(self.instances)
-            self.telemetry.emit_gateway(self.t, self.router, self.instances)
-        elif weights_changed and self.cfg.partial_rollout and self.inflight:
-            if self._fleet is not None and self._solver is not None:
-                # Dynamic-parallel path: the solver picks the new layout, the fleet
-                # aborts everything in flight and re-shapes the instances.
-                # Imported here, not at module scope: with dynamic parallelism off
-                # the package must stay untouched, which is what "opt-in" means.
-                from .dynamic_parallel import RichRequestSnapshot
-
-                # `remaining` is carried so the SCG objective can price completion
-                # time against the training deadline. It is exact here because the
-                # trace fixes every target length; a real scheduler would pass an
-                # estimate, which is what `RichRequestSnapshot` documents.
-                snapshot = [
-                    RichRequestSnapshot(
-                        v_traj=r.v_traj, ctx=r.ctx, remaining=max(1, r.remaining)
-                    )
-                    for r in self.inflight
-                ]
-                plan = self._solver.solve(snapshot, self.rollout_version)
-                aborted = self._fleet.rebuild(plan, self.t)
-                # The fleet may have constructed new instance objects, so rebind.
-                # `self.instances` is what the engine loop iterates and what
-                # `_align_instances` asserts clocks against.
-                self.instances = self._fleet.instances
-            else:
-                # Existing homogeneous path — unchanged.
-                aborted: list[Request] = []
-                for inst in self.instances:
-                    aborted.extend(inst.abort_all(requeue=False))
-            set_reference = getattr(self.router.strategy, "set_reference_version", None)
-            if callable(set_reference):
-                set_reference(self.rollout_version)
+        if weights_changed and self.cfg.partial_rollout and self.inflight:
+            aborted: list[Request] = []
+            for inst in self.instances:
+                aborted.extend(inst.abort_all(requeue=False))
             self.router.enqueue(aborted, self.t)
             self.policy.on_interrupt(list(self.inflight), self._state())
             self.telemetry.emit_instance_all(self.instances)
@@ -920,9 +780,6 @@ class Simulator:
             # unlocked + 188 aborted before placing any of them. Placing the
             # aborted set first empties the queue before the new batch exists,
             # which leaves the version-layered priority nothing to arbitrate.
-        if staged_for_plan:
-            self._dispatch_router()
-            return
         self._ingress_group_credits += self.cfg.batch_size
         # `_stage` dispatches only when it enqueued something, so keep the
         # fallback for an externally configured zero-credit update.
@@ -995,10 +852,6 @@ class Simulator:
         total_duration = train_time + sync_time + recompute_time
         deadline = self.t + total_duration
         self._run_engine(deadline=deadline)
-        # Feed the measured cycle back to the solver so it prices the next solve
-        # against the actual training cost, not the configured seed value.
-        if self._solver is not None and hasattr(self._solver, "observe_training_cycle"):
-            self._solver.observe_training_cycle(total_duration)
         self._publish_weights()
 
         self.train_timestamps.append((train_start, self.t))
