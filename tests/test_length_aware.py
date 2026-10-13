@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.component.rollout.engine import InstanceView, Request
+from dryrun.component.rollout.engine import InstanceView, Request, TrajView, traj_view
 from dryrun.component.rollout.router import build_strategy
-from dryrun.value import NoisyOracleLength, TrajView, traj_view
+from dryrun.forecast import NoisyOracleLength
 
 
 def _group(group_id: int, lengths: list[int], rid0: int = 0) -> list[Request]:
@@ -161,10 +161,13 @@ class TestKvWatermark:
         assert strategy.select(req, [_kv_instance(0, committed=794)]) is None
 
     def test_a_resumed_request_is_charged_for_what_it_already_generated(self):
+        """Context 3100 needs 194 blocks, so 650 committed passes 800 only with the generated tokens counted."""
         strategy = _strategy(balance="count", kv_watermark=0.8)
         req = _group(0, [5000])[0]
+        views = [_kv_instance(0, committed=650)]
+        assert strategy.select(req, views) == 0
         req.generated = 3000
-        assert strategy.select(req, [_kv_instance(0, committed=500)]) is None
+        assert strategy.select(req, views) is None
 
     def test_a_refused_instance_does_not_block_one_with_room(self):
         strategy = _strategy(balance="count", kv_watermark=0.8)
@@ -176,43 +179,15 @@ class TestKvWatermark:
             _strategy(kv_watermark=1.5)
 
 
-class TestNoisyOracle:
-    def _traj(self, target: int = 8000, key: int = 3) -> TrajView:
-        return TrajView(
-            generated=0, prompt_len=140, target_len=target, prompt_key=key, v_traj=0, admit_time=0.0
-        )
-
-    def test_zero_noise_is_the_oracle(self):
-        model = NoisyOracleLength(sigma=0.0)
-        assert model.expected_final_length(self._traj()) == 8000.0
-
-    def test_the_same_request_is_mispredicted_the_same_way_every_time(self):
-        model = NoisyOracleLength(sigma=0.5, seed=1)
-        t = self._traj()
-        assert model.expected_final_length(t) == model.expected_final_length(t)
-
-    def test_a_different_seed_gives_a_different_error(self):
-        t = self._traj()
-        a = NoisyOracleLength(sigma=0.5, seed=1).expected_final_length(t)
-        b = NoisyOracleLength(sigma=0.5, seed=2).expected_final_length(t)
-        assert a != b
-
-    def test_the_error_has_the_requested_log_spread(self):
-        import math
-        import statistics
-
-        model = NoisyOracleLength(sigma=0.5, seed=0)
-        errors = [
-            math.log(model.expected_final_length(self._traj(5000 + 37 * i, i)) / (5000 + 37 * i))
-            for i in range(2000)
-        ]
-        assert statistics.pstdev(errors) == pytest.approx(0.5, abs=0.05)
-        assert statistics.mean(errors) == pytest.approx(0.0, abs=0.05)
-
-    def test_a_negative_sigma_is_refused(self):
-        with pytest.raises(ValueError, match="sigma"):
-            NoisyOracleLength(sigma=-0.1)
-
-    def test_traj_view_feeds_it_from_a_request(self):
+class TestLengthPredictor:
+    def test_the_predictor_arguments_reach_the_ordering_key(self):
+        strategy = _strategy(length_model="noisy_oracle", length_model_args={"sigma": 0.5, "seed": 1})
         req = _group(0, [8000])[0]
-        assert NoisyOracleLength(sigma=0.0).expected_final_length(traj_view(req)) == 8000.0
+        strategy.observe_enqueue([req])
+        expected = NoisyOracleLength(sigma=0.5, seed=1).predict_total(traj_view(req))
+        assert strategy._group_length[0] == expected
+        assert expected != 8000.0
+
+    def test_an_unknown_predictor_is_refused(self):
+        with pytest.raises(KeyError, match="empirical"):
+            _strategy(length_model="empirical")

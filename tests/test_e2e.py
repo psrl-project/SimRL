@@ -115,6 +115,62 @@ class TestPSRLRequestLifecycle:
         assert req.group_id not in inventory.data_tracker
 
 
+def _psrl_group(group_id: int, v_traj: int, size: int = 2) -> list[Request]:
+    return [
+        Request(
+            rid=group_id * size + i, group_id=group_id, group_index=i, prompt_len=10, target_len=100, v_traj=v_traj
+        )
+        for i in range(size)
+    ]
+
+
+class TestPSRLInventorySnapshot:
+    @pytest.mark.parametrize("staleness", [0, 1, 2])
+    def test_a_reserved_group_sits_in_the_last_buffer_and_its_deadline_is_that_buffer(self, staleness):
+        policy = PSRLPolicy()
+        st = SimState(batch_size=4, group_size=2, max_staleness=staleness, train_version=0, rollout_version=0)
+        policy.admit_quota(st)
+        policy.on_admit(_psrl_group(7, v_traj=0), st)
+
+        snapshot = policy.inventory_snapshot(st)
+
+        assert snapshot.staleness == staleness
+        assert snapshot.num_entries == 4
+        assert [view.buffer_id for view in snapshot.buffers] == list(range(staleness + 1))
+        assert [view.reserved for view in snapshot.buffers] == [()] * staleness + [((7, 0),)]
+        assert snapshot.deadline(7) == staleness
+
+    def test_each_group_keeps_the_deadline_of_the_version_it_was_admitted_at(self):
+        policy = PSRLPolicy()
+        st0 = SimState(batch_size=4, group_size=2, max_staleness=2, train_version=0, rollout_version=0)
+        st1 = SimState(batch_size=4, group_size=2, max_staleness=2, train_version=1, rollout_version=1)
+        policy.admit_quota(st0)
+        policy.on_admit(_psrl_group(7, v_traj=0), st0)
+        policy.admit_quota(st1)
+        policy.on_admit(_psrl_group(8, v_traj=1), st1)
+
+        snapshot = policy.inventory_snapshot(st1)
+
+        reserved = {view.buffer_id: view.reserved for view in snapshot.buffers}
+        assert reserved == {0: (), 1: (), 2: ((7, 0),), 3: ((8, 1),)}
+        assert snapshot.deadline(7) == 2
+        assert snapshot.deadline(8) == 3
+
+    def test_a_completed_group_is_occupied_rather_than_reserved(self):
+        policy = PSRLPolicy()
+        st = SimState(batch_size=4, group_size=2, max_staleness=1, train_version=0, rollout_version=0)
+        group = _psrl_group(7, v_traj=0)
+        policy.admit_quota(st)
+        policy.on_admit(group, st)
+        assert policy.on_group_complete(group, st) is CompleteAction.KEEP
+
+        snapshot = policy.inventory_snapshot(st)
+
+        assert [(view.n_occupied, view.reserved) for view in snapshot.buffers] == [(1, ()), (0, ())]
+        with pytest.raises(KeyError, match="no reservation"):
+            snapshot.deadline(7)
+
+
 class TestArealTokenBucket:
     def test_bucket_invariant(self):
         cfg = SimConfig(batch_size=4, max_staleness=2, n_versions=10)

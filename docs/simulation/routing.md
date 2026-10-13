@@ -27,7 +27,7 @@ dryrun rollout.router.strategy=kv_cache_aware rollout.n_instances=4
 | `version_aware_tp` | Soft preference for high TP on stale requests |
 | `version_capped_tp` | Stale requests use highest TP under the active cap |
 | `scg_admission` | Places only when the request's marginal value beats the dilution it causes |
-| `length_aware` | Orders whole prompt groups longest- or shortest-first inside a bounded block, places by predicted remaining load. Reads a `LengthModel`, so it runs on the oracle or on a noisy one |
+| `length_aware` | Orders whole prompt groups longest- or shortest-first inside a bounded block, places by predicted remaining load. Reads a `LengthPredictor` from `dryrun/forecast/length.py`, so it runs on the oracle or on a noisy one |
 
 `request_num_balance` reproduces the former selection exactly, so the default is
 behaviour-preserving: at `n_instances=1` every strategy must produce an identical run, which

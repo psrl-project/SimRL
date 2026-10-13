@@ -28,7 +28,7 @@ dryrun/
 │   │   │   ├── request.py       # ReqStatus, Segment, Request (shared vocabulary)
 │   │   │   ├── instance.py      # NativeInstance (continuous batching, KV, preemption)
 │   │   │   ├── event.py         # EventKind, EngineEvent
-│   │   │   ├── state.py         # StepStat, InstanceLoad
+│   │   │   ├── state.py         # StepStat, InstanceLoad, InstanceView, TrajView/traj_view
 │   │   │   └── snapshot.py      # ReqSnapshot, InstanceSnapshot (event rollback)
 │   │   └── router/              # Cross-instance routing: dwell queue + strategies
 │   │       ├── request_queue.py # RouterQueue, SortKey (one sort-key heap per version)
@@ -55,6 +55,8 @@ dryrun/
 │   ├── roll.py              # RollPolicy (admission + GC discard)
 │   ├── slime.py             # SlimePolicy (loop barrier)
 │   └── verl.py              # VerlPolicy (window + bounded queue)
+├── forecast/
+│   └── length.py            # LengthPredictor, OracleLength, NoisyOracleLength, build_length_predictor
 ├── cost/                    # Inference step time models (shared by all instances)
 │   ├── base.py              # CostModel ABC
 │   ├── analytical.py        # UnifiedRoofline, LinearLPS
@@ -244,7 +246,8 @@ The unit of work every component handles. Import it from the engine package:
 5. `cost.analytical`, `cost.empirical` (depend on cost.base)
 6. `component.rollout.engine.event`, `.state`, `.snapshot` (depend on engine.request)
 7. `component.rollout.engine.instance` (depends on the other engine modules, cost.rollout.advance, cost.base)
-7a. `component.rollout.router.*` (depends on engine; importing the package registers every
+7a. `forecast.length` (depends on engine.state for the `TrajView` annotation only)
+7b. `component.rollout.router.*` (depends on engine, forecast.length; importing the package registers every
      strategy, which is the only registration path)
 8. `policy.base` (depends on engine.request)
 9. `policy.*` (depend on policy.base, engine.request)

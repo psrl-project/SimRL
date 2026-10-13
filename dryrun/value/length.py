@@ -21,49 +21,9 @@ single-turn trace needs none of that.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Protocol
 
-
-@dataclass(frozen=True, slots=True)
-class TrajView:
-    """A read-only projection of one trajectory, the unit every model reads.
-
-    Strategies and length models receive this rather than a `Request` so they
-    cannot mutate the engine, and so the same code runs against either backend.
-
-    `target_len` is oracle information. An observable model must not read it, which
-    `tests/test_value_length.py` asserts by varying it and requiring the answer to
-    be unchanged.
-    """
-
-    generated: int
-    prompt_len: int
-    target_len: int
-    prompt_key: int
-    v_traj: int
-    admit_time: float
-
-    @property
-    def remaining(self) -> int:
-        return max(0, self.target_len - self.generated)
-
-    @property
-    def ctx(self) -> int:
-        """Context this trajectory occupies, the depth a decode step pays for."""
-        return self.prompt_len + self.generated
-
-
-def traj_view(req) -> TrajView:
-    """Project a `Request` or its C++ equivalent, which share these field names."""
-    return TrajView(
-        generated=req.generated,
-        prompt_len=req.prompt_len,
-        target_len=req.target_len,
-        prompt_key=req.source_group_id,
-        v_traj=req.v_traj,
-        admit_time=req.admit_time,
-    )
+from ..component.rollout.engine import TrajView
 
 
 class LengthModel(Protocol):

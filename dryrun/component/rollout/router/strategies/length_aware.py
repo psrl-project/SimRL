@@ -28,14 +28,14 @@ Two independent decisions use the same prediction:
   length prediction. A count cap cannot say this: the same count is half a pool of
   short requests or a full pool of long ones.
 
-Both read a `LengthModel`, so the same rule runs against the oracle (the bound on
-what any predictor buys) and against an observable model.
+Both read a `LengthPredictor`, so the same rule runs against the oracle (the bound on
+what any predictor buys) and against a noisy one.
 """
 
 from __future__ import annotations
 
-from .....value import build_length_model, traj_view
-from ...engine import InstanceView, Request
+from .....forecast.length import build_length_predictor
+from ...engine import InstanceView, Request, traj_view
 from ..strategy import register_strategy
 
 _ORDERS = ("fifo", "lpt", "spt")
@@ -67,8 +67,8 @@ class LengthAware:
                 Zero reorders across the whole backlog.
             kv_watermark (float): Fraction of an instance's KV pool that committed
                 context may reach before it is refused. Zero disables the check.
-            length_model (str): Name in `LENGTH_MODEL_REGISTRY`.
-            length_model_args (dict | None): Constructor keywords for that model.
+            length_model (str): Name in `LENGTH_PREDICTORS`.
+            length_model_args (dict | None): Constructor keywords for that predictor.
         """
         if order not in _ORDERS:
             raise ValueError(f"order must be one of {_ORDERS}, got {order!r}.")
@@ -82,7 +82,7 @@ class LengthAware:
         if not 0.0 <= kv_watermark <= 1.0:
             raise ValueError(f"kv_watermark must be in [0, 1], got {kv_watermark!r}.")
         self.kv_watermark = float(kv_watermark)
-        self.model = build_length_model(length_model, **(length_model_args or {}))
+        self.predictor = build_length_predictor(length_model, **(length_model_args or {}))
         self._group_length: dict[int, float] = {}
         self._arrival: dict[int, int] = {}
         self._started: set[int] = set()
@@ -91,7 +91,7 @@ class LengthAware:
         """Record each group's predicted slowest member when it is first queued."""
         slowest: dict[int, float] = {}
         for req in reqs:
-            length = self.model.expected_final_length(traj_view(req))
+            length = self.predictor.predict_total(traj_view(req))
             if length > slowest.get(req.group_id, 0.0):
                 slowest[req.group_id] = length
         for group_id, length in slowest.items():
@@ -107,7 +107,7 @@ class LengthAware:
 
         def key(req: Request) -> tuple[int, float, float, int]:
             group = self._group_length.get(req.group_id, 0.0)
-            own = self.model.expected_final_length(traj_view(req))
+            own = self.predictor.predict_total(traj_view(req))
             block = (
                 self._arrival.get(req.group_id, 0) // self.window_groups
                 if self.window_groups
@@ -141,5 +141,5 @@ class LengthAware:
         """Predicted tokens the instance's residents still have to generate."""
         total = 0.0
         for traj in view.residents():
-            total += max(0.0, self.model.expected_final_length(traj) - traj.generated)
+            total += max(0.0, self.predictor.predict_total(traj) - traj.generated)
         return total

@@ -26,8 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from ....value import traj_view
-from ..engine import InstanceView, NativeInstance, Request, blocks_for
+from ..engine import InstanceView, NativeInstance, Request, blocks_for, traj_view
 from .request_queue import RouterQueue, SortKey
 from .strategy import (
     RoutingContext,

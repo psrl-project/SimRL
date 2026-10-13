@@ -8,9 +8,10 @@ arithmetic: a deadline in training cycles, a token budget, and a marginal value
 obtained by differencing the length model twice.
 """
 
+from ..component.rollout.engine import TrajView, traj_view
 from .deadline import TrainCycle, budget_tokens
 from .empirical import EmpiricalLength
-from .length import LengthModel, TrajView, traj_view
+from .length import LengthModel
 from .marginal import BatchState, Valuator, decode_rates
 from .oracle import NoisyOracleLength, OracleLength
 from .tool import NoToolCalls, ToolTimeModel
