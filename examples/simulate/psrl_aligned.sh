@@ -24,6 +24,10 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+# ROLLOUT_MODEL=composed below, and ComposedRollout has no C++ translation, so
+# the default `auto` backend fails in `_make_cpp_cost` before the first step.
+export DRYRUN_BACKEND="${DRYRUN_BACKEND:-native}"
+
 PSRL_LOG_DIR="${PSRL_LOG_DIR:-/apdcephfs_zwfy10_303541817/share_303541817/lhy/psrl/examples/dapo_trainer/megatron_psrl_log/qwen3_8b_megatron_simulate}"
 MODEL_PATH="${MODEL_PATH:-/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}"
 TRACE="${TRACE:-${ROOT_DIR}/outputs/workload/psrl_aligned/joint.jsonl}"
@@ -61,16 +65,37 @@ export BATCH_SIZE="${BATCH_SIZE:-32}"
 export N_INSTANCES="${N_INSTANCES:-2}"
 export ROLLOUT_TP="${ROLLOUT_TP:-1}"
 # psrl.staleness=1.
-export MAX_STALENESS="${MAX_STALENESS:-1}"
+export MAX_STALENESS="${MAX_STALENESS:-2}"
 export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-1024}"
 export MAX_OUTPUT_LENGTH="${MAX_OUTPUT_LENGTH:-10240}"
 # gen_actor_rollout_ref.rollout.max_num_batched_tokens=12800.
 export TOKEN_BUDGET="${TOKEN_BUDGET:-12800}"
 # psrl.rollout_coordination.routing_strategy.max_concurrent_seqs_per_instance=1024.
+# This knob lives in psrl's coordinator, not in the engine, so it belongs on the
+# router: it decides eligibility before a request is offered, and a rejected
+# request dwells in the router queue instead of the instance's own waiting queue.
+# At 1024 it never binds here -- a step routes 32*8=256 requests across 2
+# instances -- so it is transcribed for fidelity rather than for its effect.
+# Lower it to study a per-instance residency limit; `ACTIVE_CAP=50` caps each
+# instance at 50 resident (waiting + running) requests.
+export ACTIVE_CAP="${ACTIVE_CAP:-50}"
+# vLLM's own max_num_seqs. psrl leaves it at the engine default, which is 1024
+# for this build, and it is a separate limit from the router cap above.
 export MAX_CONCURRENCY="${MAX_CONCURRENCY:-1024}"
+# vLLM's preemption_notification_threshold: instance queue depth past which a
+# preempted request is handed back to the router and may be re-placed elsewhere.
+# Empty leaves every preemption local, which is what the matched run does -- its
+# 2122 preemptions all requeue in place. This is the only path by which work
+# crosses instances mid-generation, so setting it changes migration, not just
+# queueing, and each migration pays a full re-prefill of the reclaimed context.
+export MAX_WAITING_AFTER_PREEMPT="${MAX_WAITING_AFTER_PREEMPT:-1024}"
+# Keep a preemption loopback out of an instance that already has a local queue.
+# Fresh admissions and weight-update loopbacks still see the normal candidate
+# set and are ranked by the configured routing strategy.
+export ROUTER_REJECT_PREEMPTED_ON_WAITING="${ROUTER_REJECT_PREEMPTED_ON_WAITING:-true}"
 # trainer.total_training_steps=5.
 export N_VERSIONS="${N_VERSIONS:-5}"
-export POLICY="${POLICY:-psrl}"
+export POLICY="${POLICY:-verl}"
 export WORKLOAD=dapo_trace
 
 # Training mesh: tensor_model_parallel_size=2, pipeline_model_parallel_size=3,
@@ -108,14 +133,13 @@ if [[ ! -f "${TRAINING_ARTIFACT}" ]]; then
     exit 1
 fi
 
-# The KV denominator, computed from the model the way vLLM sizes it rather than
-# read back from this run's log: the simulator has to answer for configurations
-# nobody has executed. gpu_memory_utilization=0.9 is this run's
-# gen_actor_rollout_ref.rollout.gpu_memory_utilization, and the measured 2 GiB
-# non-KV overhead goes with it.
+# The KV denominator, measured by a real vLLM engine and cached per
+# checkpoint/TP/budget rather than read back from this run's log: the simulator
+# has to answer for configurations nobody has executed. The engine's own
+# measurement covers the non-KV overhead. gpu_memory_utilization=0.9 is this
+# run's gen_actor_rollout_ref.rollout.gpu_memory_utilization.
 export KV_MODEL_PATH="${KV_MODEL_PATH:-${MODEL_PATH}}"
 export KV_GPU_MEMORY_UTILIZATION="${KV_GPU_MEMORY_UTILIZATION:-0.9}"
-export KV_NON_KV_OVERHEAD_BYTES="${KV_NON_KV_OVERHEAD_BYTES:-2147483648}"
 
 # The log-prob forward pass, priced as a FLOP-derived fraction of the same fitted
 # training step. The real run measures 82.31 s per step here; the simulation
@@ -146,6 +170,9 @@ export OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/outputs/simulate/psrl_aligned}"
 # that is genuinely quadratic. Treat this run's *training* time as indicative
 # only; its rollout numbers are in domain and are the point of the comparison.
 export EXTRAPOLATE="${EXTRAPOLATE:-[tokens,activation_bytes,pipeline_slots,sum_squared_tokens]}"
-export EXTRA_OVERRIDES="workload.trace.path=${TRACE} rollout.max_concurrency=${MAX_CONCURRENCY}"
+# Appended, not assigned: a caller studying one knob passes it in EXTRA_OVERRIDES,
+# and overwriting here discarded it silently. Every arm then ran the default
+# router and matched the baseline exactly, which reads as a null result.
+export EXTRA_OVERRIDES="workload.trace.path=${TRACE} rollout.max_concurrency=${MAX_CONCURRENCY} rollout.router.max_concurrent_seqs_per_instance=${ACTIVE_CAP} rollout.router.max_waiting_after_preempt=${MAX_WAITING_AFTER_PREEMPT} rollout.router.reject_preempted_on_waiting=${ROUTER_REJECT_PREEMPTED_ON_WAITING} ${EXTRA_OVERRIDES:-}"
 
 bash "${SCRIPT_DIR}/simulate.sh"

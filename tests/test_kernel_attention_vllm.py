@@ -14,8 +14,8 @@ from dryrun.cost.kernel.ops.attention import (
 )
 from dryrun.cost.kernel.table import KernelTable
 from dryrun.profiler.hf import model_descriptor_from_yaml
-from dryrun.profiler.kernels.config import KernelProfileConfig
-from dryrun.profiler.kernels.measurements import PerfTableWriter
+from dryrun.profiler.kernel.config import KernelProfileConfig
+from dryrun.profiler.kernel.measurements import PerfTableWriter
 
 _FIXTURE_MODEL = Path("tests/fixtures/hf/qwen3_8b").resolve()
 _CUDA = torch.cuda.is_available()
@@ -45,7 +45,7 @@ def _config(tmp_path: Path) -> KernelProfileConfig:
 
 
 def test_selected_backend_is_a_real_vllm_backend():
-    from dryrun.profiler.kernels._vllm_attn import select_attention_backend
+    from dryrun.profiler.kernel.runner._vllm_attn import select_attention_backend
 
     selected = select_attention_backend(
         head_dim=128,
@@ -61,7 +61,7 @@ def test_selected_backend_is_a_real_vllm_backend():
 
 
 def test_profile_writes_both_phase_tables(tmp_path):
-    from dryrun.profiler.kernels.attention import profile_vllm_attention
+    from dryrun.profiler.kernel.runner._vllm_attn import profile_vllm_attention
 
     config = _config(tmp_path)
     model = model_descriptor_from_yaml(str(_FIXTURE_MODEL), base_dir=Path.cwd())
@@ -84,7 +84,7 @@ def test_profile_writes_both_phase_tables(tmp_path):
 
 
 def test_context_latency_grows_superlinearly_in_sequence_length(tmp_path):
-    from dryrun.profiler.kernels.attention import profile_vllm_attention
+    from dryrun.profiler.kernel.runner._vllm_attn import profile_vllm_attention
 
     config = _config(tmp_path)
     model = model_descriptor_from_yaml(str(_FIXTURE_MODEL), base_dir=Path.cwd())
@@ -106,7 +106,7 @@ def test_context_latency_grows_superlinearly_in_sequence_length(tmp_path):
 
 
 def test_generation_latency_grows_with_kv_history(tmp_path):
-    from dryrun.profiler.kernels.attention import profile_vllm_attention
+    from dryrun.profiler.kernel.runner._vllm_attn import profile_vllm_attention
 
     config = _config(tmp_path)
     model = model_descriptor_from_yaml(str(_FIXTURE_MODEL), base_dir=Path.cwd())

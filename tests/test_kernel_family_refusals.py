@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from dryrun.profiler.hf import load_hf_model_descriptor
-from dryrun.profiler.kernels.shapes import logits_gemm_shape, transformer_gemm_shapes
+from dryrun.profiler.kernel.grid.gemm import logits_gemm_shape, transformer_gemm_shapes
 from dryrun.profiler.schema import ProfileValidationError
 
 _DENSE = {
@@ -87,7 +87,7 @@ def test_the_refusal_names_the_kernel_it_would_omit(tmp_path):
 
 def test_head_counts_are_refused_as_well(tmp_path):
     """ModelOps reads head counts separately, so that path needs the same guard."""
-    from dryrun.profiler.kernels.families import family_for
+    from dryrun.profiler.kernel.grid.families import family_for
 
     model = load_hf_model_descriptor(_checkpoint(tmp_path, kv_lora_rank=512))
     with pytest.raises(ProfileValidationError, match="kv_lora_rank"):

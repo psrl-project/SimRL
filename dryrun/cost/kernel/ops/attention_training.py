@@ -153,6 +153,8 @@ class _TrainingAttentionOp:
     slice_columns = _SLICE_COLUMNS
     axis_columns = _AXIS_COLUMNS
     fits_floor = True
+    # Megatron runs no CUDA graphs, so every launch cost here is on the critical path.
+    graph_replayed = False
 
     @property
     def flop_multiplier(self) -> float:
@@ -194,7 +196,7 @@ class _TrainingAttentionOp:
 
     def parse_sweep(self, value: dict[str, Any]) -> Any:
         """Parse the `attention_training:` sweep subtree."""
-        from ....profiler.kernels.config import TrainingAttentionSweep
+        from ....profiler.kernel.sweep import TrainingAttentionSweep
 
         return TrainingAttentionSweep.from_dict(value)
 
@@ -207,9 +209,9 @@ class _TrainingAttentionOp:
         different backend for each, which is precisely the failure the `.post1` wheel
         produced.
         """
-        from ....profiler.kernels.attention_training import profile_training_attention
+        from ....profiler.kernel.runner.attention_training import TrainingAttentionRunner
 
-        return profile_training_attention(model, config, writer_factory=writer_factory)
+        return TrainingAttentionRunner(model, config).run(writer_factory=writer_factory)
 
     def table_columns(self) -> tuple[str, ...]:
         """Return this op's non-provenance table columns, latency last."""

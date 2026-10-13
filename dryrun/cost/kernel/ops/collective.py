@@ -51,6 +51,10 @@ class _CollectiveOp:
     slice_columns = ("dtype", "world_size", "nodes")
     axis_columns = ("message_bytes",)
     fits_floor = True
+    # Not capturable in the first place: `collective.py` is not a `KernelRunner` but a
+    # torchrun (and ssh) launcher whose child ranks write JSON, so there is no single
+    # callable to capture. The launch cost is also real for the training model.
+    graph_replayed = False
 
     def traffic_factor(self, world_size: int) -> float:
         """
@@ -125,7 +129,7 @@ class _CollectiveOp:
 
     def parse_sweep(self, value: dict[str, Any]) -> Any:
         """Parse the `collective:` sweep subtree into a `CollectiveSweep`."""
-        from ....profiler.kernels.config import CollectiveSweep
+        from ....profiler.kernel.sweep import CollectiveSweep
 
         return CollectiveSweep.from_dict(value)
 
@@ -139,7 +143,7 @@ class _CollectiveOp:
         five ops is the difference between a feasible sweep and an absurd one. It also
         guarantees every row describes the same communicator and the same topology.
         """
-        from ....profiler.kernels.collective import profile_collective
+        from ....profiler.kernel.collective import profile_collective
 
         return profile_collective(model, config, writer_factory=writer_factory)
 

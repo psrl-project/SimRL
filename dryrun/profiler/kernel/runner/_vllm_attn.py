@@ -76,6 +76,10 @@ def select_attention_backend(
         seed=0,
         max_model_len=65536,
     )
+    # No `ParallelConfig` here, unlike the timing path below. This config only resolves
+    # WHICH backend class to use: `get_attn_backend_cls` is handed `num_heads` explicitly and
+    # nothing in selection sizes a buffer from the model's head counts. The timing path does
+    # size one (FA3's AOT scheduler metadata) and therefore must declare the TP degree.
     vllm_config = VllmConfig(
         model_config=model_config,
         cache_config=CacheConfig(block_size=block_size, cache_dtype=kv_cache_dtype),
@@ -154,7 +158,17 @@ def time_attention_point(
     from vllm.v1.attention.backends.utils import set_kv_cache_layout
     from vllm.v1.kv_cache_interface import FullAttentionSpec
 
-    from ._timing import time_cuda_call, torch_dtype
+    from ....cost.kernel.ops.base import op_for
+    from ..utils.timing import time_cuda_call, time_cuda_graph_replay, torch_dtype
+
+    # The two phases disagree, which is the whole reason this is read per point rather than
+    # once per family: vLLM replays a FULL graph for decode batches but runs prefill
+    # piecewise with attention left outside the graph. See `cost/kernel/ops/base.py`.
+    _time = (
+        time_cuda_graph_replay
+        if op_for(f"{phase}_attention").graph_replayed
+        else time_cuda_call
+    )
 
     batch_size: int = point.batch_size
     seq_len: int = point.seq_len
@@ -325,7 +339,7 @@ def time_attention_point(
                     _impl.do_kv_cache_update(_layer, _k, _v, _kv, _slot)
                 _impl.forward(_layer, _q, _k, _v, _kv, _meta, output=_out)
 
-            latency_s = time_cuda_call(
+            latency_s = _time(
                 _timed_call,
                 warmup_iterations=warmup,
                 active_iterations=active,
@@ -412,9 +426,9 @@ def profile_vllm_attention(
         tuple[Path, Path]: The written context and generation table paths.
     """
     import vllm
-    from vllm.config import CacheConfig, ModelConfig, VllmConfig
+    from vllm.config import CacheConfig, ModelConfig, ParallelConfig, VllmConfig
 
-    from .attention import (
+    from ..grid.attention import (
         AttentionPoint,
         attention_head_dim,
         context_sweep_points,
@@ -473,6 +487,18 @@ def profile_vllm_attention(
             max_model_len=max_model_len,
         ),
         cache_config=CacheConfig(block_size=block_size, cache_dtype=kv_cache_dtype_str),
+        # The tensor-parallel degree is not decoration: FlashAttention-3's metadata builder
+        # reads `model_config.get_num_attention_heads(self.parallel_config)` and
+        # `get_num_kv_heads(self.parallel_config)`, so without this it sizes the AOT
+        # scheduler metadata for the UNSHARDED model while we invoke the kernel with the
+        # per-rank head counts from `rank_head_counts`. FA3 then rejects the mismatch with
+        # `mha_fwd ... scheduler_metadata must have shape (metadata_size)`.
+        #
+        # It went unnoticed until a model with 2 KV heads: at tp=2 Qwen3.5-35B-A3B shards to
+        # 8 query and 1 KV head against the config's 16 and 2, and the metadata sizes differ.
+        # The dense checkpoints' metadata happened to stay shape-compatible, so every earlier
+        # tp=2 sweep measured the right kernel for the wrong reason.
+        parallel_config=ParallelConfig(tensor_parallel_size=tp),
     )
 
     def _point_kwargs(point: AttentionPoint, phase: str) -> dict:

@@ -11,14 +11,15 @@ whatever it owns, not extending a snapshot dataclass that knows about every
 subsystem at once.
 """
 
-from .entries import AttrSnapshot, MappingKeysAdded, TruncateList
+from .entries import MISSING, AttrSnapshot, MappingKeysChanged, TruncateList
 from .log import UndoLog
 from .protocol import NULL_RECORDER, NullRecorder, Recorder, Undoable
 
 __all__ = [
+    "MISSING",
     "NULL_RECORDER",
     "AttrSnapshot",
-    "MappingKeysAdded",
+    "MappingKeysChanged",
     "NullRecorder",
     "Recorder",
     "TruncateList",

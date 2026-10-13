@@ -82,8 +82,13 @@ class KvCacheManager {
   int queries = 0;
   int hits = 0;
 
+  // Read-only views for state comparison in tests and debugging.
+  const std::unordered_map<int, std::vector<KvBlock*>>& held() const { return held_; }
+  const std::unordered_map<int, int>& n_cached() const { return n_cached_; }
+
  private:
   friend struct HeldBlocksRestore;
+  friend struct HeldBlocksTruncate;
   friend struct CachedCountsRestore;
 
   template <typename Recorder>
@@ -105,13 +110,7 @@ class KvCacheManager {
                         const std::vector<KvBlock*>& hit_blocks) const;
 
   HeldBlocksRestore capture_held(int rid) const;
-
-  // Unique key for record_once: combines manager address with rid.
-  static uintptr_t held_key(const void* mgr, int rid) {
-    return reinterpret_cast<uintptr_t>(mgr) ^
-           (static_cast<uintptr_t>(static_cast<unsigned>(rid)) *
-            2654435761ULL);
-  }
+  HeldBlocksTruncate capture_held_length(int rid) const;
 
   int block_size_;
   bool enable_caching_;

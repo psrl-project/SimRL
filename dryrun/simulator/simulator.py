@@ -8,12 +8,14 @@ driver but with the multi-instance event coordinator infrastructure.
 from __future__ import annotations
 
 import heapq
+import math
 from typing import TYPE_CHECKING
 
 from tqdm import tqdm
 
 from ..component.recompute.cost import FixedRecomputeCost, RecomputeCostModel
 from ..component.rollout.engine import EngineEvent, EventKind, NativeInstance, ReqStatus, Request
+from ..component.rollout.engine.eviction import build_eviction
 from ..component.rollout.router import AdmissionGate, Router, SortKey, build_strategy
 from ..component.sync.cost import FixedSyncCost, SyncCostModel
 from ..cost.rollout import RolloutCostModel
@@ -59,6 +61,11 @@ class Simulator:
         self.policy = policy
         self.workload = cfg.workload
         self.cfg = cfg
+        # Upper-cased to match `EventKind.name`, so the per-event test is one set lookup.
+        self._undoable_kinds = frozenset(name.upper() for name in cfg.undoable_events)
+        self._iteration_speculative = "ITERATION_DONE" in self._undoable_kinds
+        # instance id -> whether `_batches_iterations` allows batching
+        self._iteration_batching: dict[int, bool] = {}
         self._backend = backend
         self.training_cost = training_cost or TrainingCostModel(
             FixedTrainingLatency(1.0),
@@ -110,6 +117,7 @@ class Simulator:
                         reject_if_waiting=cfg.reject_if_waiting,
                         reject_if_running_full=cfg.reject_if_running_full,
                         enable_prefix_caching=cfg.enable_prefix_caching,
+                        eviction=build_eviction(cfg.eviction_strategy),
                     )
                 )
 
@@ -122,6 +130,7 @@ class Simulator:
                 reject_preempted_on_waiting=cfg.router_reject_preempted_on_waiting,
             ),
             sort_key=SortKey(cfg.router_sort_key),
+            queue_window=cfg.router_queue_window,
             enable_group_sticky=cfg.enable_group_sticky,
             max_waiting_after_preempt=cfg.max_waiting_after_preempt,
             # The Python model even on the C++ backend, which holds a translated
@@ -138,8 +147,7 @@ class Simulator:
         self.inflight: list[Request] = []
         self._staged_groups: dict[int, list[Request]] = {}
         self._admitted_group_ids: set[int] = set()
-        # A flow limit on dataset ingress, not a staleness bound. It must not
-        # depend on the policy: see `_stage` for what went wrong when it did.
+        # A flow limit on dataset ingress, not a staleness bound. See `_stage`.
         self._ingress_group_credits = (cfg.max_staleness + 1) * cfg.batch_size
         self.pending: dict[int, list[Request]] = {}
         """Finished responses whose group is not complete yet, by group id.
@@ -162,9 +170,6 @@ class Simulator:
         # here, so this class only ever calls high-level telemetry methods).
         self.telemetry = SimTelemetry(store, enabled=cfg.log_telemetry)
 
-        # Heterogeneous fleet: replaces the homogeneous instances built above with
-        # router this fleet rebinds is the one constructed above; a caller-built fleet
-        # would hold a different Router than the one this Simulator dispatches through.
         # Dynamic heterogeneous parallelism. Opt-in: with no solver the fleet keeps
         # the single shape built above and nothing in `dynamic_parallel` is reached.
         #
@@ -317,30 +322,19 @@ class Simulator:
                 self.telemetry.write_request("admit", self.t, member)
         self.policy.on_route(req, instance_id, self._state())
 
-    def _stage(self) -> int:
-        """Offer credited dataset groups to the router without admitting them.
+    def _stage(self, dispatch: bool = True) -> int:
+        """
+        Offer credited dataset groups to the router without admitting them.
 
-        Ingress is deliberately independent of the staleness policy. Staging
-        only decides how much of the dataset is visible to the router; the
-        policy gates admission one layer later, in `_can_place_from_router`,
-        and `v_traj` is not fixed until a placement commits. A group that waits
-        in the router is rebased to the current rollout version by
-        `_publish_weights`, so queue dwell costs it no staleness.
-
-        The credit is therefore a flow limit, and it has to stay a constant that
-        no policy influences. Deriving it from `admit_quota` was tried and
-        reverted: the per-version queue layer is ordered by `sort_key`, so the
-        number of staged groups is the size of the candidate set the router
-        chooses from, and a policy-dependent width leaks into which request gets
-        placed. Measured at `widen` 3/8/32 batches, the mean prompt length of
-        the first 48 admissions moved 92.5 -> 86.7 -> 85.0 and every run
-        differed. Worse, it manufactured a psrl/verl divergence that was an
-        artefact of the differing widths rather than of the admission rules: at
-        one fixed width the two policies agree byte for byte again.
+        Staging only decides how much of the dataset the router can see. The staleness
+        policy gates admission one layer later, in `_can_place_from_router`, and `v_traj` is
+        fixed only when a placement commits. The credit must stay independent of the policy:
+        the number of staged groups is the candidate set `sort_key` orders, so a
+        policy-dependent width would change which request gets placed.
 
         Returns:
-            Responses staged by this call. Zero means no credit was left, which
-            `run` reads as one of its livelock signals.
+            int: Responses staged by this call. Zero means no credit was left, which `run`
+                reads as one of its livelock signals.
         """
         staged = 0
         while self._ingress_group_credits > 0:
@@ -348,8 +342,53 @@ class Simulator:
             self._ingress_group_credits -= 1
         if staged:
             self.telemetry.emit_gateway(self.t, self.router, self.instances)
-            self._dispatch_router()
+            if dispatch:
+                self._dispatch_router()
         return staged
+
+    @property
+    def _plans_from_pending(self) -> bool:
+        """Whether the fleet is re-planned from in-flight and staged work at every update."""
+        return self._fleet is not None and bool(getattr(self._solver, "wants_pending", False))
+
+    def _replan_fleet(self) -> list[Request]:
+        """Plan the next interval from in-flight and soon-to-be-admitted work, then rebuild.
+
+        The in-flight requests are the partial rollouts. The staged groups are the
+        ones the policy will admit next. Both are visible to a real scheduler: the
+        first by their progress, the second by their prompts. Everything in flight
+        is aborted by the rebuild, which a weight update does anyway.
+
+        Returns:
+            The aborted requests, for the caller to re-enqueue.
+        """
+        from .dynamic_parallel import RichRequestSnapshot
+
+        reqs = list(self.inflight)
+        quota_groups = max(0, self.policy.admit_quota(self._state()) // self.cfg.group_size)
+        for group in list(self._staged_groups.values())[:quota_groups]:
+            reqs.extend(group)
+        # A strategy that learns lengths supplies estimates a scheduler could really
+        # have. Without one the trace's true remaining length is used.
+        estimate = getattr(self.router.strategy, "estimate_plan_remaining", None)
+        by_assignment = bool(getattr(self.router.strategy, "plans_by_assignment", False))
+        remaining = list(estimate(reqs)) if callable(estimate) else [float(r.remaining) for r in reqs]
+        snapshot = [
+            RichRequestSnapshot(
+                v_traj=r.v_traj,
+                ctx=r.ctx,
+                remaining=max(1, int(rem)),
+                rid=r.rid if (by_assignment or not callable(estimate)) else -1,
+            )
+            for r, rem in zip(reqs, remaining)
+        ]
+        plan = self._solver.solve(snapshot, self.rollout_version)
+        aborted = self._fleet.rebuild(plan, self.t)
+        self.instances = self._fleet.instances
+        set_reference = getattr(self.router.strategy, "set_reference_version", None)
+        if callable(set_reference):
+            set_reference(self.rollout_version)
+        return aborted
 
     def _stage_one_group(self) -> list[Request]:
         """Create one prompt group and expose it to placement admission."""
@@ -385,6 +424,10 @@ class Simulator:
             dynamic_ncols=True,
         )
         try:
+            if self._plans_from_pending:
+                self._stage(dispatch=False)
+                self._replan_fleet()
+                self._dispatch_router()
             while self.train_version < self.cfg.n_versions:
                 self._stage()
 
@@ -568,6 +611,19 @@ class Simulator:
             > self.router.max_waiting_after_preempt
         )
 
+    def _batches_iterations(self, instance_id: int) -> bool:
+        """
+        Return whether this instance's ITERATION_DONE events are batched in the engine.
+
+        Batching reproduces every committed state and written row except the per-event
+        occupancy sample, so it is enabled only where the `instance/*` stream is not written.
+        """
+        allowed = self._iteration_batching.get(instance_id)
+        if allowed is None:
+            allowed = self.telemetry.instance_stream_suppressed(instance_id)
+            self._iteration_batching[instance_id] = allowed
+        return allowed
+
     def _undo_events(self, events: dict[int, EngineEvent]) -> None:
         """Undo all pending events (one per instance) and clear the events dict.
 
@@ -632,7 +688,8 @@ class Simulator:
         """Produce one pending event for every active instance."""
         assert not events and not queue, "Events must be empty before seeding."
         for inst in self.instances:
-            if not inst.running and not inst.waiting:
+            # `n_active` because reading `running`/`waiting` converts a whole vector on C++.
+            if inst.n_active == 0:
                 continue
             event = inst.advance_one_event(self.rollout_version)
             if event is not None:
@@ -749,15 +806,28 @@ class Simulator:
                 continue
 
             # --- Produce next event from this instance ---
-            if inst.running or inst.waiting:
-                # If this event type is not undoable, the next event from this
-                # instance is produced without a snapshot — committed mode.
-                # This eliminates undo bookkeeping for the ~99% of events that
-                # are ITERATION_DONE / PREEMPT under KV pressure.
-                if event.kind.name.lower() not in self.cfg.undoable_events:
-                    next_event = inst.advance_one_event_committed(self.rollout_version)
-                else:
+            if inst.n_active > 0:
+                # A non-undoable event's successor is produced without a snapshot.
+                speculative = event.kind.name in self._undoable_kinds
+                if self._batches_iterations(inst.instance_id):
+                    # NOTE(claude): This loop only commits an ITERATION_DONE and asks for the
+                    # next event, so the engine does that itself for every one that would be
+                    # popped next anyway. The steps and their order are unchanged.
+                    next_event, n_done, t_done, n_stats = inst.advance_iterations(
+                        self.rollout_version,
+                        speculative,
+                        self._iteration_speculative,
+                        queue[0] if queue else None,
+                        math.inf if deadline is None else deadline,
+                    )
+                    if n_done:
+                        self.t = max(self.t, t_done)
+                        # Leave out the trailing row, which belongs to the pending event.
+                        self.telemetry.sync(inst, stats_upto=n_stats)
+                elif speculative:
                     next_event = inst.advance_one_event(self.rollout_version)
+                else:
+                    next_event = inst.advance_one_event_committed(self.rollout_version)
                 if next_event is not None:
                     events[inst.instance_id] = next_event
                     heapq.heappush(queue, (next_event.t, inst.instance_id))
@@ -790,7 +860,18 @@ class Simulator:
                 assert req.generated == 0
                 req.v_traj = self.rollout_version
             self.router.rekey(staged)
-        if weights_changed and self.cfg.partial_rollout and self.inflight:
+        staged_for_plan = False
+        if weights_changed and self._plans_from_pending:
+            self._ingress_group_credits += self.cfg.batch_size
+            self._stage(dispatch=False)
+            staged_for_plan = True
+            aborted = self._replan_fleet()
+            self.router.enqueue(aborted, self.t)
+            if self.inflight:
+                self.policy.on_interrupt(list(self.inflight), self._state())
+            self.telemetry.emit_instance_all(self.instances)
+            self.telemetry.emit_gateway(self.t, self.router, self.instances)
+        elif weights_changed and self.cfg.partial_rollout and self.inflight:
             if self._fleet is not None and self._solver is not None:
                 # Dynamic-parallel path: the solver picks the new layout, the fleet
                 # aborts everything in flight and re-shapes the instances.
@@ -839,6 +920,9 @@ class Simulator:
             # unlocked + 188 aborted before placing any of them. Placing the
             # aborted set first empties the queue before the new batch exists,
             # which leaves the version-layered priority nothing to arbitrate.
+        if staged_for_plan:
+            self._dispatch_router()
+            return
         self._ingress_group_credits += self.cfg.batch_size
         # `_stage` dispatches only when it enqueued something, so keep the
         # fallback for an externally configured zero-credit update.
@@ -970,12 +1054,11 @@ def _cpp_request_class() -> type:
 
 
 def _make_cpp_cost(py_cost: RolloutCostModel):
-    """Wrap a Python cost model so the C++ engine can call it.
+    """
+    Wrap a Python cost model so the C++ engine can call it.
 
-    All cost models go through the same trampoline: C++ calls back into the
-    Python object via pybind11 virtual dispatch. GIL overhead per call is
-    ~0.5-1us; cost model calls are <1% of the profile, so native C++
-    implementations for specific models are not worth the code-path divergence.
+    Every model goes through the same trampoline into the Python object. A model that
+    publishes `cpp_term_spec` is served from C++-side term memos and is called only on a miss.
     """
     from dryrun._engine_cpp import PyWrappedCostModel
 
@@ -986,7 +1069,7 @@ def _make_cpp_instance(cpp_cost, cfg: SimConfig, instance_id: int):
     """Build a CppInstance with the same parameters as the Python path."""
     from dryrun._engine_cpp import CppInstance
 
-    return CppInstance(
+    inst = CppInstance(
         cost=cpp_cost,
         token_budget=cfg.token_budget,
         kv_blocks=cfg.kv_blocks,
@@ -999,3 +1082,6 @@ def _make_cpp_instance(cpp_cost, cfg: SimConfig, instance_id: int):
         reject_if_running_full=cfg.reject_if_running_full,
         enable_prefix_caching=cfg.enable_prefix_caching,
     )
+    # The same strategy object the native path builds, so both engines consult one `select`.
+    inst.set_eviction(build_eviction(cfg.eviction_strategy))
+    return inst

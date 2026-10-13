@@ -11,206 +11,206 @@ order of magnitude and the utility surface would absorb the error silently.
 
 **A `CustomOp` needs an active `CompilationConfig(custom_ops=["all"])`.** Without it vLLM logs
 `Priority not set for op rms_norm, using native implementation` and dispatches its native
-PyTorch fallback, which is a different kernel from the fused one the server runs.
+PyTorch fallback, which is a different kernel from the fused one the server runs. That is why
+the whole loop runs inside `set_current_vllm_config` rather than per point.
 
 `silu_and_mul` is not exposed on `vllm._custom_ops`, so it is reached as `SiluAndMul().op`
 after the module is constructed inside the config context; that attribute is what the module's
 own `forward_cuda` calls.
+
+Each point's tensors are allocated inside `_time_point`, so they are released when it returns
+and the loop can empty the allocator cache knowing nothing still holds them. The allocator
+cache must be emptied between points rather than merely dropping references, because a cached
+block from one shape is not reusable for a differently-shaped next one.
+
+The element counts come from `grid/elementwise.py`, which keeps them checkable against the
+same arithmetic `cost/training/training_ops.py` applies on the query side.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
-from ..schema import ModelDescriptor, ProfileValidationError
-from ._timing import time_cuda_call, torch_dtype
-from .config import KernelProfileConfig, model_head_dim, model_intermediate_size
-from .measurements import PerfTableWriter
+from ..grid.elementwise import (
+    ElementwiseDims,
+    ElementwisePoint,
+    elementwise_dims,
+    elementwise_sweep_points,
+)
+from .base import KernelRunner, WriterFactory
 
 _MAX_POSITION = 40960
 _ROPE_THETA = 1.0e6
+_RMS_EPS = 1.0e-6
 
 
-def profile_elementwise(
-    model: ModelDescriptor,
-    config: KernelProfileConfig,
-    *,
-    writer_factory: Callable[[str, str, str], PerfTableWriter],
-) -> tuple[Path, ...]:
-    """
-    Time every elementwise kind across the configured token grid.
+class ElementwiseRunner(KernelRunner):
+    """Times every elementwise kind across the token grid, inside one vLLM config context."""
 
-    Args:
-        model (ModelDescriptor): Architecture read from the checkpoint.
-        config (KernelProfileConfig): Sweep grid, dtype, and iteration counts.
-        writer_factory (Callable[[str, str, str], PerfTableWriter]): Builds a writer from
-            `(framework, version, kernel_source)`.
+    def run(self, *, writer_factory: WriterFactory) -> tuple[Path, ...]:
+        """
+        Time every elementwise kind across the configured token grid.
 
-    Returns:
-        tuple[Path, ...]: The single written parquet path.
+        Args:
+            writer_factory (WriterFactory): Builds a writer from
+                `(framework, version, kernel_source)`.
 
-    Raises:
-        ProfileValidationError: If the architecture is missing `hidden_size`.
-    """
-    import torch
-    import vllm
-    import vllm._custom_ops as ops
-    from vllm.config import CompilationConfig, ModelConfig, VllmConfig, set_current_vllm_config
+        Returns:
+            tuple[Path, ...]: The single written parquet path.
 
-    if model.hidden_size is None:
-        raise ProfileValidationError("Model is missing hidden_size.")
-    if model.num_attention_heads is None:
-        raise ProfileValidationError("Model is missing num_attention_heads.")
+        Raises:
+            ProfileValidationError: If the architecture is missing `hidden_size` or
+                `num_attention_heads`.
+            ValueError: If the grid names a kind this runner cannot measure.
+        """
+        import torch
+        import vllm
+        from vllm.config import CompilationConfig, ModelConfig, VllmConfig, set_current_vllm_config
 
-    sweep = config.sweep("elementwise")
-    measurement = config.measurement
-    dtype_name = measurement.dtype
-    dtype = torch_dtype(dtype_name)
-    hidden = int(model.hidden_size)
-    head_dim = model_head_dim(model)
-    intermediate = model_intermediate_size(model)
-    heads = int(model.num_attention_heads)
-    kv_heads = int(model.num_query_groups or heads)
+        from ..utils.timing import torch_dtype
 
-    # `custom_ops=["all"]` is load-bearing: without it these modules dispatch vLLM's native
-    # PyTorch fallback rather than the fused CUDA kernel the server runs.
-    vllm_config = VllmConfig(
-        model_config=ModelConfig(
-            model=str(model.name),
-            tokenizer=str(model.name),
-            trust_remote_code=False,
-            dtype=dtype_name,
-            seed=0,
-            max_model_len=_MAX_POSITION,
-        ),
-        compilation_config=CompilationConfig(custom_ops=["all"]),
-    )
+        dtype_name = self.config.measurement.dtype
+        dtype = torch_dtype(dtype_name)
+        dims = elementwise_dims(self.model)
+        points = elementwise_sweep_points(self.model, self.config.sweep("elementwise"))
 
-    rows: list[dict[str, object]] = []
-    with set_current_vllm_config(vllm_config):
-        from vllm.model_executor.layers.activation import SiluAndMul
-        from vllm.model_executor.layers.layernorm import RMSNorm
-        from vllm.model_executor.layers.rotary_embedding import get_rope
+        # `custom_ops=["all"]` is load-bearing: without it these modules dispatch vLLM's native
+        # PyTorch fallback rather than the fused CUDA kernel the server runs.
+        vllm_config = VllmConfig(
+            model_config=ModelConfig(
+                model=str(self.model.name),
+                tokenizer=str(self.model.name),
+                trust_remote_code=False,
+                dtype=dtype_name,
+                seed=0,
+                max_model_len=_MAX_POSITION,
+            ),
+            compilation_config=CompilationConfig(custom_ops=["all"]),
+        )
 
-        hidden_norm = RMSNorm(hidden, dtype=dtype).cuda()
-        head_norm = RMSNorm(head_dim, dtype=dtype).cuda()
-        silu = SiluAndMul().cuda()
-        rope = get_rope(
-            head_size=head_dim,
-            max_position=_MAX_POSITION,
-            rope_parameters={"rope_type": "default", "rope_theta": _ROPE_THETA},
-            dtype=dtype,
-        ).cuda()
+        rows: list[dict[str, object]] = []
+        with set_current_vllm_config(vllm_config):
+            from vllm.model_executor.layers.activation import SiluAndMul
+            from vllm.model_executor.layers.layernorm import RMSNorm
+            from vllm.model_executor.layers.rotary_embedding import get_rope
 
-        for tokens in sweep.token_counts:
-            positions = torch.arange(tokens, device="cuda")
-
-            hidden_in = torch.randn(tokens, hidden, dtype=dtype, device="cuda")
-            hidden_out = torch.empty_like(hidden_in)
-            rows.append(
-                _row(
-                    dtype_name,
-                    "rms_norm",
-                    tokens * hidden,
-                    time_cuda_call(
-                        # Bound as default arguments rather than captured, so the lambda holds
-                        # its own reference and the `del` below can free the tensors.
-                        lambda o=hidden_out, i=hidden_in, w=hidden_norm.weight.data: ops.rms_norm(
-                            o, i, w, 1e-6
-                        ),
-                        warmup_iterations=measurement.warmup_iterations,
-                        active_iterations=measurement.active_iterations,
-                    ),
+            modules: dict[str, Any] = {
+                "hidden_norm": RMSNorm(dims.hidden_size, dtype=dtype).cuda(),
+                "head_norm": RMSNorm(dims.head_dim, dtype=dtype).cuda(),
+                "silu": SiluAndMul().cuda(),
+                "rope": get_rope(
+                    head_size=dims.head_dim,
+                    max_position=_MAX_POSITION,
+                    rope_parameters={"rope_type": "default", "rope_theta": _ROPE_THETA},
+                    dtype=dtype,
+                ).cuda(),
+            }
+            for point in points:
+                latency_s = self._time_point(point, dims=dims, dtype=dtype, modules=modules)
+                # Safe here and not inside `_time_point`: that frame's tensors are gone by the
+                # time it returns, so there is nothing left holding the blocks being released.
+                torch.cuda.empty_cache()
+                rows.append(
+                    self.row(
+                        "elementwise",
+                        dtype=dtype_name,
+                        op_kind=point.op_kind,
+                        n_elements=point.n_elements,
+                        latency_s=latency_s,
+                    )
                 )
-            )
 
-            query = torch.randn(tokens, heads * head_dim, dtype=dtype, device="cuda")
-            key = torch.randn(tokens, kv_heads * head_dim, dtype=dtype, device="cuda")
-            rows.append(
-                _row(
-                    dtype_name,
-                    "rotary_embedding",
-                    tokens * (heads + kv_heads) * head_dim,
-                    time_cuda_call(
-                        lambda p=positions, q=query, k=key: ops.rotary_embedding(
-                            p, q, k, head_dim, rope.cos_sin_cache, rope.is_neox_style
-                        ),
-                        warmup_iterations=measurement.warmup_iterations,
-                        active_iterations=measurement.active_iterations,
-                    ),
-                )
-            )
+        writer = writer_factory("vllm", str(vllm.__version__), "vllm._custom_ops")
+        return (writer.write("elementwise", rows),)
 
-            gate_up = torch.randn(tokens, 2 * intermediate, dtype=dtype, device="cuda")
-            gate_out = torch.empty(tokens, intermediate, dtype=dtype, device="cuda")
-            rows.append(
-                _row(
-                    dtype_name,
-                    "silu_and_mul",
-                    tokens * intermediate,
-                    time_cuda_call(
-                        lambda o=gate_out, i=gate_up: silu.op(o, i),
-                        warmup_iterations=measurement.warmup_iterations,
-                        active_iterations=measurement.active_iterations,
-                    ),
-                )
-            )
+    def _time_point(
+        self,
+        point: ElementwisePoint,
+        *,
+        dims: ElementwiseDims,
+        dtype: Any,
+        modules: dict[str, Any],
+    ) -> float:
+        """
+        Allocate, time, and release one `(op_kind, token_count)` point.
 
-            # qk_norm normalizes each head independently, so its rows are token*heads long.
-            head_in = torch.randn(tokens * heads, head_dim, dtype=dtype, device="cuda")
-            head_out = torch.empty_like(head_in)
-            rows.append(
-                _row(
-                    dtype_name,
-                    "qk_norm",
-                    tokens * heads * head_dim,
-                    time_cuda_call(
-                        lambda o=head_out, i=head_in, w=head_norm.weight.data: ops.rms_norm(
-                            o, i, w, 1e-6
-                        ),
-                        warmup_iterations=measurement.warmup_iterations,
-                        active_iterations=measurement.active_iterations,
-                    ),
-                )
-            )
+        Tensors are function-locals so they die with this frame; the caller empties the
+        allocator cache afterwards.
 
-            # `tensor_plumbing`: the dtype conversions, contiguity fixes and concatenations
-            # a real training step issues around the fused modules. Timed as a bf16 copy of
-            # a hidden-size tensor, which is the modal member of the traced population
-            # (`aten::copy_` 414 calls, `aten::to` 246, `aten::cat` 193, `aten::mul` 289).
+        Args:
+            point (ElementwisePoint): The kind and token count to measure.
+            dims (ElementwiseDims): Per-rank dimensions the tensors are shaped from.
+            dtype (Any): The `torch.dtype` to allocate at.
+            modules (dict[str, Any]): The vLLM modules built inside the config context, whose
+                weights and rope cache the raw ops need.
+
+        Returns:
+            float: Mean per-call latency in seconds.
+
+        Raises:
+            ValueError: If `point.op_kind` has no measurement here. Reachable only by adding a
+                kind to `ELEMENTWISE_KINDS` without adding its measurement, which would
+                otherwise write a table silently missing that kind.
+        """
+        import torch
+        import vllm._custom_ops as ops
+
+        tokens = point.token_count
+        kind = point.op_kind
+        # Tensors below are bound into each lambda as default arguments rather than captured, so
+        # the callable holds its own reference rather than a cell in this frame.
+        if kind == "rms_norm":
+            source = torch.randn(tokens, dims.hidden_size, dtype=dtype, device="cuda")
+            target = torch.empty_like(source)
+            weight = modules["hidden_norm"].weight.data
+            return self.time(
+                lambda o=target, i=source, w=weight: ops.rms_norm(o, i, w, _RMS_EPS)
+            )
+        if kind == "tensor_plumbing":
+            # Stands for the dtype conversions, contiguity fixes and concatenations a real
+            # training step issues around the fused modules. Timed as a bf16 copy of a
+            # hidden-size tensor, the modal member of the traced population (`aten::copy_` 414
+            # calls, `aten::to` 246, `aten::cat` 193, `aten::mul` 289).
             #
-            # One representative rather than five measurements, because the cost is 85%
-            # launch floor at these sizes: what separates the members is how many fire, not
-            # their bandwidth curve. `TrainingOps` carries the count.
-            plumbing_in = torch.randn(tokens, hidden, dtype=dtype, device="cuda")
-            plumbing_out = torch.empty_like(plumbing_in)
-            rows.append(
-                _row(
-                    dtype_name,
-                    "tensor_plumbing",
-                    tokens * hidden,
-                    time_cuda_call(
-                        lambda o=plumbing_out, i=plumbing_in: o.copy_(i),
-                        warmup_iterations=measurement.warmup_iterations,
-                        active_iterations=measurement.active_iterations,
-                    ),
+            # One representative rather than five measurements, because the cost is 85% launch
+            # floor at these sizes: what separates the members is how many fire, not their
+            # bandwidth curve. `TrainingOps` carries the count.
+            source = torch.randn(tokens, dims.hidden_size, dtype=dtype, device="cuda")
+            target = torch.empty_like(source)
+            return self.time(lambda o=target, i=source: o.copy_(i))
+        if kind == "rotary_embedding":
+            rope = modules["rope"]
+            positions = torch.arange(tokens, device="cuda")
+            query = torch.randn(
+                tokens, dims.num_heads * dims.head_dim, dtype=dtype, device="cuda"
+            )
+            key = torch.randn(
+                tokens, dims.num_kv_heads * dims.head_dim, dtype=dtype, device="cuda"
+            )
+            return self.time(
+                lambda p=positions, q=query, k=key, d=dims.head_dim: ops.rotary_embedding(
+                    p, q, k, d, rope.cos_sin_cache, rope.is_neox_style
                 )
             )
-
-            del positions, hidden_in, hidden_out, query, key, gate_up, gate_out, head_in, head_out
-            del plumbing_in, plumbing_out
-            torch.cuda.empty_cache()
-
-    writer = writer_factory("vllm", str(vllm.__version__), "vllm._custom_ops")
-    return (writer.write("elementwise", rows),)
-
-
-def _row(dtype_name: str, op_kind: str, n_elements: int, latency_s: float) -> dict[str, object]:
-    """Build one perf-table row for an elementwise measurement."""
-    return {
-        "dtype": dtype_name,
-        "op_kind": op_kind,
-        "n_elements": int(n_elements),
-        "latency_s": latency_s,
-    }
+        if kind == "silu_and_mul":
+            silu = modules["silu"]
+            gate_up = torch.randn(tokens, 2 * dims.intermediate_size, dtype=dtype, device="cuda")
+            gate_out = torch.empty(tokens, dims.intermediate_size, dtype=dtype, device="cuda")
+            return self.time(lambda o=gate_out, i=gate_up: silu.op(o, i))
+        if kind == "qk_norm":
+            # qk_norm normalizes each head independently, so its rows are token*heads long and
+            # it normalizes over head_dim rather than hidden_size: a different point on the
+            # bandwidth curve at the same token count, which is why it is its own kind.
+            weight = modules["head_norm"].weight.data
+            source = torch.randn(
+                tokens * dims.num_heads, dims.head_dim, dtype=dtype, device="cuda"
+            )
+            target = torch.empty_like(source)
+            return self.time(
+                lambda o=target, i=source, w=weight: ops.rms_norm(o, i, w, _RMS_EPS)
+            )
+        raise ValueError(
+            f"No measurement is implemented for elementwise kind {kind!r}. Add one here when "
+            f"adding it to ELEMENTWISE_KINDS."
+        )

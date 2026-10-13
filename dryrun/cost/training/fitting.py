@@ -12,7 +12,6 @@ from __future__ import annotations
 import hashlib
 
 import numpy as np
-from scipy.optimize import least_squares
 
 from dryrun.cost.artifact import ArtifactEntry
 from dryrun.profiler.schema import ProfileRecord
@@ -112,6 +111,9 @@ def scaled_nonnegative_fit(
 
     def residual(parameters: np.ndarray) -> np.ndarray:
         return (scaled @ parameters - target) * weights
+
+    # Deferred because only fitting needs scipy, and simulation should not pay its import.
+    from scipy.optimize import least_squares
 
     first = least_squares(
         residual,

@@ -6,7 +6,7 @@ is what lets the logits projection be marked once-per-step: written inline, it s
 indentation level away from being multiplied by the layer count, and the resulting error is a
 plausible-looking 36x that no unit test on a single kernel would catch.
 
-Sharding reuses `dryrun.profiler.kernels`' own functions rather than reimplementing the same
+Sharding reuses `dryrun.profiler.kernel`' own functions rather than reimplementing the same
 divisions. If the composition sharded differently from the sweep, it would query shapes that
 were never measured: or worse, query a measured shape corresponding to different work. The
 profiler raises rather than floor-dividing an indivisible degree, and that behaviour is
@@ -19,11 +19,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...profiler.hf import model_descriptor_from_yaml
-from ...profiler.kernels.attention import rank_head_counts
-from ...profiler.kernels.config import model_head_dim
-from ...profiler.kernels.shapes import logits_gemm_shape, transformer_gemm_shapes
+from ...profiler.kernel.grid.attention import rank_head_counts
+from ...profiler.kernel.grid.gdn import gdn_head_counts
+from ...profiler.kernel.grid.gemm import logits_gemm_shape, transformer_gemm_shapes
+from ...profiler.kernel.utils.model_dims import model_head_dim
 from ...profiler.schema import ModelDescriptor, ProfileValidationError
-from .database import AttentionQuery, CommQuery, GemmQuery
+from .database import AttentionQuery, CommQuery, GdnQuery, GemmQuery
 from .hardware import dtype_bytes
 
 
@@ -81,6 +82,31 @@ class ModelOps:
         logits = logits_gemm_shape(model, tensor_parallel=tensor_parallel)
         self._logits_op = GemmOp(name=logits.name, n=logits.n, k=logits.k, per_layer=False)
 
+        # Hybrid attention. A model with `full_attention_interval: N` runs softmax attention
+        # on every N-th layer and a gated delta net on the rest, so the two kernels must be
+        # multiplied by their own layer counts rather than both by `num_layers`.
+        #
+        # Getting this wrong is not a small error: Qwen3.5-35B-A3B has 10 softmax layers and
+        # 30 GDN ones, so charging all 40 as softmax overstates a 32k-token prefill by about
+        # 4x, and charging all 40 as GDN understates it by about as much. `_attention_layers`
+        # is `num_layers` for a dense model, which keeps the dense path byte-identical.
+        # MoE routing, used by `gemm_queries` to price the expert GEMMs per activated expert
+        # rather than once over every token. Zero for a dense model, which keeps that path
+        # byte-identical.
+        self._num_experts = int(model.extra.get("num_experts") or 0)
+        self._experts_per_tok = int(model.extra.get("num_experts_per_tok") or 1)
+
+        interval = model.extra.get("full_attention_interval")
+        if interval and int(interval) > 1:
+            stride = int(interval)
+            self._attention_layers = self._num_layers // stride
+            self._gdn_layers = self._num_layers - self._attention_layers
+            self._gdn_heads = gdn_head_counts(model, tensor_parallel=tensor_parallel)
+        else:
+            self._attention_layers = self._num_layers
+            self._gdn_layers = 0
+            self._gdn_heads = None
+
     @classmethod
     def from_checkpoint(
         cls,
@@ -113,6 +139,65 @@ class ModelOps:
     def num_layers(self) -> int:
         """Return the transformer block count."""
         return self._num_layers
+
+    @property
+    def attention_layers(self) -> int:
+        """Return how many layers run softmax attention.
+
+        Equal to `num_layers` for a dense model. On a hybrid model it is
+        `num_layers // full_attention_interval`, and the remainder run a gated delta net
+        instead -- 10 of 40 on Qwen3.5-35B-A3B.
+        """
+        return self._attention_layers
+
+    @property
+    def gdn_layers(self) -> int:
+        """Return how many layers run a gated delta net; 0 for a dense model."""
+        return self._gdn_layers
+
+    @property
+    def num_experts(self) -> int:
+        """Return the routed expert count per MoE block, or 0 for a dense model."""
+        return self._num_experts
+
+    def gdn_query(
+        self,
+        phase: str,
+        *,
+        total_tokens: int = 1,
+        batch_size: int = 1,
+        backend: str | None = None,
+    ) -> GdnQuery:
+        """
+        Build the query for one gated-delta-net call on this rank.
+
+        Args:
+            phase (str): `context` or `decode`.
+            total_tokens (int): Packed token total, for the context phase.
+            batch_size (int): Concurrent requests, for the decode phase.
+            backend (str | None): Table backend, or None for the default.
+
+        Returns:
+            GdnQuery: Ready to pass to `KernelDatabase.query_gdn`.
+
+        Raises:
+            ProfileValidationError: If this model has no gated-delta-net layers.
+        """
+        if self._gdn_heads is None:
+            raise ProfileValidationError(
+                "This model has no gated-delta-net layers, so there is no GDN call to price. "
+                "A hybrid model declares `full_attention_interval` in its config."
+            )
+        key_heads, value_heads, head_dim = self._gdn_heads
+        return GdnQuery(
+            phase=phase,
+            num_key_heads=key_heads,
+            num_value_heads=value_heads,
+            head_dim=head_dim,
+            total_tokens=total_tokens,
+            batch_size=batch_size,
+            backend=backend,
+        )
 
     @property
     def num_heads(self) -> int:
@@ -161,12 +246,136 @@ class ModelOps:
             tuple[tuple[GemmQuery, int], ...]: `(query, multiplier)` pairs. The multiplier is
                 the layer count for a per-layer op and 1 for the logits projection.
         """
-        queries = [
-            (GemmQuery(m=token_count, n=op.n, k=op.k), self._num_layers)
-            for op in self._projection_ops
-        ]
+        queries: list[tuple[GemmQuery, int]] = []
+        for op in self._projection_ops:
+            if op.name.startswith("expert_") and self._num_experts:
+                # One query per layer, not one per activated expert. The real kernel is a
+                # GROUPED gemm: a single launch covers every expert the step routes to, so
+                # the launch cost occurs once per layer.
+                #
+                # Decomposing it per expert was tried and is badly wrong in the other
+                # direction: at 64 tokens the step activates 221 experts, each becoming an
+                # `m=2` GEMM whose measured cost is almost entirely launch floor (10.45 us),
+                # so 40 layers x 221 experts charged 92 ms against a real 29 ms step and
+                # pushed decode MRE from 43% to 450%.
+                #
+                # The genuine term this form still misses is WEIGHT traffic. A grouped GEMM
+                # reads every activated expert's weights from HBM -- 1536 MiB per layer at 64
+                # tokens against the 48 MiB this shape implies -- which is ~16 ms of the real
+                # 29 ms decode step. Fixing that belongs in the GEMM SOL, as a weight-read
+                # term scaled by `_activated_experts`, not in the query shape: the shape has
+                # to stay one the sweep measured. Recorded as a known limitation rather than
+                # papered over; see `docs/composed-rollout.md`.
+                queries.append((GemmQuery(m=token_count, n=op.n, k=op.k), self._num_layers))
+                continue
+            queries.append((GemmQuery(m=token_count, n=op.n, k=op.k), self._num_layers))
         queries.append((GemmQuery(m=request_count, n=self._logits_op.n, k=self._logits_op.k), 1))
         return tuple(queries)
+
+    def expert_weight_bytes(self, token_count: int) -> int:
+        """
+        Return the expert weight bytes one step reads from HBM, across all layers.
+
+        Zero for a dense model. For a mixture-of-experts block this is the term the fused
+        per-token GEMM shape cannot express, and on a small batch it dominates the step: the
+        real kernel is a grouped GEMM that reads every ACTIVATED expert's weights whether
+        that expert received two tokens or two hundred, while an `m=token_count` GEMM query
+        implies only `experts_per_tok` copies.
+
+        Measured consequence on Qwen3.5-35B-A3B: a 64-token decode step activates 221 of 256
+        experts, so the real traffic is 1536 MiB per layer against the 48 MiB the query
+        implies -- about 16 ms of a 29 ms step, which is most of the gap the composed model
+        showed before this term existed.
+
+        Kept out of `gemm_sol` on purpose. That function also normalises MEASURED rows into
+        utility, and every measured row is a dense GEMM with one weight copy; adding an
+        expert multiplier there would corrupt the interpolation surface rather than only the
+        prediction. Kept out of the query shape too, because a shape the sweep never measured
+        raises `KernelCoverageError`, and decomposing into one GEMM per expert overcharges by
+        3x in the other direction (each tiny GEMM then pays a launch floor that physically
+        occurs once per layer).
+
+        Args:
+            token_count (int): Tokens in the step.
+
+        Returns:
+            int: Bytes of expert weights read, summed over every layer.
+        """
+        if not self._num_experts:
+            return 0
+        activated = self._activated_experts(token_count)
+        per_expert = 0
+        for op in self._projection_ops:
+            if not op.name.startswith("expert_"):
+                continue
+            # The fused shape already carries `experts_per_tok` on one axis, so dividing the
+            # product by it recovers ONE expert's weight element count regardless of which
+            # axis that was.
+            per_expert += op.n * op.k // self._experts_per_tok
+        return per_expert * activated * self._element_bytes * self._num_layers
+
+    def expert_weight_bytes_counted(self, token_count: int) -> int:
+        """Return the expert weight bytes the GEMM queries already charge.
+
+        One `(k, n)` copy per expert projection per layer, which is what an
+        `m=token_count` query's `k * n` memory term carries. Subtracted from
+        `expert_weight_bytes` so the grouped-GEMM weight read is added once, not twice.
+        """
+        if not self._num_experts:
+            return 0
+        counted = sum(
+            op.n * op.k for op in self._projection_ops if op.name.startswith("expert_")
+        )
+        return counted * self._element_bytes * self._num_layers
+
+    def tokens_per_expert(self, token_count: int) -> float:
+        """
+        Return the mean token count one activated expert receives.
+
+        `token_count * experts_per_tok / activated_experts`, floored at 1. This is the factor
+        a grouped GEMM amortises its weight read over: an expert serving one token must fetch
+        its whole matrix for that token, while an expert serving fifty fetches it once for
+        all fifty.
+
+        At decode it is ~1 by construction (64 tokens x topk 8 over 221 experts is 2.3), so
+        the weight read is charged almost in full. At a 4096-token prefill it is 128, so the
+        same read costs a 128th as much per step -- which is what the measured 4.24 ms
+        256-token step requires, since the unamortised figure exceeds the device's total
+        traffic budget for that step.
+
+        Args:
+            token_count (int): Tokens in the step.
+
+        Returns:
+            float: Mean tokens per activated expert, at least 1.0.
+        """
+        if not self._num_experts:
+            return 1.0
+        activated = self._activated_experts(token_count)
+        return max(float(token_count) * self._experts_per_tok / activated, 1.0)
+
+    def _activated_experts(self, token_count: int) -> int:
+        """
+        Return how many distinct experts a step of `token_count` tokens touches per layer.
+
+        Each token independently picks `experts_per_tok` of `num_experts`, so the expected
+        number of distinct experts hit is the classic coupon-collector complement
+        `E * (1 - (1 - 1/E)^(t * k))`, saturating at `E`. A balanced router is assumed, which
+        is what auxiliary-loss training optimises for.
+
+        This matters because it is the weight-read multiplier. At one token only `k` experts
+        are read; by 64 tokens almost every expert is, so the expert weight traffic grows 28x
+        over that range while a per-token shape would call it constant.
+
+        Args:
+            token_count (int): Tokens in the step.
+
+        Returns:
+            int: Distinct experts activated, in `[1, num_experts]`.
+        """
+        draws = max(int(token_count), 1) * self._experts_per_tok
+        expected = self._num_experts * (1.0 - (1.0 - 1.0 / self._num_experts) ** draws)
+        return max(1, min(self._num_experts, int(round(expected))))
 
     def comm_queries(self, token_count: int) -> tuple[tuple[CommQuery, int], ...]:
         """

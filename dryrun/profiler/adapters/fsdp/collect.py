@@ -18,7 +18,7 @@ from ...schema import (
     SoftwareDescriptor,
     TrainingPayload,
 )
-from ..training import (
+from ..base import (
     iter_candidate_dirs,
     load_sidecar_metrics,
     rank_memory_peaks,

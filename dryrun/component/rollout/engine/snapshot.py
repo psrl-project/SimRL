@@ -47,16 +47,10 @@ def record_request(req: Request, recorder: Recorder) -> None:
     place, so the length alone is not enough -- hence the extra entry. This is
     the same correction the original hand-written snapshot made.
     """
-    recorder.record_once(
-        ("req", id(req)),
-        lambda: AttrSnapshot.capture(req, *_REQUEST_FIELDS),
-    )
+    recorder.record_attrs_once(("req", id(req)), req, *_REQUEST_FIELDS)
     recorder.record_once(("segs", id(req)), lambda: TruncateList.capture(req.segments))
     if req.segments:
-        recorder.record_once(
-            ("seg_tail", id(req)),
-            lambda: AttrSnapshot.capture(req.segments[-1], "tokens"),
-        )
+        recorder.record_attrs_once(("seg_tail", id(req)), req.segments[-1], "tokens")
 
 
 @dataclass
@@ -85,7 +79,11 @@ class InstanceSnapshot:
         the cost is proportional to the live batch rather than to the run.
         """
         log = UndoLog()
-        log.record(AttrSnapshot.capture(inst, "t_local", "n_preemptions"))
+        log.record(
+            AttrSnapshot.capture(
+                inst, "t_local", "n_preemptions", "_last_decode_blocked"
+            )
+        )
         log.record(
             AttrSnapshot(
                 target=inst,

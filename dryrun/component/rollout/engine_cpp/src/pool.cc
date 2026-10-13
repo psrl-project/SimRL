@@ -157,7 +157,7 @@ bool BlockPool::maybe_evict(KvBlock* block, Recorder& rec) {
 
   // Capture eviction_count once per event for rollback.
   rec.record_once(
-      reinterpret_cast<uintptr_t>(&eviction_count),
+      JournalKey::of(this, JournalKey::kEvictionCount),
       [this]() -> UndoEntry {
         return FieldSnapshot3{this, FieldSnapshot3::Kind::kEvictionCount,
                               0.0, eviction_count, false, 0};

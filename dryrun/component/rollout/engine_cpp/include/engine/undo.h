@@ -1,8 +1,10 @@
 // dryrun/component/rollout/engine_cpp/include/engine/undo.h
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
@@ -63,8 +65,11 @@ struct VectorTruncate {
 };
 
 // Restores Request mutable fields to their pre-event values.
+//
+// A raw pointer is safe because the same log holds a `VectorRestore` copy of
+// both resident lists, which keeps every snapshotted request alive.
 struct RequestSnapshot {
-  RequestPtr req;
+  Request* req;
   int prefilled;
   int generated;
   ReqStatus status;
@@ -158,12 +163,24 @@ struct HashMapBulkRestore {
   void restore();
 };
 
-// Held-blocks restore for KvCacheManager.
+// Held-blocks restore for KvCacheManager: the whole list, for a free.
 struct HeldBlocksRestore {
   KvCacheManager* manager;
   int rid;
   bool existed;
   std::vector<KvBlock*> old_blocks;
+  std::optional<int> old_n_cached;
+
+  void restore();
+};
+
+// Held-blocks restore for an allocation. An allocation only appends to the held
+// list, so cutting it back to its old length undoes it without copying the list.
+struct HeldBlocksTruncate {
+  KvCacheManager* manager;
+  int rid;
+  bool existed;
+  size_t old_size;
   std::optional<int> old_n_cached;
 
   void restore();
@@ -194,8 +211,92 @@ using UndoEntry = std::variant<
     HashMapChanged,
     HashMapBulkRestore,
     HeldBlocksRestore,
+    HeldBlocksTruncate,
     CachedCountsRestore
 >;
+
+// Identity of one piece of state a `record_once` entry protects: the object
+// that owns it, and which part of that object.
+//
+// NOTE(claude): Keep owner and part separate. An object's address is also the
+// address of its first member, so a key folded into one integer lets two
+// different pieces of state collide and the second is silently not journaled.
+struct JournalKey {
+  enum Part : uint32_t {
+    kRequestFields = 1,
+    kKvCounters = 2,
+    kHeldBlocks = 3,
+    kEvictionCount = 4,
+  };
+  const void* owner;
+  uint64_t part;
+
+  static JournalKey of(const void* owner, Part kind, uint32_t id = 0) {
+    return {owner, (static_cast<uint64_t>(kind) << 32) | id};
+  }
+  bool operator==(const JournalKey& o) const {
+    return owner == o.owner && part == o.part;
+  }
+};
+
+// Open-addressing set of journal keys. `record_once` consults it for every
+// resident on every event, so clearing bumps a generation stamp in O(1).
+class FlatKeySet {
+ public:
+  FlatKeySet() { rehash(1024); }
+
+  // Returns true when `key` was absent and has now been added.
+  bool insert(const JournalKey& key) {
+    if ((size_ + 1) * 2 > keys_.size()) rehash(keys_.size() * 2);
+    const size_t mask = keys_.size() - 1;
+    size_t i = mix(key) & mask;
+    while (stamp_[i] == gen_) {
+      if (keys_[i] == key) return false;
+      i = (i + 1) & mask;
+    }
+    stamp_[i] = gen_;
+    keys_[i] = key;
+    ++size_;
+    return true;
+  }
+
+  void clear() {
+    size_ = 0;
+    if (++gen_ == 0) {
+      std::fill(stamp_.begin(), stamp_.end(), 0u);
+      gen_ = 1;
+    }
+  }
+
+ private:
+  static size_t mix(const JournalKey& k) {
+    uint64_t x = reinterpret_cast<uintptr_t>(k.owner) ^ (k.part * 0x9e3779b97f4a7c15ULL);
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return static_cast<size_t>(x);
+  }
+
+  void rehash(size_t capacity) {
+    std::vector<JournalKey> old_keys = std::move(keys_);
+    std::vector<uint32_t> old_stamp = std::move(stamp_);
+    const uint32_t old_gen = gen_;
+    keys_.assign(capacity, JournalKey{nullptr, 0});
+    stamp_.assign(capacity, 0u);
+    gen_ = 1;
+    size_ = 0;
+    for (size_t j = 0; j < old_keys.size(); ++j) {
+      if (old_stamp[j] == old_gen) insert(old_keys[j]);
+    }
+  }
+
+  std::vector<JournalKey> keys_;
+  std::vector<uint32_t> stamp_;
+  uint32_t gen_ = 1;
+  size_t size_ = 0;
+};
 
 // --- The undo log ---
 
@@ -205,10 +306,16 @@ class UndoLog {
 
   void record(UndoEntry e) { entries_.push_back(std::move(e)); }
 
+  // Build and record an entry. The factory lets the null recorder skip
+  // constructing one.
   template <typename F>
-  void record_once(uintptr_t key, F&& factory) {
-    if (keys_.count(key)) return;
-    keys_.insert(key);
+  void record_lazy(F&& factory) {
+    entries_.push_back(factory());
+  }
+
+  template <typename F>
+  void record_once(const JournalKey& key, F&& factory) {
+    if (!keys_.insert(key)) return;
     entries_.push_back(factory());
   }
 
@@ -223,14 +330,16 @@ class UndoLog {
 
  private:
   std::vector<UndoEntry> entries_;
-  std::unordered_set<uintptr_t> keys_;
+  FlatKeySet keys_;
 };
 
 // Null recorder: does nothing. Used by committed paths.
 struct NullRecorder {
   void record(UndoEntry) {}
   template <typename F>
-  void record_once(uintptr_t, F&&) {}
+  void record_lazy(F&&) {}
+  template <typename F>
+  void record_once(const JournalKey&, F&&) {}
 };
 
 inline NullRecorder kNullRecorder;

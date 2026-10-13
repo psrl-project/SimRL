@@ -10,18 +10,19 @@ import torch
 from dryrun.cost.kernel.ops.gemm import GEMM_OP
 from dryrun.cost.kernel.table import KernelTable
 from dryrun.profiler.hf import model_descriptor_from_yaml
-from dryrun.profiler.kernels.config import GemmSweep, KernelProfileConfig
-from dryrun.profiler.kernels.gemm import (
+from dryrun.profiler.kernel.config import KernelProfileConfig
+from dryrun.profiler.kernel.grid.gemm import (
     gemm_all_shapes,
     gemm_dgrad_shapes,
     gemm_sweep_shapes,
     gemm_wgrad_shapes,
     logits_gemm_shape,
     logits_sweep_shapes,
-    profile_gemm,
     transformer_gemm_shapes,
 )
-from dryrun.profiler.kernels.measurements import PerfTableWriter
+from dryrun.profiler.kernel.measurements import PerfTableWriter
+from dryrun.profiler.kernel.runner.gemm import GemmRunner
+from dryrun.profiler.kernel.sweep import GemmSweep
 from dryrun.profiler.schema import ProfileValidationError
 
 _FIXTURE_MODEL = Path("tests/fixtures/hf/qwen3_8b").resolve()
@@ -200,7 +201,7 @@ def test_dgrad_output_has_the_activation_gradients_shape():
 
 
 @pytest.mark.skipif(not _CUDA, reason="CUDA device is not available.")
-def test_profile_gemm_writes_a_loadable_table(tmp_path, model):
+def test_gemm_runner_writes_a_loadable_table(tmp_path, model):
     config = KernelProfileConfig.from_dict(
         {
             "model": str(_FIXTURE_MODEL),
@@ -225,7 +226,10 @@ def test_profile_gemm_writes_a_loadable_table(tmp_path, model):
         version="0.26.1.dev0",
         kernel_source="torch.nn.functional.linear",
     )
-    path = profile_gemm(model, config, writer=writer)
+    # The runner calls `writer_factory` itself, because the families that select a backend at
+    # runtime can only name their kernel source mid-sweep. GEMM's is known up front, so the
+    # factory here ignores its arguments and hands back the writer built above.
+    (path,) = GemmRunner(model, config).run(writer_factory=lambda *_: writer)
     table = KernelTable.load(path, GEMM_OP)
     # 8 forward + 8 dgrad + 8 wgrad (no overlaps at these token counts) + 2 logits = 26,
     # minus the 2 forward/dgrad coincidences where a projection's n equals its k

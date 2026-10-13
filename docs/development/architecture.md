@@ -33,12 +33,17 @@ The simulator's main loop advances one training version at a time. Within each v
 rollout and training interleave around a shared event queue:
 
 ```
-admit → generate → complete → select batch → (recompute) → train → sync → publish
+stage → place/admit → generate → complete → select batch → (recompute) → train → sync → publish
 ```
 
-`admit`
-: The staleness policy's `admit_quota` method returns how many new requests may enter
-  the rollout engine. Admission is gated by three configurable flags on each engine
+`stage`
+: Dataset groups enter the router independently of policy capacity. Startup exposes
+  `(max_staleness + 1) * batch_size` groups and each publish exposes one more batch.
+
+`place/admit`
+: The staleness policy's `admit_quota` gates a staged group's first placement.
+  That placement atomically admits every response in the group and calls `on_admit`
+  once. Placement is also gated by three configurable flags on each engine
   instance: `reject_if_kv_full` (refuse when the KV cache has no free blocks),
   `reject_if_waiting` (refuse when the instance already has queued requests), and
   `reject_if_running_full` (refuse when the running queue is at capacity).
@@ -78,7 +83,8 @@ admit → generate → complete → select batch → (recompute) → train → s
   decides whether the rollout engine's visible weight version also advances (it always
   does for most policies, while `slime` defers it by `update_weights_interval` steps).
   In-flight requests whose partial tokens predate the new version are interrupted, and the
-  policy's `on_interrupt` hook handles them.
+  policy's `on_interrupt` hook handles them. Unadmitted, zero-token groups still in the router
+  rebase to this new rollout version before their first placement.
 
 ---
 

@@ -255,15 +255,14 @@ def test_the_scorer_is_live():
     assert plan.tp_per_instance == (1, 1, 1, 1)
 
 
-def test_high_tp_bias_is_range_checked():
-    for bad in (-0.1, 1.5):
-        with pytest.raises(ValueError, match="high_tp_bias"):
-            ParallelismSolver(
-                cost_models=_mock_models(),
-                n_gpus=4,
-                tp_candidates=(1, 2),
-                high_tp_bias=bad,
-            )
+def test_active_cap_must_be_positive_when_set():
+    with pytest.raises(ValueError, match="active_cap"):
+        ParallelismSolver(
+            cost_models=_mock_models(),
+            n_gpus=4,
+            tp_candidates=(1, 2),
+            active_cap=0,
+        )
 
 
 def test_the_snapshot_cannot_leak_the_future():
@@ -284,6 +283,19 @@ def test_expected_placement_models_the_routers_preference():
     assert old_counts[0] >= old_counts[1], placement
     # Current work spreads over every instance, including the high-TP one.
     assert all(new > 0 for _, new in placement), placement
+
+
+def test_expected_placement_keeps_current_work_low_while_stale_is_queued():
+    solver = ParallelismSolver(
+        cost_models=_mock_models(),
+        n_gpus=4,
+        tp_candidates=(1, 2),
+        active_cap=2,
+    )
+    placement = solver._expected_placement((2, 1, 1), r_old=3, r_new=8)
+    assert placement[0][0] == 3
+    assert placement[0][1] == 0
+    assert sum(new for _, new in placement[1:]) == 8
 
 
 # ----------------------------------------------------------------------

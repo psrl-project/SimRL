@@ -10,6 +10,7 @@ import pytest
 from dryrun.cli.profile import _generate_bridge_candidates
 from dryrun.profiler.adapters.megatron import (
     MegatronBridgeConfig,
+    infer_bridge_recipe,
     prepare_bridge_candidate,
 )
 from dryrun.profiler.adapters.vllm import VLLMSweepConfig
@@ -24,6 +25,7 @@ from dryrun.profiler.search_space import ModelConstraints, TrainingCandidate, en
 
 FIXTURES = Path(__file__).parent / "fixtures"
 HF_QWEN = FIXTURES / "hf" / "qwen3_8b"
+HF_DEEPSEEK_14B = FIXTURES / "hf" / "deepseek_r1_distill_qwen_14b"
 REAL_QWEN = Path("/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B")
 
 
@@ -223,3 +225,78 @@ def test_megatron_config_carries_no_gpu_token(tmp_path: Path):
 
     assert not hasattr(config, "gpu_type")
     assert config.hardware.gpu_name == "Custom Accelerator"
+
+
+def test_bridge_recipe_resolves_qwen2_architecture_by_size():
+    """
+    A Qwen2-architecture checkpoint resolves to the recipe matching its parameter count.
+
+    The previous implementation knew only Qwen3 and computed the name arithmetically as
+    `f"qwen3_{round(params / 1e9)}b"`. That spelling names recipes the library does not
+    ship: Megatron-Bridge has `qwen25_14b` but no `qwen2_14b`, and a 14.77B checkpoint
+    rounds to 15 regardless. The failure surfaced inside the torchrun child, after the
+    candidate had already paid for distributed setup, so the table is checked here.
+    """
+    model = load_hf_model_descriptor(HF_DEEPSEEK_14B)
+
+    assert model.architecture == "Qwen2ForCausalLM"
+    assert infer_bridge_recipe(model) == ("qwen", "qwen25_14b")
+
+
+def test_bridge_recipe_still_resolves_qwen3():
+    """The table must not regress the architecture it replaced a one-branch rule for."""
+    assert infer_bridge_recipe(load_hf_model_descriptor(HF_QWEN)) == ("qwen", "qwen3_8b")
+
+
+def test_bridge_recipe_refuses_a_size_no_recipe_covers(tmp_path: Path):
+    """
+    A parameter count far from every tabled recipe raises instead of picking the nearest.
+
+    Silently resolving a 20B checkpoint to the 14B recipe would profile a different model
+    than the one asked for, and the step times would look entirely reasonable.
+    """
+    checkpoint = tmp_path / "qwen2_20b"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["Qwen2ForCausalLM"],
+                "model_type": "qwen2",
+                "hidden_size": 6144,
+                "intermediate_size": 16384,
+                "num_hidden_layers": 60,
+                "num_attention_heads": 48,
+                "num_key_value_heads": 8,
+                "vocab_size": 152064,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProfileValidationError, match="not within"):
+        infer_bridge_recipe(load_hf_model_descriptor(checkpoint))
+
+
+def test_megatron_yaml_recipe_override_requires_both_fields(tmp_path: Path):
+    """
+    `model_family_name` and `model_recipe_name` are set together or not at all.
+
+    Inference raises for an architecture the table does not hold, and naming the recipe
+    explicitly is the documented way out. Accepting one field alone would pair an override
+    with an inferred half and resolve a recipe neither the table nor the caller asked for.
+    """
+    raw = {
+        "model": str(HF_DEEPSEEK_14B),
+        "hardware": {"gpu_name": "H20", "gpu_count": 8},
+        "output_dir": str(tmp_path),
+        "model_family_name": "qwen",
+    }
+
+    with pytest.raises(ProfileValidationError, match="must be set together"):
+        MegatronBridgeConfig.from_dict(raw, base_dir=tmp_path)
+
+    config = MegatronBridgeConfig.from_dict(
+        {**raw, "model_recipe_name": "qwen25_32b"},
+        base_dir=tmp_path,
+    )
+    assert (config.model_family_name, config.model_recipe_name) == ("qwen", "qwen25_32b")

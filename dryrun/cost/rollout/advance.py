@@ -75,7 +75,16 @@ def steps_within(F, alpha, beta, budget) -> int:
     k0 = crossing_step(F, alpha, beta)
     t_floor = k0 * F
     if budget <= t_floor:
-        return int(budget // F) if F > 0 else k0
+        if F <= 0:
+            return k0
+        # `budget // F` can land one step short of an exact quotient (10.0 // 0.005 is
+        # 1999.0), so correct it the same way the branches below do.
+        k = int(budget // F)
+        while elapsed(F, alpha, beta, k + 1) <= budget:
+            k += 1
+        while k > 0 and elapsed(F, alpha, beta, k) > budget:
+            k -= 1
+        return k
 
     rest = budget - t_floor
     a = float(beta) / 2.0

@@ -42,10 +42,22 @@ class Parallelism:
     pp: int = 1
     dp: int = 1
     cp: int = 1
+    # Expert parallelism, for mixture-of-experts blocks. Deliberately NOT a factor of
+    # `world_size`: Megatron carves the expert groups out of the data-parallel dimension
+    # (`parallel_state.initialize_model_parallel` derives
+    # `expert_data_parallel_size = world_size // (etp * ep * pp)`), so a rank count is
+    # already fully described by tp * pp * dp * cp. EP only changes how many experts each
+    # rank owns and therefore the all-to-all traffic, which is exactly why it has to be a
+    # cell key: two candidates differing only in EP run different collectives for the same
+    # mesh, and sharing one fitted cell would average them.
+    #
+    # 1 means every rank holds every expert, which is the correct default for a dense model
+    # and the only valid value when `num_moe_experts` is absent.
+    ep: int = 1
     world_size: int | None = None
 
     def __post_init__(self) -> None:
-        for name in ("tp", "pp", "dp", "cp"):
+        for name in ("tp", "pp", "dp", "cp", "ep"):
             _positive(getattr(self, name), name)
         product = self.tp * self.pp * self.dp * self.cp
         if self.world_size is None:
@@ -55,6 +67,30 @@ class Parallelism:
                 "world_size must equal tp * pp * dp * cp, "
                 f"got {self.world_size} != {self.tp} * {self.pp} * {self.dp} * {self.cp}."
             )
+        # Megatron builds the expert mesh as `expert_tensor_parallel * ep * pp` over the
+        # whole world. The Megatron launcher pins `expert_tensor_parallel_size = 1` (see
+        # `adapters/megatron/launch.py` for why: following TP would force ep=1 at every
+        # memory-feasible mesh), so a real mesh must satisfy `ep * pp | world_size`.
+        #
+        # Enforced only when `dp > 1`, which is what distinguishes a real mesh from a
+        # canonical artifact cell key. A `Parallelism` is used for both:
+        #
+        # - A real mesh, where the constraint is Megatron's own and violating it raises a
+        #   RuntimeError minutes into distributed init. Such a mesh always has `dp > 1` for
+        #   this model, since EP is carved out of the data-parallel dimension and `ep > 1`
+        #   needs ranks to carve from.
+        # - A canonical cell key, where `to_profile_parallelism(canonical_dp=True)` collapses
+        #   DP to 1 so one fitted cell describes every DP degree. That key has
+        #   `world_size = tp * pp`, smaller than `ep * pp` whenever EP exceeds TP. It is
+        #   legitimate, and it round-trips through `from_dict` when the artifact is reloaded,
+        #   so rejecting it would make a correct artifact unloadable.
+        expert_mesh = self.ep * self.pp
+        if self.ep > 1 and self.dp > 1 and self.world_size % expert_mesh:
+            raise ProfileValidationError(
+                f"world_size ({self.world_size}) must be divisible by "
+                f"ep * pp ({self.ep} * {self.pp} = {expert_mesh}); "
+                "Megatron derives expert data parallelism from that quotient."
+            )
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> Parallelism:
@@ -63,6 +99,7 @@ class Parallelism:
             pp=int(value.get("pp", 1)),
             dp=int(value.get("dp", 1)),
             cp=int(value.get("cp", 1)),
+            ep=int(value.get("ep", 1)),
             world_size=int(value["world_size"]) if value.get("world_size") is not None else None,
         )
 

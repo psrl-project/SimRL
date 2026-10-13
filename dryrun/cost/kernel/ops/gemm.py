@@ -2,7 +2,7 @@
 The unified GEMM op: every linear layer in the model, sliced by `(dtype, n, k)`.
 
 One table serves forward, dgrad, and wgrad, because a GEMM's cost depends only on `(m, n, k)`
-and the backward passes are the same arithmetic with permuted axes. `shapes.gemm_wgrad_shapes`
+and the backward passes are the same arithmetic with permuted axes. `grid.gemm.gemm_wgrad_shapes`
 emits the permuted triples into this same table, so backward needs no separate op.
 
 `m` is the only interpolation axis. `n` and `k` are categorical: blending across output or
@@ -23,13 +23,6 @@ from ..sol import SolComponents, gemm_sol
 from .base import register_op
 
 
-def _torch_version() -> str:
-    """Return the torch version string used as the GEMM table's provenance version."""
-    import torch
-
-    return str(torch.__version__)
-
-
 @dataclass(frozen=True)
 class GemmKernelOp:
     """The unified GEMM perf table and its roofline.
@@ -46,6 +39,13 @@ class GemmKernelOp:
     slice_columns = ("gemm_dtype", "n", "k")
     axis_columns = ("m",)
     fits_floor = False
+    # Shared by the rollout and training models, and the two disagree: a decode GEMM is
+    # inside the FULL graph while a Megatron GEMM is not. Left event-timed because the
+    # stake does not justify splitting the table -- the gap is 1.68 us per call at m<=8
+    # (9.64 us event against 7.96 us amortised), about 0.47 ms across a 40-layer step,
+    # and it vanishes above m=128 where the kernel is compute-bound. Contrast GDN decode,
+    # where the same gap was 21.95 us per call.
+    graph_replayed = False
 
     def sol(
         self,
@@ -76,10 +76,10 @@ class GemmKernelOp:
 
     def parse_sweep(self, value: dict[str, Any]) -> Any:
         """Parse the `gemm:` sweep subtree into a `GemmSweep`."""
-        # Imported lazily: `dryrun.profiler.kernels.config` reaches the profiler package, and
+        # Imported lazily: `dryrun.profiler.kernel.sweep` reaches the profiler package, and
         # a simulator run that only prices kernels must not load it. Four dots because this
         # module is `dryrun.cost.kernel.ops.gemm`; Step 4 verifies the depth resolves.
-        from ....profiler.kernels.config import GemmSweep
+        from ....profiler.kernel.sweep import GemmSweep
 
         return GemmSweep.from_dict(value)
 
@@ -90,10 +90,9 @@ class GemmKernelOp:
     def measure(self, model: Any, config: Any, *, writer_factory: Any) -> tuple[Any, ...]:
         """Time every swept GEMM shape and write the unified table."""
         # Imported here so the cost path never loads torch.
-        from ....profiler.kernels.gemm import profile_gemm
+        from ....profiler.kernel.runner.gemm import GemmRunner
 
-        writer = writer_factory("vllm", _torch_version(), "torch.nn.functional.linear")
-        return (profile_gemm(model, config, writer=writer),)
+        return GemmRunner(model, config).run(writer_factory=writer_factory)
 
 
 GEMM_OP = GemmKernelOp()

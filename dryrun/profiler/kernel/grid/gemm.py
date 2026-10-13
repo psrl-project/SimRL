@@ -1,9 +1,10 @@
 """
 Per-rank GEMM shapes of a transformer block, sharded by tensor parallelism.
 
-Separate from `gemm.py` because these are pure integer arithmetic over a `ModelDescriptor`,
-while `gemm.py` also holds the CUDA timing loop and so imports `torch`. The cost model
-composes a step from these shapes and must not pay a 4.2-second GPU-stack import to do it.
+Separate from `runner/gemm.py` because these are pure integer arithmetic over a
+`ModelDescriptor`, while the runner also holds the CUDA timing loop and so imports `torch`.
+The cost model composes a step from these shapes and must not pay a 4.2-second GPU-stack
+import to do it.
 
 Shapes are sharded at construction time, so the perf table itself is TP-agnostic: it stores
 `(m, n, k)` and nothing else. Forward, dgrad, and wgrad all land in that one table, which is
@@ -21,8 +22,8 @@ refused rather than priced with the dense arithmetic. The sweep helpers below ar
 
 from __future__ import annotations
 
-from ..schema import ModelDescriptor
-from .config import GemmSweep
+from ...schema import ModelDescriptor
+from ..sweep.gemm import GemmSweep
 from .families import family_for
 from .shape import GemmShape
 

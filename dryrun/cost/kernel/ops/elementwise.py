@@ -70,6 +70,10 @@ class ElementwiseKernelOp:
     slice_columns = ("dtype", "op_kind")
     axis_columns = ("n_elements",)
     fits_floor = True
+    # Consumed only by the training model, and Megatron runs no CUDA graphs, so the launch
+    # cost is genuinely on its critical path. `ComposedRollout` does not charge elementwise
+    # at all precisely because graph replay absorbs it there -- see `training_ops.py`.
+    graph_replayed = False
 
     def sol(
         self,
@@ -113,15 +117,15 @@ class ElementwiseKernelOp:
 
     def parse_sweep(self, value: dict[str, Any]) -> Any:
         """Parse the `elementwise:` sweep subtree into an `ElementwiseSweep`."""
-        from ....profiler.kernels.config import ElementwiseSweep
+        from ....profiler.kernel.sweep import ElementwiseSweep
 
         return ElementwiseSweep.from_dict(value)
 
     def measure(self, model: Any, config: Any, *, writer_factory: Any) -> tuple[Any, ...]:
         """Time every elementwise kind across the token grid and write one table."""
-        from ....profiler.kernels.elementwise import profile_elementwise
+        from ....profiler.kernel.runner.elementwise import ElementwiseRunner
 
-        return profile_elementwise(model, config, writer_factory=writer_factory)
+        return ElementwiseRunner(model, config).run(writer_factory=writer_factory)
 
     def table_columns(self) -> tuple[str, ...]:
         """Return this op's non-provenance table columns, latency last."""

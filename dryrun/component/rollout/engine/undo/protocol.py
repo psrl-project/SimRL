@@ -8,7 +8,7 @@ structural requirement of the engine loop rather than a safety net.
 
 from __future__ import annotations
 
-from typing import Callable, Hashable, Protocol, runtime_checkable
+from typing import Any, Callable, Hashable, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -41,6 +41,15 @@ class Recorder(Protocol):
         """
         ...
 
+    def record_attrs_once(self, key: Hashable, target: Any, *names: str) -> None:
+        """`record_once` specialised to capturing attributes of one object.
+
+        The hot-path form. A closure per call is what `record_once`'s callable
+        costs, and for the common case the recorder can build the snapshot
+        itself from the target and names, so a repeat key allocates nothing.
+        """
+        ...
+
 
 class NullRecorder:
     """A `Recorder` that keeps nothing, for paths that cannot be rolled back.
@@ -56,6 +65,9 @@ class NullRecorder:
         pass
 
     def record_once(self, key: Hashable, capture: Callable[[], Undoable]) -> None:
+        pass
+
+    def record_attrs_once(self, key: Hashable, target: Any, *names: str) -> None:
         pass
 
 

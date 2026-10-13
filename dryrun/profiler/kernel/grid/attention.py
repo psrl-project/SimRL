@@ -8,20 +8,18 @@ budget rather than by catching OOM keeps the grid reproducible across machines.
 Points are ordered largest-footprint first so that a sweep which is going to run out
 of memory does so in its first seconds rather than its last hour.
 
-Timing lives in `_vllm_attn` and `_flashinfer_attn`; this module stays importable
-without a GPU.
+Timing lives in `runner/`; this module stays importable without a GPU, because the cost
+path reads `rank_head_counts` from here to shard its own query shapes.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import product
-from pathlib import Path
 
-from ..schema import ModelDescriptor, ProfileValidationError
-from .config import AttentionSweep, KernelProfileConfig, model_head_dim
-from .measurements import PerfTableWriter
+from ...schema import ModelDescriptor, ProfileValidationError
+from ..sweep.attention import AttentionSweep
+from ..utils.model_dims import model_head_dim
 
 
 @dataclass(frozen=True)
@@ -116,50 +114,3 @@ def attention_head_dim(model: ModelDescriptor) -> int:
         int: Head dimension.
     """
     return model_head_dim(model)
-
-
-def profile_vllm_attention(
-    model: ModelDescriptor,
-    config: KernelProfileConfig,
-    *,
-    writer_factory: Callable[[str, str, str], PerfTableWriter],
-) -> tuple[Path, Path]:
-    """
-    Measure both attention phases through the backend vLLM selects.
-
-    Args:
-        model (ModelDescriptor): Architecture read from the checkpoint.
-        config (KernelProfileConfig): Sweep grid, dtypes, and iteration counts.
-        writer_factory (Callable[[str, str, str], PerfTableWriter]): Builds a writer
-            from `(framework, version, kernel_source)`. The kernel source is only known
-            after backend selection, so the writer cannot be passed in directly.
-
-    Returns:
-        tuple[Path, Path]: The written context and generation table paths.
-    """
-    from ._vllm_attn import profile_vllm_attention as _impl
-
-    return _impl(model, config, writer_factory=writer_factory)
-
-
-def profile_flashinfer_attention(
-    model: ModelDescriptor,
-    config: KernelProfileConfig,
-    *,
-    writer_factory: Callable[[str, str, str], PerfTableWriter],
-) -> tuple[Path, Path]:
-    """
-    Measure both attention phases through FlashInfer's paged wrappers.
-
-    Args:
-        model (ModelDescriptor): Architecture read from the checkpoint.
-        config (KernelProfileConfig): Sweep grid, dtypes, and iteration counts.
-        writer_factory (Callable[[str, str, str], PerfTableWriter]): Builds a writer
-            from `(framework, version, kernel_source)`.
-
-    Returns:
-        tuple[Path, Path]: The written context and generation table paths.
-    """
-    from ._flashinfer_attn import profile_flashinfer_attention as _impl
-
-    return _impl(model, config, writer_factory=writer_factory)

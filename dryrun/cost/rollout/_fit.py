@@ -9,7 +9,6 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 import numpy as np
-from scipy.optimize import least_squares
 
 from dryrun.profiler.io import profile_digest
 from dryrun.profiler.schema import Parallelism, ProfileRecord, RolloutPayload
@@ -95,6 +94,9 @@ def robust_nonnegative_fit(
     n_samples: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Fit non-negative parameters with soft-L1 loss and MAD refitting."""
+    # Deferred because only fitting needs scipy, and simulation should not pay its import.
+    from scipy.optimize import least_squares
+
     first = least_squares(
         lambda parameters: predict(parameters),
         x0=np.maximum(initial, np.finfo(np.float64).eps),

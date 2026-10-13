@@ -49,24 +49,19 @@ def _unpack(slice_key: tuple[Any, ...], coords: tuple[float, ...]) -> dict[str, 
 
 def _parse_attention_sweep(value: dict[str, Any]) -> Any:
     """Parse the shared `attention:` sweep subtree."""
-    # Imported lazily: `dryrun.profiler.kernels.config` reaches the profiler package, and
+    # Imported lazily: `dryrun.profiler.kernel.sweep` reaches the profiler package, and
     # a simulator run that only prices kernels must not load it. Four dots because this
     # module is `dryrun.cost.kernel.ops.attention`; the torch-free check verifies the depth.
-    from ....profiler.kernels.config import AttentionSweep
+    from ....profiler.kernel.sweep import AttentionSweep
 
     return AttentionSweep.from_dict(value)
 
 
 def _measure_attention(model: Any, config: Any, *, writer_factory: Any) -> tuple[Any, ...]:
     """Measure both phases through both backends and write four tables."""
-    from ....profiler.kernels.attention import (
-        profile_flashinfer_attention,
-        profile_vllm_attention,
-    )
+    from ....profiler.kernel.runner.attention import AttentionRunner
 
-    written = list(profile_vllm_attention(model, config, writer_factory=writer_factory))
-    written.extend(profile_flashinfer_attention(model, config, writer_factory=writer_factory))
-    return tuple(written)
+    return AttentionRunner(model, config).run(writer_factory=writer_factory)
 
 
 @dataclass(frozen=True)
@@ -81,6 +76,9 @@ class ContextAttentionKernelOp:
     slice_columns = _SLICE_COLUMNS
     axis_columns = ("num_heads", "batch_size", "isl")
     fits_floor = True
+    # Prefill batches are captured PIECEWISE, and `unified_attention_with_output` is a
+    # splitting op, so this call runs outside the graph and pays its dispatch eagerly.
+    graph_replayed = False
 
     def sol(
         self,
@@ -131,6 +129,10 @@ class GenerationAttentionKernelOp:
     slice_columns = _SLICE_COLUMNS
     axis_columns = ("num_heads", "batch_size", "step")
     fits_floor = True
+    # A decode batch replays one FULL graph spanning the whole forward pass, attention
+    # included, so the engine pays no per-call dispatch here. Measured 67 us event-timed
+    # against 15 us replayed at batch 1 -- a 4.5x overcharge, repeated once per layer.
+    graph_replayed = True
 
     def sol(
         self,

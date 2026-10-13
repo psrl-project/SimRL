@@ -6,7 +6,6 @@ from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
-from scipy.optimize import lsq_linear
 
 from dryrun.cost.artifact import ArtifactEntry, CostArtifact, FitMetrics
 from dryrun.profiler.schema import Parallelism, ProfileRecord
@@ -217,6 +216,9 @@ def _roofline_initial(
         active = target > floor + max(1e-12, abs(floor) * 1e-8)
         source_x = design[active] if int(np.sum(active)) >= design.shape[1] else design
         source_y = target[active] if int(np.sum(active)) >= design.shape[1] else target
+        # Deferred because only fitting needs scipy, and simulation should not pay its import.
+        from scipy.optimize import lsq_linear
+
         linear = lsq_linear(source_x, source_y, bounds=(0, np.inf)).x
         predicted = np.maximum(floor, design @ linear)
         score = float(np.sum((predicted - target) ** 2))

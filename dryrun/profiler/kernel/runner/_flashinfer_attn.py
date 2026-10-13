@@ -29,6 +29,22 @@ from pathlib import Path
 
 import torch
 
+from ...._logging import dryrun_logger
+
+# GQA group sizes FlashInfer's paged decode kernel compiles a specialization for. The ratio
+# is a template parameter, dispatched by `DISPATCH_GQA_GROUP_SIZE` in
+# `flashinfer/data/include/flashinfer/utils.cuh`, and anything else reaches that macro's
+# `else` branch and raises "Unsupported group_size: N" from inside the generated kernel.
+#
+# This bites real checkpoints: DeepSeek-R1-Distill-Qwen-14B has 40 query heads to 8 KV
+# heads, a ratio of 5. Tensor parallelism does not help, because `rank_head_counts` shards
+# both counts by the same degree and the ratio is invariant: 40/8, 20/4, 10/2 and 5/1 are
+# all group size 5. So this is a property of the architecture, not of a topology choice.
+#
+# The prefill kernel has no such restriction, which is why the constraint is checked at the
+# decode phase rather than refusing the backend outright.
+_FLASHINFER_DECODE_GROUP_SIZES = frozenset({1, 2, 3, 4, 8})
+
 
 def flashinfer_kernel_source() -> str:
     """Return the kernel-source tag for all rows written by this module."""
@@ -64,7 +80,7 @@ def time_flashinfer_context_point(
     """
     import flashinfer
 
-    from ._timing import time_cuda_call, torch_dtype
+    from ..utils.timing import time_cuda_call, torch_dtype
 
     batch_size: int = point.batch_size
     seq_len: int = point.seq_len
@@ -195,7 +211,7 @@ def time_flashinfer_generation_point(
     """
     import flashinfer
 
-    from ._timing import time_cuda_call, torch_dtype
+    from ..utils.timing import time_cuda_call, torch_dtype
 
     batch_size: int = point.batch_size
     step: int = point.step
@@ -342,7 +358,7 @@ def profile_flashinfer_attention(
     config: object,
     *,
     writer_factory: Callable[[str, str, str], object],
-) -> tuple[Path, Path]:
+) -> tuple[Path, ...]:
     """
     Measure both attention phases through FlashInfer's paged wrappers.
 
@@ -353,13 +369,15 @@ def profile_flashinfer_attention(
             `(framework, version, kernel_source)`.
 
     Returns:
-        tuple[Path, Path]: The written context and generation table paths.
+        tuple[Path, ...]: The written context and generation table paths, or the context
+            path alone when the model's GQA group size has no compiled decode kernel (see
+            `_FLASHINFER_DECODE_GROUP_SIZES`).
     """
     import flashinfer
     from vllm.config import CacheConfig, ModelConfig, VllmConfig, set_current_vllm_config
     from vllm.v1.attention.backends.utils import get_kv_cache_layout
 
-    from .attention import (
+    from ..grid.attention import (
         AttentionPoint,
         attention_head_dim,
         context_sweep_points,
@@ -448,13 +466,38 @@ def profile_flashinfer_attention(
         )
 
     # --- Generation phase ---
+    #
+    # Skipped wholesale when the model's GQA ratio has no compiled specialization, rather
+    # than attempted and caught per point: the failure is a property of the ratio, so every
+    # point would fail identically, and letting it raise aborts the sweep after the context
+    # phase has already been measured but before anything is written.
+    #
+    # No generation table is written in that case, rather than an empty one: `PerfTableWriter`
+    # refuses a table with no rows, and rightly so, since an empty table would satisfy a
+    # downstream existence check while answering no query. The absent file makes a query
+    # raise a coverage error, which is the honest outcome -- the vLLM table is what the cost
+    # model reads, and on this hardware vLLM's own selector picks FLASH_ATTN anyway.
+    group_size = num_heads // num_kv_heads if num_kv_heads else 0
+    skip_generation = group_size not in _FLASHINFER_DECODE_GROUP_SIZES
     generation_rows: list[dict[str, object]] = []
-    for point in all_gen_points:
-        latency_s = time_flashinfer_generation_point(**_point_kwargs(point))
-        generation_rows.append(
-            {**shared, "batch_size": point.batch_size, "step": point.step, "latency_s": latency_s}
+    if skip_generation:
+        dryrun_logger.warning(
+            f"Skipping FlashInfer generation attention: GQA group size {group_size} "
+            f"({num_heads} query heads to {num_kv_heads} KV heads at tp={tp}) has no "
+            f"compiled kernel; FlashInfer supports "
+            f"{sorted(_FLASHINFER_DECODE_GROUP_SIZES)}. Tensor parallelism shards both "
+            "counts equally and cannot change the ratio. The vLLM generation table is "
+            "unaffected and is what the cost model reads."
         )
+    else:
+        for point in all_gen_points:
+            latency_s = time_flashinfer_generation_point(**_point_kwargs(point))
+            generation_rows.append(
+                {**shared, "batch_size": point.batch_size, "step": point.step, "latency_s": latency_s}
+            )
 
     context_path = writer.write("context_attention", context_rows)
+    if skip_generation:
+        return (context_path,)
     generation_path = writer.write("generation_attention", generation_rows)
     return context_path, generation_path

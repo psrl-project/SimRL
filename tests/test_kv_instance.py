@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import random
+
+import pytest
+
 from dryrun.component.rollout.engine import NativeInstance, Request
 from dryrun.cost.rollout import UnifiedRoofline
 
@@ -432,14 +436,11 @@ class TestExhaustionAccountsForSharing:
 
     def test_matches_brute_force_when_siblings_share_a_prompt(self):
         inst = _inst(kv_blocks=1000)
-        # The admission gate reserves prompt+ctx against the cap, so later
-        # siblings of a long shared prompt are refused up front. Take whoever is
-        # admitted; the point here is the estimate, not the gate.
         for rid in range(8):
             inst.add_request(
                 _req(rid=rid, prompt_len=2048, source_group_id=99, target_len=400), t=0.0
             )
-        assert len(inst.waiting) == 7, "seven fit under the admission gate"
+        assert len(inst.waiting) == 8, "admission queues every request"
         for _ in range(6):
             if inst.advance_one_event(version=0) is None:
                 break
@@ -469,10 +470,7 @@ class TestExhaustionAccountsForSharing:
             if inst.advance_one_event(version=0) is None:
                 break
         assert inst.n_preemptions == 0, "the pool was never short of blocks"
-        assert len(inst.completed) == 7, (
-            "seven admitted; the eighth is refused by the admission gate, which "
-            "reserves prompt+ctx against a 1000-block cap and is unrelated to sharing"
-        )
+        assert len(inst.completed) == 8, "every sibling runs to completion"
 
     def test_sharing_never_makes_the_estimate_optimistic(self):
         """The intercept must never be below the pool's true occupancy, or the
@@ -552,6 +550,95 @@ class TestAFullPoolStillMakesProgress:
                     "be re-admitted, so the instance is deadlocked"
                 )
 
+    def test_an_eviction_leaves_the_batch_able_to_decode(self):
+        """Preemption must clear the stall it was called for.
+
+        Not a bound on how often preemption happens: an oversubscribed pool
+        preempts often and that is correct. What must hold is that the pool can
+        fund one decode token per resident afterwards, so the engine advances
+        instead of re-entering the same stall with nothing changed.
+        """
+        inst = _inst(kv_blocks=31_294, token_budget=12_800, max_concurrency=1024)
+        for rid in range(188):
+            # Staggered lengths: equal-length requests retire together and
+            # release in bulk, which never exercises the stall.
+            req = _req(rid=rid, prompt_len=140, source_group_id=rid, target_len=11_300)
+            req.generated = 9_000 + 37 * rid if rid < 60 else 100 + rid % 80
+            inst.add_request(req, t=0.0)
+        for _ in range(400):
+            inst.advance_to(t_limit=inst.t_local + 50.0, version=0)
+            if not inst.running and not inst.waiting:
+                break
+            if inst.free_blocks() == 0 and inst.running:
+                boundary = sum(
+                    1 for r in inst.running if (r.prefilled % inst.block_size) == 0
+                )
+                assert boundary == 0, (
+                    f"pool empty with {boundary} residents on a block boundary: "
+                    f"the next decode step cannot advance them"
+                )
+        assert len(inst.completed) == 188, (
+            f"only {len(inst.completed)} of 188 finished; a pool-bound batch must "
+            f"drain in waves rather than stall"
+        )
+
+    def test_a_full_pool_alone_is_not_a_stall(self):
+        """Preemption needs a refused decode token, not merely a full pool.
+
+        Asking whether any resident *could* need a block reads a full pool as
+        stalled whenever one sits on a block boundary, which at 175 running has
+        probability 1.0. On the matched run that fired on 96% of a plateau's
+        prefill steps, every one of which decoded 93-182 tokens.
+        """
+        inst = _inst(kv_blocks=200, token_budget=12_800, max_concurrency=1024)
+        for rid in range(8):
+            req = _req(rid=rid, prompt_len=320, source_group_id=rid, target_len=2_000)
+            inst.add_request(req, t=float(rid))
+        while inst.free_blocks() > 0:
+            if inst.advance_one_event(version=0) is None:
+                break
+            inst.commit_last_event()
+        assert inst.free_blocks() == 0, "the fixture must drive the pool full"
+        assert len(inst.running) > 1, "the fixture must leave a resident batch"
+        # A request sitting exactly on a block boundary is what the old proxy
+        # keyed on, so put one there rather than waiting for the batch to drift
+        # into that state.
+        inst.running[0].prefilled -= inst.running[0].prefilled % inst.block_size
+        boundary = sum(1 for r in inst.running if (r.prefilled % inst.block_size) == 0)
+        assert boundary > 0
+        # The pool granted every decode token it was asked for on the last step,
+        # so this is not a stall however many residents sit on a boundary.
+        inst._last_decode_blocked = False
+        assert not inst._deadlocked(), (
+            f"full pool with {boundary} of {len(inst.running)} residents on a block "
+            f"boundary read as a stall, though the decode pass was never refused"
+        )
+        # And the converse: a genuine refusal must still be reported.
+        inst._last_decode_blocked = True
+        assert inst._deadlocked(), "a refused decode token must still count as a stall"
+
+    def test_a_genuine_stall_is_still_broken_by_preemption(self):
+        """The other side of the same rule: the escape must survive.
+
+        With the deadlock path removed this workload ends at running=49,
+        waiting=139 and completes nothing, so the predicate cannot simply be
+        dropped once its false positives are gone.
+        """
+        inst = _inst(kv_blocks=31_294, token_budget=12_800, max_concurrency=1024)
+        for rid in range(188):
+            req = _req(rid=rid, prompt_len=140, source_group_id=rid, target_len=11_300)
+            req.generated = 9_000 + 37 * rid if rid < 60 else 100 + rid % 80
+            inst.add_request(req, t=float(rid))
+        # Draining this batch takes ~6100 simulated seconds.
+        for _ in range(2000):
+            inst.advance_to(t_limit=inst.t_local + 5.0, version=0)
+            if not inst.running and not inst.waiting:
+                break
+        assert inst.n_preemptions > 0, "a pool-bound batch has to preempt to advance"
+        assert len(inst.completed) == 188, (
+            f"only {len(inst.completed)} of 188 finished; the stall was never broken"
+        )
+
     def test_a_pool_with_room_admits_everything_at_once(self):
         """The control: the watermark must not throttle a batch that fits."""
         inst = _inst(kv_blocks=200_000, token_budget=12800, max_concurrency=1024)
@@ -563,3 +650,158 @@ class TestAFullPoolStillMakesProgress:
         inst.advance_one_event(version=0)
         assert len(inst.running) == 64, "ample capacity should admit the whole batch"
         assert inst.n_preemptions == 0
+
+
+class TestTheEstimateMatchesTheStep:
+    """`_step_time_estimate` must price what `_engine_step` does.
+
+    `advance_to` has no snapshot, so it asks the twin how long the next
+    iteration will take before performing it. Any disagreement advances the
+    clock by work that does not happen: the two differed by 369.6% on one
+    workload's `t_local` before the twin was given the step's own gates.
+    """
+
+    @staticmethod
+    def _priced(inst) -> int:
+        """Tokens each path hands the cost model for the current state."""
+        captured: list[int] = []
+        inner = inst.cost
+
+        class Spy:
+            def __getattr__(self, name):
+                return getattr(inner, name)
+
+            def step_time(self, n_tokens, t2, ctxsum, n_reqs=0, prefill_ctx=0.0):
+                captured.append(n_tokens)
+                return inner.step_time(n_tokens, t2, ctxsum, n_reqs, prefill_ctx)
+
+        inst.cost = Spy()
+        try:
+            inst._step_time_estimate()
+            inst._save_snapshot()
+            inst._engine_step(0)
+            inst.undo_last_event()
+        finally:
+            inst.cost = inner
+        return captured[0], captured[1]
+
+    @pytest.mark.parametrize("kv_blocks", [500, 2000, 31_294])
+    def test_the_twin_prices_the_same_tokens(self, kv_blocks):
+        """Swept rather than spot-checked: the gates drifted apart silently.
+
+        Prefix caching is off because `peek_hit_tokens` deliberately does not
+        reserve the blocks a hit claims, so the twin cannot see what the real
+        step's `_apply_prefix_hit` consumes. That is a known approximation,
+        measured at 6 divergent states in 540 trials, against 0 in 19,408 with
+        caching off.
+        """
+        rng = random.Random(kv_blocks)
+        inst = _inst(kv_blocks=kv_blocks, token_budget=12_800,
+                     max_concurrency=1024, enable_prefix_caching=False)
+        # `add_request` refuses a request that can never fit even in an empty
+        # pool, so prompt and target together stay under half of it. The batch
+        # as a whole still oversubscribes, which is the regime being probed.
+        budget = kv_blocks * 16 // 2
+        for rid in range(40):
+            prompt = min(rng.choice([140, 1024, 4096]), budget // 2)
+            target = budget - prompt
+            req = _req(rid=rid, prompt_len=prompt,
+                       source_group_id=rid // 8, target_len=target)
+            req.generated = rng.randint(0, max(1, target - 1))
+            inst.add_request(req, t=float(rid))
+        probed = 0
+        for _ in range(150):
+            if inst.waiting:
+                twin, real = self._priced(inst)
+                assert twin == real, (
+                    f"twin priced {twin} tokens, the step did {real}, with "
+                    f"running={len(inst.running)} waiting={len(inst.waiting)} "
+                    f"free={inst.free_blocks()}"
+                )
+                probed += 1
+            if inst.advance_one_event(version=0) is None:
+                break
+            inst.commit_last_event()
+            if not inst.running and not inst.waiting:
+                break
+        assert probed > 20, f"only {probed} states exercised the prefill path"
+
+
+class TestUndoJournalComposesOverManyMutations:
+    """The free list rolls back by replaying inverse operations rather than by
+    snapshotting node links, so an event that mutates the same node repeatedly
+    must unwind through every step. These drive a pool under real pressure,
+    where one event preempts several requests and each eviction both unlinks and
+    appends -- the case a single keyed capture per node could get wrong.
+    """
+
+    def test_a_preempting_event_restores_the_pool_exactly(self):
+        # A pool too small for the batch, so events preempt and each preemption
+        # frees a long context: many list mutations inside one event.
+        inst = _inst(kv_blocks=200, token_budget=2048)
+        for rid in range(12):
+            inst.add_request(
+                _req(rid=rid, prompt_len=400, source_group_id=rid, target_len=600),
+                t=float(rid),
+            )
+        undone = 0
+        for _ in range(200):
+            if inst.advance_one_event(version=0) is None:
+                break
+            inst.commit_last_event()
+            before = _instance_state(inst)
+            if inst.advance_one_event(version=0) is None:
+                break
+            inst.undo_last_event()
+            assert _instance_state(inst) == before
+            undone += 1
+            inst.advance_one_event(version=0)
+            inst.commit_last_event()
+        assert undone > 20, f"only {undone} events were undone"
+
+    def test_undo_after_an_abort_restores_free_list_order(self):
+        """`abort_all` frees every resident request and resets the hash map, so
+        it is the largest single-event mutation the list sees."""
+        inst = _inst(kv_blocks=400)
+        for rid in range(10):
+            inst.add_request(
+                _req(rid=rid, prompt_len=300, source_group_id=rid, target_len=400),
+                t=float(rid),
+            )
+        for _ in range(5):
+            if inst.advance_one_event(version=0) is None:
+                break
+            inst.commit_last_event()
+        before = _instance_state(inst)
+
+        inst._save_snapshot()
+        inst.abort_all(requeue=True)
+        inst.undo_last_event()
+        assert _instance_state(inst) == before
+
+    def test_randomised_events_round_trip(self):
+        rng = random.Random(1234)
+        inst = _inst(kv_blocks=300, token_budget=4096)
+        for rid in range(16):
+            req = _req(
+                rid=rid,
+                prompt_len=rng.choice([160, 320, 800]),
+                source_group_id=rid // 4,
+                target_len=rng.choice([200, 500, 900]),
+            )
+            inst.add_request(req, t=float(rid))
+        checked = 0
+        for _ in range(300):
+            before = _instance_state(inst)
+            event = inst.advance_one_event(version=0)
+            if event is None:
+                break
+            if rng.random() < 0.5:
+                inst.undo_last_event()
+                assert _instance_state(inst) == before, "undo did not round-trip"
+                checked += 1
+                event = inst.advance_one_event(version=0)
+                if event is None:
+                    break
+            inst.commit_last_event()
+        assert checked > 40, f"only {checked} undos were exercised"

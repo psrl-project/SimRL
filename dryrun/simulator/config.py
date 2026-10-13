@@ -121,6 +121,13 @@ class SimConfig:
     reject_if_kv_full: bool = False
     reject_if_waiting: bool = False
     reject_if_running_full: bool = False
+    eviction_strategy: str = "vllm_lru"
+    """Which resident pays when the KV pool cannot fund a decode step.
+
+    vllm_lru | longest_ctx | scg_value. Independent of the routing strategy on
+    purpose: the two decisions are made by different components, and separating
+    them is what lets an experiment move one and hold the other fixed.
+    """
     routing_strategy: str = "request_num_balance"
     """Which instance a queued request is sent to.
 
@@ -137,6 +144,8 @@ class SimConfig:
     of the dataset is staged, which couples the result to an unrelated flow
     limit.
     """
+    router_queue_window: int = 32
+    """Queued requests a ranking strategy chooses among per placement."""
     max_concurrent_seqs_per_instance: int = 0
     """Router-side cap on requests one instance may hold. 0 disables it."""
     router_reject_on_waiting: bool = False

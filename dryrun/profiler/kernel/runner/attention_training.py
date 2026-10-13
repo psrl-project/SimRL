@@ -10,7 +10,7 @@ on `required <= version <= max` read from package metadata, and PEP 440 orders
 new. TE then falls back to `UnfusedDotProductAttention` and logs it only at
 `NVTE_DEBUG_LEVEL=1`. The first run of this sweep measured that fallback.
 `_normalize_flash_attn_version` is the existing fix and must run **before** TE is imported,
-which is why it is called at the top of the profiling function rather than at module scope.
+which is why it is called at the top of `run` rather than at module scope.
 
 **THD requires `padding_causal`.** `DotProductAttention.forward` asserts
 `"padding" in attn_mask_type` when `qkv_format="thd"`, so plain `causal` raises. A backend
@@ -30,164 +30,192 @@ forward to have run, so timing `forward + backward` and subtracting a separately
 forward is the only way to get the backward alone. The subtraction is done here rather than
 written as a combined row, because a consumer summing a `fwd+bwd` row and a `fwd` row would
 double-count the forward.
+
+The grid, including the GQA ratio that derives each point's KV head count, lives in
+`grid/attention_training.py` so it can be checked without a GPU.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
-from ..schema import ModelDescriptor, ProfileValidationError
-from ._timing import time_cuda_call, torch_dtype
-from .config import KernelProfileConfig, model_head_dim
-from .measurements import PerfTableWriter
+from ...schema import ProfileValidationError
+from ..grid.attention_training import TrainingAttentionPoint, training_attention_points
+from .base import KernelRunner, WriterFactory
 
 
-def profile_training_attention(
-    model: ModelDescriptor,
-    config: KernelProfileConfig,
-    *,
-    writer_factory: Callable[[str, str, str], PerfTableWriter],
-) -> tuple[Path, ...]:
-    """
-    Time THD attention forward and backward across the configured grid.
+class TrainingAttentionRunner(KernelRunner):
+    """Times THD attention forward and backward against one set of packed tensors per point."""
 
-    Args:
-        model (ModelDescriptor): Architecture, read for `head_dim` and the KV head count.
-        config (KernelProfileConfig): Sweep grid, dtype, and iteration counts.
-        writer_factory (Callable[[str, str, str], PerfTableWriter]): Builds a writer from
-            `(framework, version, kernel_source)`.
+    def run(self, *, writer_factory: WriterFactory) -> tuple[Path, ...]:
+        """
+        Time THD attention forward and backward across the configured grid.
 
-    Returns:
-        tuple[Path, ...]: The forward and backward parquet paths.
+        Args:
+            writer_factory (WriterFactory): Builds a writer from
+                `(framework, version, kernel_source)`.
 
-    Raises:
-        ProfileValidationError: If the architecture is incomplete, or if Transformer Engine
-            selects its unfused fallback, which would measure a kernel no training run uses.
-    """
-    # Before importing transformer_engine: the version gate is read at import time.
-    from ..adapters.megatron.launch import _normalize_flash_attn_version
+        Returns:
+            tuple[Path, ...]: The forward and backward parquet paths.
 
-    _normalize_flash_attn_version()
+        Raises:
+            ProfileValidationError: If the architecture is incomplete, if the forward and
+                combined measurements are not separable, or if Transformer Engine selects its
+                unfused fallback, which would measure a kernel no training run uses.
+        """
+        # Before importing transformer_engine: the version gate is read at import time.
+        from ...adapters.megatron.launch import _normalize_flash_attn_version
 
-    import torch
-    import transformer_engine
-    from transformer_engine.pytorch.attention import DotProductAttention
+        _normalize_flash_attn_version()
 
-    if model.num_attention_heads is None:
-        raise ProfileValidationError("Model is missing num_attention_heads.")
-    sweep = config.sweep("training_attention_forward")
-    measurement = config.measurement
-    dtype_name = measurement.dtype
-    dtype = torch_dtype(dtype_name)
-    head_dim = model_head_dim(model)
-    total_heads = int(model.num_attention_heads)
-    total_kv_heads = int(model.num_query_groups or total_heads)
+        import torch
+        import transformer_engine
+        from transformer_engine.pytorch.attention import DotProductAttention
 
-    forward_rows: list[dict[str, object]] = []
-    backward_rows: list[dict[str, object]] = []
-    kernel_sources: set[str] = set()
+        from ..utils.timing import torch_dtype
 
-    for mask_type in sweep.mask_types:
-        for num_heads in sweep.num_heads:
-            # The KV head count is sharded in the same ratio as the query heads, which is
-            # what `rank_head_counts` does for the cost side. Deriving it here keeps the
-            # swept slice reachable by a query the composition builds.
-            num_kv_heads = max(num_heads * total_kv_heads // total_heads, 1)
-            attention = DotProductAttention(
-                num_attention_heads=num_heads,
-                kv_channels=head_dim,
-                num_gqa_groups=num_kv_heads,
-                attention_dropout=0.0,
-                qkv_format="thd",
-                attn_mask_type=mask_type,
-            ).cuda()
+        dtype_name = self.config.measurement.dtype
+        dtype = torch_dtype(dtype_name)
+        points = training_attention_points(
+            self.model, self.config.sweep("training_attention_forward")
+        )
 
-            for total_tokens in sweep.total_tokens:
-                cu_seqlens = torch.tensor(
-                    [0, total_tokens], dtype=torch.int32, device="cuda"
-                )
-                query = torch.randn(
-                    total_tokens, num_heads, head_dim,
-                    dtype=dtype, device="cuda", requires_grad=True,
-                )
-                key = torch.randn(
-                    total_tokens, num_kv_heads, head_dim,
-                    dtype=dtype, device="cuda", requires_grad=True,
-                )
-                value = torch.randn(
-                    total_tokens, num_kv_heads, head_dim,
-                    dtype=dtype, device="cuda", requires_grad=True,
-                )
-                call_kwargs = dict(
-                    qkv_format="thd",
-                    cu_seqlens_q=cu_seqlens,
-                    cu_seqlens_kv=cu_seqlens,
-                    max_seqlen_q=total_tokens,
-                    max_seqlen_kv=total_tokens,
-                    attn_mask_type=mask_type,
-                )
-                output = attention(query, key, value, **call_kwargs)
-                kernel_sources.add(_selected_backend())
-                grad_output = torch.randn_like(output)
+        forward_rows: list[dict[str, object]] = []
+        backward_rows: list[dict[str, object]] = []
+        kernel_sources: set[str] = set()
 
-                forward_s = time_cuda_call(
-                    lambda a=attention, q=query, k=key, v=value, kw=call_kwargs: a(
-                        q, k, v, **kw
-                    ),
-                    warmup_iterations=measurement.warmup_iterations,
-                    active_iterations=measurement.active_iterations,
-                )
-
-                def forward_and_backward(
-                    a=attention, q=query, k=key, v=value, kw=call_kwargs, g=grad_output
-                ) -> None:
-                    for tensor in (q, k, v):
-                        tensor.grad = None
-                    a(q, k, v, **kw).backward(g)
-
-                combined_s = time_cuda_call(
-                    forward_and_backward,
-                    warmup_iterations=measurement.warmup_iterations,
-                    active_iterations=measurement.active_iterations,
-                )
-                # The backward alone. A combined row would be double-counted by any
-                # consumer that also charges the forward, which `ComposedTraining` does
-                # twice under full recompute.
-                backward_s = combined_s - forward_s
-                if backward_s <= 0.0:
-                    raise ProfileValidationError(
-                        f"Backward time came out non-positive ({backward_s:.6g}s) at "
-                        f"{total_tokens} tokens and {num_heads} heads, so the forward and "
-                        f"combined measurements are not separable. Raise "
-                        f"measurement.active_iterations."
-                    )
-
-                slice_fields = {
-                    "num_key_value_heads": num_kv_heads,
-                    "head_dim": head_dim,
-                    "attn_dtype": dtype_name,
-                    "attn_mask_type": mask_type,
-                    "num_heads": num_heads,
-                    "total_tokens": int(total_tokens),
-                }
-                forward_rows.append({**slice_fields, "latency_s": forward_s})
-                backward_rows.append({**slice_fields, "latency_s": backward_s})
-
-                del query, key, value, output, grad_output, cu_seqlens
+        # One module per `(mask_type, num_heads)` pair, reused across every token count:
+        # constructing it is the expensive part, and the grid is ordered mask-major then
+        # head-major then token-major to make that reuse contiguous.
+        attention: Any = None
+        module_key: tuple[str, int] | None = None
+        for point in points:
+            key = (point.mask_type, point.num_heads)
+            if key != module_key:
+                attention = None
                 torch.cuda.empty_cache()
+                attention = DotProductAttention(
+                    num_attention_heads=point.num_heads,
+                    kv_channels=point.head_dim,
+                    num_gqa_groups=point.num_kv_heads,
+                    attention_dropout=0.0,
+                    qkv_format="thd",
+                    attn_mask_type=point.mask_type,
+                ).cuda()
+                module_key = key
 
-            del attention
+            forward_s, backward_s = self._time_point(
+                point, attention=attention, dtype=dtype, kernel_sources=kernel_sources
+            )
             torch.cuda.empty_cache()
+            slice_fields = {
+                "num_key_value_heads": point.num_kv_heads,
+                "head_dim": point.head_dim,
+                "attn_dtype": dtype_name,
+                "attn_mask_type": point.mask_type,
+                "num_heads": point.num_heads,
+                "total_tokens": point.total_tokens,
+            }
+            forward_rows.append(
+                self.row("training_attention_forward", latency_s=forward_s, **slice_fields)
+            )
+            backward_rows.append(
+                self.row("training_attention_backward", latency_s=backward_s, **slice_fields)
+            )
 
-    _require_fused_backend(kernel_sources)
-    writer = writer_factory(
-        "megatron", str(transformer_engine.__version__), sorted(kernel_sources)[0]
-    )
-    return (
-        writer.write("training_attention_forward", forward_rows),
-        writer.write("training_attention_backward", backward_rows),
-    )
+        attention = None
+        torch.cuda.empty_cache()
+
+        _require_fused_backend(kernel_sources)
+        writer = writer_factory(
+            "megatron", str(transformer_engine.__version__), sorted(kernel_sources)[0]
+        )
+        return (
+            writer.write("training_attention_forward", forward_rows),
+            writer.write("training_attention_backward", backward_rows),
+        )
+
+    def _time_point(
+        self,
+        point: TrainingAttentionPoint,
+        *,
+        attention: Any,
+        dtype: Any,
+        kernel_sources: set[str],
+    ) -> tuple[float, float]:
+        """
+        Time one packed point's forward and isolate its backward.
+
+        The q/k/v tensors are function-locals so they die with this frame, before the caller
+        empties the allocator cache for the next and possibly larger pack.
+
+        Args:
+            point (TrainingAttentionPoint): Head counts and pack length to measure.
+            attention (Any): The `DotProductAttention` module for this point's head count.
+            dtype (Any): The `torch.dtype` to allocate at.
+            kernel_sources (set[str]): Accumulates the backend TE chose, checked after the
+                sweep so a grid spanning two backends is refused rather than written as one
+                table.
+
+        Returns:
+            tuple[float, float]: `(forward_s, backward_s)`, the backward already isolated.
+
+        Raises:
+            ProfileValidationError: If the backward comes out non-positive, meaning the two
+                measurements are not separable at this iteration count.
+        """
+        import torch
+
+        total_tokens = point.total_tokens
+        cu_seqlens = torch.tensor([0, total_tokens], dtype=torch.int32, device="cuda")
+        query = torch.randn(
+            total_tokens, point.num_heads, point.head_dim,
+            dtype=dtype, device="cuda", requires_grad=True,
+        )
+        key = torch.randn(
+            total_tokens, point.num_kv_heads, point.head_dim,
+            dtype=dtype, device="cuda", requires_grad=True,
+        )
+        value = torch.randn(
+            total_tokens, point.num_kv_heads, point.head_dim,
+            dtype=dtype, device="cuda", requires_grad=True,
+        )
+        call_kwargs = dict(
+            qkv_format="thd",
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_kv=cu_seqlens,
+            max_seqlen_q=total_tokens,
+            max_seqlen_kv=total_tokens,
+            attn_mask_type=point.mask_type,
+        )
+        output = attention(query, key, value, **call_kwargs)
+        kernel_sources.add(_selected_backend())
+        grad_output = torch.randn_like(output)
+
+        forward_s = self.time(
+            lambda a=attention, q=query, k=key, v=value, kw=call_kwargs: a(q, k, v, **kw)
+        )
+
+        def forward_and_backward(
+            a=attention, q=query, k=key, v=value, kw=call_kwargs, g=grad_output
+        ) -> None:
+            for tensor in (q, k, v):
+                tensor.grad = None
+            a(q, k, v, **kw).backward(g)
+
+        combined_s = self.time(forward_and_backward)
+        # The backward alone. A combined row would be double-counted by any consumer that also
+        # charges the forward, which `ComposedTraining` does twice under full recompute.
+        backward_s = combined_s - forward_s
+        if backward_s <= 0.0:
+            raise ProfileValidationError(
+                f"Backward time came out non-positive ({backward_s:.6g}s) at "
+                f"{total_tokens} tokens and {point.num_heads} heads, so the forward and "
+                f"combined measurements are not separable. Raise "
+                f"measurement.active_iterations."
+            )
+        return forward_s, backward_s
 
 
 def _selected_backend() -> str:

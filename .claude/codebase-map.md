@@ -31,9 +31,9 @@ dryrun/
 │   │   │   ├── state.py         # StepStat, InstanceLoad
 │   │   │   └── snapshot.py      # ReqSnapshot, InstanceSnapshot (event rollback)
 │   │   └── router/              # Cross-instance routing: dwell queue + strategies
-│   │       ├── request_queue.py # RouterQueue, SortKey (min-heap on version/sort_key/arrival)
+│   │       ├── request_queue.py # RouterQueue, SortKey (one sort-key heap per version)
 │   │       ├── strategy.py      # RoutingStrategy protocol, STRATEGY_REGISTRY, build_strategy
-│   │       ├── strategies.py    # The six strategies; @register_strategy is the only reg path
+│   │       ├── strategies/      # One module per built-in routing strategy
 │   │       └── router.py        # Router (queue + gate + dispatch), AdmissionGate.
 │   │                            #   Dispatch runs ONLY after a committed capacity release
 │   │                            #   (complete / preempt / weight publish), never mid-segment
@@ -108,6 +108,9 @@ dryrun/
 ├── profiler/
 │   ├── adapters/
 │   │   ├── __init__.py      # Exports all adapters: VLLMSweepConfig, MegatronBridgeConfig, FsdpProfileConfig
+│   │   ├── base/            # Shared base of megatron+fsdp (run_candidate, OOM helpers, sidecar).
+│   │   │                    #   NOT a backend: named `base` like cost/*/base.py, because sitting
+│   │   │                    #   beside megatron/fsdp/vllm made `training/` read as a fourth one
 │   │   ├── fsdp/            # DryRun-owned FSDP2/HSDP profiling adapter
 │   │   │   ├── __init__.py      # Public exports (safe on CLI import path; excludes launch/measure)
 │   │   │   ├── collect.py       # collect_fsdp_record, collect_fsdp_records
@@ -117,20 +120,36 @@ dryrun/
 │   │   │   ├── measure.py       # FsdpMeasurement, step timing and memory capture
 │   │   │   └── prepare.py       # prepare_fsdp_candidate, read/write_candidate_manifest
 │   │   ├── megatron/        # Megatron-Bridge profiling adapter
-│   │   ├── training/        # Shared training-adapter base (run_candidate, OOM helpers)
 │   │   └── vllm/            # vLLM timing sweep adapter
 │   ├── fsdp_search_space.py # FsdpCandidate, enumerate_fsdp_candidates
 │   ├── hf.py                # model_descriptor_from_yaml, AutoConfig helpers
 │   ├── io.py                # read_records, write_records, profile_digest
-│   └── kernels/
-│       ├── shapes.py        # transformer_gemm_shapes, logits_gemm_shape (GEMM shape arithmetic)
-│       ├── elementwise.py   # Raw fused vLLM op timing (NOT the CustomOp module: 13x slower)
+│   └── kernel/              # Singular, matching cost/kernel/ and its own output_dir/"kernel"
+│       ├── __init__.py      # Exports KernelProfileConfig only; the 28-name PEP 562 lazy table
+│       │                    #   is gone, the layering below replaces what it guarded
+│       ├── config.py        # KernelProfileConfig, MeasurementConfig (no per-family fields)
+│       ├── measurements.py  # PerfTableWriter (atomic parquet writes, columns from the op)
+│       ├── introspect.py    # verify_shapes: declared shapes vs a meta-device module graph
 │       ├── collective.py    # Driver: torchrun locally, ssh per node when nodes>1. Forwards
-│       │                    #   every NCCL_* var (remote ~/.bashrc disagrees with the env script)
-│       └── collective_launch.py  # torchrun child; the only kernels module importing torch at
-│                            #   module scope. Skips vLLM parallel state when nodes>1: vLLM
-│                            #   disables custom all-reduce across nodes, so it costs 60s for
-│                            #   a duplicate of the nccl control table
+│       │                    #   every NCCL_* var (remote ~/.bashrc disagrees with the env script).
+│       │                    #   Outside runner/: it launches rather than times in-process
+│       ├── collective_launch.py  # torchrun child, named as a STRING in collective.py so no
+│       │                    #   import graph follows a move. Skips vLLM parallel state when
+│       │                    #   nodes>1: vLLM disables custom all-reduce across nodes, so it
+│       │                    #   costs 60s for a duplicate of the nccl control table
+│       ├── utils/           # timing.py (CUDA events; the one torch importer), model_dims.py,
+│       │                    #   validators.py
+│       ├── sweep/           # One *Sweep per family, parsed from its own YAML subtree.
+│       │                    #   Reached by cost/kernel/ops/<op>.py:parse_sweep
+│       ├── grid/            # Which shapes each sweep enumerates. TORCH-FREE (gated per module
+│       │                    #   by tests/test_kernel_package_imports.py). gemm.py dispatches to
+│       │                    #   families.py; elementwise.py's n_elements is re-derived on the
+│       │                    #   query side by cost/training/training_ops.py, so it must be
+│       │                    #   checkable without a GPU
+│       └── runner/          # The measurement loops. base.py KernelRunner carries time()/row()
+│                            #   but NOT the loop: attention needs one KV cache before it,
+│                            #   optimizer an untimed step inside it, elementwise a vLLM config
+│                            #   context around it. Reached by ops/<op>.py:measure
 ├── workload/
 │   ├── distributions.py     # Synthetic bimodal/lognormal/powerlaw/uniform lengths
 │   ├── trace.py             # Joint RequestGroup trace read/write
@@ -238,12 +257,18 @@ The unit of work every component handles. Import it from the engine package:
 16. `profiling.schemas`, `profiling.runner` (no internal deps)
 17. `profiling.fit` (depends on profiling.schemas, numpy, scipy)
 18. `profiling.vllm_profiler`, `profiling.megatron_profiler` (depend on profiling.runner, profiling.schemas)
-19. `profiler.kernels.shapes` (no internal deps)
+19. `profiler.kernel.utils.{model_dims,validators}` (depend on profiler.schema)
+19a. `profiler.kernel.sweep.*` (depends on profiler.kernel.utils.validators)
+19b. `profiler.kernel.grid.*` (depends on profiler.kernel.{sweep,utils.model_dims}; `grid.gemm`
+     dispatches through `grid.families`. MUST stay torch-free, gated per module by
+     `tests/test_kernel_package_imports.py`, because the cost path imports `grid.gemm` and
+     `grid.attention` to build its queries.)
 20. `cost.kernel.surface` (depends on cost.kernel.interp)
 20a. `cost.kernel.ops.*` (depends on cost.kernel.{hardware,sol,interp}; MUST stay torch-free.
      `ops/__init__` imports every op module, so importing `ops.base` populates OP_REGISTRY --
-     that is the only registration path. `parse_sweep`/`measure` import the profiler lazily.)
-21. `cost.kernel.model_ops` (depends on profiler.kernels.shapes, cost.kernel.database)
+     that is the only registration path. `parse_sweep` imports `profiler.kernel.sweep` lazily;
+     `measure` imports `profiler.kernel.runner.*` lazily.)
+21. `cost.kernel.model_ops` (depends on profiler.kernel.grid.gemm, cost.kernel.database)
 22. `cost.rollout.segment` (no internal deps)
 23. `cost.rollout.composed` (depends on cost.kernel.database, cost.rollout.base, cost.rollout.segment)
 24. `cost.kernel.validate` (depends on cost.rollout.base)
@@ -256,13 +281,20 @@ The unit of work every component handles. Import it from the engine package:
 31. `cost.training.__init__` (re-exports; TRAINING_MODEL_REGISTRY)
 32. `profiler.schema`, `profiler.io`, `profiler.hf` (no internal deps)
 33. `profiler.fsdp_search_space` (depends on profiler.schema)
-34. `profiler.adapters.training` (depends on profiler.schema)
+34. `profiler.adapters.base` (depends on profiler.schema)
 35. `profiler.adapters.fsdp.config` (depends on profiler.schema, profiler.hf)
 36. `profiler.adapters.fsdp.prepare` (depends on profiler.fsdp_search_space, profiler.adapters.fsdp.config)
-37. `profiler.adapters.fsdp.execute` (depends on profiler.adapters.training, profiler.adapters.fsdp.prepare)
+37. `profiler.adapters.fsdp.execute` (depends on profiler.adapters.base, profiler.adapters.fsdp.prepare)
 38. `profiler.adapters.fsdp.collect` (depends on profiler.schema, profiler.io)
 39. `profiler.adapters.fsdp.__init__` (re-exports safe CLI subset)
 40. `profiler.adapters.__init__` (re-exports vllm, megatron, fsdp adapters)
+40a. `profiler.kernel.runner.*` (depends on profiler.kernel.{config,grid,measurements,utils.timing};
+     the GPU side -- every runner imports torch inside `run()`, so `runner/__init__` itself stays
+     cheap. `runner.attention_training` also reaches `profiler.adapters.megatron.launch` for the
+     flash-attn version normalization, which must run before transformer_engine is imported.)
+40b. `profiler.kernel.collective` (depends on profiler.kernel.{config,measurements,utils.timing},
+     cost.kernel.ops.base. Outside `runner/`: it launches torchrun rather than timing in-process,
+     and names `profiler.kernel.collective_launch` as a string literal.)
 41. `telemetry.store` (no internal deps)
 41a. `telemetry.writer` (depends on telemetry.store, component.rollout.engine)
 41b. `telemetry.psrl_log` (depends on telemetry.store; parses a real run's logs into the same streams)

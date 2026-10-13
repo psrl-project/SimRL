@@ -1,5 +1,9 @@
 // dryrun/component/rollout/engine_cpp/src/undo.cc
 #include "engine/undo.h"
+
+#include <stdexcept>
+#include <string>
+
 #include "engine/free_list.h"
 #include "engine/instance.h"
 #include "engine/kv_manager.h"
@@ -37,7 +41,7 @@ void HashMapChanged::restore() {
 
 RequestSnapshot RequestSnapshot::capture(const RequestPtr& r) {
   return {
-      r,
+      r.get(),
       r->prefilled,
       r->generated,
       r->status,
@@ -131,6 +135,27 @@ void HashMapBulkRestore::restore() {
 void HeldBlocksRestore::restore() {
   if (existed) {
     manager->held_[rid] = std::move(old_blocks);
+  } else {
+    manager->held_.erase(rid);
+  }
+  if (old_n_cached.has_value()) {
+    manager->n_cached_[rid] = old_n_cached.value();
+  } else {
+    manager->n_cached_.erase(rid);
+  }
+}
+
+void HeldBlocksTruncate::restore() {
+  if (existed) {
+    // Anything that erased this list after the allocation was a free, which
+    // journals the whole list and is restored first, so the entry is present.
+    auto it = manager->held_.find(rid);
+    if (it == manager->held_.end() || it->second.size() < old_size) {
+      throw std::logic_error(
+          "Held list for request " + std::to_string(rid) +
+          " is shorter than before the allocation being undone.");
+    }
+    it->second.resize(old_size);
   } else {
     manager->held_.erase(rid);
   }

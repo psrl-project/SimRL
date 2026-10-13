@@ -5,8 +5,8 @@ from __future__ import annotations
 from dryrun.component.rollout.engine import StepStat
 from dryrun.config.schema import RolloutConfig
 from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.simulator.config import SimConfig
 from dryrun.policy.areal import ArealPolicy
+from dryrun.simulator.config import SimConfig
 from dryrun.simulator.simulator import Simulator
 from dryrun.workload.grouped import GroupedWorkload
 from dryrun.workload.trace import RequestGroup

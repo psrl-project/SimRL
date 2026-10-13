@@ -35,13 +35,31 @@ if TYPE_CHECKING:
     from ..request import Request
 
 
-def block_hashes(req: "Request", block_size: int) -> list[Hashable]:
-    """Hash ids for every full block of this request's current context.
+def block_count(req: "Request", block_size: int) -> int:
+    """How many full blocks this request's current context covers.
+
+    The length `block_hashes` would return for the whole context, without
+    building the list. Callers that only need the extent -- a bound on which
+    blocks are cacheable -- ask for this instead.
+    """
+    return (req.prompt_len + req.generated) // block_size
+
+
+def block_hashes(
+    req: "Request",
+    block_size: int,
+    start: int = 0,
+    stop: int | None = None,
+) -> list[Hashable]:
+    """Hash ids for full blocks `[start, stop)` of this request's context.
 
     Args:
         req: The request. Its context is `prompt_len + generated`, which is the
             token count the engine knows about so far.
         block_size: Tokens per KV block.
+        start: First block index to emit. Defaults to the start of the context.
+        stop: One past the last block index to emit, clamped to the context's
+            own block count. Defaults to that count, i.e. the whole context.
 
     Returns:
         One id per full block, in block order. A block lying wholly inside the
@@ -54,19 +72,41 @@ def block_hashes(req: "Request", block_size: int) -> list[Hashable]:
         missed. `source_group_id` records which workload group the lengths came
         from, which is the prompt's actual identity.
 
+        A hash depends only on `j` and on identity fields that never change, so
+        the list is a pure function of its index range: block `j`'s id is the
+        same whatever the context length was when it was asked for. That is
+        what makes a range request equivalent to slicing the whole list, and
+        why `allocate` can ask only for the blocks it is about to fill rather
+        than rebuilding every hash of a 30k-token context per decode step.
+
     Raises:
         ValueError: If `block_size` is not positive.
     """
     if block_size <= 0:
         raise ValueError(f"Expected block_size > 0, got {block_size!r}.")
 
-    context = req.prompt_len + req.generated
+    n_blocks = (req.prompt_len + req.generated) // block_size
+    if stop is None or stop > n_blocks:
+        stop = n_blocks
+    if start < 0:
+        start = 0
+    if start >= stop:
+        return []
+
     # Only full blocks are cacheable, which is vLLM's own rule. The block
     # straddling the end of the prompt is therefore private even though most of
     # its tokens are shared.
-    return [
-        ("p", req.source_group_id, j)
-        if (j + 1) * block_size <= req.prompt_len
-        else ("r", req.rid, j)
-        for j in range(context // block_size)
+    #
+    # The prompt/response split is a threshold on `j`, not a per-element test:
+    # block `j` is shared exactly while `(j + 1) * block_size <= prompt_len`.
+    # Computing the boundary once turns a per-block branch into two slices.
+    shared_blocks = req.prompt_len // block_size
+    group_id = req.source_group_id
+    rid = req.rid
+    if stop <= shared_blocks:
+        return [("p", group_id, j) for j in range(start, stop)]
+    if start >= shared_blocks:
+        return [("r", rid, j) for j in range(start, stop)]
+    return [("p", group_id, j) for j in range(start, shared_blocks)] + [
+        ("r", rid, j) for j in range(shared_blocks, stop)
     ]

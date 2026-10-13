@@ -1,24 +1,18 @@
 """What a routing strategy is, and how one is looked up by name.
 
-A strategy is pure selection: given one request and the instances that could
-take it, say which. It does not queue, does not check capacity, and does not
-mutate anything. The admission gate has already removed ineligible candidates
-before a strategy sees them, so a strategy that returns an index is promising
-only a preference, never an admission.
-
-That split is why adding a strategy means adding one class here and one
-registry entry, and touching no dispatch code. It is the same boundary SMG
-draws between its `LoadBalancingPolicy` trait and its admission gate.
+A strategy selects among instances that passed the admission gate. It may also
+narrow candidates for one version queue and decide whether dispatch may bypass
+that queue when its head cannot be placed.
 """
 
 from __future__ import annotations
 
-from typing import Callable, Protocol, runtime_checkable
+from dataclasses import dataclass
+from typing import Callable, Protocol
 
 from ..engine import InstanceView, Request
 
 
-@runtime_checkable
 class RoutingStrategy(Protocol):
     """Picks one instance for one request."""
 
@@ -37,6 +31,60 @@ class RoutingStrategy(Protocol):
             An index into `candidates`, or None to leave the request queued.
         """
         ...
+
+
+@dataclass(frozen=True)
+class RoutingContext:
+    """Queue state visible to a strategy during one placement attempt."""
+
+    blocked_versions: tuple[int, ...]
+    fleet_min_tp: int
+    fleet_max_tp: int
+    now: float = 0.0
+    """Simulation time of this attempt, for a strategy that prices a deadline."""
+
+
+def narrow_candidates(
+    strategy: RoutingStrategy,
+    req: Request,
+    candidates: list[InstanceView],
+    context: RoutingContext,
+) -> list[int]:
+    """Apply an optional strategy-owned admission rule."""
+    narrow = getattr(strategy, "narrow_candidates", None)
+    if not callable(narrow):
+        return list(range(len(candidates)))
+    return narrow(req, candidates, context)
+
+
+def allows_version_bypass(
+    strategy: RoutingStrategy,
+    req: Request,
+    context: RoutingContext,
+) -> bool:
+    """Return whether dispatch may continue after this version blocks."""
+    allow = getattr(strategy, "allow_version_bypass", None)
+    return bool(allow(req, context)) if callable(allow) else False
+
+
+def select_with_context(
+    strategy: RoutingStrategy,
+    req: Request,
+    candidates: list[InstanceView],
+    context: RoutingContext,
+) -> int | None:
+    """Choose an instance, passing the context to a strategy that wants it.
+
+    `select` is the whole protocol for a strategy that ranks instances on load or
+    cache state. One that prices a deadline also needs the clock, so it declares
+    `select_context` instead and receives both. Duck-typed like
+    `narrow_candidates` and `allow_version_bypass`, so no strategy is forced to
+    accept an argument it has no use for.
+    """
+    contextual = getattr(strategy, "select_context", None)
+    if callable(contextual):
+        return contextual(req, candidates, context)
+    return strategy.select(req, candidates)
 
 
 STRATEGY_REGISTRY: dict[str, Callable[..., RoutingStrategy]] = {}

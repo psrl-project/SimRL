@@ -19,10 +19,12 @@ class StepStat:
     """Aggregated engine steps.
 
     `dt`, `phase`, and `t` describe wall-clock cost so telemetry (the
-    `rollout_step` log stream) can report per-step prefill vs. decode timing,
-    not just token counts. `phase` is `"prefill"` for a mixed prefill+decode
-    engine step (any waiting request in the batch) and `"decode"` for a pure
-    closed-form decode segment. `t` is the simulation time at which the step
+    `rollout_step` log stream) can report per-step timing, not just token
+    counts. `phase` is `"mixed"` for one engine step, which decodes the running
+    batch and prefills whatever the token budget still allows, and `"decode"`
+    for a closed-form segment covering many steps of a batch with no prefill in
+    it. The names match `RolloutWorkload.phase`, which the cost models key
+    their fitted coefficients on. `t` is the simulation time at which the step
     ends (commits), matching `NativeInstance.t_local` after the step.
 
     `n_prefill` is the work this step charged. `n_prefill_hit` is what the
@@ -94,9 +96,35 @@ class InstanceView(InstanceLoad):
             engine's `vllm:prefix_cache_queries`.
         step_time_delta: Predicted increase in step latency from adding a
             given request, in seconds.
+        decode_batch: The running batch size and summed context, the pair the
+            cost model prices a decode step on. A strategy that predicts
+            dilution needs the same inputs the engine will use.
+        residents: Read-only projections of the decoding requests, for a
+            strategy that prices what admitting would slow down. Projections
+            rather than requests, so the capability boundary above still holds
+            and both engine backends answer identically.
+        cost_model: The instance's rollout cost model, for pricing a
+            hypothetical batch. Read-only: a strategy calls `step_time`.
+        kv_blocks: Total KV blocks this instance owns, the denominator a
+            strategy sizes a projected footprint against.
+        block_size: Tokens per KV block.
+        prefill_throughput: Tokens per second this instance re-prefills at, for
+            pricing the recompute an eviction forces.
     """
 
     free_blocks: int = 0
     committed_blocks: int = 0
     prefix_hit_tokens: Callable[["Request"], int] = lambda req: 0
     step_time_delta: Callable[["Request"], float] = lambda req: 0.0
+    decode_batch: Callable[[], tuple[int, float]] = lambda: (0, 0.0)
+    residents: Callable[[], list] = list
+    decoding: Callable[[], list] = list
+    """`(projection, request)` for each decoding request, for a strategy that pauses one.
+
+    Separate from `residents` because naming a request to the engine needs the
+    object, while pricing one must not. Only the pause path uses it.
+    """
+    cost_model: object | None = None
+    kv_blocks: int = 0
+    block_size: int = 16
+    prefill_throughput: Callable[[], float] = lambda: 0.0

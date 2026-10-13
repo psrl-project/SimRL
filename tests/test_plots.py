@@ -158,12 +158,14 @@ class TestTrainPhaseBand:
         store = self._store_with_train(
             tmp_path, recompute_time=2.0, train_time=7.0, sync_time=1.0
         )
-        spans = SimPlotter(store, tmp_path / "plots")._train_phase_spans()
+        plotter = SimPlotter(store, tmp_path / "plots")
+        spans = plotter._train_phase_spans()
         assert [(label, start, end) for start, end, label, _ in spans[0]] == [
             ("recompute", 0.0, 2.0),
             ("train", 2.0, 9.0),
             ("sync", 9.0, 10.0),
         ]
+        assert plotter._train_start_events() == [(0.0, 1)]
 
     def test_a_zero_width_phase_is_omitted_rather_than_widening_its_neighbour(self, tmp_path):
         """The simulator does not model recompute, and that gap must stay visible."""

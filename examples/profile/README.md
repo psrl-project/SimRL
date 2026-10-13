@@ -3,6 +3,11 @@
 These workflows call pinned official benchmark entrypoints. DryRun-RL preserves their raw output and writes a
 validated JSONL normalization as the only regression input.
 
+The same three workflows applied to a second checkpoint, with only the differences recorded:
+[`DEEPSEEK_R1_DISTILL_QWEN_14B.md`](DEEPSEEK_R1_DISTILL_QWEN_14B.md). Read it alongside this
+file rather than instead of it, and read it first if you are profiling a *new* model — it is
+the worked example of what a different architecture actually forces you to change.
+
 Install pinned vLLM and Megatron-Bridge into the current conda environment first:
 
 ```bash

@@ -15,7 +15,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from ..training import SIDECAR_NAME
+from ..base import SIDECAR_NAME
 
 __all__ = ["SIDECAR_NAME", "FsdpMeasurement", "is_nccl_memory_exhaustion", "write_oom_sidecar"]
 

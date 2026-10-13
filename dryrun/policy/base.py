@@ -95,20 +95,18 @@ class StalenessPolicy(ABC):
         """
 
     def on_admit(self, group: list[Request], st: SimState) -> None:
-        """Hook for policies that reserve resources at dispatch time.
+        """Commit policy state when a staged group first reaches an instance.
 
-        Called once per admitted prompt group, after every response in it has
-        been placed on an instance.
+        Called exactly once per prompt group, immediately after its first
+        response is placed. The whole group is admitted atomically; siblings
+        may remain staged in the router until instance capacity is available.
         """
 
     def on_route(self, req: Request, instance_id: int, st: SimState) -> None:
         """Hook for policies tracking which instance serves a request.
 
-        Called every time the router places `req`, including re-placements
-        after a weight update or a preemption overflow. Separate from
-        `on_admit` because admission and placement are no longer the same
-        moment: a request is admitted into the router queue first and may wait
-        there, and may later move to a different instance.
+        Called every time the router places `req`, including the first
+        placement and re-placements after a weight update or preemption.
         """
 
     def on_group_complete(self, group: list[Request], st: SimState) -> CompleteAction:
@@ -146,6 +144,14 @@ class StalenessPolicy(ABC):
 
     def on_discard(self, reqs: list[Request], st: SimState) -> None:
         """Called when requests are permanently removed from the simulator."""
+
+    def replacement_groups_on_drop(
+        self,
+        groups: list[list[Request]],
+        st: SimState,
+    ) -> int:
+        """Return dataset groups to stage after permanent policy drops."""
+        return 0
 
     def expire(self, st: SimState, expected_train_version: int) -> list[Request]:
         """Drop requests that would violate staleness at `expected_train_version`.

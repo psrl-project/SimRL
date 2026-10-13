@@ -6,7 +6,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from dryrun.profiler.schema import TRAINING_SCHEDULES, Parallelism, SequenceStats
+from dryrun.profiler.schema import (
+    TRAINING_SCHEDULES,
+    ModelDescriptor,
+    Parallelism,
+    SequenceStats,
+)
 
 
 class TrainingOutOfDomainError(ValueError):
@@ -21,9 +26,14 @@ class TrainingParallelism:
     pp: int = 1
     dp: int = 1
     cp: int = 1
+    # Expert parallelism. Not a factor of `world_size` -- Megatron carves the expert groups
+    # out of the data-parallel dimension -- but it IS part of the cell key, because two
+    # candidates with the same mesh and different EP run different all-to-all traffic and
+    # hold a different number of experts per rank. See `profiler/schema.Parallelism.ep`.
+    ep: int = 1
 
     def __post_init__(self) -> None:
-        if min(self.tp, self.pp, self.dp, self.cp) <= 0:
+        if min(self.tp, self.pp, self.dp, self.cp, self.ep) <= 0:
             raise ValueError("Training parallelism dimensions must be positive.")
         if self.cp != 1:
             raise TrainingOutOfDomainError("Hydraulis V1 only supports CP=1.")
@@ -40,12 +50,13 @@ class TrainingParallelism:
             pp=self.pp,
             dp=dp,
             cp=self.cp,
+            ep=self.ep,
             world_size=self.tp * self.pp * dp * self.cp,
         )
 
     @classmethod
     def from_profile_parallelism(cls, value: Parallelism) -> TrainingParallelism:
-        return cls(tp=value.tp, pp=value.pp, dp=value.dp, cp=value.cp)
+        return cls(tp=value.tp, pp=value.pp, dp=value.dp, cp=value.cp, ep=value.ep)
 
 
 def _attention_workload(length: int) -> int:
@@ -232,9 +243,18 @@ class TrainingCostModel:
         self,
         latency_model: TrainingLatencyModel,
         memory_model: TrainingMemoryModel,
+        model: ModelDescriptor | None = None,
     ):
         self.latency_model = latency_model
         self.memory_model = memory_model
+        self.model = model
+        """Architecture the fit describes, when it came from an artifact.
+
+        Anything deriving a quantity from the model's geometry must read it from
+        here rather than being configured separately, so it cannot describe a
+        different model than the curve it is scaling. None for the analytical
+        and constant models, which are not tied to a checkpoint.
+        """
 
     def estimate(
         self,
@@ -250,6 +270,7 @@ class TrainingCostModel:
                 "pp": parallelism.pp,
                 "dp": parallelism.dp,
                 "cp": parallelism.cp,
+                "ep": parallelism.ep,
                 "micro_batch_size": workload.micro_batch_size,
                 "schedule": workload.schedule,
                 "recompute": workload.recompute,

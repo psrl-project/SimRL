@@ -50,8 +50,11 @@ class RolloutCostModel {
                          double prefill_ctx) = 0;
 
   // Adapt the simulator's compact step arguments to predict.
-  double step_time(double n_tokens, double t2, double ctxsum, int n_reqs = 0,
-                   double prefill_ctx = 0.0);
+  //
+  // Virtual because a Python model may override it rather than `predict`, and a
+  // wrapped model must reach that override. The default forwards to `predict`.
+  virtual double step_time(double n_tokens, double t2, double ctxsum,
+                           int n_reqs = 0, double prefill_ctx = 0.0);
 
   // Return floor, intercept, and slope for a pure-decode segment.
   virtual std::tuple<double, double, double> decode_coeffs(int n_d,
@@ -61,14 +64,18 @@ class RolloutCostModel {
   virtual bool saturated(double n_tokens, double t2, double ctxsum,
                          int n_reqs = 0);
 
+  // The segment queries below are virtual for the same reason. Their defaults
+  // rebuild each answer from `decode_coeffs`, a secant approximation of the
+  // curve a model such as `ComposedRollout` integrates exactly.
+
   // Wall-clock seconds of k decode steps over a fixed batch.
-  double decode_segment_time(int n_d, double ctxsum, int k);
+  virtual double decode_segment_time(int n_d, double ctxsum, int k);
 
   // Largest step count whose segment time fits inside budget.
-  int decode_steps_within(int n_d, double ctxsum, double budget);
+  virtual int decode_steps_within(int n_d, double ctxsum, double budget);
 
   // How many of k steps run above the low-load floor.
-  int decode_saturated_steps(int n_d, double ctxsum, int k);
+  virtual int decode_saturated_steps(int n_d, double ctxsum, int k);
 };
 
 // --- PSRL fitted model ---

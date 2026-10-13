@@ -30,13 +30,28 @@ from ..sol import SolComponents
 
 @runtime_checkable
 class KernelOp(Protocol):
-    """One measured kernel family: its table shape, its roofline, and its floor policy."""
+    """One measured kernel family: its table shape, roofline, floor, and timing policy."""
 
     name: str
     family: str
     slice_columns: tuple[str, ...]
     axis_columns: tuple[str, ...]
     fits_floor: bool
+    graph_replayed: bool
+    """Whether the serving engine replays this op from a captured CUDA graph.
+
+    Decides which timing helper the runner uses, and it is a property of the op rather than
+    of the family because vLLM's default `cudagraph_mode=FULL_AND_PIECEWISE` splits the two
+    phases: a decode batch replays one FULL graph covering the whole forward pass, while
+    prefill and mixed batches run piecewise, with every op named in `splitting_ops` -- which
+    includes both softmax attention and GDN -- left outside the graph and dispatched eagerly.
+
+    So `generation_attention` and `gdn_decode` are graph-replayed and `context_attention` and
+    `gdn_context` are not, even though each pair shares a sweep, a backend, and a family.
+    Timing a graph-replayed op with CUDA events charges the simulator a per-call python
+    dispatch cost the engine never pays; timing an eager op by graph replay hides one it
+    does. See `profiler/kernel/utils/timing.py` for the measurements behind each setting.
+    """
 
     def sol(
         self,

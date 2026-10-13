@@ -19,6 +19,9 @@ When writing a string, ask: **"Is this string a name the program looks up, or a 
 | **Docstring prose** | Uppercase | Yes `.` | Yes `` `id` `` | N/A |
 | **Docstring arg desc** | Uppercase | `.` optional | Yes for *other* identifiers | N/A |
 
+For comments and docstrings, §5.0 also bounds *what* they may say (no history,
+no measurements) and §5.0.1 bans `;` and dashes in all prose.
+
 ---
 
 ## §1. Identifier Strings vs. Human-Readable Messages ⚠️
@@ -283,6 +286,73 @@ def wait_for_nixl_push_completion(self, timeout: float | None = None) -> bool:
 ---
 
 ## §5. Comments & Annotation Markers
+
+### 5.0 What a Comment Must Earn ⚠️
+
+> **A comment earns its line by carrying information the code cannot. One line is
+> the default, two the ceiling for ordinary code. Three only for a `NOTE` about a
+> real design trap.**
+
+Write the intuition: the constraint, the invariant, the unit, the failure mode
+that made the code look the way it does. Then stop. If it needs more, it belongs
+in the function docstring, or the code needs a better name.
+
+**Never write these.**
+
+| Anti-pattern | Why it is worthless |
+|--------------|---------------------|
+| **History** (`# Previously we called X`, `# An earlier version did Y`) | Nobody reads code to learn what it used to be. `git log` owns this. Delete the old approach rather than narrating it |
+| **Measurements that justified a choice** (`# 65.53 GiB weight, verified to 0.999x`) | Dates instantly, nobody re-measures it. Belongs in the commit message |
+| **Restating the code** (`# Increment the counter` above `counter += 1`) | Costs a line, adds nothing, rots on the next edit |
+| **Comparison to alternatives** (`# We could have used a heap, but...`) | Design-space tourism. Keep only if a reader would actively try the alternative and break something |
+| **Narrative markers** (`**Why this exists.**`, `**The bug this fixes.**`) | A comment is not an essay. State the fact |
+
+```python
+# BAD: history, measurements, and self-narration for a one-line fact
+# Hybrid attention: only full-attention layers carry a KV cache. The linear
+# layers use a separate Mamba state cache, so charging them would overstate
+# capacity by the interval factor (4x here, 10 of 40 layers). An earlier
+# version charged all 40 and was wrong by 9.4x against the real server.
+num_layers = _full_attention_layer_count(config, num_layers)
+
+# GOOD: one line, states what a reader cannot see
+# Only full-attention layers carry a KV cache. The linear layers hold a
+# per-sequence mamba state instead.
+num_layers = _full_attention_layer_count(config, num_layers)
+```
+
+**Numbers.** Only when the number *is* the specification (`# vLLM caps this at
+1024`). A number that merely motivated a choice goes in the commit message.
+
+**Budget.** A module docstring is ~15 lines. Past that the content is reference
+material: put it in `.claude/`, a README, or a memory note, and link to it.
+
+**A missing comment is cheaper than a bloated one.** When nothing non-obvious is
+happening, write nothing.
+
+### 5.0.1 Banned characters in all prose ⚠️
+
+In every comment, docstring, log message and assertion message, these are
+forbidden anywhere in the line, not only at the end.
+
+| Banned | Instead write |
+|--------|---------------|
+| `;` semicolon | `.` and a new sentence, or a conjunction |
+| `—` em dash, `–` en dash, ` -- ` | `.` and a new sentence, or restructure |
+| `. ` double space | one space |
+
+Hyphenated compounds inside a word (`worker-side`, `non-KV`) are fine.
+
+```python
+# BAD: semicolon and dash splicing clauses
+# Recovery succeeded; the slot is not wasted -- keep the data.
+
+# GOOD: separate sentences
+# Recovery succeeded, so the slot is not wasted. Keep the data.
+```
+
+Before finishing an edit, grep the diff: `git diff -U0 | grep -nE '^\+.*[;—–]'`
+and confirm every hit is real code rather than prose.
 
 ### 5.1 Block Comments
 

@@ -18,7 +18,7 @@ from ...schema import (
     TrainingPayload,
 )
 from ...search_space import TrainingCandidate
-from ..training import (
+from ..base import (
     iter_candidate_dirs,
     load_sidecar_metrics,
     rank_memory_peaks,
@@ -60,6 +60,18 @@ def _validate_resolved_config(
         "train.micro_batch_size": candidate.micro_batch_size,
         "train.global_batch_size": candidate.global_batch_size,
     }
+    # Verified only for a MoE run. A dense recipe leaves `expert_model_parallel_size` at
+    # the library default rather than at the candidate's `ep`, and comparing them would
+    # fail every dense candidate.
+    #
+    # `expert_tensor_parallel_size` is checked against 1, not against `tp`: the launcher
+    # pins it there on purpose, because Megatron's default of following TP would force
+    # `ep=1` at every mesh whose memory fits this model and the EP axis would vanish. See
+    # `launch.py` for the arithmetic. Asserting `tp` here instead rejected a sweep whose
+    # configs were exactly right.
+    if OmegaConf.select(resolved, "model.num_moe_experts"):
+        expected["model.expert_model_parallel_size"] = candidate.parallelism.ep
+        expected["model.expert_tensor_parallel_size"] = 1
     for key, expected_value in expected.items():
         actual = OmegaConf.select(resolved, key)
         if actual is not None and int(actual) != int(expected_value):

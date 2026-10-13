@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 from dataclasses import asdict
@@ -40,7 +41,7 @@ from ..profiler.adapters.fsdp import (
 )
 from ..profiler.fsdp_search_space import enumerate_fsdp_candidates
 from ..profiler.io import write_records
-from ..profiler.kernels import KernelProfileConfig
+from ..profiler.kernel import KernelProfileConfig
 from ..profiler.search_space import (
     ModelConstraints,
     TrainingCandidate,
@@ -166,6 +167,13 @@ def _generate_bridge_candidates(
             if "data_parallel_sizes" in search
             else None
         ),
+        # Expert parallelism for a MoE block. Absent means [1], every rank holding every
+        # expert, which is the only valid value for a dense model.
+        expert_parallel_sizes=(
+            _as_int_list(search["expert_parallel_sizes"])
+            if "expert_parallel_sizes" in search
+            else None
+        ),
     )
 
 
@@ -234,7 +242,7 @@ def cmd_kernels_run(args: argparse.Namespace) -> None:
     import torch
 
     from ..cost.kernel.ops.base import families, ops_for_family
-    from ..profiler.kernels.measurements import PerfTableWriter
+    from ..profiler.kernel.measurements import PerfTableWriter
 
     config = _kernel_config(args.config)
     device = torch.cuda.get_device_name(0)
@@ -287,7 +295,7 @@ def cmd_kernels_fit_floor(args: argparse.Namespace) -> None:
 def cmd_kernels_verify_shapes(args: argparse.Namespace) -> None:
     """Compare a family's declared kernel shapes against the checkpoint's real module graph."""
     from ..profiler.hf import load_hf_model_descriptor
-    from ..profiler.kernels.introspect import verify_shapes
+    from ..profiler.kernel.introspect import verify_shapes
 
     if args.model_path:
         model_path = args.model_path
@@ -466,7 +474,15 @@ def cmd_megatron_run(args: argparse.Namespace) -> None:
             )
             continue
         try:
-            run_bridge_candidate(config, candidate, resume=args.resume)
+            run_bridge_candidate(
+                config,
+                candidate,
+                resume=args.resume,
+                nnodes=args.nnodes,
+                node_rank=args.node_rank,
+                master_addr=args.master_addr,
+                master_port=args.master_port,
+            )
         except subprocess.CalledProcessError as exc:
             failures += 1
             dryrun_logger.warning(
@@ -603,6 +619,36 @@ def _add_candidate_arguments(parser: argparse.ArgumentParser) -> None:
     selection.add_argument("--index", type=int, help="Run or collect one candidate index.")
 
 
+def cmd_kv_probe(args: argparse.Namespace) -> None:
+    """Measure and cache the KV capacity a real vLLM engine allocates."""
+    from ..cost.rollout.kv_probe import DEFAULT_CACHE_PATH, probe_kv_capacity
+
+    if args.refresh:
+        # For when the answer changed under a stable key: a new driver, a rebuilt
+        # vLLM. Clearing the file is simpler than recomputing one key, and the
+        # dropped entries are cheap to re-measure.
+        cache = Path(os.environ.get("DRYRUN_KV_CACHE", str(DEFAULT_CACHE_PATH)))
+        if cache.is_file():
+            cache.unlink()
+            dryrun_logger.info("Cleared KV cache at %s for --refresh.", cache)
+
+    capacity = probe_kv_capacity(
+        args.model,
+        tensor_parallel=args.tp,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        max_model_len=args.max_model_len,
+        dtype=args.dtype,
+        block_size=args.block_size,
+        max_num_batched_tokens=args.max_num_batched_tokens,
+        max_num_seqs=args.max_num_seqs,
+        gpu_name=args.gpu_name,
+    )
+    print(
+        f"tp={args.tp}: {capacity.num_gpu_blocks} blocks x {capacity.block_size} tokens "
+        f"= {capacity.total_tokens:,} tokens  [{capacity.source}]"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the profiling command tree for tests and console entrypoints."""
     parser = argparse.ArgumentParser(
@@ -610,6 +656,32 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run official profilers and normalize their raw artifacts.",
     )
     backends = parser.add_subparsers(dest="backend_name", required=True)
+
+    kv = backends.add_parser(
+        "kv-probe",
+        help="Measure real KV capacity by starting vLLM once, and cache it.",
+        description=(
+            "Start a vLLM engine, read back the KV block count it allocates, and "
+            "write it to the on-disk cache that `dryrun simulate` reads. Run this "
+            "ahead of time so a simulation never has to wait on an engine start, "
+            "or on a GPU box to populate a cache a GPU-less box will consume."
+        ),
+    )
+    kv.add_argument("--model", required=True)
+    kv.add_argument("--tp", type=int, default=1, help="Tensor-parallel degree.")
+    kv.add_argument("--gpu-memory-utilization", type=float, default=0.9)
+    kv.add_argument("--max-model-len", type=int, default=32768)
+    kv.add_argument("--dtype", default="bfloat16")
+    kv.add_argument("--max-num-batched-tokens", type=int, default=0)
+    kv.add_argument("--max-num-seqs", type=int, default=0)
+    kv.add_argument("--gpu-name", default="unknown")
+    kv.add_argument("--block-size", type=int, default=0)
+    kv.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Re-probe and overwrite even when the key is already cached.",
+    )
+    kv.set_defaults(func=cmd_kv_probe)
 
     vllm = backends.add_parser("vllm", help="Use vLLM bench sweep serve.")
     vllm_workflows = vllm.add_subparsers(dest="workflow", required=True)
@@ -715,6 +787,25 @@ def build_parser() -> argparse.ArgumentParser:
     _add_candidate_arguments(run)
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--resume", action="store_true")
+    # Multi-node. A mesh wider than one host's GPU count needs these: every host runs the
+    # same command with its own --node-rank, against one shared --master-addr. Required for
+    # Qwen3.5-35B-A3B, whose smallest trainable mesh is 16 ranks.
+    run.add_argument(
+        "--nnodes",
+        type=int,
+        default=1,
+        help="Nodes the candidate mesh spans (default 1, single-host torchrun --standalone).",
+    )
+    run.add_argument(
+        "--node-rank",
+        type=int,
+        default=0,
+        help="This host's index in [0, nnodes).",
+    )
+    run.add_argument("--master-addr", help="Rendezvous host, required when --nnodes > 1.")
+    run.add_argument(
+        "--master-port", type=int, help="Rendezvous port, required when --nnodes > 1."
+    )
     run.set_defaults(func=cmd_megatron_run)
 
     collect = megatron_workflows.add_parser("collect")

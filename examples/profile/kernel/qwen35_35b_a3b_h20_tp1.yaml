@@ -1,0 +1,76 @@
+# Kernel profiling for Qwen3.5-35B-A3B at TP=1.
+#
+# The first mixture-of-experts model in the kernel sweep, and the `qwen35_moe` family
+# declares seven GEMM shapes per layer rather than the dense four: `qkv_proj`, `o_proj`,
+# `router`, `expert_gate_up`, `expert_down`, `shared_gate_up`, `shared_down`. The expert
+# shapes are per-expert at `moe_intermediate_size=512`, so they are narrow and launch-bound
+# where the dense projections are bandwidth-bound; the grid below keeps the small token
+# counts dense for exactly that reason.
+#
+# Hybrid attention is the other difference. Only 10 of the 40 layers run softmax attention
+# (`full_attention_interval: 4`); the other 30 are gated delta-net, which this sweep does
+# NOT measure -- there is no linear-attention kernel op. So the attention tables here price
+# a quarter of the model's layers, and a composed rollout built from them would understate a
+# step. That is a known gap, recorded rather than papered over: the per-kernel tables and
+# their holdout gate are still valid for the kernels they cover.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy10/share_303541817/lhy/models/Qwen3.5-35B-A3B}
+hardware:
+  gpu_name: H20
+  gpu_count: 1
+  gpu_memory_mib: 97871
+output_dir: ../../../outputs/profile/qwen35_35b_a3b/kernel_tp1
+experiment_name: qwen35-35b-a3b
+parallelism:
+  tensor_parallel: 1
+
+gemm:
+  token_counts: [1, 2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
+attention:
+  batch_sizes: [1, 2, 4, 8, 16, 32, 48, 64]
+  context_seq_lens: [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+  generation_steps: [0, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+  block_size: 16
+  window_size: 0
+  # The KV footprint per token is a quarter of a dense Qwen3-8B's: 2 KV heads instead of 8,
+  # and only 10 of 40 layers hold a KV cache at all. head_dim is 256 rather than 128, which
+  # halves that saving back. The budget is left at the dense default because it is a cap on
+  # the measured tensor, not on the model: the same 262144 context tokens is the same
+  # allocation whatever fraction of the real model it represents.
+  max_context_tokens: 262144
+
+gdn:
+  # Gated delta net: the linear-attention layer this model runs on 30 of its 40 layers. A
+  # separate family from `attention:` because the kernels and the cost function differ -- GDN
+  # is LINEAR in tokens where softmax attention is quadratic, which at 32k tokens is a 128x
+  # difference in the roofline.
+  #
+  # Two axes, one per phase, and each phase has only one:
+  #
+  # `total_tokens` for prefill. The kernel (`chunk_gated_delta_rule`) is varlen, so a packed
+  # batch is one row behind `cu_seqlens` and there is no batch dimension. The range reaches
+  # 32768 because the state is fixed-size and the measurement stays cheap at long lengths --
+  # the reason this layer type exists.
+  total_tokens: [128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+  # `batch_sizes` for decode, with NO step axis: the recurrent state is a fixed
+  # `num_key_heads x head_dim x head_dim` per request whatever the KV depth, so a decode step
+  # costs the same at depth 128 as at 32768. Sweeping history here would fit noise.
+  batch_sizes: [1, 2, 4, 8, 16, 32, 48, 64, 128, 256]
+
+elementwise:
+  token_counts: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
+collective:
+  # Byte sizes, so this grid is model-independent and identical to the dense sweeps'.
+  # For a MoE model it covers one extra regime: the expert all-to-all, whose message size
+  # is `tokens * topk * hidden / ep` rather than anything the dense collectives carry.
+  message_bytes: [4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152,
+     4194304, 8388608, 16777216, 33554432, 67108864, 134217728, 268435456, 536870912]
+  topologies: [[2, 1], [4, 1], [8, 1]]
+  dtypes: [bfloat16, float32]
+
+measurement:
+  warmup_iterations: 5
+  active_iterations: 20
+  dtype: bfloat16
+  kv_cache_dtype: bfloat16

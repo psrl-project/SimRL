@@ -181,7 +181,7 @@ def test_the_config_serves_a_sweep_per_op_name():
     import os
     from pathlib import Path as _Path
 
-    from dryrun.profiler.kernels.config import KernelProfileConfig
+    from dryrun.profiler.kernel.config import KernelProfileConfig
 
     config_path = _Path(__file__).resolve().parents[1] / "examples" / "profile" / "kernel" / "qwen3_8b_h20_tp1.yaml"
     if not config_path.is_file():

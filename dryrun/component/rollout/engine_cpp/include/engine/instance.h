@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -103,6 +104,13 @@ class NativeInstance {
   // Expose the Python-side attribute names.
   double t_local() const { return t_local_; }
   void set_t_local(double t) { t_local_ = t; }
+
+  // Which resident pays when the KV pool cannot fund a decode step. Mirrors the
+  // native engine's `eviction.select(candidates, now)`. Returning nullptr
+  // defers to the default, newest-dispatched first, which is what vLLM does.
+  using EvictionFn =
+      std::function<RequestPtr(const std::vector<RequestPtr>&, double)>;
+  void set_eviction(EvictionFn fn) { eviction_ = std::move(fn); }
   int instance_id() const { return instance_id_; }
   int tp() const { return tp_; }
   int kv_blocks() const { return kv_blocks_; }
@@ -111,6 +119,8 @@ class NativeInstance {
   int kv_hits() const { return kv_.hits; }
   bool has_pending_event() const { return log_ != nullptr; }
   int block_size() const { return block_size_; }
+  // Read-only view of the KV manager, for state comparison in tests.
+  const KvCacheManager& kv() const { return kv_; }
   int peek_hit_tokens(const RequestPtr& req) const {
     return kv_.peek_hit_tokens(*req);
   }
@@ -129,6 +139,25 @@ class NativeInstance {
 
   // Advance without recording undo state. Cannot be rolled back.
   std::optional<EngineEvent> advance_one_event_committed(int version);
+
+  // The result of `advance_iterations`.
+  struct IterationBatch {
+    std::optional<EngineEvent> pending;  // the event left for the caller, if any
+    int n_committed = 0;                 // ITERATION_DONE events committed here
+    double last_committed_t = 0.0;       // time of the last of them
+    size_t n_stats_committed = 0;        // step_stats rows that are committed
+  };
+
+  // Produce events the way the simulator's loop would, committing each
+  // ITERATION_DONE that the loop would pop next anyway.
+  //
+  // NOTE(claude): An event ends the batch, uncommitted, when it is not
+  // ITERATION_DONE, ends after `deadline`, or does not sort below
+  // `(t_top, iid_top)`, the other instances' earliest pending event. The flags
+  // mirror the loop's `undoable_events` choice for the first event and the rest.
+  IterationBatch advance_iterations(int version, bool first_speculative,
+                                    bool iter_speculative, bool has_top,
+                                    double t_top, int iid_top, double deadline);
 
   void commit_last_event();
   void undo_last_event();
@@ -171,12 +200,14 @@ class NativeInstance {
   std::vector<RequestPtr> retire(const std::vector<RequestPtr>& reqs);
   RequestPtr preempt_one(RequestPtr victim = nullptr);
   std::vector<RequestPtr> preempt_until_decodable();
+  RequestPtr pick_victim(const std::vector<RequestPtr>& victims) const;
   void release(const RequestPtr& req, bool keep_tokens);
   void save_snapshot();
 
   // --- Fields ---
 
   std::shared_ptr<RolloutCostModel> cost_;
+  EvictionFn eviction_;
   int M_;  // token_budget
   int kv_blocks_;
   int block_size_;
@@ -201,6 +232,16 @@ class NativeInstance {
 
   // Undo log for speculative events. nullptr when no event is in flight.
   std::unique_ptr<UndoLog> log_;
+  // The last event's log, emptied and kept so the next event reuses its storage.
+  std::unique_ptr<UndoLog> spare_log_;
+
+  // End the in-flight event's journal and keep the log for reuse.
+  void recycle_log() {
+    if (log_) {
+      log_->clear();
+      spare_log_ = std::move(log_);
+    }
+  }
 };
 
 }  // namespace dryrun::engine

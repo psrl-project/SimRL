@@ -94,6 +94,9 @@ def build_launch_spec(
             "tp": parallelism.tp,
             "pp": parallelism.pp,
             "cp": parallelism.cp,
+            # The launcher applies this to `expert_model_parallel_size`. Omitting it would
+            # leave a MoE recipe's own tuned value in place against an overridden TP/PP.
+            "ep": parallelism.ep,
             "world_size": parallelism.world_size,
         },
         "micro_batch_size": candidate.micro_batch_size,
@@ -101,6 +104,18 @@ def build_launch_spec(
         "num_microbatches": candidate.num_microbatches,
         "seq_length": seq_length,
         "packing": packing,
+        # Recorded, not acted on: a provider whose forward derives rotary positions from
+        # `input_ids` cannot be pipelined by this profiler. Megatron's `get_batch` returns
+        # all-None for a middle pipeline stage *before* consulting the data iterator
+        # (`gpt_step.py`, `if (not is_first) and (not is_last): return None, ...`), which is
+        # correct for a dense GPT where a middle stage receives hidden states. The
+        # Qwen3.5-VL MoE forward instead calls `get_rope_index(input_ids, ...)` whenever
+        # `position_ids is None`, so every PP>1 candidate dies with
+        # `AttributeError: 'NoneType' object has no attribute 'shape'`. No batch-reader
+        # patch can fix that, because the iterator is never reached. The sweep uses PP=1 for
+        # such a model; this field is here so the artifact records why.
+        "derives_position_ids_from_input_ids": "VL" in str(config.model.architecture or "")
+        or "Conditional" in str(config.model.architecture or ""),
         # The launcher builds `cu_seqlens` from these and the sidecar records them,
         # so the measured buffer and the fitted shape cannot drift apart.
         "sequence_lengths": list(candidate.sequence_shape),

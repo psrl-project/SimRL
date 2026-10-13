@@ -1,9 +1,9 @@
 # Routing
 
-A request is admitted into the **router**, not onto an instance. The router holds it until
-some instance can take it, and decides which one. That is where a real gateway puts its
-backlog, and it is why the simulated engine's waiting queue now means what the real one's
-does: work an instance has accepted, rather than the whole fleet's backlog.
+A request is first **staged in the router**. It becomes admitted only when the router
+successfully places its first group member on an instance. That is where a real gateway puts
+its backlog, and it prevents queue dwell from consuming staleness-policy inventory or fixing
+the trajectory version too early.
 
 Before this existed, instance selection was three lines of `argmin(n_active)` and a group that
 any instance refused was rolled back wholesale. There was nowhere to park a request, so the
@@ -24,14 +24,83 @@ dryrun rollout.router.strategy=kv_cache_aware rollout.n_instances=4
 | `kv_cache_aware` | Most KV headroom, counting committed-but-unallocated context |
 | `prefix_aware` | Whoever already holds this request's prefix, unless the fleet is skewed |
 | `throughput_balance` | Smallest predicted increase in step latency |
+| `version_aware_tp` | Soft preference for high TP on stale requests |
+| `version_capped_tp` | Stale requests use highest TP under the active cap |
+| `scg_admission` | Places only when the request's marginal value beats the dilution it causes |
+| `length_aware` | Orders whole prompt groups longest- or shortest-first inside a bounded block, places by predicted remaining load. Reads a `LengthModel`, so it runs on the oracle or on a noisy one |
 
 `request_num_balance` reproduces the former selection exactly, so the default is
 behaviour-preserving: at `n_instances=1` every strategy must produce an identical run, which
 `tests/test_router_integration.py` asserts.
 
-Adding a strategy means one class in `component/rollout/router/strategies.py` under
-`@register_strategy`, and nothing else. A strategy is pure selection over `InstanceView` and
-never queues, checks capacity, or mutates state, so it can be unit tested without an engine.
+Adding a strategy means one module in `component/rollout/router/strategies/`, with
+one class under `@register_strategy`, and an import in that package's `__init__.py`.
+Most strategies only select over `InstanceView`. A strategy may also narrow the
+candidate set for one queue head and decide whether dispatch may continue to the
+next version queue when that head cannot be admitted.
+
+### Strategy hooks beyond `select`
+
+All are optional and duck-typed, so a strategy implements only what it needs.
+
+| Hook | Called | Used by |
+|---|---|---|
+| `narrow_candidates` | before `select`, per request | `version_capped_tp` |
+| `allow_version_bypass` | after a version head cannot be placed | `version_capped_tp` |
+| `select_context` | instead of `select`, with the clock | `scg_admission` |
+| `rank_queued(window, now)` | per placement, over `rollout.router.queue_window` queued requests of one version | `scg_admission`, `length_aware` |
+| `observe_enqueue(reqs)` | when a prompt group is first queued | `length_aware` |
+
+`observe_enqueue` exists because admission is per group while placement is per request. A rule keyed
+on the group, such as its slowest member, has no other moment at which every member is known to be
+queued together. `queue_window` (default 32) bounds how many requests `rank_queued` sees; a strategy
+ordering the whole backlog needs it at least that wide.
+
+### `length_aware` reorders inside a block, on purpose
+
+psrl consumes the first groups to finish, so ordering the queue by length changes which trajectories
+are trained on, not only how fast the run goes. Ranking the whole backlog starves whichever end it
+ranks last. `window_groups` serves groups in consecutive blocks of that size in arrival order and
+reorders only within a block; one training batch of groups is the natural size, since it is the set
+sharing a consumption deadline. Any comparison must also report tokens per consumed group, which
+should match the baseline's. See `docs/design/psrl-scheduling-headroom.md` for what this buys and where.
+
+### `scg_admission` is the only strategy that refuses
+
+Every other strategy answers "which instance", never "whether". This one prices the
+placement and leaves the request in the router when the answer is no:
+
+```
+admit  <=>  G_new * rate_after  >  (sum of resident G) * (rate_before - rate_after)
+```
+
+`G` is the trajectories bought per extra token of generation budget, obtained by
+differencing a conditional length CDF, and both rates come from the same `step_time`
+the engine prices its own decode steps with. The result is a residency limit that
+moves with context depth and remaining slack, which is what a tuned
+`max_concurrent_seqs_per_instance` approximates with a constant. See
+`dryrun/value/` for the model and `examples/simulate/scg_admission_sweep.sh` for the
+comparison against that constant.
+
+Three things make it safe rather than merely clever. An idle instance is taken
+unconditionally, so a fleet whose whole queue prices at zero cannot refuse its way
+into the livelock bound. A length model that has not yet seen `min_samples`
+trajectories reports itself unready and the strategy falls back to load balancing,
+which is counted in `n_fallback` so an untested run is distinguishable from a null
+result. And it requires a cost model: the Router raises rather than pricing every
+dilution against `None`.
+
+```{warning}
+`strategy_args.max_staleness` must match `job.max_staleness`. The deadline is
+derived from it, so a mismatch misprices every budget in the same direction, and
+nothing checks the two agree.
+```
+
+Known limitation: a refusal stops the dispatch pass at that version head, so a
+low-value request can block a higher-value one behind it in the same layer. The
+queue is ordered by prompt length, which is the admission-selection rule this is
+supposed to use, so the ordering is not arbitrary. Reordering within a layer needs
+the router to peek deeper than one.
 
 ### Two warnings
 
@@ -48,25 +117,48 @@ admission gate agree about what "full" means.
 
 ## Admission and dwell
 
-Two layers, kept separate on purpose:
+Three layers, kept separate on purpose:
+
+The **staleness policy** gates the first placement with `admit_quota`. A successful first
+placement atomically admits the whole prompt group and calls `on_admit` once. Its siblings can
+remain in the router, but they bypass the admission check because the group already owns its
+policy slot. If policy capacity is unavailable, dispatch stops and the request remains staged.
 
 The **router's gate** decides *eligibility* and mirrors SMG's `admission_reject_reason`:
-`max_concurrent_seqs_per_instance` (0 disables it) and `reject_on_waiting`. Both default to
-permissive.
+`max_concurrent_seqs_per_instance` (0 disables it), global `reject_on_waiting`, and
+`reject_preempted_on_waiting`, which applies the waiting check only to preemption loopbacks.
+All three default to permissive.
 
 The **engine's `add_request`** remains the authority on whether the request actually fits. It
 is not duplicated in the router: two places deciding admission is how the two drift apart.
 
-A request whose candidates all refuse stays queued. Dispatch walks the queue in priority order
-and **stops at the first request nothing can take** rather than skipping it, which is SMG's
-peek-then-pop shape and what stops a long request being starved by a stream of short ones that
-keep fitting into the gap it needs.
+A request whose candidates all refuse stays queued. Ordinary strategies stop at the first
+version head nothing can take. The router itself does not know which versions are stale or
+what TP policy is active. It visits one queue per `v_traj`, oldest first, and asks the strategy
+about each head. `version_capped_tp` permits a blocked queue to be bypassed: every old version
+is still restricted to the highest TP tier, while the reference version can use the lowest TP
+tier after one or more older queues block.
 
-Queue order is a min-heap on `(version, sort_key, arrival)`. Lower weight versions always go
-first, because an older trajectory is closer to expiring. `sort_key` breaks ties:
+After every successful placement, dispatch restarts at the oldest nonempty version. This keeps
+older work first whenever its high-TP tier has capacity without coupling the router to
+`version_capped_tp`. Each version layer is a min-heap on `(sort_key, arrival)`. `sort_key`
+breaks ties:
 `short_length` (default), `long_length`, or `small_id`. The key uses the **original** prompt
 length even after a loopback, so a resumed request does not drift backwards every time it
 returns.
+
+Dataset ingress follows policy capacity. Staging offers a prompt group only while
+`admit_quota` grants room beyond what is already staged and uncommitted, so the policy is the
+only admission gate. `Simulator` used to grant ingress from a counter of its own,
+`(max_staleness + 1) * batch_size` groups at startup and another `batch_size` per published
+version. That counter bounded in-flight work so tightly that no policy's quota ever refused:
+measured over a full aligned run, it was consulted 3367 times and refused none, while ingress
+credits were exhausted at 1353 of 1359 staging calls. `max_staleness` was therefore the
+simulator's guarantee rather than each policy's, which made policies with genuinely different
+admission rules indistinguishable -- psrl bounds staleness through its reserve/occupy
+inventory and verl does not bound it at all, yet the two produced byte-identical telemetry.
+Unadmitted groups that cross a weight update are re-layered at the new rollout version;
+admitted or already-generated requests keep their trajectory history.
 
 ## Loopback
 
@@ -85,6 +177,8 @@ it worse. Below the threshold nothing crosses instances, which keeps the common 
 there were 2122 preemptions in the matched run against 404 aborts.
 
 `max_waiting_after_preempt` defaults to `null`, leaving every preemption local.
+When `reject_preempted_on_waiting=true`, a reclaimed victim skips instances that still have
+local waiting work; fresh admissions and weight-update loopbacks remain unaffected.
 
 ```{warning}
 The preempt-overflow path is **not validated by the aligned baseline**. That run sets the
@@ -106,7 +200,7 @@ Capacity is released in three places, all already event boundaries:
 | Release | Event | Count in the matched run |
 |---|---|---|
 | A finished request's blocks are freed | `REQUEST_COMPLETE` | 1394 |
-| A preemption frees its victim | `KV_PREEMPT` / `DEADLOCK_PREEMPT` | 2122 |
+| A preemption frees its victim | `PREEMPT` | 2122 |
 | A weight update frees everything | publish | 404 |
 
 So dispatch runs after those commit, plus once on entry to the engine loop. **A decode segment

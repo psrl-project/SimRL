@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.telemetry.store import JsonlStore
 from dryrun.policy.psrl import PSRLPolicy
 from dryrun.simulator import SimConfig, Simulator
+from dryrun.telemetry.store import JsonlStore
 from dryrun.workload.distributions import uniform
 from dryrun.workload.grouped import GroupedWorkload
 
@@ -124,6 +124,16 @@ class TestInstanceStream:
                 assert a != b, "consecutive instance samples must differ"
 
 
+class TestGatewayStream:
+    def test_queue_depth_is_reported_per_version(self, tmp_path):
+        store, _, _ = _run_with_store(tmp_path)
+        rows = list(store.iter("gateway"))
+        assert rows
+        for row in rows:
+            assert isinstance(row["queue_by_version"], dict)
+            assert sum(row["queue_by_version"].values()) == row["queue_len"]
+
+
 class TestRolloutStepStream:
     def test_phases_and_positive_dt(self, tmp_path):
         store, _, cfg = _run_with_store(tmp_path)
@@ -131,7 +141,7 @@ class TestRolloutStepStream:
         assert rows
         seen_instances = set()
         for r in rows:
-            assert r["phase"] in ("prefill", "decode")
+            assert r["phase"] in ("mixed", "decode")
             assert r["dt"] > 0
             assert r["steps"] >= 1
             assert r["n_tokens"] == r["n_prefill"] + r["n_decode"]

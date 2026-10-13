@@ -1,38 +1,18 @@
-"""KV cache capacity in blocks, derived from the model and the GPU budget.
+"""Estimate KV capacity arithmetically, as a fallback to measuring it.
 
-`rollout.kv_blocks` is the denominator of every `kv_cache_usage` number the
-simulator reports, so a wrong value rescales the whole KV curve without
-changing anything else. The default of 100000 is a placeholder: a real vLLM
-engine sizes its cache from whatever GPU memory is left after weights, and for
-Qwen3-8B on an H20 at `gpu_memory_utilization=0.9` that is closer to 31000.
-Comparing a simulated KV trace against a measured one is meaningless until the
-two share a denominator.
-
-This reproduces vLLM's own arithmetic rather than inventing one:
+`kv_probe.py` is the primary path: it asks a real vLLM engine. This module
+reproduces vLLM's sizing arithmetic for the case where no GPU is available:
 
     page_size_bytes = 2 * block_size * num_kv_heads * head_dim * dtype_bytes
     num_gpu_blocks  = available_kv_memory // (page_size_bytes * num_layers)
 
-(`vllm/v1/kv_cache_interface.py:AttentionSpec.real_page_size_bytes` and
-`vllm/v1/core/kv_cache_utils.py`, where the same floor division appears.) The
-leading 2 is K and V; `num_kv_heads` rather than `num_attention_heads` is what
-makes a GQA model cheap to cache.
+It is only honest for a plain dense model. vLLM subtracts a peak activation,
+non-torch allocation and CUDA graph reservation that it measures at startup, and
+a hybrid attention/linear model pads its mamba pages to the attention page.
+Neither is derivable from a config file, so `non_kv_overhead_bytes` is the only
+lever and it has to come from somewhere else.
 
-Nothing here imports torch or vllm. The inputs are a handful of integers read
-from a HuggingFace `config.json`, so this runs on a machine with no GPU and no
-inference stack installed.
-
-**This is an estimate of a measurement.** vLLM subtracts its *observed* peak
-non-KV memory, which includes the CUDA context, allocator fragmentation and the
-activation high-water mark of a profile run. Those cannot be derived from a
-config file. For Qwen3-8B on one H20 at utilisation 0.9 this function returns
-32205 against a measured 31279, a 3.0% overestimate, all of it that unmodelled
-overhead.
-
-That 3% is the price of not needing a real run to have happened, which is the
-whole point of a simulator: a configuration worth simulating is usually one
-nobody has executed yet. Use `non_kv_overhead_bytes` to fold in a per-hardware
-constant once one is known: on H20 at this utilisation it is about 2 GiB.
+Imports no torch and no vllm, so it runs on a machine with no inference stack.
 """
 
 from __future__ import annotations
@@ -44,6 +24,39 @@ from pathlib import Path
 from ..._logging import dryrun_logger
 
 _BYTES_PER_MIB = 1024 * 1024
+
+
+def _flatten_text_config(config: dict) -> dict:
+    """Merge nested ``text_config`` into the top-level dict for multimodal checkpoints.
+
+    Mirrors the same helper in `dryrun.profiler.hf` so that models whose
+    architecture fields live under ``text_config`` (e.g. Qwen3.5-MoE) resolve
+    correctly without importing the profiler stack.
+    """
+    text_sub = config.get("text_config")
+    if not isinstance(text_sub, dict):
+        return config
+    merged = dict(config)
+    for key, value in text_sub.items():
+        if key not in merged:
+            merged[key] = value
+    return merged
+
+
+def _full_attention_layer_count(config: dict, total_layers: int) -> int:
+    """Return the number of layers that carry a KV cache.
+
+    Equals ``total_layers`` for a pure-attention model. A hybrid model declaring
+    ``full_attention_interval`` holds a KV cache only in its full-attention
+    layers; charging all of them overstates capacity by that interval.
+    """
+    interval = config.get("full_attention_interval")
+    if interval is None:
+        return total_layers
+    interval = int(interval)
+    if interval <= 0:
+        return total_layers
+    return total_layers // interval
 
 # Bytes per element, keyed by the `torch_dtype` string a HuggingFace config uses.
 _DTYPE_BYTES = {
@@ -116,6 +129,7 @@ class KvCacheGeometry:
             raise ValueError(f"No model config at {path!s}.")
 
         config = json.loads(path.read_text(encoding="utf-8"))
+        config = _flatten_text_config(config)
         try:
             num_layers = int(config["num_hidden_layers"])
             num_attention_heads = int(config["num_attention_heads"])
@@ -126,6 +140,9 @@ class KvCacheGeometry:
         # every attention head carries its own KV.
         num_kv_heads = int(config.get("num_key_value_heads", num_attention_heads))
         head_dim = int(config.get("head_dim") or (int(config["hidden_size"]) // num_attention_heads))
+        # Only full-attention layers carry a KV cache. The linear layers hold a
+        # per-sequence mamba state instead.
+        num_layers = _full_attention_layer_count(config, num_layers)
         return cls(
             num_layers=num_layers,
             num_kv_heads=num_kv_heads,
@@ -162,12 +179,38 @@ class KvCacheGeometry:
         return self.page_size_bytes(block_size, tp_size) * self.num_layers
 
 
+def parameter_bytes_from_checkpoint(model_path: str | Path) -> int | None:
+    """Return the checkpoint's on-disk weight size in bytes, or None if unknown.
+
+    Read from the checkpoint rather than configured, because the weight footprint
+    is the largest subtraction in the KV budget and a configured constant
+    silently survives a model change. `metadata.total_size` is the materialized
+    size in the checkpoint's own dtype, so it already covers MoE expert weights.
+    None when there is no index file; the caller may still pass a count.
+
+    Args:
+        model_path: Directory holding the checkpoint, or its `config.json`.
+
+    Returns:
+        Total weight bytes, or None when no index file is present.
+    """
+    path = Path(model_path)
+    if path.is_file():
+        path = path.parent
+    index = path / "model.safetensors.index.json"
+    if not index.is_file():
+        return None
+    total = json.loads(index.read_text(encoding="utf-8")).get("metadata", {}).get("total_size")
+    return int(total) if total else None
+
+
 def kv_blocks_from_memory(
     geometry: KvCacheGeometry,
     gpu_memory_mib: int,
     gpu_memory_utilization: float,
-    parameter_count: int,
+    parameter_count: int | None = None,
     *,
+    weight_bytes_total: int | None = None,
     block_size: int = 16,
     tp_size: int = 1,
     parameter_dtype_bytes: int = 2,
@@ -182,26 +225,39 @@ def kv_blocks_from_memory(
         geometry: Per-token KV cost of the model.
         gpu_memory_mib: Total device memory.
         gpu_memory_utilization: vLLM's fraction of the device it may use.
-        parameter_count: Total model parameters, before TP sharding.
+        parameter_count: Total parameters before TP sharding. Ignored when
+            `weight_bytes_total` is given.
+        weight_bytes_total: Materialized weight bytes before TP sharding.
+            Preferred: `parameter_count` assumes a uniform dtype and is easy to
+            leave pointing at another model.
         block_size: Tokens per KV block.
         tp_size: Tensor-parallel degree. Shards both weights and KV heads.
         parameter_dtype_bytes: Bytes per weight element.
-        non_kv_overhead_bytes: Additional non-KV memory to subtract, such as the
-            CUDA context and the activation high-water mark. Left at 0 the
-            result overestimates by roughly 3%, because vLLM measures this
-            rather than deriving it. About 2 GiB on an H20.
+        non_kv_overhead_bytes: Non-KV memory to subtract, covering the CUDA
+            context, activation high-water mark and graph pool. vLLM measures
+            this rather than deriving it, so at 0 the result overestimates.
 
     Returns:
         Block count, floored at 0.
 
     Raises:
-        ValueError: If the utilisation is outside (0, 1].
+        ValueError: If the utilisation is outside (0, 1], or if neither
+            `parameter_count` nor `weight_bytes_total` is given.
     """
     if not 0.0 < gpu_memory_utilization <= 1.0:
         raise ValueError(f"Expected gpu_memory_utilization in (0, 1], got {gpu_memory_utilization!r}.")
+    if weight_bytes_total is None and parameter_count is None:
+        raise ValueError(
+            "kv_blocks_from_memory needs either weight_bytes_total or parameter_count: "
+            "the weight footprint is the largest subtraction in the KV budget and "
+            "cannot be defaulted."
+        )
 
     budget = int(gpu_memory_mib * _BYTES_PER_MIB * gpu_memory_utilization)
-    weight_bytes = parameter_count * parameter_dtype_bytes // tp_size
+    if weight_bytes_total is not None:
+        weight_bytes = int(weight_bytes_total) // tp_size
+    else:
+        weight_bytes = parameter_count * parameter_dtype_bytes // tp_size
     available = budget - weight_bytes - non_kv_overhead_bytes
     if available <= 0:
         dryrun_logger.warning(

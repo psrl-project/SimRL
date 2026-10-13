@@ -58,7 +58,7 @@ optimizer:
   # The ceiling is 2.048B, not higher: a shard needs ~18 bytes per parameter for its
   # parameter, gradient and fp32 state, so 4.096B wants 115 GiB against H20's 95 GiB. The
   # first sweep included that point, the allocation OOM'd inside TE, and the timed step then
-  # measured an empty update at an implied 190 TB/s. `profiler/kernels/optimizer.py` now
+  # measured an empty update at an implied 190 TB/s. `profiler/kernel/runner/optimizer.py` now
   # refuses such a point rather than recording it.
   param_counts: [1000000, 2000000, 5000000, 10000000, 20000000, 50000000, 100000000,
      200000000, 341000000, 512000000, 683000000, 1024000000, 1365000000, 2048000000]

@@ -31,6 +31,25 @@ _ARCHITECTURE_MARKER_KEYS = (
     "moe_intermediate_size",
     "kv_lora_rank",
     "q_lora_rank",
+    # Hybrid attention: every N-th layer is full attention; the rest are linear/SSM.
+    # Required by the MoE family to count full-attention layers for the attention grid.
+    "full_attention_interval",
+    # Explicit shared-expert MLP size (Qwen3.5-MoE has one in addition to the MoE block).
+    "shared_expert_intermediate_size",
+    # Output-gated attention. When set, the query projection emits a gate alongside the
+    # query, so its row count is `2 * heads * head_dim` rather than `heads * head_dim`.
+    # Verified on Qwen3.5-35B-A3B: q_proj is (8192, 2048) at 16 heads x head_dim 256,
+    # exactly twice the ungated 4096. Omitting it understates the fused QKV GEMM by 1.8x.
+    "attn_output_gate",
+    # Gated-delta-net geometry, for the linear-attention layers of a hybrid model. Required
+    # by the `gdn` kernel family: those layers hold a fixed-size recurrent state keyed on
+    # these head counts rather than a KV cache, and they are 30 of Qwen3.5-35B-A3B's 40
+    # layers, so pricing them needs the real dimensions rather than the softmax ones.
+    "linear_num_key_heads",
+    "linear_num_value_heads",
+    "linear_key_head_dim",
+    "linear_value_head_dim",
+    "linear_conv_kernel_dim",
 )
 
 
@@ -122,7 +141,7 @@ def _read_hf_config(source: str | Path) -> dict[str, Any]:
         loaded = json.loads(config_file.read_text(encoding="utf-8"))
         if not isinstance(loaded, dict):
             raise ProfileValidationError(f"Expected a JSON object in {config_file}.")
-        return loaded
+        return _flatten_text_config(loaded)
     try:
         from transformers import AutoConfig
     except ImportError as exc:
@@ -130,7 +149,27 @@ def _read_hf_config(source: str | Path) -> dict[str, Any]:
             f"Cannot read HuggingFace config from {str(source)!r}. "
             "Install transformers or pass a local directory with config.json."
         ) from exc
-    return AutoConfig.from_pretrained(str(source)).to_dict()
+    return _flatten_text_config(AutoConfig.from_pretrained(str(source)).to_dict())
+
+
+def _flatten_text_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Merge nested ``text_config`` into the top-level config dict.
+
+    Multimodal checkpoints (Qwen3.5-MoE, InternVL, etc.) separate language and
+    vision architecture fields into ``text_config`` and ``vision_config``
+    sub-dicts rather than placing them at the top level. The profiler only prices
+    the language backbone, so merging ``text_config`` upward — without overwriting
+    any key that already exists at the top — makes the rest of the code oblivious
+    to whether a checkpoint is purely text or multimodal.
+    """
+    text_sub = config.get("text_config")
+    if not isinstance(text_sub, dict):
+        return config
+    merged = dict(config)
+    for key, value in text_sub.items():
+        if key not in merged:
+            merged[key] = value
+    return merged
 
 
 def _parameter_count(model_dir: Path | None, config: dict[str, Any]) -> int | None:

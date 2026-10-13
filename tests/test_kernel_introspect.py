@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.kernels.introspect import _fuse, verify_shapes
+from dryrun.profiler.kernel.introspect import _fuse, verify_shapes
 from dryrun.profiler.schema import ModelDescriptor, ProfileValidationError
 
 _QWEN3 = Path("/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B")
@@ -100,7 +100,7 @@ def test_a_wrong_declared_shape_is_caught():
         name: str = "deliberately_wrong"
 
         def gemm_shapes(self, model, *, tensor_parallel):
-            from dryrun.profiler.kernels.shape import GemmShape
+            from dryrun.profiler.kernel.grid.shape import GemmShape
 
             # qkv_proj is off by one row; everything else is right.
             return (
@@ -111,14 +111,14 @@ def test_a_wrong_declared_shape_is_caught():
             )
 
         def logits_shape(self, model, *, tensor_parallel):
-            from dryrun.profiler.kernels.shape import GemmShape
+            from dryrun.profiler.kernel.grid.shape import GemmShape
 
             return GemmShape("lm_head", 151936, 4096)
 
         def head_counts(self, model, *, tensor_parallel):
             return 32, 8
 
-    from dryrun.profiler.kernels import families
+    from dryrun.profiler.kernel.grid import families
 
     saved = families.FAMILY_REGISTRY["Qwen3ForCausalLM"]
     families.FAMILY_REGISTRY["Qwen3ForCausalLM"] = _WrongFamily()
@@ -137,3 +137,69 @@ def test_a_sharded_comparison_is_refused():
     """The module graph is unsharded, so a tp>1 comparison would fail on every entry."""
     with pytest.raises(ProfileValidationError, match="tensor_parallel"):
         verify_shapes(_QWEN3, _descriptor(_QWEN3), tensor_parallel=2)
+
+
+def test_fuse_scales_the_two_expert_projections_on_different_axes():
+    """
+    A per-token expert shape multiplies rows for gate_up and the contraction for down.
+
+    The module graph holds ONE expert's slice; the family declares the work of all
+    `num_experts_per_tok` of them as a single GEMM. Which dimension carries the factor
+    differs between the two projections, and getting it backwards reports a mismatch for a
+    family that is right:
+
+      gate_up: each expert produces its own rows from the same hidden vector -> stack rows.
+      down:    each expert maps its own activations onto the same hidden rows -> widen k.
+
+    Both declared shapes carry the right work: gate_up is 16.8M MACs per token per layer
+    (it fuses gate AND up, so 2x) and down is 8.4M. Scaling the wrong axis would change
+    those numbers, so this is a costing check and not only a bookkeeping one.
+    """
+    from dryrun.profiler.kernel.introspect import _fuse
+
+    layer = {
+        "mlp.experts.gate_up_proj": (1024, 2048),
+        "mlp.experts.down_proj": (2048, 512),
+    }
+    fused = _fuse(layer, experts_per_tok=8)
+
+    assert fused["expert_gate_up"] == (8192, 2048)
+    assert fused["expert_down"] == (2048, 4096)
+    # topk * 2 * moe_inter * hidden, and topk * hidden * moe_inter: the real per-token work.
+    assert 8192 * 2048 == 8 * (2 * 512) * 2048
+    assert 2048 * 4096 == 8 * 2048 * 512
+
+
+def test_fuse_reads_expert_stacks_and_the_router_from_a_moe_layer():
+    """
+    `_linear_shapes` must see 3-D expert stacks and a bare-module router weight.
+
+    256 experts are 93% of Qwen3.5-35B-A3B's parameters and they are stored as plain 3-D
+    `nn.Parameter` stacks, not `nn.Linear`. A verifier that only walked 2-D module weights
+    could not see them at all, so `verify-shapes` would pass a family that priced them
+    wrongly -- which is exactly how a 1.8x error in `qkv_proj` survived until this gate
+    could reach a MoE layer.
+    """
+    import torch
+
+    from dryrun.profiler.kernel.introspect import _linear_shapes
+
+    class _Experts(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate_up_proj = torch.nn.Parameter(torch.empty(256, 1024, 2048, device="meta"))
+            self.down_proj = torch.nn.Parameter(torch.empty(256, 2048, 512, device="meta"))
+
+    class _Mlp(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate = torch.nn.Linear(2048, 256, bias=False, device="meta")
+            self.experts = _Experts()
+
+    shapes = _linear_shapes(_Mlp())
+
+    # The router is an nn.Linear, keyed by module name with no `.weight`.
+    assert shapes["gate"] == (256, 2048)
+    # Expert stacks report the per-expert slice, with the expert count stripped.
+    assert shapes["experts.gate_up_proj"] == (1024, 2048)
+    assert shapes["experts.down_proj"] == (2048, 512)

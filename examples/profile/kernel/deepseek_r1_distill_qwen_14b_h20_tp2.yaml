@@ -1,0 +1,89 @@
+# HuggingFace checkpoint. Set MODEL_PATH, or edit this line.
+#
+# See `deepseek_r1_distill_qwen_14b_h20_tp1.yaml` for how this checkpoint differs from
+# Qwen3-8B. This config adds the two training-only families (`attention_training`,
+# `optimizer`) on top of the rollout grids, because tp=2 is the tensor-parallel degree the
+# training sweep runs at.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/DeepSeek-R1-Distill-Qwen-14B}
+hardware:
+  gpu_name: H20
+  gpu_count: 2
+  gpu_memory_mib: 97871
+output_dir: ../../../outputs/profile/deepseek_r1_distill_qwen_14b/kernel_tp2
+experiment_name: deepseek-r1-distill-qwen-14b
+parallelism:
+  tensor_parallel: 2
+
+gemm:
+  # Powers of two plus the non-power-of-two token counts the THD training sweep reaches:
+  # a wgrad query carries `k = token_count`, so a `sum_tokens` outside this grid raises
+  # KernelCoverageError and blocks end-to-end scoring of ComposedTraining. The entries
+  # 3072, 6144, 7510, 10240, 11264, 12288 and 22528 are exactly the packed totals and
+  # per-sequence lengths in `megatron/deepseek_r1_distill_qwen_14b_thd.yaml`.
+  token_counts: [1, 2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024, 2048, 3072, 4096, 6144, 7510, 8192, 10240, 11264, 12288, 16384, 22528]
+
+attention:
+  batch_sizes: [1, 2, 4, 8, 16, 32, 48, 64]
+  context_seq_lens: [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+  generation_steps: [0, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+  block_size: 16
+  window_size: 0
+  max_context_tokens: 262144
+
+elementwise:
+  token_counts: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
+attention_training:
+  # THD-packed attention as Transformer Engine runs it, both directions. Separate from the
+  # `attention:` grid above, which measures vLLM's prefill kernel over a BSHD batch: a
+  # packed training microbatch is one row with `cu_seqlens`, so there is no batch dimension
+  # to sweep and `total_tokens` is the axis. Reading the rollout table for a training query
+  # understated the forward by 1.59-1.84x on Qwen3-8B.
+  total_tokens: [512, 1024, 2048, 3072, 4096, 6144, 7510, 8192, 10240, 11264, 12288,
+     16384, 22528, 32768]
+  # Per-rank query head counts. This model has 40 query heads to 8 KV, so 40 is tp=1, 20 is
+  # tp=2, 10 is tp=4 and 5 is tp=8 -- not the powers of two a 32-head model gives. The KV
+  # head count is derived in the same 5:1 ratio (40->8, 20->4, 10->2, 5->1), matching how
+  # `rank_head_counts` shards both on the cost side. Listing 32 or 16 here would write rows
+  # keyed on a head count no query can reach.
+  num_heads: [5, 10, 20, 40]
+  # `padding_causal` only: TE asserts `"padding" in attn_mask_type` for qkv_format="thd",
+  # so plain `causal` raises rather than selecting a different kernel.
+  mask_types: [padding_causal]
+
+optimizer:
+  # Parameter counts, not token counts: an Adam step reads and writes the optimizer state
+  # once per step regardless of how many tokens produced the gradients. The grid brackets
+  # `total_parameters / (tp * pp * dp)`, which is the shard one rank updates. The sub-10M
+  # points locate the launch floor rather than describing any real shard.
+  #
+  # 1651673088 and 2040956928 are the two shards this model's tp=2/pp=4 mesh actually
+  # produces, read from `rank_memory[].local_parameter_count` in a profiled run rather than
+  # derived. A pipeline does not split parameters evenly: the first and last stages also
+  # carry the embedding and the LM head, so ranks 0-1 and 6-7 hold 2.041B while the four
+  # middle ranks hold 1.652B. Dividing 14.77B by 8 would have given 1.846B, a count no rank
+  # has. They are listed exactly so a query lands on a measured point instead of
+  # interpolating between neighbours.
+  #
+  # The ceiling stays at 2.048B, which 2.041B sits just inside. A shard needs ~18 bytes per
+  # parameter for its parameter, gradient and fp32 state, so 4.096B wants 115 GiB against
+  # H20's 95 GiB; the Qwen3-8B sweep included that point, the allocation OOM'd inside TE,
+  # and the timed step then measured an empty update at an implied 190 TB/s.
+  param_counts: [1000000, 2000000, 5000000, 10000000, 20000000, 50000000, 100000000,
+     200000000, 341000000, 512000000, 683000000, 1024000000, 1365000000,
+     1651673088, 2040956928, 2048000000]
+
+collective:
+  # Byte sizes, so this grid is model-independent and identical to the Qwen3-8B one.
+  message_bytes: [4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152,
+     4194304, 8388608, 16777216, 33554432, 67108864, 134217728, 268435456, 536870912]
+  topologies: [[2, 1], [4, 1], [8, 1]]
+  # float32 is not optional: Megatron reduces gradients in fp32, so a bf16-only table
+  # cannot price the data-parallel reduction.
+  dtypes: [bfloat16, float32]
+
+measurement:
+  warmup_iterations: 5
+  active_iterations: 20
+  dtype: bfloat16
+  kv_cache_dtype: bfloat16

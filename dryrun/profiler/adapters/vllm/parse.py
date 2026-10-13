@@ -38,6 +38,40 @@ _MEASUREMENT_STOP_MARKERS = (
 # shorter step is an async-scheduling overlap artifact, not a measurement.
 _MIN_MEASURED_ELAPSED_MS = 1.0
 
+# The same claim, made per token rather than per step. The absolute floor above is
+# necessary but not sufficient: it only catches a step that is short in wall-clock terms,
+# while an overlap artifact on a *large* prefill lands just above it and still reports an
+# impossible rate. Measured on Qwen3.5-35B-A3B at tp=1, two steps survived collection at
+# 16128 tokens in 1.080 ms (14.9M tok/s) and 11317 tokens in 1.030 ms (11.0M tok/s); the
+# psrl fit then charged them a 424 ms prediction against a 1 ms "measurement", a 39178%
+# residual that dragged tp=1 prefill MRE to 813%.
+#
+# 1M tok/s is far above anything an H20 reaches (a real 16k-token prefill measures ~400 ms,
+# i.e. 40k tok/s) so this rejects artifacts without touching a single genuine step: the
+# Qwen3-8B and DeepSeek-14B sweeps have zero steps above it. It is deliberately not tuned
+# close to the real ceiling, because the quantity being rejected is off by two orders of
+# magnitude and a loose bound cannot discard data that matters.
+_MAX_MEASURED_TOKENS_PER_SECOND = 1_000_000.0
+
+
+def _is_unmeasured(detail: _IterationDetail) -> bool:
+    """
+    Report whether a step's elapsed time is an overlap artifact rather than a measurement.
+
+    Args:
+        detail (_IterationDetail): One scheduler iteration.
+
+    Returns:
+        bool: True when the step is too short in absolute terms, or implies a
+            physically impossible token rate.
+    """
+    if detail.elapsed_ms < _MIN_MEASURED_ELAPSED_MS:
+        return True
+    tokens = detail.ctx_tokens + detail.gen_tokens
+    if tokens <= 0:
+        return False
+    return tokens / (detail.elapsed_ms / 1000.0) > _MAX_MEASURED_TOKENS_PER_SECOND
+
 
 @dataclass(frozen=True)
 class _IterationDetail:
@@ -188,7 +222,7 @@ def trusted_iterations(
                 truncation_reason=reason,
             )
         scheduled_prompt_tokens += detail.ctx_tokens
-        if detail.elapsed_ms < _MIN_MEASURED_ELAPSED_MS:
+        if _is_unmeasured(detail):
             dropped_unmeasured += 1
             continue
         kept.append(detail)

@@ -174,7 +174,11 @@ class CostArtifact:
             and all(entry.selector.get(key) == value for key, value in requested.items())
         ]
         if len(matches) != 1:
-            mesh = f"tp={parallelism.tp} cp={parallelism.cp}" if ignore_pp else repr(parallelism)
+            mesh = (
+                f"tp={parallelism.tp} cp={parallelism.cp} ep={parallelism.ep}"
+                if ignore_pp
+                else repr(parallelism)
+            )
             raise KeyError(
                 f"Expected exactly one artifact entry for parallelism {mesh} "
                 f"and selector {requested!r}, found {len(matches)}."
@@ -190,7 +194,15 @@ class CostArtifact:
     ) -> bool:
         if not ignore_pp:
             return entry == requested
-        return entry.tp == requested.tp and entry.cp == requested.cp
+        # `ep` is compared even when the pipeline depth is derived rather than looked up:
+        # expert parallelism changes the all-to-all traffic and the experts held per rank,
+        # so it is a different measurement, not a different slice of the same one. Omitting
+        # it would let an EP=1 cell answer an EP=4 query with no indication.
+        return (
+            entry.tp == requested.tp
+            and entry.cp == requested.cp
+            and entry.ep == requested.ep
+        )
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> CostArtifact:

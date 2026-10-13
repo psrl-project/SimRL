@@ -181,6 +181,22 @@ def build_policy(cfg: DictConfig, max_staleness: int) -> StalenessPolicy:
 _PROFILED_TP_DEGREES = frozenset({1, 2})
 
 
+def _degrees_with_gemm_tables(cfg: DictConfig, dynamic: DictConfig) -> frozenset[int]:
+    """TP degrees whose configured kernel root actually holds GEMM tables.
+
+    Only the composed model reads tables, so every other model gets none. A degree
+    is judged by what is on disk rather than by a fixed list, so a newly profiled
+    TP4 or TP8 root is accepted without touching this module.
+    """
+    if str(cfg.rollout_cost.get("name", "roofline")) != "composed":
+        return frozenset()
+    gpu = str(cfg.rollout_cost.get("gpu", ""))
+    configured = dict(dynamic.get("kernel_table_roots", {}) or {})
+    return frozenset(
+        int(tp) for tp, root in configured.items() if (Path(str(root)) / gpu / "gemm").is_dir()
+    )
+
+
 def _table_roots_per_tp(
     dynamic: DictConfig,
     tp_candidates: tuple[int, ...],
@@ -254,15 +270,23 @@ def build_dynamic_parallel(
     # Only TP 1 and 2 have profiled GEMM and attention tables; kernel_tp4/tp8 carry
     # collective tables only. Refusing here names the setting, where letting it through
     # surfaces a shape-coverage error much further from the cause.
-    if unsupported := sorted(set(tp_candidates) - _PROFILED_TP_DEGREES):
+    profiled = _PROFILED_TP_DEGREES | _degrees_with_gemm_tables(cfg, dynamic)
+    if unsupported := sorted(set(tp_candidates) - profiled):
         raise ValueError(
             f"dynamic_parallel.tp_candidates contains unprofiled TP degrees "
-            f"{unsupported}. Only {sorted(_PROFILED_TP_DEGREES)} have measured GEMM "
-            f"and attention tables. Profile the missing families to widen this set."
+            f"{unsupported}. Only {sorted(profiled)} have measured GEMM "
+            f"and attention tables. Profile the missing families, or point "
+            f"dynamic_parallel.kernel_table_roots at a root that holds them."
         )
 
     strategy = cfg.rollout.router.get("strategy", "request_num_balance")
-    if strategy != "version_capped_tp":
+    planner = str(dynamic.strategy) == "planner"
+    if planner and strategy != "planned_tier_tp":
+        dryrun_logger.warning(
+            f"dynamic_parallel.strategy=planner with rollout.router.strategy={strategy!r}. "
+            f"Only 'planned_tier_tp' follows the tiers the planner chooses."
+        )
+    elif not planner and strategy != "version_capped_tp":
         dryrun_logger.warning(
             f"dynamic_parallel.enabled=true with rollout.router.strategy={strategy!r}. "
             f"Only 'version_capped_tp' enforces version tiers under an active cap. "
@@ -297,6 +321,21 @@ def build_dynamic_parallel(
         if per_tp_rollout.get("kv_cache_sizing", None) is not None:
             per_tp_rollout.kv_cache_sizing.tp_size = tp
         kv_blocks_per_tp[tp] = resolve_kv_blocks(per_tp_rollout, cfg.job, cfg.rollout_cost)
+
+    if str(dynamic.strategy) == "planner":
+        from ..simulator.dynamic_parallel import PlannerSolver, TierPlanner
+
+        block_size = int(cfg.rollout.get("block_size", 16))
+        planner = TierPlanner(
+            cost_models=cost_models,
+            kv_tokens_per_tp={tp: kv_blocks_per_tp[tp] * block_size for tp in tp_candidates},
+            n_gpus=int(dynamic.n_gpus),
+            tp_candidates=tp_candidates,
+            algorithm=str(dynamic.get("algorithm", "pp")),
+            max_concurrency=int(cfg.rollout.get("max_concurrency", 1024) or 1024),
+            switch_margin=float(dynamic.get("switch_margin", 0.0)),
+        )
+        return cost_models, kv_blocks_per_tp, PlannerSolver(planner, max_staleness=int(cfg.job.max_staleness))
 
     solver = ParallelismSolver(
         cost_models=cost_models,
@@ -717,9 +756,11 @@ def run_simulate(cfg: DictConfig) -> None:
         reject_if_kv_full=admit.get("reject_if_kv_full", False),
         reject_if_waiting=admit.get("reject_if_waiting", False),
         reject_if_running_full=admit.get("reject_if_running_full", False),
+        eviction_strategy=router.get("eviction", "vllm_lru"),
         routing_strategy=router.get("strategy", "request_num_balance"),
         routing_strategy_args=dict(router.get("strategy_args", {}) or {}),
         router_sort_key=router.get("sort_key", "small_id"),
+        router_queue_window=router.get("queue_window", 32),
         max_concurrent_seqs_per_instance=router.get("max_concurrent_seqs_per_instance", 0),
         router_reject_on_waiting=router.get("reject_on_waiting", False),
         router_reject_preempted_on_waiting=router.get(
@@ -776,10 +817,7 @@ def run_simulate(cfg: DictConfig) -> None:
 
     # Only create the logs directory / JSONL files at all when telemetry
     # logging is switched on; `log_telemetry=False` must not touch disk.
-    # `log_exclude` drops individual streams instead of all of them: a sweep
-    # that only plots from `request` can suppress the per-step `instance/*` and
-    # `rollout_step` streams, which are three orders of magnitude larger and
-    # have exhausted a shared quota mid-run.
+    # `log_exclude` drops individual streams, e.g. the large per-step ones a sweep never reads.
     log_exclude = [
         name.strip() for name in str(cfg.get("log_exclude", "") or "").split(",") if name.strip()
     ]
@@ -789,7 +827,7 @@ def run_simulate(cfg: DictConfig) -> None:
         else None
     )
     if log_exclude:
-        dryrun_logger.info("Telemetry streams suppressed: %s.", ", ".join(log_exclude))
+        dryrun_logger.info(f"Telemetry streams suppressed: {', '.join(log_exclude)}.")
 
     backend = os.environ.get("DRYRUN_BACKEND", "auto")
 

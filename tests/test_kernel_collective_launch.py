@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.profiler.kernels.collective import _fabric_exports, _kernel_source, _rows_for
-from dryrun.profiler.kernels.collective_launch import _nccl_call
+from dryrun.profiler.kernel.collective import _fabric_exports, _kernel_source, _rows_for
+from dryrun.profiler.kernel.collective_launch import _nccl_call
 
 
 def test_the_remote_command_forwards_every_nccl_variable(monkeypatch):
@@ -175,7 +175,7 @@ def test_the_dispatcher_is_only_consulted_within_a_node():
     """
     import inspect
 
-    from dryrun.profiler.kernels import collective_launch
+    from dryrun.profiler.kernel import collective_launch
 
     source = inspect.getsource(collective_launch.main)
     assert "dispatcher_available = nodes == 1" in source, (
@@ -190,7 +190,7 @@ def test_a_cross_node_topology_under_ib_disable_is_refused(monkeypatch, tmp_path
     wrong, self-consistent, and smoothly interpolable, so nothing downstream would flag
     them.
     """
-    from dryrun.profiler.kernels.collective import _run_topology
+    from dryrun.profiler.kernel.collective import _run_topology
 
     monkeypatch.setenv("NCCL_IB_DISABLE", "1")
     with pytest.raises(RuntimeError, match="NCCL_IB_DISABLE"):

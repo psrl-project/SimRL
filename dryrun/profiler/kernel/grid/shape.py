@@ -1,7 +1,7 @@
 """The GEMM weight shape, split out so a family module can name it without a cycle.
 
-`shapes.py` imports the families to delegate to them, and each family returns `GemmShape`, so
-the type cannot live in `shapes.py` without closing a loop. It has no dependencies at all, which
+`gemm.py` imports the families to delegate to them, and each family returns `GemmShape`, so
+the type cannot live in `gemm.py` without closing a loop. It has no dependencies at all, which
 is why it is its own module rather than a member of one side.
 """
 

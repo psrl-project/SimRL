@@ -130,6 +130,7 @@ def enumerate_training_candidates(
     schedules: list[str] | None = None,
     recompute_modes: list[str] | None = None,
     data_parallel_sizes: list[int] | None = None,
+    expert_parallel_sizes: list[int] | None = None,
     packing: str = "bshd",
 ) -> list[TrainingCandidate]:
     """Enumerate only candidates that satisfy V1 topology and batch constraints.
@@ -145,6 +146,16 @@ def enumerate_training_candidates(
             DP comparison, and DP changes both the gradient all-reduce volume
             and the per-rank token count. Pinning DP=1 leaves GPUs idle at the
             smaller meshes, which costs nothing and keeps the comparison clean.
+
+        expert_parallel_sizes: Expert-parallel degrees for a mixture-of-experts block.
+            Leave None for `[1]`, which is the only valid value for a dense model.
+
+            EP does not consume ranks of its own -- Megatron carves the expert groups out
+            of the data-parallel dimension -- so it never changes `mesh_size`. It does
+            change the experts each rank owns and the all-to-all volume, which is why it
+            is a cell key rather than a free dimension. Megatron requires `ep * pp` to
+            divide the mesh (the launcher pins expert tensor parallelism to 1), and a combination that does not is dropped here rather
+            than raising minutes into distributed init.
     """
     if repeats <= 0:
         raise ProfileValidationError("repeats must be positive.")
@@ -152,7 +163,10 @@ def enumerate_training_candidates(
         raise ProfileValidationError("num_microbatches values must be positive.")
     if data_parallel_sizes is not None and any(value <= 0 for value in data_parallel_sizes):
         raise ProfileValidationError("data_parallel_sizes values must be positive.")
+    if expert_parallel_sizes is not None and any(value <= 0 for value in expert_parallel_sizes):
+        raise ProfileValidationError("expert_parallel_sizes values must be positive.")
     cp_values = context_parallel_sizes or [1]
+    ep_values = sorted(set(expert_parallel_sizes)) if expert_parallel_sizes else [1]
     schedule_values = schedules or ["1f1b"]
     recompute_values = recompute_modes or ["full"]
     candidates: list[TrainingCandidate] = []
@@ -168,6 +182,7 @@ def enumerate_training_candidates(
         sorted(set(tensor_parallel_sizes)),
         sorted(set(pipeline_parallel_sizes)),
         sorted(set(cp_values)),
+        ep_values,
         dp_values,
         sorted(set(micro_batch_sizes)),
         sorted(set(num_microbatches)),
@@ -175,7 +190,7 @@ def enumerate_training_candidates(
         schedule_values,
         recompute_values,
     )
-    for world_size, tp, pp, cp, pinned_dp, mbs, nmb, raw_shape, schedule, recompute in dimensions:
+    for world_size, tp, pp, cp, ep, pinned_dp, mbs, nmb, raw_shape, schedule, recompute in dimensions:
         if cp != 1 or schedule.lower() != "1f1b":
             continue
         model_parallel = tp * pp * cp
@@ -210,7 +225,13 @@ def enumerate_training_candidates(
         # launcher turns into `--nproc-per-node`. For a pinned DP it is the mesh
         # product rather than the hardware GPU count, so the idle GPUs are never
         # handed ranks.
-        parallelism = Parallelism(tp=tp, pp=pp, dp=dp, cp=cp, world_size=mesh_size)
+        # Megatron's expert mesh is `expert_tensor_parallel * ep * pp` over the whole
+        # world, and the launcher pins the expert TP degree to 1, so the constraint is
+        # `ep * pp | mesh_size`. A combination that does not divide evenly raises inside
+        # distributed init, so drop it while enumerating.
+        if ep > 1 and mesh_size % (ep * pp):
+            continue
+        parallelism = Parallelism(tp=tp, pp=pp, dp=dp, cp=cp, ep=ep, world_size=mesh_size)
         for repeat in range(repeats):
             candidates.append(
                 TrainingCandidate(

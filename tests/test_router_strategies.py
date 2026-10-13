@@ -54,6 +54,10 @@ class TestRegistry:
             "prefix_aware",
             "throughput_balance",
             "version_aware_tp",
+            "version_capped_tp",
+            "scg_admission",
+            "length_aware",
+            "planned_tier_tp",
         }
 
     def test_an_unknown_name_lists_the_known_ones(self):
@@ -208,3 +212,13 @@ class TestAdmissionGate:
         busy = _view(0, n_waiting=1)
         assert AdmissionGate().reject_reason(busy) is None
         assert AdmissionGate(reject_on_waiting=True).reject_reason(busy) == "waiting_queue"
+
+    def test_preempt_waiting_gate_does_not_reject_fresh_work(self):
+        busy = _view(0, n_waiting=1)
+        gate = AdmissionGate(reject_preempted_on_waiting=True)
+
+        assert gate.reject_reason(busy) is None
+        assert (
+            gate.reject_reason(busy, is_preempt_loopback=True)
+            == "waiting_queue"
+        )

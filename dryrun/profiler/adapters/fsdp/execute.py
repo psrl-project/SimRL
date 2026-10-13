@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ...fsdp_search_space import FsdpCandidate
-from ..training import OOM_EXIT_CODE, oom_marker_paths, run_candidate
+from ..base import OOM_EXIT_CODE, oom_marker_paths, run_candidate
 from .config import FsdpProfileConfig
 from .prepare import prepare_fsdp_candidate
 

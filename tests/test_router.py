@@ -69,6 +69,20 @@ class TestQueueOrdering:
         queue.push(_req(1, prompt_len=999, v_traj=1), t=0.0)
         assert [r.rid for r in queue.drain()] == [1, 0]
 
+    def test_version_layers_report_every_version_depth(self):
+        queue = RouterQueue()
+        for rid, version in enumerate((0, 0, 2, 3)):
+            queue.push(_req(rid, v_traj=version), t=0.0)
+        assert queue.versions() == (0, 2, 3)
+        assert queue.depths() == {0: 2, 2: 1, 3: 1}
+
+    def test_pop_version_does_not_disturb_other_layers(self):
+        queue = RouterQueue()
+        queue.push(_req(0, prompt_len=200, v_traj=0), t=0.0)
+        queue.push(_req(1, prompt_len=100, v_traj=1), t=0.0)
+        assert queue.pop_version(1).rid == 1
+        assert queue.peek().rid == 0
+
     def test_equal_keys_keep_arrival_order(self):
         queue = RouterQueue(SortKey.SHORT_LENGTH)
         for rid in range(5):
@@ -144,7 +158,9 @@ class TestDispatch:
     def test_dispatch_stops_at_the_first_request_nothing_can_take(self):
         """Head-of-line, as SMG's peek-then-pop is. Skipping the head to place
         a later request would starve whatever needs the most room."""
-        instances = _instances(1, kv_blocks=64, block_size=16)
+        # `reject_if_kv_full` is off by default, so it is named here to give the
+        # head of the queue something that refuses it.
+        instances = _instances(1, kv_blocks=64, block_size=16, reject_if_kv_full=True)
         # `long_length` puts the big request at the head, so it is genuinely the
         # blocker rather than being sorted out of the way.
         router = _router(instances, sort_key=SortKey.LONG_LENGTH)
@@ -157,6 +173,21 @@ class TestDispatch:
         placed = router.dispatch(t=0.0)
         assert placed == []
         assert len(router) == 2
+
+    def test_default_strategy_does_not_bypass_a_blocked_version(self):
+        instances = _instances(1, kv_blocks=64, block_size=16, reject_if_kv_full=True)
+        router = _router(instances)
+        instances[0].add_request(_req(99, prompt_len=800), 0.0)
+        router.enqueue(
+            [
+                _req(0, prompt_len=400, v_traj=0),
+                _req(1, prompt_len=16, v_traj=1),
+            ],
+            t=0.0,
+        )
+
+        assert router.dispatch(t=0.0) == []
+        assert router.queue_depths == {0: 1, 1: 1}
 
     def test_has_dispatchable_tracks_the_queue(self):
         router = _router(_instances(1))
@@ -182,6 +213,106 @@ class TestDispatch:
         instances[0].commit_last_event()
         router.enqueue([_req(0)], t=0.0)
         assert len(router.dispatch(t=0.0)) == 1
+
+
+class TestStrategyHooks:
+    def test_enqueue_shows_a_strategy_the_whole_group_once(self):
+        """Admission is per group and placement per request, so a strategy keyed on the
+        group needs this moment, the only one at which every member is known to be queued."""
+        seen = []
+
+        class Watcher:
+            name = "watcher"
+
+            def observe_enqueue(self, reqs):
+                seen.append([r.rid for r in reqs])
+
+            def select(self, req, candidates):
+                return 0
+
+        router = Router(Watcher(), _instances(1))
+        router.enqueue([_req(0), _req(1), _req(2)], t=0.0)
+        assert seen == [[0, 1, 2]]
+
+    def test_ranking_picks_within_the_configured_window(self):
+        """`queue_window` bounds how many queued requests a ranking strategy may choose among."""
+        offered = []
+
+        class Picker:
+            name = "picker"
+
+            def rank_queued(self, window, now):
+                offered.append(len(window))
+                return window[-1]
+
+            def select(self, req, candidates):
+                return 0
+
+        router = Router(Picker(), _instances(1), queue_window=3)
+        router.enqueue([_req(i) for i in range(10)], t=0.0)
+        router.dispatch(t=0.0)
+        assert max(offered) == 3
+
+
+class TestVersionCappedDispatch:
+    @staticmethod
+    def _heterogeneous_router(cap: int = 2) -> tuple[Router, list[NativeInstance]]:
+        instances = [
+            NativeInstance(
+                LinearLPS(),
+                token_budget=8192,
+                kv_blocks=1000,
+                instance_id=0,
+                tp=1,
+            ),
+            NativeInstance(
+                LinearLPS(),
+                token_budget=8192,
+                kv_blocks=1000,
+                instance_id=1,
+                tp=2,
+            ),
+        ]
+        strategy = build_strategy("version_capped_tp")
+        strategy.set_reference_version(1)
+        router = Router(
+            strategy,
+            instances,
+            gate=AdmissionGate(max_concurrent_seqs_per_instance=cap),
+        )
+        return router, instances
+
+    def test_blocked_version_layers_are_bypassed_one_by_one(self):
+        router, instances = self._heterogeneous_router(cap=2)
+        router.strategy.set_reference_version(3)
+        oldest = [_req(rid, v_traj=0) for rid in range(3)]
+        newer_stale = [_req(10 + rid, v_traj=1) for rid in range(2)]
+        current = [_req(20 + rid, v_traj=3) for rid in range(3)]
+        router.enqueue(oldest + newer_stale + current, t=0.0)
+
+        placed = router.dispatch(t=0.0)
+
+        assert len(placed) == 4
+        assert all(req.v_traj == 0 for req in instances[1].waiting)
+        assert all(req.v_traj == 3 for req in instances[0].waiting)
+        assert router.queue_depths == {0: 1, 1: 2, 3: 1}
+        assert all(inst.n_active <= 2 for inst in instances)
+
+    def test_current_work_uses_high_tp_after_stale_queue_drains(self):
+        router, instances = self._heterogeneous_router(cap=3)
+        stale = _req(0, v_traj=0)
+        current = [_req(10 + rid, v_traj=1) for rid in range(4)]
+        router.enqueue([stale, *current], t=0.0)
+
+        router.dispatch(t=0.0)
+
+        assert 0 not in router.queue_depths
+        assert any(req.v_traj == 1 for req in instances[1].waiting)
+        assert all(inst.n_active <= 3 for inst in instances)
+
+    def test_version_capped_strategy_requires_an_active_cap(self):
+        with pytest.raises(ValueError, match="max_concurrent_seqs_per_instance"):
+            Router(build_strategy("version_capped_tp"), _instances(2))
 
 
 class TestRerouteAccounting:
@@ -302,6 +433,49 @@ class TestPreemptLoopback:
         assert len(reclaimed) == 3
         assert len(instances[0].waiting) == 2
         assert len(router) == 3
+
+    def test_waiting_at_the_threshold_loops_back_the_new_victim(self):
+        instances = _instances(1)
+        router = _router(instances, max_waiting_after_preempt=1)
+        local = _req(0)
+        assert instances[0].add_request(local, 0.0)
+        victim = _req(1)
+        assert instances[0].add_request(victim, 0.0)
+        victim.num_preemptions = 1
+
+        reclaimed = router.reclaim_preempted(t=1.0)
+
+        assert reclaimed == [victim]
+        assert instances[0].waiting == [local]
+        assert router.queue_len == 1
+
+    def test_preempt_waiting_gate_does_not_block_fresh_admission(self):
+        instances = _instances(1)
+        router = _router(
+            instances,
+            gate=AdmissionGate(reject_preempted_on_waiting=True),
+        )
+        assert instances[0].add_request(_req(0), 0.0)
+        fresh = _req(1)
+        router.enqueue([fresh], t=1.0)
+
+        assert router.dispatch(t=1.0) == [(fresh, 0)]
+
+    def test_preempt_waiting_gate_keeps_the_victim_in_the_router(self):
+        instances = _instances(1)
+        router = _router(
+            instances,
+            gate=AdmissionGate(reject_preempted_on_waiting=True),
+            max_waiting_after_preempt=1,
+        )
+        assert instances[0].add_request(_req(0), 0.0)
+        victim = _req(1)
+        assert instances[0].add_request(victim, 0.0)
+        victim.num_preemptions = 1
+        assert router.reclaim_preempted(t=1.0) == [victim]
+
+        assert router.dispatch(t=1.0) == []
+        assert router.queue.peek() is victim
 
     def test_only_preempted_requests_are_taken(self):
         """A fresh admission has not been preempted, so it is not overflow."""

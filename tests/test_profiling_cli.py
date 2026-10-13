@@ -324,7 +324,7 @@ def test_kernels_cli_no_longer_exposes_synthesize():
 
 
 def test_kernels_module_no_longer_exports_the_synthesis_path():
-    import dryrun.profiler.kernels as kernels
+    import dryrun.profiler.kernel as kernels
 
     for name in (
         "ComposedCostTerms",

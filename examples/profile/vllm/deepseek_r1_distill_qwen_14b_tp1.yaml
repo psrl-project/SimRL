@@ -1,0 +1,105 @@
+# HuggingFace checkpoint. Architecture fields are read from config.json / AutoConfig.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/DeepSeek-R1-Distill-Qwen-14B}
+
+# Hardware fingerprint. gpu_count is overwritten from each sweep point's world_size.
+hardware:
+  gpu_name: H20
+  gpu_count: 1
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 1
+  interconnect: PCIe
+
+output_dir: ../../../outputs/profile/deepseek_r1_distill_qwen_14b/vllm_tp1
+experiment_name: deepseek-r1-distill-qwen-14b
+num_runs: 1
+server_ready_timeout: 900
+
+# Concurrent official servers. auto uses all visible GPU slots (world_size each).
+# Set 1 to keep the legacy serial layout. CLI --max-parallel overrides this.
+# Benchmarking runs at max_parallel, but only max_concurrent_startups servers boot at
+# once: parallel imports of torch/vLLM and the checkpoint from CephFS are slow enough to
+# trip server_ready_timeout.
+run:
+  max_parallel: auto
+  max_concurrent_startups: 8
+
+serve:
+  args:
+    dtype: bfloat16
+    max-model-len: 32768
+    max-num-batched-tokens: 65536
+    gpu-memory-utilization: 0.9
+  parameters:
+    - tensor-parallel-size: 1
+      pipeline-parallel-size: 1
+      max-num-seqs: 1024
+
+bench:
+  args:
+    request-rate: "inf"
+    random-range-ratio: 0.0
+    seed: 42
+
+# Collect writes one JSONL record per scheduler iteration from the timing sweep.
+# Prefill/decode features (sum_l2, ctxsum) are filled from equal-length formulas.
+# A decode point that fills the KV cache is truncated at its first preemption, so
+# keep max-concurrency * (input + output) inside the cache.
+# Prefill is one shot (or token-budget chunks), so the grid must vary prompt length
+# and concurrency. Decode walks context across steps, so one long output per
+# (input, concurrency) is enough.
+# Both phases set num-prompts = max-concurrency so a point costs one scheduler
+# step (prefill) or random-output-len steps (decode), not extra request waves.
+#
+# The grid is byte-identical to `qwen3_8b_tp1.yaml`. That is deliberate: the per-phase MRE
+# of the composed model is only comparable across the two checkpoints if the sweeps differ
+# by the model alone.
+#
+# The largest decode points will not fit, and that is expected rather than an oversight.
+# This model holds the same 8 KV heads at head_dim 128 as Qwen3-8B but across 48 layers
+# instead of 36, so a KV token costs 0.1875 MiB against 0.1406 MiB, and the weights take
+# 27.5 GiB against 15.3 GiB. At `gpu-memory-utilization: 0.9` that leaves about 56 GiB for
+# cache, roughly 309k tokens, where `max-concurrency: 64` at 1024 + 8192 wants 590k.
+# Qwen3-8B reaches 501k on the same grid, so it crosses the boundary later but still
+# crosses it: this is a difference of degree, not a new failure mode.
+#
+# Collection truncates such a point at its first preemption and warns with the run name and
+# the step count it dropped. The retained prefix stays valid, because every request in it
+# still shares one age, which is the assumption `ctxsum` rests on. Read that warning rather
+# than assuming the point is clean, and treat the concurrency-64 decode row as covering
+# fewer context values than the concurrency-16 row rather than as an equal sample.
+phases:
+  prefill:
+    parameters:
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+  decode:
+    parameters:
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 32, num-prompts: 32}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 48, num-prompts: 48}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 64, num-prompts: 64}

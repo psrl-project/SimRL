@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from fractions import Fraction
@@ -54,14 +54,30 @@ class JsonlStore:
         overwrite: If True, delete `root` (when it already exists) before
             creating it, so this run's logs replace any previous run. Plotting
             and other read-only reopenings should leave this False.
+        exclude: Stream-name prefixes to drop instead of writing. The per-step and
+            per-instance streams dominate disk use, and a run must fit on disk while it
+            executes, so a caller that never reads them can skip them at the source.
     """
 
-    def __init__(self, root: str | Path, *, overwrite: bool = False):
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        overwrite: bool = False,
+        exclude: Iterable[str] = (),
+    ):
         self.root = Path(root)
         if overwrite and self.root.exists():
             shutil.rmtree(self.root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._files: dict[str, TextIO] = {}
+        self._exclude = tuple(exclude)
+
+    def excluded(self, stream: str) -> bool:
+        """Return whether `stream` is suppressed by this store's exclude list."""
+        return any(
+            stream == prefix or stream.startswith(f"{prefix}/") for prefix in self._exclude
+        )
 
     def _path(self, stream: str) -> Path:
         return self.root / f"{stream}.jsonl"
@@ -79,8 +95,11 @@ class JsonlStore:
         """Append one JSON record to `stream`, flushing immediately.
 
         No schema is enforced: `record` is whatever keyword fields the
-        caller wants persisted for this stream.
+        caller wants persisted for this stream. An excluded stream is a silent
+        no-op, so a caller need not know which streams this store keeps.
         """
+        if self.excluded(stream):
+            return
         fp = self._file(stream)
         fp.write(json.dumps(_to_jsonable(record)) + "\n")
         fp.flush()

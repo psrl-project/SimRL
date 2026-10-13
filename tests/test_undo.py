@@ -14,7 +14,7 @@ import pytest
 from dryrun.component.rollout.engine.undo import (
     NULL_RECORDER,
     AttrSnapshot,
-    MappingKeysAdded,
+    MappingKeysChanged,
     TruncateList,
     Undoable,
     UndoLog,
@@ -69,23 +69,58 @@ class TestTruncateList:
         assert items == [1, 2]
 
 
-class TestMappingKeysAdded:
+class TestMappingKeysChanged:
     def test_removes_exactly_the_noted_keys(self):
         mapping = {"a": 1}
-        entry = MappingKeysAdded.capture(mapping)
-        mapping["b"] = 2
+        entry = MappingKeysChanged.capture(mapping)
         entry.note("b")
-        mapping["c"] = 3
+        mapping["b"] = 2
         entry.note("c")
+        mapping["c"] = 3
+        entry.restore()
+        assert mapping == {"a": 1}
+
+    def test_restores_an_overwritten_value_rather_than_deleting_it(self):
+        """The case `MappingKeysAdded` got wrong.
+
+        A key written during an event may already have had a value. Rollback
+        has to put that value back; popping the key loses it. In the KV pool
+        this was a prefix hash re-pointed from one block to another, where the
+        undo dropped the hash while the original block still held it.
+        """
+        mapping = {"a": 1}
+        entry = MappingKeysChanged.capture(mapping)
+        entry.note("a")
+        mapping["a"] = 99
+        entry.restore()
+        assert mapping == {"a": 1}
+
+    def test_a_none_value_is_restored_not_treated_as_absent(self):
+        """`None` is a legal value, so absence needs its own sentinel."""
+        mapping = {"a": None}
+        entry = MappingKeysChanged.capture(mapping)
+        entry.note("a")
+        mapping["a"] = 1
+        entry.restore()
+        assert mapping == {"a": None}
+
+    def test_the_first_note_for_a_key_is_the_one_kept(self):
+        """Two writes to one key in one event unwind to the pre-event value."""
+        mapping = {"a": 1}
+        entry = MappingKeysChanged.capture(mapping)
+        entry.note("a")
+        mapping["a"] = 2
+        entry.note("a")
+        mapping["a"] = 3
         entry.restore()
         assert mapping == {"a": 1}
 
     def test_leaves_keys_it_was_not_told_about(self):
-        """It removes additions, it does not diff the mapping. A key added
+        """It reverts noted writes, it does not diff the mapping. A key added
         without a `note` is a caller bug, and silently removing it would hide
         that bug rather than surface it."""
         mapping = {"a": 1}
-        entry = MappingKeysAdded.capture(mapping)
+        entry = MappingKeysChanged.capture(mapping)
         mapping["b"] = 2
         entry.restore()
         assert mapping == {"a": 1, "b": 2}
@@ -93,7 +128,7 @@ class TestMappingKeysAdded:
     def test_a_noted_key_already_gone_is_not_an_error(self):
         """Eviction can remove a key the same event added."""
         mapping = {}
-        entry = MappingKeysAdded.capture(mapping)
+        entry = MappingKeysChanged.capture(mapping)
         entry.note("b")
         entry.restore()
         assert mapping == {}

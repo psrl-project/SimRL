@@ -75,6 +75,14 @@ FALLBACK_FLOORS_S: dict[str, dict[str, float]] = {
         "context_attention": 32e-6,
         "generation_attention": 22e-6,
         "elementwise": 2e-6,
+        # Gated delta net, refitted on H20 against Qwen3.5-35B-A3B (2026-10-08) after the
+        # runner moved to CUDA graph replay. The earlier 80 us / 22 us pair was fitted
+        # against event-timed rows that were measuring FlashInfer's CUTLASS DSL python
+        # marshaling rather than the GPU: 491 us of "kernel" at 128 tokens against 57 us of
+        # actual device work. A real engine replays a captured decode graph and pays none of
+        # that. See `profiler/kernel/runner/gdn.py` for the evidence and the phase caveat.
+        "gdn_context": 16e-6,
+        "gdn_decode": 32e-6,
         **_COLLECTIVE_FALLBACK_S,
     },
     "flashinfer": {
@@ -250,4 +258,135 @@ def generation_attention_sol(
     kv_write = kv_bytes * 2 * batch_size * num_kv_heads * head_dim
     query_and_output = 2 * attn_bytes * batch_size * num_heads * head_dim
     memory_s = (history_read + kv_write + query_and_output) / spec.memory_bandwidth_bytes_per_s
+    return SolComponents(math_s=math_s, memory_s=memory_s, floor_s=floor_s)
+
+
+def gdn_context_sol(
+    spec: GpuSpec,
+    *,
+    total_tokens: int,
+    num_key_heads: int,
+    num_value_heads: int,
+    head_dim: int,
+    attn_dtype: str,
+    chunk_size: int = 64,
+    floor_s: float = 0.0,
+) -> SolComponents:
+    """
+    Return the roofline latency of one chunked gated-delta-net prefill call.
+
+    Linear in `total_tokens`, not quadratic, and that is the whole point of the layer: a
+    gated delta net carries a fixed-size recurrent state of `num_value_heads * head_dim^2`
+    instead of a growing KV cache, so a token attends to the state rather than to every
+    earlier token. Pricing it with `context_attention_sol` would overstate a long prompt by
+    roughly `seq_len / chunk_size` -- 128x at 32k tokens.
+
+    The chunked algorithm (`fla.ops.gated_delta_rule.chunk_gated_delta_rule`) splits the
+    sequence into chunks of `chunk_size` and, per chunk, does intra-chunk attention plus a
+    state update, so the work has two parts:
+
+    - intra-chunk, quadratic *within* a chunk and therefore linear overall:
+      `total_tokens * chunk * head_dim` per value head.
+    - state propagation, linear in tokens: each token touches the `head_dim x head_dim`
+      state once, giving `total_tokens * head_dim^2` per state block. The state is indexed
+      by VALUE heads (`gated_delta_net_state_shape` is `(num_v_heads, head_v_dim,
+      head_k_dim)`), so the block count is `num_value_heads`.
+
+    Measured on H20 (Qwen3.5-35B-A3B, 16 key / 32 value heads, head_dim 128, 2026-10-08) by
+    CUDA graph replay, the cost scales from 57.8 us at 128 tokens to 3106 us at 32768, clean
+    doublings once past ~2048. An earlier version of this docstring reported the kernel as
+    flat at ~368 us to 4096 tokens; that plateau was FlashInfer's CUTLASS DSL python
+    marshaling, which an engine replaying a captured graph never pays, and it is gone from
+    the measurement now. The fitted floor is correspondingly small, 16 us.
+
+    Args:
+        spec (GpuSpec): Target hardware.
+        total_tokens (int): Tokens in the packed batch, summed over sequences.
+        num_key_heads (int): Key/query heads on this rank.
+        num_value_heads (int): Value heads on this rank, which also index the state.
+        head_dim (int): Per-head dimension, shared by key and value here.
+        attn_dtype (str): Input and output dtype.
+        chunk_size (int): The kernel's chunk length. 64 is `fla`'s default for this op.
+        floor_s (float): Fitted dispatch floor in seconds, applied inside the `max`.
+
+    Returns:
+        SolComponents: Compute, memory, and dispatch-floor components in seconds.
+    """
+    _require_positive(
+        total_tokens=total_tokens,
+        num_key_heads=num_key_heads,
+        num_value_heads=num_value_heads,
+        head_dim=head_dim,
+        chunk_size=chunk_size,
+    )
+    attended = float(min(chunk_size, total_tokens))
+    intra = 2.0 * (2.0 * num_value_heads * total_tokens * attended * head_dim)
+    state = 2.0 * (2.0 * num_value_heads * total_tokens * head_dim * head_dim)
+    math_s = (intra + state) / spec.flops_for(attn_dtype)
+
+    nbytes = dtype_bytes(attn_dtype)
+    qk = 2 * nbytes * total_tokens * num_key_heads * head_dim
+    vo = 2 * nbytes * total_tokens * num_value_heads * head_dim
+    gates = (4 + nbytes) * total_tokens * num_value_heads
+    state_bytes = 2 * nbytes * num_value_heads * head_dim * head_dim
+    memory_s = (qk + vo + gates + state_bytes) / spec.memory_bandwidth_bytes_per_s
+    return SolComponents(math_s=math_s, memory_s=memory_s, floor_s=floor_s)
+
+
+def gdn_decode_sol(
+    spec: GpuSpec,
+    *,
+    batch_size: int,
+    num_key_heads: int,
+    num_value_heads: int,
+    head_dim: int,
+    attn_dtype: str,
+    floor_s: float = 0.0,
+) -> SolComponents:
+    """
+    Return the roofline latency of one recurrent gated-delta-net decode step.
+
+    There is no `step` axis, which is the structural difference from
+    `generation_attention_sol` and the reason this op has one fewer dimension: the recurrent
+    state is a fixed `num_value_heads x head_dim x head_dim` per request regardless of how
+    many tokens preceded it, so a decode step costs the same at KV depth 128 as at 32768. A
+    cost model that interpolated GDN decode over history depth would be fitting noise.
+
+    That also makes the step overwhelmingly memory-bound: it reads and writes the whole state
+    to produce one token, so `state_bytes / bandwidth` dominates unless the batch is large.
+
+    Measured on H20 (2026-10-08) by CUDA graph replay, the step scales from 3.9 us at batch 1
+    to 348 us at batch 256, roughly linear throughout (12.8 us at 8, 50.0 us at 32, 91.4 us
+    at 64). The flat ~25 us plateau an earlier version of this docstring reported below batch
+    16 was python dispatch, not device work, and is absent once the marshaling is excluded.
+
+    Args:
+        spec (GpuSpec): Target hardware.
+        batch_size (int): Requests decoding concurrently.
+        num_key_heads (int): Key heads on this rank.
+        num_value_heads (int): Value heads on this rank, which index the state.
+        head_dim (int): Per-head dimension.
+        attn_dtype (str): Input and output dtype.
+        floor_s (float): Fitted dispatch floor in seconds, applied inside the `max`.
+
+    Returns:
+        SolComponents: Compute, memory, and dispatch-floor components in seconds.
+    """
+    _require_positive(
+        batch_size=batch_size,
+        num_key_heads=num_key_heads,
+        num_value_heads=num_value_heads,
+        head_dim=head_dim,
+    )
+    # One token against a head_dim x head_dim state: an outer-product update and a readout,
+    # two matmuls per state block, and the state is indexed by value heads.
+    math_s = (
+        2.0 * (2.0 * batch_size * num_value_heads * head_dim * head_dim)
+    ) / spec.flops_for(attn_dtype)
+    nbytes = dtype_bytes(attn_dtype)
+    # The state is read and written in full. fp32 because the recurrence accumulates.
+    state_bytes = 2 * 4 * batch_size * num_value_heads * head_dim * head_dim
+    qk = 2 * nbytes * batch_size * num_key_heads * head_dim
+    vo = 2 * nbytes * batch_size * num_value_heads * head_dim
+    memory_s = (state_bytes + qk + vo) / spec.memory_bandwidth_bytes_per_s
     return SolComponents(math_s=math_s, memory_s=memory_s, floor_s=floor_s)

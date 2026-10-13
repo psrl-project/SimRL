@@ -55,24 +55,44 @@ rollout:
   # Where kv_blocks should come from instead of the literal above. Leaving
   # model_path null keeps the literal.
   kv_cache_sizing:
-    # A HuggingFace checkpoint dir, used to derive capacity the way vLLM does from
-    # the model's KV geometry and the budget below. Overestimates by ~3%, because
-    # vLLM also subtracts a measured non-KV peak no config file reveals; set
-    # non_kv_overhead_bytes to fold that in once known.
+    # A HuggingFace checkpoint dir. Null keeps the literal kv_blocks above.
     model_path: null
+
+    # Start a real vLLM engine on a cache miss and reuse the cached block count
+    # thereafter. False falls back to arithmetic over config.json, which is only
+    # honest for a dense model: vLLM measures its peak-activation and non-torch
+    # memory at startup, and a hybrid model's mamba page alignment cannot be
+    # reconstructed from a config file.
+    probe: true
+
+    # Cache key component: two GPUs with equal memory differ in context size and
+    # fragmentation, so a capacity measured on one is invalid for the other.
+    gpu_name: unknown
+
     gpu_memory_mib: 97871
     gpu_memory_utilization: 0.9
     tp_size: 1
+
+    # probe: false only. Weight size normally comes from the checkpoint's
+    # safetensors index; this is the fallback for a single-shard checkpoint.
     parameter_count: null
     non_kv_overhead_bytes: 0
+
+    # max_model_len, max_num_seqs, max_num_batched_tokens, dtype and block_size
+    # are read from job.*, rollout.* and rollout_cost.* rather than duplicated
+    # here, so they cannot drift from the run they describe.
 
   # Max sequences in the running batch (vLLM max_num_seqs). null = unlimited.
   max_concurrency: null
 
   # Admission gates applied when a request is offered to an instance.
   admission_control:
-    # Reject new requests when reserved KV would exceed capacity.
-    reject_if_kv_full: true
+    # Reject new requests when reserved KV would exceed capacity. Off because
+    # capacity is the scheduler's constraint: the engine already holds a request
+    # that does not fit on its own waiting queue, as vLLM does. Turning this on
+    # applies the same limit a second time, earlier, counting the waiting queue
+    # as committed, which keeps a partial-rollout refill in the router instead.
+    reject_if_kv_full: false
 
     # Reject new requests while any request is still waiting.
     reject_if_waiting: false
@@ -91,17 +111,40 @@ rollout:
     #   kv_cache_aware       most free KV blocks
     #   prefix_aware         whoever already holds the prefix, unless skewed
     #   throughput_balance   smallest predicted step-time increase
+    #   version_aware_tp     old-version tail PREFERS high TP (soft; fresh work
+    #                        still balances over the whole fleet)
+    #   version_capped_tp    old versions use only the highest TP tier. Current
+    #                        work uses lower TP while stale work remains queued
+    #   length_aware         order whole groups longest- or shortest-first and place
+    #                        by predicted remaining load. Needs queue_window wide
+    #                        enough to cover the backlog
     strategy: request_num_balance
 
     # Keyword arguments for the chosen strategy, e.g.
     #   {cache_threshold: 0.3, balance_abs_threshold: 64} for prefix_aware
     #   {seed: 0} for random
     strategy_args: {}
+    # Which resident the engine evicts when the KV pool cannot fund a decode
+    # step. Separate from `strategy` because the engine makes this call, not
+    # the router, so an experiment can move one without the other.
+    #   vllm_lru      reverse arrival order, what vLLM itself does (default)
+    #   longest_ctx   the deepest context, freeing the most blocks per eviction
+    #   scg_value     whoever loses the least hit probability by waiting
+    eviction: vllm_lru
 
     # Tie-break among queued requests of the same weight version:
-    # short_length | long_length | small_id. Lower versions always go first,
+    # small_id | short_length | long_length. Lower versions always go first,
     # whatever this is set to.
-    sort_key: short_length
+    #
+    # small_id is arrival order and is the default: a length key makes the
+    # placement order depend on how much of the dataset is staged, so an
+    # unrelated flow limit leaks into which request runs.
+    sort_key: small_id
+
+    # How many queued requests a ranking strategy (one with `rank_queued`)
+    # chooses among per placement. A strategy that orders the whole backlog
+    # needs this at least as wide as the backlog.
+    queue_window: 32
 
     # Router-side cap on how many requests one instance may hold. 0 disables.
     # Distinct from rollout.max_concurrency, which is vLLM's max_num_seqs
@@ -110,6 +153,11 @@ rollout:
 
     # Skip an instance that already has a queue of its own.
     reject_on_waiting: false
+
+    # Skip instances with a local queue only when placing a request returned by
+    # max_waiting_after_preempt. Fresh admissions and weight-update loopbacks
+    # still use the normal strategy over every otherwise eligible instance.
+    reject_preempted_on_waiting: false
 
     # Pin a prompt group's responses to the instance that took the first one.
     # False matches the run this is aligned against, which scatters every
@@ -136,10 +184,8 @@ rollout:
 #
 # When enabled, the fleet is re-shaped at every weight update: the solver decides
 # each instance's TP degree, and the ROUTER decides which request goes where.
-# Those are deliberately separate. The solver does not partition requests, so a
-# high-TP instance is never reserved for one kind of work -- once the old-version
-# tail drains, fresh work is free to use that capacity instead of leaving it idle.
-# Pair this with rollout.router.strategy=version_aware_tp.
+# Pair this with rollout.router.strategy=version_capped_tp and a positive
+# rollout.router.max_concurrent_seqs_per_instance.
 dynamic_parallel:
   # Master switch. false = the existing static homogeneous fleet, unchanged.
   enabled: false
@@ -156,13 +202,33 @@ dynamic_parallel:
   # runs through this same code path.
   strategy: search
 
+  # Solver used by strategy=planner: dp | pp | twopool. The planner re-plans the TP
+  # shape and the length tiers at every weight update from in-flight and staged work.
+  algorithm: pp
+
+  # Planner only: keep the best uniform fleet unless a heterogeneous plan is predicted
+  # to be at least this fraction faster.
+  switch_margin: 0.0
+
   # Only read when strategy=fixed. One TP degree per instance, e.g. [2, 1, 1].
   tp_per_instance: []
 
-  # How strongly the solver assumes the router steers the old-version tail toward
-  # high TP, in [0, 1]. version_aware_tp always prefers the highest available TP
-  # for that work, so 1.0 is the matching value.
-  high_tp_bias: 1.0
+  # Solver objective: scg (expected completions inside one training cycle) or
+  # throughput (aggregate token rate). throughput always picks the all-TP1 fleet
+  # and is kept only as an ablation. scg is the paper's §9 algorithm.
+  objective: scg
+
+  # Seed value for the training-cycle deadline the SCG objective drains against.
+  # Updated automatically after each step via observe_training_cycle.
+  training_cycle_s: 60.0
+
+  # Weight on new-version completions in the SCG score, in [0, 1]. 1.0 treats
+  # both populations at face value; lower values push harder toward tail drain.
+  future_discount: 1.0
+
+  # Multiplier on the old-version drain term. Above 1.0 trades fresh-work
+  # throughput for tail drain; the lever that makes concentration worth choosing.
+  drain_weight: 1.0
 
   # Per-TP kernel table root, required when rollout_cost.name=composed. Measured
   # tables are sharded per TP degree, so one path cannot serve every instance.
@@ -191,6 +257,11 @@ sync_cost:
 
   # Fixed weight-sync time in seconds (used when name=fixed).
   sync_time: 0.0
+
+  # Rollout-side weight-load latency in seconds. The time vLLM takes to
+  # execute pull_model and reset_prefix_cache after the NIXL transfer.
+  # Measured at 4-5 s on the matched PSRL run. Separate from sync_time.
+  weight_load_time: 0.0
 
 # Log-prob recomputation cost model, the training-side forward pass. It is roughly
 # a quarter of a real training block, so the 0.0 default understates every block.

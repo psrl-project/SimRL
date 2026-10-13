@@ -8,7 +8,7 @@
 #   tp2_x2   2 x TP=2, static            baseline: maximum concentration
 #   search   re-solved at every update   treatment (contribution C4)
 #
-# All three run with dynamic_parallel.enabled=true and version_aware_tp routing, so the two
+# All three run with dynamic_parallel.enabled=true and version_capped_tp routing, so the two
 # baselines traverse the SAME fleet/rebuild/routing code as the treatment. A measured
 # difference therefore cannot be an artefact of the new plumbing -- which is the whole
 # reason the baselines are expressed as `strategy=fixed` rather than by turning the
@@ -103,9 +103,10 @@ export MAX_TOKENS_PER_MICROBATCH="${MAX_TOKENS_PER_MICROBATCH:-12800}"
 export ACTIVATION_RECOMPUTE=full
 export TRAINING_ARTIFACT
 export RECOMPUTE_MODEL=training_forward
+# Capacity is measured by a real vLLM engine and cached (KV_PROBE defaults to
+# true), which covers the non-KV overhead too.
 export KV_MODEL_PATH="${MODEL_PATH}"
 export KV_GPU_MEMORY_UTILIZATION=0.9
-export KV_NON_KV_OVERHEAD_BYTES=2147483648
 export EXTRAPOLATE="${EXTRAPOLATE:-[tokens,activation_bytes,pipeline_slots,sum_squared_tokens]}"
 
 # `rollout_cost.kernel_table_root` still has to satisfy the composed model's own
@@ -120,9 +121,9 @@ DYNAMIC_COMMON=(
     # a struct, so adding keys to it is an append rather than an override. Without the
     # prefix Hydra refuses with "Key '1' is not in struct".
     "+dynamic_parallel.kernel_table_roots={1:'${TP1_ROOT}',2:'${TP2_ROOT}'}"
-    # The placement rule. Only this strategy ranks instances by TP, so the
-    # old-version tail prefers high TP while current work balances fleet-wide.
-    "rollout.router.strategy=version_aware_tp"
+    # The placement rule enforces version tiers under one H20 BF16 active cap.
+    "rollout.router.strategy=version_capped_tp"
+    "rollout.router.max_concurrent_seqs_per_instance=40"
     "rollout.max_concurrency=${MAX_CONCURRENCY}"
     "workload.trace.path=${TRACE}"
 )

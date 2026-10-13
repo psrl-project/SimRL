@@ -1,0 +1,61 @@
+# HuggingFace checkpoint. Set MODEL_PATH, or edit this line.
+#
+# DeepSeek-R1-Distill-Qwen-14B is a `Qwen2ForCausalLM`: a dense gated pre-norm block with
+# GQA, which `families_dense.py` already registers. It differs from Qwen3-8B in width
+# (hidden 5120 against 4096), depth (48 layers against 36), and query heads (40 against 32),
+# and it carries NO `q_norm`/`k_norm`, so the elementwise grid omits the two `qk_norm`
+# kernels that Qwen3 pays for. All of that is read from `config.json`; nothing below
+# restates it.
+#
+# What matters for the grids: the KV geometry is identical to Qwen3-8B (8 KV heads at
+# head_dim 128), so every attention memory budget transfers unchanged. The weights do not:
+# 27.5 GiB of bf16 parameters against 16.4 GiB, which only the model-loading paths
+# (`kernels validate`, the vLLM sweep) care about, not these synthetic-tensor sweeps.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/DeepSeek-R1-Distill-Qwen-14B}
+hardware:
+  gpu_name: H20
+  gpu_count: 1
+  gpu_memory_mib: 97871
+output_dir: ../../../outputs/profile/deepseek_r1_distill_qwen_14b/kernel_tp1
+experiment_name: deepseek-r1-distill-qwen-14b
+parallelism:
+  tensor_parallel: 1
+
+gemm:
+  token_counts: [1, 2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
+attention:
+  batch_sizes: [1, 2, 4, 8, 16, 32, 48, 64]
+  context_seq_lens: [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+  generation_steps: [0, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+  block_size: 16
+  window_size: 0
+  max_context_tokens: 262144
+
+elementwise:
+  token_counts: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
+collective:
+  # Message sizes are swept directly rather than derived from token counts: the five
+  # collectives do not carry the same size at the same token count. An SP-sharded
+  # reduce_scatter moves tokens*hidden/tp where an all_reduce moves tokens*hidden, and a
+  # Megatron gradient bucket is unrelated to tokens entirely. The grid spans 4 KiB to
+  # 512 MiB, which covers all three regimes.
+  #
+  # Byte sizes, so this grid is model-independent and identical to the Qwen3-8B one. Only
+  # the number of buckets changes with parameter count, and that is the caller's arithmetic.
+  message_bytes: [4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152,
+     4194304, 8388608, 16777216, 33554432, 67108864, 134217728, 268435456, 536870912]
+  # (world_size, nodes) pairs. Every collective is timed inside one process group per
+  # topology, because group setup dominates a small-message measurement. `nodes` is a slice
+  # column, so an unmeasured topology raises rather than interpolating from another one.
+  topologies: [[2, 1], [4, 1], [8, 1]]
+  # float32 is not optional: Megatron reduces gradients in fp32, so a bf16-only table
+  # cannot price the data-parallel reduction.
+  dtypes: [bfloat16, float32]
+
+measurement:
+  warmup_iterations: 5
+  active_iterations: 20
+  dtype: bfloat16
+  kv_cache_dtype: bfloat16

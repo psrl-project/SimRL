@@ -61,6 +61,9 @@ class OptimizerStepKernelOp:
     slice_columns = ("optimizer", "state_kind")
     axis_columns = ("param_count",)
     fits_floor = True
+    # Training-only, eager, and bandwidth-bound at 2703 GB/s well before a launch cost
+    # shows: a real shard is 10^8-10^9 parameters.
+    graph_replayed = False
 
     def sol(
         self,
@@ -104,15 +107,15 @@ class OptimizerStepKernelOp:
 
     def parse_sweep(self, value: dict[str, Any]) -> Any:
         """Parse the `optimizer:` sweep subtree into an `OptimizerSweep`."""
-        from ....profiler.kernels.config import OptimizerSweep
+        from ....profiler.kernel.sweep import OptimizerSweep
 
         return OptimizerSweep.from_dict(value)
 
     def measure(self, model: Any, config: Any, *, writer_factory: Any) -> tuple[Any, ...]:
         """Time the fused Adam step across the parameter-count grid and write one table."""
-        from ....profiler.kernels.optimizer import profile_optimizer
+        from ....profiler.kernel.runner.optimizer import OptimizerRunner
 
-        return profile_optimizer(model, config, writer_factory=writer_factory)
+        return OptimizerRunner(model, config).run(writer_factory=writer_factory)
 
     def table_columns(self) -> tuple[str, ...]:
         """Return this op's non-provenance table columns, latency last."""

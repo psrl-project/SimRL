@@ -5,7 +5,7 @@ from __future__ import annotations
 import pyarrow.parquet as pq
 import pytest
 
-from dryrun.profiler.kernels.measurements import PerfTableWriter
+from dryrun.profiler.kernel.measurements import PerfTableWriter
 
 
 @pytest.fixture

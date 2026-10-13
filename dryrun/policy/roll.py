@@ -114,6 +114,14 @@ class RollPolicy(StalenessPolicy):
         self.budget += st.batch_size
         self._ensure_cohort(train_version)
 
+    def replacement_groups_on_drop(
+        self,
+        groups: list[list[Request]],
+        st: SimState,
+    ) -> int:
+        """ROLL replaces groups permanently removed by its expiry rules."""
+        return len(groups)
+
     def expire(self, st: SimState, expected_train_version: int) -> list[Request]:
         max_gc_step = (expected_train_version - 1) - st.max_staleness
         if max_gc_step < 0:

@@ -52,6 +52,12 @@ class BlockPool {
   // The block holding `block_hash`, or nullptr on a miss.
   KvBlock* cached_block(const BlockHash& hash) const;
 
+  // Read-only views for state comparison in tests and debugging.
+  const std::vector<KvBlock>& blocks() const { return blocks_; }
+  const std::unordered_map<BlockHash, KvBlock*, BlockHashHasher>& hash_map() const {
+    return hash_to_block_;
+  }
+
   // --- Recorded overloads (speculative / undo-tracked paths) ---
 
   std::vector<KvBlock*> new_blocks(int n, UndoLog& log);

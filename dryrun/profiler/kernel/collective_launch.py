@@ -29,7 +29,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from ._timing import time_cuda_call, torch_dtype
+from .utils.timing import time_cuda_call, torch_dtype
 
 dryrun_logger = logging.getLogger(__file__)
 

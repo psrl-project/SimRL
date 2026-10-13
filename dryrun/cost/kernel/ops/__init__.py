@@ -9,5 +9,6 @@ from . import attention as _attention_ops  # noqa: F401
 from . import attention_training as _attention_training_ops  # noqa: F401
 from . import collective as _collective_ops  # noqa: F401
 from . import elementwise as _elementwise_ops  # noqa: F401
+from . import gdn as _gdn_ops  # noqa: F401
 from . import gemm as _gemm_ops  # noqa: F401
 from . import optimizer as _optimizer_ops  # noqa: F401

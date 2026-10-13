@@ -177,11 +177,12 @@ class RecomputeCostConfig:
     peak_flops: float = 312e12
     overhead_factor: float = 1.1
 
-    # training_forward only: the unembedding runs over the full vocabulary in
-    # both passes, which adds a few percent on a model with a large vocab.
-    hidden_size: int = 0
-    vocab_size: int = 0
-    parameter_count: int = 0
+    # training_forward's unembedding correction needs hidden_size, vocab_size and
+    # parameter_count. They are NOT configured here: they describe the model whose
+    # fitted training curve this scales, so they are read from the training
+    # artifact (or the run's checkpoint when the training model has no fit behind
+    # it). Configuring them separately let the correction describe one
+    # architecture while the curve it multiplied described another.
 
 
 @dataclass
@@ -203,7 +204,10 @@ class JobConfig:
 class AdmissionControlConfig:
     """Gates applied when a request is offered to an instance."""
 
-    reject_if_kv_full: bool = True
+    # Off because KV capacity is the scheduler's constraint, not an admission
+    # one. `_engine_step` already enforces it the way vLLM does, by
+    # leaving a request that does not fit on the instance's waiting queue.
+    reject_if_kv_full: bool = False
     reject_if_waiting: bool = False
     reject_if_running_full: bool = False
 
@@ -213,23 +217,37 @@ class KvCacheSizingConfig:
     """How to obtain `rollout.kv_blocks` instead of taking the literal value.
 
     `kv_blocks` is the denominator of every reported `kv_cache_usage`, so a
-    placeholder value rescales the whole KV curve and makes it incomparable
-    with a measured one. These two fields let it come from the engine that was
-    actually measured, or from the model's own geometry.
-
-    Computed from the model rather than read from a run's log, so a
-    configuration can be simulated before it has ever been executed.
+    placeholder rescales the whole KV curve and makes it incomparable with a
+    measured one. Naming a `model_path` replaces it with the capacity a real
+    vLLM engine allocates for the same deployment.
     """
 
-    # A HuggingFace checkpoint directory. Derives capacity from the model
-    # geometry and the memory budget below. Overestimates by roughly 3%,
-    # because vLLM subtracts a measured non-KV peak that a config cannot reveal.
+    # A HuggingFace checkpoint directory. Required for either path below.
     model_path: str | None = None
+
+    # True starts a real vLLM engine on a cache miss and reuses the cached block
+    # count thereafter. False uses arithmetic over config.json, which is only
+    # honest for a dense model: vLLM measures its peak-activation and non-torch
+    # memory at startup, and a hybrid model's mamba page alignment cannot be
+    # reconstructed from a config file.
+    probe: bool = True
+
+    # Cache key component. Two GPUs with equal memory differ in context size and
+    # fragmentation, so a capacity measured on one is invalid for the other.
+    gpu_name: str = "unknown"
+
     gpu_memory_mib: int = 97_871
     gpu_memory_utilization: float = 0.9
     tp_size: int = 1
+
+    # `probe: false` only. Weight size normally comes from the checkpoint's
+    # safetensors index. This is the fallback for a single-shard checkpoint.
     parameter_count: int | None = None
     non_kv_overhead_bytes: int = 0
+
+    # max_model_len, max_num_seqs, max_num_batched_tokens, dtype and block_size
+    # are read from job.*, rollout.* and rollout_cost.* rather than duplicated
+    # here, so they cannot drift from the run they describe.
 
 
 @dataclass
@@ -241,17 +259,45 @@ class RouterConfig:
     a setting can be transcribed rather than translated.
     """
 
+    eviction: str = "vllm_lru"
+    """vllm_lru | longest_ctx | scg_value.
+
+    Which resident the engine evicts when the KV pool cannot fund a decode
+    step. Separate from `strategy` because the engine makes this call, not the
+    router, and an experiment should be able to move one without the other.
+    """
     strategy: str = "request_num_balance"
     """request_num_balance | round_robin | random | kv_cache_aware |
-    prefix_aware | throughput_balance.
+    prefix_aware | throughput_balance | version_aware_tp | version_capped_tp |
+    scg_admission | length_aware.
 
     The default reproduces the former least-active selection exactly, so it is
     behaviour-preserving as well as what the matched PSRL run uses.
+
+    `scg_admission` is the only one that may refuse every instance, leaving the
+    request in the router rather than placing it. Set its `max_staleness` in
+    `strategy_args` to match `job.max_staleness`.
     """
     strategy_args: dict = field(default_factory=dict)
     """Per-strategy keyword arguments, e.g. cache_threshold for prefix_aware."""
-    sort_key: str = "short_length"
-    """Tie-break among same-version queued requests: short_length | long_length | small_id."""
+    sort_key: str = "small_id"
+    """Tie-break among same-version queued requests: small_id | short_length | long_length.
+
+    `small_id` is arrival order, and it is the default because it is the only
+    one of the three that does not make the result depend on how much of the
+    dataset happens to be staged. A length key reorders the queue, so widening
+    ingress changes which request is placed: measured over staged widths of
+    3, 8 and 32 batches under `short_length`, the mean prompt length of the
+    first 48 admissions moved 92.5 -> 86.7 -> 85.0. The length keys remain
+    available for studying that effect deliberately.
+    """
+    queue_window: int = 32
+    """Queued requests a ranking strategy chooses among per placement.
+
+    Only a strategy implementing `rank_queued` reads it. The default keeps the
+    cost of a placement bounded when a backlog reaches several hundred requests;
+    a strategy ordering the whole backlog needs it at least that wide.
+    """
     max_concurrent_seqs_per_instance: int = 0
     """Router-side cap on requests one instance may hold. 0 disables the gate.
 
@@ -261,6 +307,8 @@ class RouterConfig:
     """
     reject_on_waiting: bool = False
     """Whether the router skips an instance that already has a queue of its own."""
+    reject_preempted_on_waiting: bool = False
+    """Whether only preemption loopbacks skip instances with a local queue."""
     enable_group_sticky: bool = False
     """Pin a prompt group's responses to the instance that accepted the first.
 
@@ -312,10 +360,9 @@ class DynamicParallelConfig:
     `dryrun.simulator.dynamic_parallel` is imported or run.
 
     When enabled, the fleet is re-shaped at every weight update. Placement is NOT
-    partitioned: the solver only decides each instance's TP degree, and which
-    request goes where stays the router's decision. Pair this with
-    ``rollout.router.strategy=version_aware_tp`` so the old-version tail prefers
-    high-TP instances while current work balances across the whole fleet.
+    partitioned by the solver. Pair this with
+    ``rollout.router.strategy=version_capped_tp`` and a positive router active
+    cap so placement matches the plan scorer.
     """
 
     enabled: bool = False
@@ -324,19 +371,17 @@ class DynamicParallelConfig:
     tp_candidates: list = field(default_factory=lambda: [1, 2])
     """TP degrees the solver may use. Each needs profiled kernel tables."""
     strategy: str = "search"
-    """search = enumerate legal fleets and take the argmax. fixed = use `tp_per_instance`."""
+    """search = enumerate legal fleets and take the argmax. fixed = use `tp_per_instance`.
+    planner = re-plan the shape and the length tiers from pending work at every update."""
+    algorithm: str = "pp"
+    """Planner solver, only read when strategy == "planner": dp, pp or twopool."""
+    switch_margin: float = 0.0
+    """Planner only: a heterogeneous plan must beat the best uniform fleet by this fraction."""
     tp_per_instance: list = field(default_factory=list)
     """Only read when strategy == "fixed": one TP degree per instance, e.g. [2, 1, 1].
 
     How a static homogeneous baseline runs through the identical dynamic code path,
     so a measured difference cannot be an artefact of the new plumbing.
-    """
-    high_tp_bias: float = 1.0
-    """How strongly the solver assumes the router steers the tail to high TP, in [0, 1].
-
-    Must match the router's behaviour. `version_aware_tp` always prefers the highest
-    available TP for old-version work, so 1.0 is the matching value; lowering it
-    models a weaker preference and is only useful when comparing against one.
     """
     kernel_table_roots: dict = field(default_factory=dict)
     """Per-TP kernel table root, required when ``rollout_cost.name == "composed"``.
@@ -346,8 +391,42 @@ class DynamicParallelConfig:
     Keys may be ints or strings. Example:
     ``{1: .../kernel_tp1/kernel, 2: .../kernel_tp2/kernel}``
     """
+    objective: str = "scg"
+    """What the solver maximises: ``scg`` or ``throughput``.
 
+    ``throughput`` ranks plans by predicted aggregate token rate, which on a fixed
+    GPU budget always prefers the all-lowest-TP fleet: more instances means more
+    concurrency. It therefore never produces a heterogeneous plan and is kept only
+    as the ablation that isolates the objective as the lever.
 
+    ``scg`` ranks plans by expected trajectories completing inside one training
+    cycle, splitting the value into old-version drain and new-version throughput.
+    This is the objective that can prefer concentration: a higher TP degree lowers
+    per-step latency, so an old-version tail that would miss the staleness boundary
+    on TP=1 can finish in time on TP=2.
+    """
+    training_cycle_s: float = 60.0
+    """Seconds per training cycle, the deadline the SCG objective drains against.
+
+    Only a seed value. `Simulator` calls `ParallelismSolver.observe_training_cycle`
+    after every training step, so the solver scores against the measured cycle
+    rather than this estimate from the second update onward. It matters only for
+    the first solve, where no measurement exists yet.
+    """
+    future_discount: float = 1.0
+    """Weight on new-version completions relative to old-version drain, in [0, 1].
+
+    1.0 scores both populations at face value, which is plain SCG. Lowering it
+    makes the solver value the old-version tail more, since fresh work has a full
+    staleness budget and is in less danger of being dropped.
+    """
+    drain_weight: float = 1.0
+    """Multiplier on the old-version drain term. Must be >= 0.
+
+    Above 1.0 the solver trades fresh-work throughput for tail drain. This is the
+    knob that decides how aggressively heterogeneity is chosen, because the drain
+    term is the only one that rewards concentration.
+    """
 @dataclass
 class SimulateConfig:
     """Top-level simulation configuration."""

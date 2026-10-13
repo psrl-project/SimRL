@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.adapters.training import (
+from dryrun.profiler.adapters.base import (
     OOM_EXIT_CODE,
     iter_candidate_dirs,
     load_sidecar_metrics,

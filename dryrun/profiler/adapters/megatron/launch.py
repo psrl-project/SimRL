@@ -92,6 +92,51 @@ def _normalize_flash_attn_version() -> None:
     importlib.metadata.version = truncated
 
 
+def _nccl_allocation_failure(error: BaseException) -> bool:
+    """
+    Report whether a RuntimeError is a NCCL collective that ran out of device memory.
+
+    NCCL allocates its communicator and channel buffers with `cudaCalloc`, outside the
+    PyTorch caching allocator. When the device is full that call fails inside the library
+    and torch re-raises a plain `RuntimeError: NCCL Error 1: unhandled cuda error`, never a
+    `torch.OutOfMemoryError` -- so the candidate is classified `failed` and the memory model
+    loses a real upper bound. On a MoE sweep that is most of the boundary, because the
+    expert `all_to_all` is both the largest allocation and the last one attempted.
+
+    Two conditions must hold, because misclassifying a driver fault as an OOM adds an
+    inequality constraint that can only raise the fitted memory floor:
+
+    1. The message names NCCL and a CUDA fault.
+    2. The device really is nearly full, read from the driver rather than inferred. This is
+       the evidence: the NCCL WARN lines that say `Cuda failure 'out of memory'` go to the
+       parent's log, and the child process cannot read them.
+
+    Args:
+        error (BaseException): The caught exception.
+
+    Returns:
+        bool: True when the failure is an out-of-memory condition in disguise.
+    """
+    import torch
+
+    text = str(error)
+    if "NCCL" not in text:
+        return False
+    if "unhandled cuda error" not in text.lower() and "out of memory" not in text.lower():
+        return False
+    if not torch.cuda.is_available():
+        return False
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+    except RuntimeError:
+        # The CUDA context is already poisoned, which happens only after a real fault.
+        # Treating that as inconclusive leaves the candidate `failed`.
+        return False
+    # NCCL's buffers are a few MiB. A device with under 2% headroom had no room for them;
+    # one with more failed for some other reason.
+    return free_bytes < 0.02 * total_bytes
+
+
 def _apex_wgrad_fusion_available() -> bool:
     """Report whether Apex's fused weight-gradient extension is importable."""
     try:
@@ -274,6 +319,46 @@ def build_config(spec: dict[str, Any]) -> ConfigContainer:
     cfg.model.pipeline_model_parallel_size = int(parallelism["pp"])
     cfg.model.context_parallel_size = int(parallelism["cp"])
     cfg.model.virtual_pipeline_model_parallel_size = None
+
+    # Expert parallelism is applied from the candidate, never inherited. A MoE library
+    # recipe ships its own `expert_model_parallel_size` tuned for its own mesh --
+    # `qwen3_30b_a3b` uses 4 with TP=4/PP=2 -- and Megatron requires
+    # `expert_tensor_parallel * ep * pp` to divide the world size. Overriding TP and PP
+    # while leaving EP at the recipe's value therefore builds a mesh the recipe never
+    # described, and the failure is a RuntimeError inside distributed init rather than
+    # anything the candidate manifest would show.
+    #
+    # `expert_tensor_parallel_size` is pinned to 1 rather than following TP, which is the
+    # one non-obvious choice here. Megatron defaults it to `tp`, and that default makes EP
+    # unmeasurable on this hardware: `etp * ep * pp` must divide 8, so at the only meshes
+    # whose static memory fits a 36B MoE (TP2/PP4 and TP4/PP2, both 75 GiB of 95) the
+    # constraint forces ep=1 and the sweep would have no EP axis at all. With etp=1 the
+    # experts shard by EP alone and TP2/PP4 admits ep in {1, 2}, TP4/PP2 admits {1, 2, 4}.
+    #
+    # It is also what a real MoE deployment does: an expert FFN at
+    # `moe_intermediate_size=512` is far too narrow to shard across tensor ranks usefully,
+    # so production meshes route experts with EP and leave the expert GEMMs whole.
+    if getattr(cfg.model, "num_moe_experts", None):
+        cfg.model.expert_model_parallel_size = int(parallelism.get("ep", 1))
+        cfg.model.expert_tensor_parallel_size = 1
+
+        # Fall back to Megatron's built-in all-to-all token dispatcher. The MoE library
+        # recipes set `moe_flex_dispatcher_backend = "deepep"`, and
+        # `apply_flex_dispatcher_backend` then rewrites `moe_token_dispatcher_type` to
+        # "flex", which imports DeepEP at module-build time and raises ImportError on a host
+        # without it. That is a hard failure for every MoE candidate, eight minutes into the
+        # run, with the real cause buried under a chained exception.
+        #
+        # `alltoall` is the right fallback rather than a mere workaround: it is the
+        # dispatcher whose per-layer all-to-all volume expert parallelism is meant to price,
+        # so measuring it is measuring the thing EP trades against. DeepEP is a faster
+        # implementation of the same collective; swapping it in later would change the
+        # fitted coefficients, so `moe_flex_dispatcher_backend` is recorded in the manifest
+        # and the two must not share a cell.
+        if getattr(cfg.model, "moe_flex_dispatcher_backend", None):
+            cfg.model.moe_flex_dispatcher_backend = None
+            cfg.model.moe_token_dispatcher_type = "alltoall"
+
     # Follows TP, as Megatron and verl both do by default. Being a function of TP it
     # is not a free cell-key dimension, so one cell per TP still describes one
     # configuration. `DRYRUN_SEQUENCE_PARALLEL=0` forces it off for A/B diagnosis;
@@ -434,6 +519,30 @@ def main() -> None:
         # Caught by exact type. A driver-level CUDA failure or a NCCL error is a
         # different fault and must stay classified as a failure, because an
         # out-of-memory record can only raise the fitted memory floor.
+        write_oom_sidecar(run_dir, spec, error)
+        raise SystemExit(OOM_EXIT_CODE) from error
+    except RuntimeError as error:
+        # A NCCL collective that cannot allocate its own buffers is an out-of-memory
+        # condition wearing a different exception. NCCL allocates communicator and
+        # channel buffers outside the PyTorch caching allocator, so when the device is
+        # full its `cudaCalloc` fails inside the library and torch re-raises a plain
+        # `RuntimeError: NCCL Error 1: unhandled cuda error` -- never
+        # `torch.OutOfMemoryError`. Measured on Qwen3.5-35B-A3B at TP2/DP4/EP4, where the
+        # expert `all_to_all_single` died with
+        # `NCCL WARN Cuda failure 'out of memory' / Failed to CUDA calloc 10485760 bytes`.
+        #
+        # Left unclassified that candidate is `failed`, so the memory model loses a real
+        # upper bound -- and for a MoE sweep that is most of the boundary, because the
+        # expert dispatch is both the largest allocation and the last one made.
+        #
+        # The match is on NCCL's own failure shape plus a direct reading of free device
+        # memory, rather than on the word "memory" appearing somewhere in the log, which
+        # `base/run.py` rightly refuses to do: a false OOM can only raise the fitted floor.
+        # Querying the device is evidence rather than inference -- the NCCL WARN lines go to
+        # the parent's log file and the child cannot read them. Any other RuntimeError, or a
+        # NCCL fault on a device with room to spare, re-raises and stays `failed`.
+        if not _nccl_allocation_failure(error):
+            raise
         write_oom_sidecar(run_dir, spec, error)
         raise SystemExit(OOM_EXIT_CODE) from error
     finally:

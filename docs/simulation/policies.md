@@ -265,8 +265,8 @@ dependency.
 The `StalenessPolicy` ABC in `dryrun/policy/base.py` defines the full interface. Only
 two methods are abstract and must be implemented:
 
-- `admit_quota(st: SimState) -> int`: how many new rollouts the policy allows at this
-  instant. Return 0 to pause admission entirely.
+- `admit_quota(st: SimState) -> int`: how many staged responses may commit their
+  first placement at this instant. Return 0 to leave them in the router.
 - `peek_batch(st: SimState) -> list[Request] | None`: return the next training batch
   without consuming policy state. Return `None` if no batch is ready.
 
@@ -274,8 +274,9 @@ The remaining hooks have do-nothing defaults and can be overridden selectively:
 
 | Method | When called |
 |--------|-------------|
-| `on_admit` | After a request is dispatched to the rollout engine |
-| `on_complete` | After a request finishes generation. Return `KEEP` or `DROP` |
+| `on_admit` | Once per group, after its first response is successfully placed |
+| `on_route` | After every placement, including reroutes of admitted requests |
+| `on_group_complete` | After every response in a group finishes. Return `KEEP` or `DROP` |
 | `take_batch` | When training actually consumes a batch. Defaults to `peek_batch` |
 | `on_batch_unavailable` | Each iteration that no batch could be assembled |
 | `on_train_version_advance` | After a training step publishes a new version |

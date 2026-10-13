@@ -81,6 +81,53 @@ represented, though it is not the dominant term here, since every phase under-pr
 share would have shown a ratio near 1.13. And every world size is measured intra-node over
 NVLink, so a cross-node `tp` would be priced with the wrong interconnect. `tp=4` and `tp=8` have
 collective tables but no end-to-end baseline.
+
+## Hybrid attention and mixture-of-experts (measured on Qwen3.5-35B-A3B, 2026-10-08)
+
+Two model structures beyond the dense case are priced here, with one accurate phase and one
+known-inaccurate one. The accuracy table against the real vLLM TP=1 baseline:
+
+| phase   | buckets | MRE    | median ratio | share of real engine time |
+|---------|---------|--------|--------------|---------------------------|
+| decode  | 194     | 9.6%   | 0.92         | 95.3%                     |
+| mixed   | 5       | 38.5%  | 1.41         | 0.4%                      |
+| prefill | 25      | 137.3% | 1.38         | 4.3%                      |
+
+**Decode is the phase that matters and it works.** Two terms got it there from an initial
+42.6%:
+
+- Attention is split by layer kind. 10 of 40 layers run softmax attention and 30 run a gated
+  delta net, whose prefill is LINEAR in tokens rather than quadratic. Charging all 40 as one
+  kind is a ~4x error either way.
+- `_expert_weight_seconds` adds the grouped expert GEMM's weight read. A 64-token step
+  activates 221 of 256 experts and must stream all their weights from HBM, 51.8 GiB against
+  the 1.9 GiB an `m=token_count` GEMM query implies -- about 16 ms of a 29 ms step, and the
+  single largest missing term in the model.
+
+**Prefill over-predicts by ~1.4x, and the cause is a per-call floor that this model makes
+dominant rather than anything new.** The dispatch floor is not peculiar to GDN: measured at
+batch 1, softmax context attention is also flat, 68.9 us at 128 tokens and 72.0 us at 512,
+before it starts scaling. Every family in this tree has one, which is why `floor_s` exists.
+
+What changes is the arithmetic. GDN's floor is 595 us -- 8.6x softmax attention's -- and it is
+paid on 30 layers instead of 10, so the floor term alone claims 17.9 ms against a measured
+4.24 ms step. On a dense model the same mechanism is 69 us x 36 layers = 2.5 ms inside an
+~8 ms step, about 30% and comfortably inside the noise the utility fit absorbs. DeepSeek-14B's
+prefill validates at 2.82% MRE with a median ratio of 0.994, so the dense path is sound; this
+is not a general inability to price prefill.
+
+So the floor is genuine in isolation (verified: 30 chained calls still cost 490 us each, and a
+bare FlashInfer call on pre-normalised tensors is 378 us, so it is not wrapper overhead
+either) and cannot be genuine in situ, because 30 of them do not fit inside the step that
+contains them. The engine runs these layers back-to-back on one stream with warmed autotuner
+state, where a standalone benchmark pays a launch and tail per call.
+
+Fixing it properly means measuring the GDN layer in situ -- an engine-level probe that counts
+the real per-layer cost inside a vLLM forward -- not tuning the floor until prefill agrees.
+Two dead ends worth not repeating: switching the measured kernel from `fla` to the FlashInfer
+one vLLM actually dispatches made the standalone floor *larger* (368 -> 595 us), and
+amortising the expert weight read over each expert's token share improved prefill from 118%
+to 79% but cost decode 10.2% -> 21.4%, the wrong trade at a 95:4 time split.
 """
 
 from __future__ import annotations
@@ -111,6 +158,20 @@ _SEGMENT_CAP = 1 << 20
 # Ceiling on the predict memo, ~11 MB at roughly 172 bytes per entry. Only a stride far below
 # the default can reach it, and there the memo degrades to a partial cache rather than failing.
 _MAX_CACHE_ENTRIES = 65536
+
+# Ceiling on each term-level memo under `predict`, sized to hold a whole run's distinct keys.
+_MAX_TERM_ENTRIES = 1 << 18
+
+
+def _bounded_put(memo: dict, key, value: float) -> None:
+    """
+    Insert into `memo`, evicting an arbitrary entry once it is full.
+
+    Entries are exact, so eviction only costs a recomputation, never a different answer.
+    """
+    if len(memo) >= _MAX_TERM_ENTRIES:
+        memo.pop(next(iter(memo)))
+    memo[key] = value
 
 
 class _SegmentHandle:
@@ -203,7 +264,7 @@ class ComposedRollout(RolloutCostModel):
         #     are evaluated twice: a 1.75x measured redundancy on a real run_until.
         #     Not memoizing at the integrator level is intentional: each event sees a fresh
         #     ctxsum, so an integrator cache would grow unbounded with near-zero hit rate.
-        # (2) `_step_time_estimate` and `_prefill_budget_step` both call `step_time` on
+        # (2) `_step_time_estimate` and `_engine_step` both call `step_time` on
         #     the same batch state, doubling prefill predict calls.
         # Keying on the full frozen `RolloutWorkload` (a hashable dataclass) covers both
         # sites with one mechanism. The cap keeps memory O(1) over an unbounded simulation.
@@ -215,16 +276,21 @@ class ComposedRollout(RolloutCostModel):
         # it is clamped: a stride that fine is inherently expensive, and paying it in repeated
         # table lookups is preferable to paying it in resident memory.
         self._predict_cache_cap = min(max(4096, _SEGMENT_CAP // stride + 2), _MAX_CACHE_ENTRIES)
+        # NOTE(claude): Term memos under `predict`, keyed on the few integers each term reads,
+        # which repeat far more often than whole workloads do. They must stay bit-exact, since a
+        # last-bit change reorders simulation events (`tests/test_composed_term_memo.py`).
+        self._gemm_comm_memo: dict[tuple[int, int], float] = {}
+        self._attention_memo: dict[tuple, float] = {}
 
-    def step_time(self, n_tokens, t2, ctxsum, n_reqs: int = 0) -> float:
+    def step_time(self, n_tokens, t2, ctxsum, n_reqs: int = 0, prefill_ctx: float = 0.0) -> float:
         """
         Adapt the simulator's compact step arguments to `RolloutWorkload`, with caching.
 
         Overrides the base class to add the bounded memo. `advance_to` calls
-        `_step_time_estimate` and `_prefill_budget_step` in sequence on the same batch
+        `_step_time_estimate` and `_engine_step` in sequence on the same batch
         state, so both resolve to an identical `RolloutWorkload`; the second call is free.
         """
-        workload = RolloutWorkload.from_step(n_tokens, t2, ctxsum, n_reqs)
+        workload = RolloutWorkload.from_step(n_tokens, t2, ctxsum, n_reqs, prefill_ctx)
         return self._cached_predict(workload)
 
     def _cached_predict(self, workload: RolloutWorkload) -> float:
@@ -252,26 +318,185 @@ class ComposedRollout(RolloutCostModel):
         """
         request_count = max(int(workload.request_count), 1)
         token_count = max(int(round(workload.n_tokens)), 1)
+        total = self._gemm_comm_sum(token_count, request_count)
+        # Each attention kind is multiplied by ITS OWN layer count, not by `num_layers`.
+        # On a dense model `attention_layers == num_layers` and `gdn_layers == 0`, so this is
+        # byte-identical to the previous form. On a hybrid model it is the difference between
+        # a usable prediction and a ~4x error: Qwen3.5-35B-A3B runs softmax attention on 10 of
+        # 40 layers and a gated delta net on the other 30, and the two cost functions diverge
+        # by about 128x at a 32k prompt (quadratic against linear).
+        total += self._ops.attention_layers * self._memo_attention_seconds(workload, request_count)
+        if self._ops.gdn_layers:
+            total += self._ops.gdn_layers * self._gdn_seconds(workload, request_count)
+        total += self._expert_weight_seconds(token_count)
+        return total
+
+    def _predict_uncached(self, workload: RolloutWorkload) -> float:
+        """Evaluate `predict` straight from the tables, as the reference the memos must equal."""
+        request_count = max(int(workload.request_count), 1)
+        token_count = max(int(round(workload.n_tokens)), 1)
         total = 0.0
         for query, multiplier in self._ops.gemm_queries(token_count, request_count):
             total += multiplier * self._database.query_gemm(query)
         for query, multiplier in self._ops.comm_queries(token_count):
             total += multiplier * self._database.query_comm(query)
-        total += self._ops.num_layers * self._attention_seconds(workload, request_count)
+        total += self._ops.attention_layers * self._attention_seconds(workload, request_count)
+        if self._ops.gdn_layers:
+            total += self._ops.gdn_layers * self._gdn_seconds(workload, request_count)
+        total += self._expert_weight_seconds(token_count)
         return total
+
+    def _gemm_comm_sum(self, token_count: int, request_count: int) -> float:
+        """
+        Return the running sum `predict` reaches after its GEMM and communication terms.
+
+        A caller that keeps adding from this value performs the same float operations in the
+        same order as the uncached path, so the result is bit-identical.
+        """
+        key = (token_count, request_count)
+        cached = self._gemm_comm_memo.get(key)
+        if cached is not None:
+            return cached
+        total = 0.0
+        for query, multiplier in self._ops.gemm_queries(token_count, request_count):
+            total += multiplier * self._database.query_gemm(query)
+        for query, multiplier in self._ops.comm_queries(token_count):
+            total += multiplier * self._database.query_comm(query)
+        _bounded_put(self._gemm_comm_memo, key, total)
+        return total
+
+    def _memo_attention_seconds(self, workload: RolloutWorkload, request_count: int) -> float:
+        """Return `_attention_seconds`, memoized on the integer extents it depends on."""
+        key = self._attention_key(workload, request_count)
+        cached = self._attention_memo.get(key)
+        if cached is not None:
+            return cached
+        seconds = self._attention_from_key(*key)
+        _bounded_put(self._attention_memo, key, seconds)
+        return seconds
+
+    @staticmethod
+    def _attention_key(workload: RolloutWorkload, request_count: int) -> tuple:
+        """
+        Return the integers `_attention_seconds` reads from a workload, and nothing else.
+
+        The C++ engine derives the same key in `bindings.cc`, so a change here must be
+        mirrored there.
+        """
+        context = None
+        if workload.sum_l2 > 0:
+            extent_sum = workload.prefill_ctx or workload.n_tokens
+            context = (
+                max(int(workload.sum_l2 // extent_sum), 1),
+                max(int(round(extent_sum**2 / workload.sum_l2)), 1),
+            )
+        generation = None
+        if workload.ctxsum > 0:
+            generation = max(int(workload.ctxsum // request_count), 1)
+        return (context, generation, request_count)
+
+    def _attention_from_key(self, context, generation, request_count: int) -> float:
+        """Return one layer's attention cost from its key, summed in `_attention_seconds`'s order."""
+        seconds = 0.0
+        if context is not None:
+            seq_len, prefill_reqs = context
+            seconds += self._database.query_attention(
+                self._ops.attention_query(
+                    "context", batch_size=prefill_reqs, seq_len=seq_len, backend=self._backend
+                )
+            )
+        if generation is not None:
+            seconds += self._database.query_attention(
+                self._ops.attention_query(
+                    "generation", batch_size=request_count, step=generation, backend=self._backend
+                )
+            )
+        if seconds == 0.0:
+            seconds = self._database.query_attention(
+                self._ops.attention_query(
+                    "generation", batch_size=request_count, step=1, backend=self._backend
+                )
+            )
+        return seconds
+
+    def cpp_term_spec(self) -> dict | None:
+        """
+        Describe what the C++ engine needs to assemble `step_time` from its own term memos.
+
+        The engine calls `_gemm_comm_sum` and `_attention_from_key` only on a memo miss and
+        sums the terms in `predict`'s order.
+
+        Returns:
+            dict | None: The spec, or None if the model has a gated delta net or routed
+                experts, which the C++ side does not assemble.
+        """
+        if self._ops.gdn_layers or self._ops.num_experts:
+            return None
+        return {"attention_layers": int(self._ops.attention_layers)}
+
+    def _clear_term_memo(self) -> None:
+        """Drop the term-level memos, for tests that compare against a cold model."""
+        self._gemm_comm_memo.clear()
+        self._attention_memo.clear()
+
+    def _expert_weight_seconds(self, token_count: int) -> float:
+        """Return the extra time to stream activated experts' weights from HBM; 0 if dense.
+
+        The grouped expert GEMM reads every routed expert's weights whatever its token share,
+        while the `m=token_count` query above charges only `experts_per_tok` copies. At
+        decode that difference IS the step: 221 of 256 experts at 64 tokens, 51.8 GiB against
+        the 1.9 GiB the query implies, which is about 16 ms of a 29 ms measured step and
+        closed a 3x underprediction.
+
+        Charged in full rather than amortised over each expert's token share, which was
+        tried and is the worse trade. Dividing by `tokens_per_expert` is physically the right
+        story for prefill -- a 256-token step measures 4.24 ms, admitting only 15.8 GiB of
+        traffic at 4 TB/s against this term's 60 GiB, so the weights plainly do stay resident
+        across the tokens sharing them. But at decode that divisor is 2.3 rather than 1 (64
+        tokens x topk 8 spread over 221 experts), and applying it moved decode from 10.2% to
+        21.4% MRE while improving prefill only from 118% to 79%. Decode is where this term is
+        load-bearing and where the model is used, so it stays uncapped.
+
+        The consequence is a known over-prediction of small prefill steps, which the module
+        docstring records alongside the GDN floor that shares the blame.
+
+        Priced at the device's own bandwidth rather than through a measured table, because no
+        measured GEMM row carries more than one weight copy -- which is also why this cannot
+        live in `gemm_sol` without corrupting the utility surface that normalises those rows.
+        """
+        # `getattr` rather than a direct call: `_ops` is a protocol satisfied by test
+        # doubles and by any future op list, and a model with no experts has no reason to
+        # implement this. Absent means dense, which is zero.
+        weight_bytes = getattr(self._ops, "expert_weight_bytes", None)
+        if weight_bytes is None:
+            return 0.0
+        total = weight_bytes(token_count)
+        if total <= 0:
+            return 0.0
+        excess = total - self._ops.expert_weight_bytes_counted(token_count)  # type: ignore[attr-defined]
+        if excess <= 0:
+            return 0.0
+        return excess / self._database.gpu_spec.memory_bandwidth_bytes_per_s
 
     def _attention_seconds(self, workload: RolloutWorkload, request_count: int) -> float:
         """Return one layer's attention cost, adding both phases for a mixed step."""
         seconds = 0.0
         if workload.sum_l2 > 0:
-            # `sum_l2` is used only as a boolean gate to detect a context phase; it is not used
-            # arithmetically. The mean prompt length `n_tokens / request_count` assumes a
-            # near-uniform batch. See the module docstring's known-limitation paragraph for the
-            # reasoning and the measured 0.7% deviation on the six available mixed iterations.
-            seq_len = max(int(workload.n_tokens // request_count), 1)
+            # `sum_l2` is the sum of squared attention extents, and `prefill_ctx` their plain
+            # sum, so the pair describes the prefilling set without reference to the decoding
+            # one: the weighted mean extent is `sum_l2 / prefill_ctx` and the count is
+            # `prefill_ctx**2 / sum_l2`. Both are exact when the extents are equal.
+            #
+            # Dividing `n_tokens` by `request_count` instead conflated the two, because
+            # `request_count` counts decoders as well. A resume sharing a step with 180
+            # decoders was priced as 180 tiny prompts rather than one long one: 1290 ms
+            # against the 1612 ms a real engine takes on a 12800-token chunk at 11200 context.
+            extent_sum = workload.prefill_ctx or workload.n_tokens
+            seq_len = max(int(workload.sum_l2 // extent_sum), 1)
+            prefill_reqs = max(int(round(extent_sum**2 / workload.sum_l2)), 1)
             seconds += self._database.query_attention(
                 self._ops.attention_query(
-                    "context", batch_size=request_count, seq_len=seq_len, backend=self._backend
+                    "context", batch_size=prefill_reqs, seq_len=seq_len, backend=self._backend
                 )
             )
         if workload.ctxsum > 0:
@@ -287,6 +512,36 @@ class ComposedRollout(RolloutCostModel):
                 self._ops.attention_query(
                     "generation", batch_size=request_count, step=1, backend=self._backend
                 )
+            )
+        return seconds
+
+    def _gdn_seconds(self, workload: RolloutWorkload, request_count: int) -> float:
+        """Return one gated-delta-net layer's cost, adding both phases for a mixed step.
+
+        Mirrors `_attention_seconds`, but each phase takes a different axis because the
+        kernels do: the chunked prefill is varlen and priced on the packed token TOTAL rather
+        than a per-request length, and the recurrent decode has no history-depth axis at all,
+        since the state is a fixed size whatever the KV depth.
+        """
+        seconds = 0.0
+        if workload.sum_l2 > 0:
+            # The varlen kernel sees one packed row, so the whole token count is the axis --
+            # unlike softmax prefill, which is priced per request at the mean prompt length.
+            seconds += self._database.query_gdn(
+                self._ops.gdn_query(
+                    "context",
+                    total_tokens=max(int(round(workload.n_tokens)), 1),
+                    backend=self._backend,
+                )
+            )
+        if workload.ctxsum > 0:
+            seconds += self._database.query_gdn(
+                self._ops.gdn_query("decode", batch_size=request_count, backend=self._backend)
+            )
+        if seconds == 0.0:
+            # A step with neither prompt nor context tokens still runs one call per layer.
+            seconds = self._database.query_gdn(
+                self._ops.gdn_query("decode", batch_size=request_count, backend=self._backend)
             )
         return seconds
 

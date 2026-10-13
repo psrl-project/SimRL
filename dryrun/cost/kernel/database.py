@@ -253,6 +253,79 @@ class TrainingAttentionQuery:
 
 
 @dataclass(frozen=True)
+class GdnQuery:
+    """One gated-delta-net (linear attention) call to price, in one phase.
+
+    Separate from `AttentionQuery` because it is a different kernel with a different cost
+    function, not a slice of the same surface: GDN carries a fixed-size recurrent state
+    instead of a growing KV cache, so its prefill is LINEAR in tokens where softmax attention
+    is quadratic. On a 32k prompt the two rooflines differ by about 128x.
+
+    Each phase has one axis, and the missing ones are structural:
+
+    - `context` takes `total_tokens` only. The kernel is varlen, so a packed batch is one row
+      behind `cu_seqlens` and there is no batch dimension.
+    - `decode` takes `batch_size` only. There is NO history depth: the state is a fixed
+      `num_value_heads x head_dim x head_dim` per request, so a step costs the same at KV
+      depth 128 as at 32768.
+
+    `phase` selects the op rather than being a slice column, for the same reason it does in
+    `AttentionQuery`: the two phases have different rooflines and different axes, so one
+    interpolation surface cannot describe both.
+    """
+
+    phase: str
+    num_key_heads: int
+    num_value_heads: int
+    head_dim: int
+    total_tokens: int = 1
+    batch_size: int = 1
+    attn_dtype: str = "bfloat16"
+    chunk_size: int = 64
+    backend: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.phase not in ("context", "decode"):
+            raise KernelCoverageError(
+                f"GDN phase must be 'context' or 'decode', got {self.phase!r}."
+            )
+        for name in ("num_key_heads", "num_value_heads", "head_dim", "chunk_size"):
+            if getattr(self, name) <= 0:
+                raise KernelCoverageError(
+                    f"GDN {name} must be positive, got {getattr(self, name)!r}."
+                )
+        axis = "total_tokens" if self.phase == "context" else "batch_size"
+        if getattr(self, axis) <= 0:
+            raise KernelCoverageError(
+                f"GDN {axis} must be positive for phase {self.phase!r}, got "
+                f"{getattr(self, axis)!r}."
+            )
+
+    @property
+    def op_name(self) -> str:
+        """Return the parquet op name this query reads."""
+        return f"gdn_{self.phase}"
+
+    @property
+    def slice_key(self) -> tuple[Any, ...]:
+        """Return the categorical key in the GDN slice order."""
+        return (
+            self.num_key_heads,
+            self.num_value_heads,
+            self.head_dim,
+            canonical_dtype(self.attn_dtype),
+            self.chunk_size,
+        )
+
+    @property
+    def coords(self) -> tuple[float, ...]:
+        """Return interpolation coordinates in this phase's axis order."""
+        if self.phase == "context":
+            return (float(self.total_tokens),)
+        return (float(self.batch_size),)
+
+
+@dataclass(frozen=True)
 class OptimizerQuery:
     """One fused optimizer step to price, over one rank's parameter shard.
 
@@ -484,6 +557,21 @@ class KernelDatabase:
 
         Args:
             query (AttentionQuery): Per-rank shape.
+
+        Returns:
+            float: `SOL(query) / interpolated utility`, in seconds.
+
+        Raises:
+            KernelCoverageError: If no table or slice covers the query.
+        """
+        return self._price(query)
+
+    def query_gdn(self, query: GdnQuery) -> float:
+        """
+        Return the predicted latency in seconds of one gated-delta-net call.
+
+        Args:
+            query (GdnQuery): Per-rank shape and phase.
 
         Returns:
             float: `SOL(query) / interpolated utility`, in seconds.

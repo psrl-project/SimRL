@@ -57,9 +57,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...profiler.hf import model_descriptor_from_yaml
-from ...profiler.kernels.attention import rank_head_counts
-from ...profiler.kernels.config import model_head_dim, model_intermediate_size
-from ...profiler.kernels.shapes import logits_gemm_shape, transformer_gemm_shapes
+from ...profiler.kernel.grid.attention import rank_head_counts
+from ...profiler.kernel.grid.gemm import logits_gemm_shape, transformer_gemm_shapes
+from ...profiler.kernel.utils.model_dims import model_head_dim, model_intermediate_size
 from ...profiler.schema import ModelDescriptor, ProfileValidationError
 from ..kernel.database import (
     CommQuery,

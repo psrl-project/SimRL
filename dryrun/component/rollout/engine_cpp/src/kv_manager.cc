@@ -85,6 +85,19 @@ HeldBlocksRestore KvCacheManager::capture_held(int rid) const {
                            std::move(old_blocks), old_n_cached};
 }
 
+HeldBlocksTruncate KvCacheManager::capture_held_length(int rid) const {
+  auto it = held_.find(rid);
+  bool existed = (it != held_.end());
+  size_t old_size = existed ? it->second.size() : 0;
+  std::optional<int> old_n_cached;
+  auto cit = n_cached_.find(rid);
+  if (cit != n_cached_.end()) {
+    old_n_cached = cit->second;
+  }
+  return HeldBlocksTruncate{const_cast<KvCacheManager*>(this), rid, existed,
+                            old_size, old_n_cached};
+}
+
 // --- Template implementations ---
 
 template <typename Recorder>
@@ -102,7 +115,7 @@ KvCacheManager::computed_blocks_impl(const Request& req, Recorder& rec) {
 
   // Capture diagnostic counters once per event for rollback.
   rec.record_once(
-      reinterpret_cast<uintptr_t>(&queries),
+      JournalKey::of(this, JournalKey::kKvCounters),
       [this]() -> UndoEntry {
         return FieldSnapshot3{this, FieldSnapshot3::Kind::kCounters,
                               0.0, queries, false, hits};
@@ -132,10 +145,10 @@ std::optional<std::vector<KvBlock*>> KvCacheManager::allocate_impl(
     return std::nullopt;
   }
 
-  // Capture held-blocks state once per (manager, rid) per event.
+  // The held list is only appended to below, so its length is enough to undo it.
   rec.record_once(
-      held_key(this, req.rid),
-      [this, rid = req.rid]() -> UndoEntry { return capture_held(rid); });
+      JournalKey::of(this, JournalKey::kHeldBlocks, static_cast<uint32_t>(req.rid)),
+      [this, rid = req.rid]() -> UndoEntry { return capture_held_length(rid); });
 
   pool_.touch(hit_blocks, rec);
   auto& held = held_[req.rid];
@@ -171,10 +184,10 @@ std::optional<std::vector<KvBlock*>> KvCacheManager::allocate_impl(
 
 template <typename Recorder>
 void KvCacheManager::free_impl(const Request& req, Recorder& rec) {
-  // Capture held-blocks state once per (manager, rid) per event.
-  rec.record_once(
-      held_key(this, req.rid),
-      [this, rid = req.rid]() -> UndoEntry { return capture_held(rid); });
+  // NOTE(claude): Journal the whole list on every free, not once per event. An
+  // earlier allocation's entry holds only a length, so rollback (newest first)
+  // needs this entry to restore the list before that one cuts it back.
+  rec.record_lazy([this, rid = req.rid]() -> UndoEntry { return capture_held(rid); });
 
   auto it = held_.find(req.rid);
   if (it != held_.end()) {

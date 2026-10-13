@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -28,13 +29,16 @@ from dryrun.config.schema import (
     WorkloadConfig,
 )
 from dryrun.cost.rollout import DistServe, UnifiedRoofline
+from dryrun.profiler.schema import ModelDescriptor
 from dryrun.cost.training import (
     AnalyticalTrainingLatency,
     FixedTrainingCost,
     FixedTrainingLatency,
+    FixedTrainingMemory,
     LinearTrainingCost,
     LinearTrainingLatency,
     LinearTrainingMemory,
+    TrainingCostModel,
     TrainingParallelism,
     TrainingWorkload,
 )
@@ -57,9 +61,11 @@ class TestStructuredConfigs:
         assert cfg.job.max_output_length is None
         assert cfg.rollout.n_instances == 1
         assert cfg.rollout.partial_rollout is True
-        assert cfg.rollout.admission_control.reject_if_kv_full is True
+        assert cfg.rollout.admission_control.reject_if_kv_full is False
         assert cfg.rollout.admission_control.reject_if_waiting is False
         assert cfg.rollout.admission_control.reject_if_running_full is False
+        assert cfg.rollout.router.reject_on_waiting is False
+        assert cfg.rollout.router.reject_preempted_on_waiting is False
         assert cfg.rollout_cost.name == "roofline"
         assert cfg.training_cost.name == "fixed"
         assert cfg.policy.name == "psrl"
@@ -286,26 +292,57 @@ class TestFactoryFunctions:
 
     def test_build_training_forward_recompute_cost(self):
         """The log-prob pass priced off the same training model as the optimizer step."""
-        training = FixedTrainingCost(latency_s=100.0, peak_memory_bytes=0)
-        cfg = OmegaConf.create(
-            {
-                "name": "training_forward",
-                "hidden_size": 4096,
-                "vocab_size": 151936,
-                "parameter_count": 8_190_735_360,
-            }
+        training = TrainingCostModel(
+            FixedTrainingLatency(100.0),
+            FixedTrainingMemory(0),
+            model=ModelDescriptor(
+                name="qwen3-8b",
+                parameter_count=8_190_735_360,
+                hidden_size=4096,
+                extra={"vocab_size": 151936},
+            ),
         )
-        model = build_recompute_cost(cfg, training)
+        model = build_recompute_cost(OmegaConf.create({"name": "training_forward"}), training)
         assert isinstance(model, TrainingForwardRecomputeCost)
+        # Read off the training model's own descriptor, not configured.
+        assert model.hidden_size == 4096
+        assert model.vocab_size == 151936
+        assert model.parameter_count == 8_190_735_360
         # Full activation recompute makes a step 8 FLOPs per param per token and
         # the forward pass 2, so a quarter, plus the unembedding correction.
         assert model.forward_fraction("full") == pytest.approx(0.269, abs=0.002)
         # Without checkpointing a step is only 6, so the forward share is larger.
         assert model.forward_fraction("none") > model.forward_fraction("full")
 
-    def test_training_forward_recompute_needs_the_geometry(self):
+    def test_training_forward_recompute_reads_the_checkpoint_without_an_artifact(self, tmp_path):
+        """A training model with no fit behind it falls back to the run's checkpoint."""
+        (tmp_path / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["Qwen2ForCausalLM"],
+                    "model_type": "qwen2",
+                    "hidden_size": 5120,
+                    "num_hidden_layers": 48,
+                    "num_attention_heads": 40,
+                    "num_key_value_heads": 8,
+                    "vocab_size": 152064,
+                    "num_parameters": 14_770_033_664,
+                }
+            ),
+            encoding="utf-8",
+        )
+        model = build_recompute_cost(
+            OmegaConf.create({"name": "training_forward"}),
+            FixedTrainingCost(latency_s=1.0, peak_memory_bytes=0),
+            model_path=str(tmp_path),
+        )
+        assert model.hidden_size == 5120
+        assert model.vocab_size == 152064
+
+    def test_training_forward_recompute_needs_a_geometry_source(self):
+        """Neither an artifact nor a checkpoint: refuse rather than default."""
         cfg = OmegaConf.create({"name": "training_forward"})
-        with pytest.raises(ValueError, match="hidden_size"):
+        with pytest.raises(ValueError, match="carries no architecture descriptor"):
             build_recompute_cost(cfg, FixedTrainingCost(latency_s=1.0, peak_memory_bytes=0))
 
     def test_unknown_recompute_model_raises(self):
@@ -457,7 +494,12 @@ class TestDynamicParallelTableRoots:
             {
                 "dynamic_parallel": self._hetero(tp_candidates=[1, 4]),
                 "rollout_cost": {"name": "roofline", "parallelism": {"tp": 1}},
-                "rollout": {"router": {"strategy": "version_aware_tp"}},
+                "rollout": {
+                    "router": {
+                        "strategy": "version_capped_tp",
+                        "max_concurrent_seqs_per_instance": 40,
+                    }
+                },
             }
         )
         with pytest.raises(ValueError, match="unprofiled TP degrees"):

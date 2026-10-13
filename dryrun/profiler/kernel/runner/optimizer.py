@@ -12,7 +12,8 @@ never runs, which is the error `docs/profiling/tensor-parallel.md` records for
 `exp_avg_sq` and the fp32 master copy lazily, inside the first step, so that call includes
 three allocations of 4 bytes per parameter. At 1.365B parameters that is 16 GiB of
 allocation attributed to a kernel that moves 38 GB: the measured step would be roughly
-double. One untimed `step()` precedes the warmup for that reason.
+double. One untimed `step()` precedes the warmup for that reason, and it is why this family
+cannot share a timing loop with the others.
 
 **One flat tensor, not many.** Megatron's `param_and_grad_buffer` coalesces parameters into
 contiguous buckets, so the real kernel sees a handful of large tensors rather than hundreds
@@ -33,13 +34,11 @@ raises with its own size rather than entering the table.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 
-from ..schema import ModelDescriptor, ProfileValidationError
-from ._timing import time_cuda_call, torch_dtype
-from .config import KernelProfileConfig
-from .measurements import PerfTableWriter
+from ...schema import ProfileValidationError
+from ..grid.optimizer import optimizer_param_counts
+from .base import KernelRunner, WriterFactory
 
 _LEARNING_RATE = 1.0e-4
 # Adam keeps these three tensors per parameter. All three must exist and be the parameter's
@@ -77,41 +76,78 @@ def _require_allocated_state(optimizer: object, parameter: object, param_count: 
             )
 
 
-def profile_optimizer(
-    model: ModelDescriptor,
-    config: KernelProfileConfig,
-    *,
-    writer_factory: Callable[[str, str, str], PerfTableWriter],
-) -> tuple[Path, ...]:
-    """
-    Time the fused Adam step across the configured parameter-count grid.
+class OptimizerRunner(KernelRunner):
+    """Times `FusedAdam.step()` across the parameter-count grid, state allocation verified."""
 
-    Args:
-        model (ModelDescriptor): Unused for shapes; the op has no architecture dependence
-            beyond the parameter count, which the sweep declares. Accepted to match the
-            `KernelOp.measure` contract.
-        config (KernelProfileConfig): Sweep grid, dtype, and iteration counts.
-        writer_factory (Callable[[str, str, str], PerfTableWriter]): Builds a writer from
-            `(framework, version, kernel_source)`.
+    def run(self, *, writer_factory: WriterFactory) -> tuple[Path, ...]:
+        """
+        Time the fused Adam step across the configured parameter-count grid.
 
-    Returns:
-        tuple[Path, ...]: The single written parquet path.
-    """
-    import torch
-    import transformer_engine
-    from transformer_engine.pytorch.optimizers import FusedAdam
+        Args:
+            writer_factory (WriterFactory): Builds a writer from
+                `(framework, version, kernel_source)`.
 
-    sweep = config.sweep("optimizer_step")
-    measurement = config.measurement
-    param_dtype = torch_dtype(measurement.dtype)
+        Returns:
+            tuple[Path, ...]: The single written parquet path.
 
-    rows: list[dict[str, object]] = []
-    for param_count in sweep.param_counts:
+        Raises:
+            ProfileValidationError: If a shard's optimizer state was not fully allocated,
+                which means the timed step would measure an empty update.
+        """
+        import torch
+        import transformer_engine
+        from transformer_engine.pytorch.optimizers import FusedAdam
+
+        from ..utils.timing import torch_dtype
+
+        param_dtype = torch_dtype(self.config.measurement.dtype)
+        rows: list[dict[str, object]] = []
+        for param_count in optimizer_param_counts(self.config.sweep("optimizer_step")):
+            latency_s = self._time_shard(param_count, param_dtype=param_dtype, adam=FusedAdam)
+            torch.cuda.empty_cache()
+            rows.append(
+                self.row(
+                    "optimizer_step",
+                    optimizer="adam",
+                    state_kind="master_fp32",
+                    param_count=int(param_count),
+                    latency_s=latency_s,
+                )
+            )
+
+        writer = writer_factory(
+            "megatron",
+            str(transformer_engine.__version__),
+            "transformer_engine.pytorch.optimizers.FusedAdam",
+        )
+        return (writer.write("optimizer_step", rows),)
+
+    def _time_shard(self, param_count: int, *, param_dtype: object, adam: object) -> float:
+        """
+        Allocate one shard, prime its optimizer state, verify it, and time a step.
+
+        The parameter and optimizer are function-locals so a shard worth tens of GiB is
+        released when this returns, before the next and larger point allocates.
+
+        Args:
+            param_count (int): Parameters in this shard.
+            param_dtype (object): The `torch.dtype` parameters and gradients are held in.
+            adam (object): The `FusedAdam` class, passed in so the TE import stays in `run`.
+
+        Returns:
+            float: Mean per-step latency in seconds.
+
+        Raises:
+            ProfileValidationError: If the state allocation did not produce three
+                full-length tensors.
+        """
+        import torch
+
         parameter = torch.nn.Parameter(
             torch.randn(param_count, dtype=param_dtype, device="cuda")
         )
         parameter.grad = torch.randn(param_count, dtype=param_dtype, device="cuda")
-        optimizer = FusedAdam(
+        optimizer = adam(  # type: ignore[operator]
             [parameter],
             lr=_LEARNING_RATE,
             master_weights=True,
@@ -124,25 +160,4 @@ def profile_optimizer(
         optimizer.step()
         torch.cuda.synchronize()
         _require_allocated_state(optimizer, parameter, param_count)
-
-        rows.append(
-            {
-                "optimizer": "adam",
-                "state_kind": "master_fp32",
-                "param_count": int(param_count),
-                "latency_s": time_cuda_call(
-                    lambda o=optimizer: o.step(),
-                    warmup_iterations=measurement.warmup_iterations,
-                    active_iterations=measurement.active_iterations,
-                ),
-            }
-        )
-        del parameter, optimizer
-        torch.cuda.empty_cache()
-
-    writer = writer_factory(
-        "megatron",
-        str(transformer_engine.__version__),
-        "transformer_engine.pytorch.optimizers.FusedAdam",
-    )
-    return (writer.write("optimizer_step", rows),)
+        return self.time(lambda o=optimizer: o.step())

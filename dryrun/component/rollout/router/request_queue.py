@@ -1,13 +1,12 @@
-"""The router's dwell queue: requests admitted but not yet placed on an instance.
+"""The router's dwell queue: requests staged but not yet placed on an instance.
 
 A request waits here when no instance can take it, which is the state the real
 gateway spends its backlog in. The engine's own `waiting` list keeps its
 original meaning, work an instance has accepted and not yet started.
 
-Ordering mirrors SMG's `MultiPriorityRequestQueue`: a min-heap on
-`(version_tag, sort_key, seq)`, where `seq` is a monotonic counter so equal
-keys pop in arrival order. Lower weight versions go first, because a request
-generated under an older version is closer to expiring.
+Each weight version owns one heap ordered by `(sort_key, seq)`. Keeping the
+versions separate lets a strategy decide whether a blocked version prevents
+dispatch from trying the next one.
 """
 
 from __future__ import annotations
@@ -29,23 +28,26 @@ class SortKey(Enum):
 class RouterQueue:
     """A priority-ordered queue of requests awaiting placement.
 
+    Requests are first partitioned by `v_traj`, oldest version first; `sort_key`
+    only breaks ties inside one version layer.
+
     Usage:
-        queue = RouterQueue(SortKey.SHORT_LENGTH)
+        queue = RouterQueue(SortKey.SMALL_ID)
         queue.push(req, t=now)
         for req in queue.drain():       # highest priority first
             ...
     """
 
-    def __init__(self, sort_key: SortKey = SortKey.SHORT_LENGTH):
+    def __init__(self, sort_key: SortKey = SortKey.SMALL_ID):
         self.sort_key = sort_key
-        self._heap: list[tuple[int, int, int, Request]] = []
+        self._layers: dict[int, list[tuple[int, int, Request]]] = {}
         self._seq = 0
 
     def __len__(self) -> int:
-        return len(self._heap)
+        return sum(len(layer) for layer in self._layers.values())
 
     def __bool__(self) -> bool:
-        return bool(self._heap)
+        return bool(self._layers)
 
     def _tie_break(self, req: Request) -> int:
         """The within-version ordering key.
@@ -66,22 +68,88 @@ class RouterQueue:
         """Enqueue `req`, recording when it began waiting."""
         req.router_enqueue_time = t
         self._seq += 1
+        layer = self._layers.setdefault(req.v_traj, [])
         heapq.heappush(
-            self._heap,
-            (req.v_traj, self._tie_break(req), self._seq, req),
+            layer,
+            (self._tie_break(req), self._seq, req),
         )
 
     def peek(self) -> Request | None:
-        return self._heap[0][3] if self._heap else None
+        version = self.oldest_version()
+        return self.peek_version(version) if version is not None else None
+
+    def peek_version(self, version: int) -> Request | None:
+        """Return the first request in `version` without removing it."""
+        layer = self._layers.get(version)
+        return layer[0][2] if layer else None
+
+    def candidates_version(self, version: int, width: int) -> list[Request]:
+        """Return up to `width` requests from `version`, best heap order first.
+
+        The heap key is fixed when a request is pushed, so a caller ranking on
+        anything that moves with the clock cannot express its order here. This
+        offers a window instead and lets the caller choose inside it, which keeps
+        the heap's meaning intact while bounding the work per placement.
+        """
+        layer = self._layers.get(version)
+        if not layer:
+            return []
+        if width <= 1:
+            return [layer[0][2]]
+        return [entry[2] for entry in heapq.nsmallest(width, layer)]
+
+    def remove_one(self, version: int, req: Request) -> None:
+        """Remove `req` from `version`, wherever it sits in the heap.
+
+        Raises:
+            KeyError: If that version does not hold the request, which would
+                mean a caller is placing work the queue never had.
+        """
+        layer = self._layers.get(version)
+        if not layer:
+            raise KeyError(f"Router queue version {version!r} is empty.")
+        kept = [entry for entry in layer if entry[2] is not req]
+        if len(kept) == len(layer):
+            raise KeyError(f"Request {req.rid} is not queued at version {version!r}.")
+        if kept:
+            heapq.heapify(kept)
+            self._layers[version] = kept
+        else:
+            del self._layers[version]
+
+    def versions(self) -> tuple[int, ...]:
+        """Return nonempty versions from oldest to newest."""
+        return tuple(sorted(self._layers))
+
+    def depths(self) -> dict[int, int]:
+        """Return the queue depth of every nonempty version."""
+        return {version: len(self._layers[version]) for version in self.versions()}
+
+    def oldest_version(self) -> int | None:
+        """Return the oldest nonempty version."""
+        return min(self._layers, default=None)
 
     def pop(self) -> Request:
         """Remove and return the highest-priority request."""
-        return heapq.heappop(self._heap)[3]
+        version = self.oldest_version()
+        if version is None:
+            raise IndexError("Cannot pop from an empty router queue.")
+        return self.pop_version(version)
+
+    def pop_version(self, version: int) -> Request:
+        """Remove and return the first request in `version`."""
+        layer = self._layers.get(version)
+        if not layer:
+            raise IndexError(f"Cannot pop from empty router queue version {version!r}.")
+        req = heapq.heappop(layer)[2]
+        if not layer:
+            del self._layers[version]
+        return req
 
     def drain(self) -> list[Request]:
         """Return every queued request in priority order, emptying the queue."""
         out = []
-        while self._heap:
+        while self:
             out.append(self.pop())
         return out
 
@@ -94,9 +162,25 @@ class RouterQueue:
         and a lazy tombstone would leak into `__len__`, which telemetry reports.
         """
         targets = {id(req) for req in reqs}
-        kept = [entry for entry in self._heap if id(entry[3]) not in targets]
-        removed = [entry[3] for entry in self._heap if id(entry[3]) in targets]
-        if removed:
-            self._heap = kept
-            heapq.heapify(self._heap)
+        removed: list[Request] = []
+        for version, layer in list(self._layers.items()):
+            kept = [entry for entry in layer if id(entry[2]) not in targets]
+            removed.extend(entry[2] for entry in layer if id(entry[2]) in targets)
+            if kept:
+                heapq.heapify(kept)
+                self._layers[version] = kept
+            else:
+                del self._layers[version]
         return removed
+
+    def rekey(self, reqs: list[Request]) -> None:
+        """Re-layer queued `reqs` after their trajectory version changes.
+
+        Existing enqueue timestamps are preserved because rebasing a staged
+        request is not a new arrival. Reinserted requests receive fresh heap
+        sequence numbers, while the configured priority remains authoritative.
+        """
+        enqueue_times = {id(req): req.router_enqueue_time for req in reqs}
+        queued = self.remove(reqs)
+        for req in queued:
+            self.push(req, enqueue_times[id(req)])

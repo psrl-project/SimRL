@@ -1,0 +1,107 @@
+# Qwen3.5-35B-A3B rollout profile at tp=1.
+#
+# WHY THIS MODEL, AND WHAT IS DIFFERENT ABOUT IT
+#   Qwen3-8B is dense, 32 heads, head_dim 128, and on H20 its attention is already
+#   bandwidth-bound enough that sharding it across ranks buys little -- which is why
+#   TP concentration measured as a null result there. This checkpoint changes three
+#   things at once that bear on that question:
+#     * MoE: 256 experts, 8 active per token (`moe_intermediate_size` 512). Only
+#       ~3B of the 35B parameters are active per token, so the per-token FLOP count
+#       is small relative to the weight footprint that TP has to shard.
+#     * Hybrid attention: 40 layers, of which only 10 are `full_attention`
+#       (`full_attention_interval: 4`) and 30 are `linear_attention`. Only the 10
+#       full-attention layers grow their cost with context, so the context-linear
+#       term of the cost model is carried by a quarter of the stack.
+#     * head_dim 256 with num_key_value_heads 2. The KV cache per token is
+#       2 * 2 * 256 * 2 bytes * 10 full-attention layers, which is far smaller than
+#       Qwen3-8B's, so KV capacity binds much later and the in-flight count can run
+#       higher before admission throttles.
+#
+#   tp=1 is the reference arm: `qwen35_35b_a3b_tp{2,4}.yaml` carry a byte-identical
+#   `phases:` grid so the only difference between the sweeps is tensor parallelism.
+#   Do not tune the grid in one file without re-running the others.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy10/share_303541817/lhy/models/Qwen3.5-35B-A3B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 2
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen35_35b_a3b/vllm_tp2
+experiment_name: qwen35-35b-a3b
+num_runs: 1
+# The checkpoint is 14 safetensors shards on CephFS and the MoE weights are large,
+# so first load is slow. 8 GiB of experts per rank at tp=1 took well past the 900 s
+# that sufficed for Qwen3-8B.
+server_ready_timeout: 2400
+
+run:
+  max_parallel: auto
+  # One at a time while loading: 8 concurrent readers of a 70 GiB checkpoint from
+  # CephFS saturate the mount and trip server_ready_timeout rather than going faster.
+  max_concurrent_startups: 2
+
+serve:
+  args:
+    dtype: bfloat16
+    # 32768 matches the Qwen3-8B sweeps so the context axis is comparable. The
+    # checkpoint declares 262144, which is far beyond anything the rollout traces
+    # reach and would only inflate the KV reservation.
+    max-model-len: 32768
+    max-num-batched-tokens: 65536
+    gpu-memory-utilization: 0.9
+    # The MoE path needs the expert-parallel plumbing even at tp=1, where it
+    # degenerates to all experts on one rank.
+    trust-remote-code: true
+  parameters:
+    - tensor-parallel-size: 2
+      pipeline-parallel-size: 1
+      max-num-seqs: 1024
+
+bench:
+  args:
+    request-rate: "inf"
+    random-range-ratio: 0.0
+    seed: 42
+
+# Identical grid to tp2/tp4. Prefill varies prompt length and concurrency because it
+# is one shot per request; decode walks context across steps so one long output per
+# (input, concurrency) suffices.
+phases:
+  prefill:
+    parameters:
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 256,  random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 512,  random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 1024, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 2048, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 4096, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 8192, random-output-len: 1, max-concurrency: 64, num-prompts: 64}
+  decode:
+    parameters:
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 1,  num-prompts: 1}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 16, num-prompts: 16}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 32, num-prompts: 32}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 48, num-prompts: 48}
+      - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 64, num-prompts: 64}

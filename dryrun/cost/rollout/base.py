@@ -17,11 +17,22 @@ class RolloutWorkload:
     sum_l2: float
     ctxsum: float
     request_count: int
+    prefill_ctx: float = 0.0
+    """Sum of the attention extents of the prefilling requests.
+
+    A chunk attends over the keys already written for its request, so its extent
+    is `prefilled + chunk` rather than `chunk`. With `sum_l2` holding the squares
+    of the same extents, the pair fixes the prefilling set's shape independently
+    of how many requests are decoding alongside it. Zero means the caller did not
+    separate the two, and `n_tokens` stands in.
+    """
 
     def __post_init__(self) -> None:
         if self.phase not in {"prefill", "decode", "mixed"}:
             raise ValueError(f"Unsupported rollout phase {self.phase!r}.")
         if self.n_tokens < 0 or self.sum_l2 < 0 or self.ctxsum < 0 or self.request_count < 0:
+            raise ValueError("Rollout workload values must be non-negative.")
+        if self.prefill_ctx < 0:
             raise ValueError("Rollout workload values must be non-negative.")
 
     @classmethod
@@ -31,6 +42,7 @@ class RolloutWorkload:
         sum_l2,
         ctxsum,
         request_count: int,
+        prefill_ctx: float = 0.0,
     ) -> RolloutWorkload:
         """Infer the phase for the simulator's compact step interface."""
         if sum_l2 > 0 and ctxsum > 0:
@@ -45,6 +57,7 @@ class RolloutWorkload:
             sum_l2=sum_l2,
             ctxsum=ctxsum,
             request_count=request_count,
+            prefill_ctx=prefill_ctx,
         )
 
 
@@ -55,9 +68,11 @@ class RolloutCostModel(ABC):
     def predict(self, workload: RolloutWorkload):
         """Predict strictly positive wall-clock latency in seconds."""
 
-    def step_time(self, n_tokens, t2, ctxsum, n_reqs=0):
+    def step_time(self, n_tokens, t2, ctxsum, n_reqs=0, prefill_ctx=0.0):
         """Adapt the simulator's compact step arguments to `RolloutWorkload`."""
-        return self.predict(RolloutWorkload.from_step(n_tokens, t2, ctxsum, n_reqs))
+        return self.predict(
+            RolloutWorkload.from_step(n_tokens, t2, ctxsum, n_reqs, prefill_ctx)
+        )
 
     @abstractmethod
     def decode_coeffs(self, n_d: int, ctxsum) -> tuple:

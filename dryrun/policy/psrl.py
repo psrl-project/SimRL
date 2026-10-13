@@ -12,36 +12,73 @@ and ensure the psrl source root is on sys.path so the lightweight import succeed
 
 from __future__ import annotations
 
+import importlib.util
 import sys
+from pathlib import Path
 
 from ..component.rollout.engine import Request
 from .base import CompleteAction, SimState, StalenessPolicy
 
 _PSRL_ROOT = "/apdcephfs_zwfy10_303541817/share_303541817/lhy/psrl"
+_CONTROLLER_NAME = "dryrun.policy._psrl_staleness_controller"
+# Optional imports the controller replaces with lightweight fallbacks when they are absent.
+_CONTROLLER_OPTIONAL = ("psrl.utils.logger", "psrl.workers.gen.utils")
+
+
+def _find_controller() -> Path | None:
+    """Locate `staleness_controller.py` without importing any psrl package."""
+    for root in (*sys.path, _PSRL_ROOT):
+        candidate = Path(root or ".") / "psrl" / "workers" / "ps" / "staleness_controller.py"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _load_controller():
+    """
+    Load PSRL's staleness controller as a standalone module.
+
+    An ordinary import runs package `__init__` chains that pull in Ray and torch, which the
+    controller never uses. It already falls back to lightweight substitutes when its two
+    optional imports are missing, so those are marked absent in `sys.modules` for the
+    duration of the load and restored afterwards. The file executed is PSRL's own, so the
+    inventory logic is unchanged.
+
+    Raises:
+        ImportError: If `staleness_controller.py` cannot be found.
+    """
+    if _CONTROLLER_NAME in sys.modules:
+        return sys.modules[_CONTROLLER_NAME]
+    path = _find_controller()
+    if path is None:
+        raise ImportError("psrl/workers/ps/staleness_controller.py was not found.")
+    spec = importlib.util.spec_from_file_location(_CONTROLLER_NAME, path)
+    module = importlib.util.module_from_spec(spec)
+    blocked = [name for name in _CONTROLLER_OPTIONAL if name not in sys.modules]
+    for name in blocked:
+        sys.modules[name] = None  # type: ignore[assignment]
+    # `dataclass` resolves annotations through `sys.modules[cls.__module__]`.
+    sys.modules[_CONTROLLER_NAME] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(_CONTROLLER_NAME, None)
+        raise
+    finally:
+        for name in blocked:
+            sys.modules.pop(name, None)
+    return module
+
 
 try:
-    from psrl.workers.ps.staleness_controller import (
-        BufferStatus,
-        EntryCategory,
-        EntryInfo,
-        StalenessInventory,
-    )
-
+    _controller = _load_controller()
+    BufferStatus = _controller.BufferStatus
+    EntryCategory = _controller.EntryCategory
+    EntryInfo = _controller.EntryInfo
+    StalenessInventory = _controller.StalenessInventory
     _HAS_PSRL = True
 except ImportError:
-    if _PSRL_ROOT not in sys.path:
-        sys.path.insert(0, _PSRL_ROOT)
-    try:
-        from psrl.workers.ps.staleness_controller import (  # type: ignore[no-redef]
-            BufferStatus,
-            EntryCategory,
-            EntryInfo,
-            StalenessInventory,
-        )
-
-        _HAS_PSRL = True
-    except ImportError:
-        _HAS_PSRL = False
+    _HAS_PSRL = False
 
 
 class PSRLPolicy(StalenessPolicy):
@@ -127,9 +164,10 @@ class PSRLPolicy(StalenessPolicy):
     def on_route(self, req: Request, instance_id: int, st: SimState) -> None:
         """Tell the inventory where this request actually landed.
 
-        `on_admit` runs before routing now, so the id it reserved with is a
-        placeholder. The real gateway does the same correction when it commits
-        a selection, and the inventory provides this method for it.
+        The first response already has its selected instance when `on_admit`
+        reserves the whole group. Siblings use a placeholder until their own
+        placement, and reroutes update the same reservation rather than making
+        another one.
 
         The entry may be gone by the time a re-route happens (the group was
         dropped, or consumed), so a missing prompt id is expected rather than

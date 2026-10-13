@@ -7,18 +7,20 @@ queue, and that capacity is released only at the events the router watches.
 
 from __future__ import annotations
 
-from dryrun.component.rollout.engine import EventKind
+from dryrun.component.rollout.engine import EngineEvent, EventKind, Request
 from dryrun.cost.rollout import UnifiedRoofline
 from dryrun.cost.training import (
     FixedTrainingLatency,
     FixedTrainingMemory,
     TrainingCostModel,
 )
+from dryrun.policy.areal import ArealPolicy
 from dryrun.policy.psrl import PSRLPolicy
 from dryrun.simulator.config import SimConfig
 from dryrun.simulator.simulator import Simulator
 from dryrun.workload.distributions import uniform
 from dryrun.workload.grouped import GroupedWorkload
+from dryrun.workload.trace import RequestGroup
 
 
 def _sim(cfg: SimConfig, lengths=None, policy=None) -> Simulator:
@@ -103,7 +105,184 @@ class TestNoStarvation:
         assert accounted + len(sim.inflight) == sim.n_admitted
 
 
+class TestPlacementTimeAdmission:
+    def test_staging_does_not_consume_policy_or_inflight_capacity(self):
+        """A staged group costs nothing until something places it.
+
+        The router cap, not the policy, is what holds the queue back here. A
+        zero `max_inflight` would be the wrong instrument: staging is gated by
+        `admit_quota`, so a policy that admits nothing correctly stages nothing,
+        and the queue this test is about would never form.
+        """
+        cfg = SimConfig(
+            batch_size=2,
+            max_staleness=1,
+            n_versions=1,
+            n_instances=1,
+            max_concurrent_seqs_per_instance=1,
+        )
+        policy = ArealPolicy()
+        sim = _sim(cfg, policy=policy)
+
+        assert sim._stage() == 4
+        # One response was placed; the cap strands the rest in the router. The
+        # default group_size is 1, so a placement commits exactly one response.
+        assert len(sim.router) == 3
+        assert sim.n_admitted == 1
+        assert len(sim.inflight) == 1
+        assert policy.running == 1
+        # The three queued responses hold quota but no instance.
+        assert sim.router.queue_depths == {0: 3}
+
+    def test_first_sibling_placement_commits_the_whole_group_once(self):
+        workload = GroupedWorkload.from_groups(
+            [RequestGroup(group_id=0, prompt_len=32, output_lens=(16, 16))]
+        )
+        cfg = SimConfig(
+            batch_size=1,
+            group_size=2,
+            max_staleness=0,
+            n_versions=1,
+            max_concurrent_seqs_per_instance=1,
+            workload=workload,
+        )
+        sim = _sim(cfg, policy=ArealPolicy(max_inflight=1))
+
+        sim._stage()
+        assert sim.n_admitted == 2
+        assert len(sim.inflight) == 2
+        assert len(sim.router) == 1
+        assert len(sim._admitted_group_ids) == 1
+        assert sim.policy.running == 1
+
+    def test_unadmitted_groups_rebase_when_rollout_weights_advance(self):
+        """A queued, uncommitted group adopts the new weights rather than aging.
+
+        As above, the router cap is what keeps the groups queued: staging now
+        follows `admit_quota`, so a policy admitting nothing would leave the
+        queue empty and there would be nothing to rebase.
+        """
+        cfg = SimConfig(
+            batch_size=2,
+            max_staleness=1,
+            n_versions=1,
+            n_instances=1,
+            max_concurrent_seqs_per_instance=1,
+        )
+        sim = _sim(cfg, policy=ArealPolicy())
+        sim._stage()
+        queued = [
+            req
+            for group_id, group in sim._staged_groups.items()
+            if group_id not in sim._admitted_group_ids
+            for req in group
+        ]
+        assert sim.router.queue_depths == {0: 3}
+        assert queued, "No uncommitted group was left to rebase."
+
+        sim._publish_weights()
+
+        assert sim.rollout_version == 1
+        assert all(req.v_traj == 1 for req in queued)
+        assert set(sim.router.queue_depths) == {1}
+
+
 class TestPreemptOverflowInAFullRun:
+    def test_global_waiting_gate_keeps_the_rest_in_the_router(self):
+        cfg = SimConfig(
+            batch_size=2,
+            max_staleness=1,
+            n_versions=1,
+            n_instances=2,
+            router_reject_on_waiting=True,
+        )
+        sim = _sim(cfg, uniform(100, 100, 200, seed=17))
+
+        staged = sim._stage()
+
+        assert staged > len(sim.instances)
+        assert [len(inst.waiting) for inst in sim.instances] == [1, 1]
+        assert len(sim.router) == staged - len(sim.instances)
+
+    def test_preempt_only_waiting_gate_keeps_initial_admission_permissive(self):
+        cfg = SimConfig(
+            batch_size=2,
+            max_staleness=1,
+            n_versions=1,
+            n_instances=2,
+            router_reject_preempted_on_waiting=True,
+        )
+        sim = _sim(cfg, uniform(100, 100, 200, seed=17))
+
+        staged = sim._stage()
+
+        assert sum(inst.n_active for inst in sim.instances) == staged
+        assert len(sim.router) == 0
+
+    def test_global_waiting_gate_collects_simultaneous_completions(self):
+        cfg = SimConfig(
+            batch_size=1,
+            max_staleness=1,
+            n_versions=1,
+            n_instances=2,
+            router_reject_on_waiting=True,
+        )
+        result = _sim(cfg, uniform(100, 10, 10, seed=17)).run()
+
+        assert not result.livelocked
+        assert result.versions_done == 1
+
+    def test_completion_with_preemption_loops_back_and_is_collected(self):
+        cfg = SimConfig(
+            batch_size=1,
+            max_staleness=1,
+            n_versions=1,
+            max_waiting_after_preempt=1,
+            router_reject_preempted_on_waiting=True,
+        )
+        policy = ArealPolicy()
+        sim = _sim(cfg, policy=policy)
+        inst = sim.instances[0]
+        already_waiting = Request(
+            rid=0, group_id=0, prompt_len=100, target_len=100, v_traj=0
+        )
+        victim = Request(
+            rid=1, group_id=1, prompt_len=100, target_len=100, v_traj=0
+        )
+        assert inst.add_request(already_waiting, t=0.0)
+        assert inst.add_request(victim, t=0.0)
+        victim.num_preemptions = 1
+
+        completed = Request(
+            rid=2, group_id=2, prompt_len=100, target_len=100, v_traj=0
+        )
+        completed.complete_time = 0.0
+        sim.inflight.append(completed)
+        sim._admitted_group_ids.add(completed.group_id)
+        policy.on_admit([completed], sim._state())
+        event = EngineEvent(
+            kind=EventKind.REQUEST_COMPLETE,
+            instance_id=0,
+            t=0.0,
+            completed=[completed],
+            preempted=[victim],
+        )
+        emitted = False
+
+        def emit_once(_version):
+            nonlocal emitted
+            if emitted:
+                return None
+            emitted = True
+            return event
+
+        inst.advance_one_event = emit_once
+        sim._run_engine(stop_on_batch=True)
+
+        assert sim.router.queue.peek() is victim
+        assert completed not in sim.inflight
+        assert completed in sim.ready
+
     def test_crossing_the_threshold_moves_work_across_instances(self):
         """The path the aligned baseline cannot exercise: it sets the threshold
         to 1024 while its instance queues peak at 218, so every one of its 383
@@ -117,6 +296,7 @@ class TestPreemptOverflowInAFullRun:
             kv_blocks=700,  # tight enough that preemption happens
             block_size=16,
             max_waiting_after_preempt=1,
+            router_reject_preempted_on_waiting=True,
         )
         sim = _sim(cfg, uniform(100, 400, 900, seed=17))
         result = sim.run()
@@ -158,8 +338,7 @@ class TestCapacityReleaseIsWatched:
 
         releasing = {
             EventKind.REQUEST_COMPLETE,
-            EventKind.KV_PREEMPT,
-            EventKind.DEADLOCK_PREEMPT,
+            EventKind.PREEMPT,
         }
         violations: list[tuple[str, int, int]] = []
         originals = {}

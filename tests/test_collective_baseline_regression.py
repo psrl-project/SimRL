@@ -54,10 +54,16 @@ _HOLDOUT_COMPUTE = {
     # The MRE is identical across both re-sweeps (4.6436%) because the utility fit is robust
     # to the grid densification; the point count rose because more shapes are now held out.
     ("gemm", "vllm"): (3.7249, 174),
-    ("context_attention", "vllm"): (6.6801, 59),
-    ("generation_attention", "vllm"): (4.5715, 72),
-    ("context_attention", "flashinfer"): (9.9274, 59),
-    ("generation_attention", "flashinfer"): (6.3715, 72),
+    # Attention was re-swept 2026-10-09 when `generation_attention` moved to CUDA graph
+    # replay. Both phases move: they share a floor fit, so re-fitting the decode floor from
+    # 22 us to 6 us perturbs the context surface too. The decode holdout rising (4.5715% to
+    # 9.5042%) is the expected direction -- the old table was flat across a 256x range of KV
+    # work, and a utility surface over a constant is trivially accurate. The end-to-end
+    # decode number below improves 2.4x, which is the quantity that matters.
+    ("context_attention", "vllm"): (6.5900, 59),
+    ("generation_attention", "vllm"): (9.5042, 72),
+    ("context_attention", "flashinfer"): (9.8276, 59),
+    ("generation_attention", "flashinfer"): (6.3574, 72),
     # Re-swept 2026-10-05 when the `tensor_plumbing` kind was added for the training path,
     # taking the point count from 52 to 65 and the MRE from 9.3544% to 6.7111%. The MRE
     # *improving* on a denser surface is the expected direction here: a copy is the cleanest
@@ -124,17 +130,26 @@ _SUPERSEDED_DEGREE_TREES = (4, 8)
 # A0 values: prefill 3.597, decode 9.510, mixed 3.643. The A1 re-sweep reproduced them to
 # +0.076, +0.282 and +0.099 pp, all inside the +-0.5pp tolerance. Re-pinned to the
 # post-sweep values so the gate compares against data that exists.
+#
+# 2026-10-09: decode 9.497 -> 4.031 when `generation_attention` moved to graph replay. The
+# comment below had identified the cause years' worth of sweeps ago -- a composed step was
+# summing per-call floors that CUDA graph replay removes in the real server -- and this is
+# that diagnosis finally applied to the measurement rather than worked around downstream.
 _VALIDATE_WHOLE_GRID = {
-    "prefill": (4.025, 29),
-    "decode": (9.497, 204),
-    "mixed": (4.178, 7),
+    "prefill": (4.017, 29),
+    "decode": (4.031, 204),
+    "mixed": (4.547, 7),
 }
 
 # The figure the documentation headlines, excluding the small-batch decode region whose
-# over-prediction is a known model error rather than a parallelism effect: a composed step
-# sums 253 per-call floors that CUDA graph replay removes in the real server.
-# A0 value 2.957; A1 gave 3.071; the B0 gemm re-sweep gives 3.439.
-_VALIDATE_DECODE_REQS_GE_5 = (3.211, 137)
+# over-prediction WAS a known model error: a composed step summed 253 per-call floors that
+# CUDA graph replay removes in the real server. Those floors are now gone from the table, so
+# the exclusion no longer buys anything -- the full grid scores 4.031% against this subset's
+# 4.272%, i.e. small batches are no longer the worse region. Kept as a tripwire: if a future
+# change reintroduces a dispatch floor into the decode table, this number will diverge from
+# the whole-grid one again.
+# A0 value 2.957; A1 gave 3.071; the B0 gemm re-sweep gave 3.439.
+_VALIDATE_DECODE_REQS_GE_5 = (4.272, 137)
 
 # Fitted floors. The attention and elementwise values are **unchanged** by the A1 re-sweep,
 # which is further evidence of neutrality: those tables were not re-measured, so their
@@ -156,8 +171,12 @@ _FLOORS = {
         "p2p": 12e-06,
     },
     ("elementwise", "vllm"): {"elementwise": 2e-06},
-    ("attention", "vllm"): {"context_attention": 45e-06, "generation_attention": 22e-06},
-    ("attention", "flashinfer"): {"context_attention": 16e-06, "generation_attention": 6e-06},
+    # Re-fitted 2026-10-09 against the graph-replayed decode table: `generation_attention`
+    # drops 22 us -> 6 us because the old floor was absorbing python dispatch the engine
+    # never pays inside its captured decode graph. `context_attention` moves too (45 -> 40,
+    # 16 -> 20) because the fit is shared across the family's two phases.
+    ("attention", "vllm"): {"context_attention": 40e-06, "generation_attention": 6e-06},
+    ("attention", "flashinfer"): {"context_attention": 20e-06, "generation_attention": 6e-06},
 }
 
 

@@ -11,6 +11,7 @@ the simulator or the store are required.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 
 import matplotlib
@@ -34,6 +35,15 @@ _TRAIN_PHASES = (
     ("train_time", "train", "steelblue"),
     ("sync_time", "sync", "midnightblue"),
 )
+
+# Applied only when a fleet is heterogeneous. Darker with higher degree, so the
+# figure reads as a shape without checking the text.
+_TP_COLOURS = {
+    1: "#1f77b4",
+    2: "#d62728",
+    4: "#7f2704",
+    8: "#3f007d",
+}
 
 
 class SimPlotter:
@@ -73,6 +83,15 @@ class SimPlotter:
         rows = list(self.store.iter("train"))
         rows.sort(key=lambda r: r["start"])
         return [(r["start"], r["end"]) for r in rows]
+
+    def _train_start_events(self) -> list[tuple[float, int]]:
+        """Return `(start_time, published_version)` for each training step."""
+        rows = list(self.store.iter("train"))
+        rows.sort(key=lambda r: r["start"])
+        return [
+            (float(row["start"]), int(row.get("version", index + 1)))
+            for index, row in enumerate(rows)
+        ]
 
     def _train_phase_spans(self) -> list[list[tuple[float, float, str, str]]]:
         """Split each training block into its `(start, end, label, colour)` phases.
@@ -130,6 +149,7 @@ class SimPlotter:
             return self._empty_placeholder(path, "No instance telemetry logged")
 
         intervals = self._train_intervals()
+        train_start_events = self._train_start_events()
         phase_blocks = self._train_phase_spans()
         gateway_rows = self._gateway_rows()
 
@@ -170,6 +190,36 @@ class SimPlotter:
         train_ax.set_yticks([])
         train_ax.set_ylabel("train")
 
+        # Shading shows duration; these markers identify the exact event that
+        # starts each training step. Labels live on one row only to keep the
+        # instance panels readable, while the vertical line crosses every row.
+        marker_axes = [*([gateway_ax] if gateway_ax is not None else []), *axes]
+        for start, _ in train_start_events:
+            for ax in marker_axes:
+                ax.axvline(
+                    start,
+                    color="saddlebrown",
+                    linestyle=":",
+                    linewidth=0.7,
+                    alpha=0.55,
+                    zorder=3,
+                )
+        label_ax = gateway_ax if gateway_ax is not None else train_ax
+        for start, _ in train_start_events:
+            label_ax.text(
+                start,
+                0.96,
+                f"{start:.1f}s",
+                rotation=45,
+                rotation_mode="anchor",
+                ha="right",
+                va="top",
+                fontsize=6,
+                color="saddlebrown",
+                transform=label_ax.get_xaxis_transform(),
+                zorder=4,
+            )
+
         # The phase key goes on the figure rather than inside the band, whose
         # full width is occupied by the blocks it would otherwise cover.
         fig.suptitle("Instance Load")
@@ -182,6 +232,12 @@ class SimPlotter:
                 fontsize=8,
                 frameon=False,
             )
+
+        # Two identical occupancy curves mean different things if one instance
+        # holds twice the GPUs.
+        tp_by_instance = self._tp_by_instance(instance_ids)
+        distinct_tp = {tp for tp in tp_by_instance.values() if tp is not None}
+        heterogeneous = len(distinct_tp) > 1
 
         for ax, iid in zip(inst_axes, instance_ids):
             rows = list(self.store.iter(f"instance/{iid}"))
@@ -207,14 +263,56 @@ class SimPlotter:
                 kv_ax.fill_between(ts, kv, color="lightskyblue", alpha=0.4, zorder=1)
                 kv_ax.set_ylim(0, 1)
                 kv_ax.set_ylabel("KV util")
-            ax.set_title(f"instance {iid}", fontsize=10)
+            tp = tp_by_instance.get(iid)
+            if tp is None:
+                ax.set_title(f"instance {iid}", fontsize=10)
+            else:
+                # Coloured only when heterogeneous, so the homogeneous case does
+                # not look busier than it is.
+                ax.set_title(
+                    f"instance {iid}  —  TP{tp} ({tp} GPU{'s' if tp > 1 else ''})",
+                    fontsize=10,
+                    color=_TP_COLOURS.get(tp, "black") if heterogeneous else "black",
+                    fontweight="bold" if heterogeneous else "normal",
+                )
             ax.grid(True, alpha=0.3)
+
+        if heterogeneous:
+            # The per-row titles say what each instance is. This says how the
+            # GPUs were split overall.
+            shape = "  ".join(
+                f"{sum(1 for v in tp_by_instance.values() if v == tp)}xTP{tp}"
+                for tp in sorted(distinct_tp)
+            )
+            total_gpus = sum(tp for tp in tp_by_instance.values() if tp is not None)
+            fig.suptitle(
+                f"Instance Load — heterogeneous fleet: {shape}  ({total_gpus} GPUs)"
+            )
 
         inst_axes[-1].set_xlabel(self.time_label)
         fig.tight_layout()
         fig.savefig(path, dpi=150)
         plt.close(fig)
         return path
+
+    def _tp_by_instance(self, instance_ids: Sequence[int]) -> dict[int, int | None]:
+        """Return each instance's tensor-parallel degree, or None when unlogged.
+
+        Reads the first sample of each stream: the degree is written on every
+        sample so a re-shaped fleet is representable, but the opening value is
+        what labels the row. None rather than a default of 1, so a run recorded
+        before the field existed is drawn without a degree instead of being
+        labelled with a wrong one.
+        """
+        degrees: dict[int, int | None] = {}
+        for iid in instance_ids:
+            degrees[iid] = None
+            for row in self.store.iter(f"instance/{iid}"):
+                tp = row.get("tp")
+                if tp is not None:
+                    degrees[iid] = int(tp)
+                break
+        return degrees
 
     def plot_rollout_step(self) -> Path:
         """Per-instance scatter of engine step wall-clock cost: prefill dt vs. decode dt."""
@@ -238,12 +336,12 @@ class SimPlotter:
             for start, end in intervals:
                 ax.axvspan(start, end, color="navajowhite", alpha=0.35, zorder=0)
             inst_rows = by_instance.get(iid, [])
-            prefill = [r for r in inst_rows if r["phase"] == "prefill"]
+            mixed = [r for r in inst_rows if r["phase"] == "mixed"]
             decode = [r for r in inst_rows if r["phase"] == "decode"]
 
             ax.scatter(
-                [r["t"] for r in prefill], [r["dt"] for r in prefill],
-                s=8, alpha=0.6, color="crimson", label="prefill step dt", zorder=2,
+                [r["t"] for r in mixed], [r["dt"] for r in mixed],
+                s=8, alpha=0.6, color="crimson", label="engine step dt", zorder=2,
             )
             ax.scatter(
                 [r["t"] for r in decode], [r["dt"] for r in decode],
@@ -363,35 +461,49 @@ class SimPlotter:
     def _scg_curve_data(
         staleness_values: list[int],
         span: float,
+        token_values: list[int] | None = None,
     ) -> tuple[list[int], list[float]]:
-        """Compute the SCG step curve given a list of per-trajectory staleness values.
+        """Compute the SCG step curve from per-trajectory staleness values.
 
-        SCG(S) = count(staleness_true <= S) / span for S in [0, max(staleness_values)].
+        SCG(S) = sum(tokens where staleness_true <= S) / span, for S in
+        [0, max(staleness_values)].
 
         Factored out so tests can assert on exact numeric values without parsing a PNG.
 
         Args:
             staleness_values: One integer staleness per consumed trajectory.
             span: Total simulation time in seconds (the rate denominator).
+            token_values: Generated tokens per consumed trajectory, positionally
+                aligned with `staleness_values`. None falls back to counting
+                trajectories, which is what a run logged before `generated` was
+                recorded can support.
 
         Returns:
             xs: S values 0..max inclusive.
-            ys: Corresponding SCG(S) rates.
+            ys: Corresponding SCG(S) rates, in tokens/s (or trajectories/s when
+                `token_values` is None).
         """
         if not staleness_values or span <= 0:
             return [], []
         max_s = max(staleness_values)
         xs = list(range(max_s + 1))
-        ys = [sum(1 for v in staleness_values if v <= s) / span for s in xs]
+        if token_values is None:
+            ys = [sum(1 for v in staleness_values if v <= s) / span for s in xs]
+        else:
+            ys = [
+                sum(t for v, t in zip(staleness_values, token_values) if v <= s) / span
+                for s in xs
+            ]
         return xs, ys
 
     def plot_scg_curve(self) -> Path:
-        """Plot SCG(S): consumed trajectories with staleness ≤ S per simulated second.
+        """Plot SCG(S): tokens from trajectories with staleness ≤ S, per second.
 
         SCG(S) is a non-decreasing step function of the integer staleness budget S.
-        The denominator is ``max(complete_time)`` over all consume rows — the same
-        time axis ``plot_throughput`` uses — so the rates are directly comparable
-        across the two plots.
+        The denominator is ``max(complete_time)`` over all consume rows, the same
+        time axis ``plot_throughput`` uses, so the rates are directly comparable
+        across the two plots -- and the curve's last point equals the run's
+        throughput by construction, since no trajectory is excluded there.
 
         Returns:
             Path to the saved PNG.
@@ -402,13 +514,19 @@ class SimPlotter:
         # Rows from runs predating the staleness_true field are skipped rather
         # than falling back to v_min arithmetic, so the curve only reflects data
         # we can trust. If none survive the filter we fall through to placeholder.
-        staleness_values = [
-            int(r["staleness_true"])
-            for r in rows
-            if r.get("staleness_true") is not None
-        ]
+        usable = [r for r in rows if r.get("staleness_true") is not None]
+        staleness_values = [int(r["staleness_true"]) for r in usable]
         if not staleness_values:
             return self._empty_placeholder(path, "No staleness data to plot SCG curve")
+
+        # Tokens are the goodput unit: a dispersed workload's trajectories differ
+        # in length by more than an order of magnitude, so counting them weights a
+        # short response the same as one 40x longer. A run logged before
+        # `generated` existed falls back to the count form rather than plotting
+        # zeros.
+        token_values: list[int] | None = [int(r.get("generated", 0)) for r in usable]
+        if token_values is not None and not any(token_values):
+            token_values = None
 
         complete_times = [
             float(r["complete_time"])
@@ -420,7 +538,7 @@ class SimPlotter:
         if span <= 0:
             span = 1.0  # guard: avoid division by zero on pathological input
 
-        xs, ys = self._scg_curve_data(staleness_values, span)
+        xs, ys = self._scg_curve_data(staleness_values, span, token_values)
 
         fig, ax = plt.subplots(figsize=(8, 5))
         # step(where='post') is the correct representation: SCG(S) holds constant
@@ -429,7 +547,8 @@ class SimPlotter:
         ax.step(xs, ys, where="post", color="steelblue", linewidth=2)
         ax.scatter(xs, ys, color="steelblue", s=40, zorder=3)
         ax.set_xlabel("Staleness budget S (weight updates)")
-        ax.set_ylabel("SCG(S)  [trajectories / s]")
+        unit = "trajectories / s" if token_values is None else "tokens / s"
+        ax.set_ylabel(f"SCG(S)  [{unit}]")
         ax.set_title("Staleness-Constrained Goodput")
         ax.set_xticks(xs)
         ax.grid(True, axis="y", alpha=0.3)

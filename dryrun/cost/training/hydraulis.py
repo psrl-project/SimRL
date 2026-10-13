@@ -12,7 +12,7 @@ import numpy as np
 
 from dryrun.cost.artifact import ArtifactEntry, CostArtifact, FitMetrics
 from dryrun.profiler.io import profile_digest
-from dryrun.profiler.schema import Parallelism, ProfileRecord, TrainingPayload
+from dryrun.profiler.schema import ModelDescriptor, Parallelism, ProfileRecord, TrainingPayload
 
 from .activation import ActivationGeometry, activation_bytes
 from .base import (
@@ -49,6 +49,10 @@ class _CellKey:
     tp: int
     pp: int
     cp: int
+    # Expert parallelism, part of the key for MoE blocks: a different EP means different
+    # all-to-all traffic and a different expert count per rank, so it is a separate
+    # measurement rather than a slice of the same one. 1 for every dense model.
+    ep: int
     schedule: str
     recompute: str
     optimizer: str
@@ -61,7 +65,7 @@ class _CellKey:
 
     @property
     def parallelism(self) -> Parallelism:
-        return Parallelism(tp=self.tp, pp=self.pp, dp=1, cp=self.cp)
+        return Parallelism(tp=self.tp, pp=self.pp, dp=1, cp=self.cp, ep=self.ep)
 
     def selector(self, component: str) -> dict[str, Any]:
         return {
@@ -94,6 +98,7 @@ def _training_records(records: list[ProfileRecord]) -> tuple[dict[_CellKey, list
             tp=record.parallelism.tp,
             pp=record.parallelism.pp,
             cp=record.parallelism.cp,
+            ep=record.parallelism.ep,
             schedule=payload.schedule.lower(),
             recompute=payload.recompute,
             optimizer=payload.optimizer,
@@ -164,7 +169,7 @@ def _activation_feature(
     return activation_bytes(
         geometry,
         payload.microbatches,
-        TrainingParallelism(tp=parallelism.tp, pp=pp, dp=parallelism.dp, cp=parallelism.cp),
+        TrainingParallelism(tp=parallelism.tp, pp=pp, dp=parallelism.dp, cp=parallelism.cp, ep=parallelism.ep),
     )
 
 
@@ -259,10 +264,24 @@ def _fit_latency_entry(
         ),
         feature_ranges=feature_ranges,
         diagnostics={
+            # Spelled in the same terms `LatencyFeatures.design_row` actually builds, which
+            # differ from the earlier `slots * max_microbatch_tokens` wording in two ways.
+            #
+            # The token terms are SUMS over the rank's microbatches plus a `pp - 1` bubble
+            # charged at the largest: a stage runs every microbatch it is given, so a step
+            # costs the sum of their costs, and only the slots it cannot fill are charged
+            # at the maximum. And every term carries a `1 / PP` stage share, because the
+            # fitted coefficients price the whole model while a stage holds one slice.
+            #
+            # The two forms coincide on the uniform microbatches profiling measures, so the
+            # old string still fitted correctly; it just could not be reimplemented from.
             "formula": (
-                "per_step_overhead + ((num_microbatches + PP - 1) / PP) * (token_cost * "
-                "max_microbatch_tokens + token_quadratic_cost * "
-                "max_microbatch_sum_squared_tokens + microbatch_overhead)"
+                "per_step_overhead "
+                "+ (token_cost * (sum_over_microbatches(sum_tokens) "
+                "+ (PP - 1) * max_microbatch_tokens) "
+                "+ token_quadratic_cost * (sum_over_microbatches(sum_squared_tokens) "
+                "+ (PP - 1) * max_microbatch_sum_squared_tokens) "
+                "+ microbatch_overhead * (num_microbatches + PP - 1)) / PP"
             ),
             "pipeline_latency": "derived-per-layer-1f1b",
             "profiled_pipeline_degrees": sorted(
@@ -795,6 +814,7 @@ class HydraulisTrainingCost(TrainingCostModel):
         return cls(
             latency_model=HydraulisLatencyModel(**common),
             memory_model=HydraulisMemoryModel(**common),
+            model=ModelDescriptor.from_dict(artifact.model),
         )
 
     def estimate(
@@ -810,6 +830,7 @@ class HydraulisTrainingCost(TrainingCostModel):
             "pp": parallelism.pp,
             "dp": parallelism.dp,
             "cp": parallelism.cp,
+            "ep": parallelism.ep,
             "micro_batch_size": workload.micro_batch_size,
             "schedule": workload.schedule,
             "recompute": workload.recompute,

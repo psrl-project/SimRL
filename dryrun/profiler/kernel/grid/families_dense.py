@@ -7,7 +7,7 @@ weights per layer; vLLM fuses them into `QKVParallelLinear` and `MergedColumnPar
 giving four. Verified against both local checkpoints: summing HF's row counts reproduces these
 `n` values exactly, so this is the engine's shape rather than an approximation of HF's.
 
-`dryrun/profiler/kernels/introspect.py` is the gate that keeps that claim true: it enumerates
+`dryrun/profiler/kernel/introspect.py` is the gate that keeps that claim true: it enumerates
 a real module graph on the meta device and compares. This module is the fast path and never
 loads a model.
 """
@@ -16,9 +16,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..schema import ModelDescriptor, ProfileValidationError
+from ...schema import ModelDescriptor, ProfileValidationError
+from ..utils.model_dims import model_head_dim, model_intermediate_size, model_vocab_size
 from .attention import rank_head_counts
-from .config import model_head_dim, model_intermediate_size, model_vocab_size
 from .families import register_family
 from .shape import GemmShape
 

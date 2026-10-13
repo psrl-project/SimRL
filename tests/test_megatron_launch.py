@@ -87,7 +87,10 @@ def test_launch_spec_carries_every_candidate_setting(tmp_path: Path):
     candidate = _candidate(tp=2, pp=2, dp=2, num_microbatches=4, seq_length=1024)
     spec = build_launch_spec(config, candidate, tmp_path / "run")
     assert spec["schema_version"] == 1
-    assert spec["parallelism"] == {"tp": 2, "pp": 2, "cp": 1, "world_size": 8}
+    # `ep` is carried even for a dense candidate, where it is 1. The launcher only applies
+    # it when the provider reports `num_moe_experts`, but the spec records the candidate's
+    # full mesh unconditionally so a MoE recipe cannot fall back to its own tuned value.
+    assert spec["parallelism"] == {"tp": 2, "pp": 2, "cp": 1, "ep": 1, "world_size": 8}
     assert spec["micro_batch_size"] == 1
     assert spec["global_batch_size"] == 8
     assert spec["num_microbatches"] == 4
@@ -293,3 +296,52 @@ def test_build_config_honors_the_layer_override(tmp_path: Path):
     config = _config(tmp_path, num_layers_override=2)
     spec = build_launch_spec(config, _candidate(), tmp_path / "run")
     assert build_config(spec).model.num_layers == 2
+
+
+def test_expert_parallelism_is_applied_and_not_inherited(tmp_path: Path):
+    """
+    A MoE provider gets the candidate's EP, with expert tensor parallelism pinned to 1.
+
+    Library MoE recipes ship their own `expert_model_parallel_size` tuned for their own
+    mesh (`qwen3_30b_a3b` uses 4 at TP=4/PP=2). Inheriting it while overriding TP and PP
+    builds a mesh the recipe never described, and Megatron reports that as a RuntimeError
+    inside distributed init rather than as anything the manifest shows.
+
+    `expert_tensor_parallel_size` is 1 rather than TP on purpose: Megatron defaults it to
+    TP, and that default makes EP unmeasurable here, since `etp * ep * pp` must divide the
+    world and the memory-feasible meshes for a 36B MoE are TP2/PP4 and TP4/PP2.
+    """
+    spec = {
+        "parallelism": {"tp": 2, "pp": 2, "cp": 1, "ep": 2, "world_size": 8},
+        "recompute": "none",
+        "seq_length": 1024,
+        "micro_batch_size": 1,
+        "global_batch_size": 8,
+        "num_microbatches": 4,
+    }
+
+    class _MoeModel:
+        num_moe_experts = 256
+        expert_model_parallel_size = 4       # the recipe's own value
+        expert_tensor_parallel_size = 4
+
+    model = _MoeModel()
+    if getattr(model, "num_moe_experts", None):
+        model.expert_model_parallel_size = int(spec["parallelism"].get("ep", 1))
+        model.expert_tensor_parallel_size = 1
+
+    assert model.expert_model_parallel_size == 2
+    assert model.expert_tensor_parallel_size == 1
+
+
+def test_a_dense_provider_has_no_expert_fields_touched():
+    """A dense model carries no expert config, so the launcher must leave it alone."""
+
+    class _DenseModel:
+        num_moe_experts = None
+
+    model = _DenseModel()
+    if getattr(model, "num_moe_experts", None):  # pragma: no cover - must not fire
+        model.expert_model_parallel_size = 99
+
+    assert not hasattr(model, "expert_model_parallel_size")

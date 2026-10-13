@@ -19,7 +19,7 @@ from dryrun.cost.kernel.ops.attention_training import (
     TRAINING_MASK_TYPES,
 )
 from dryrun.cost.kernel.ops.base import op_for
-from dryrun.profiler.kernels.config import TrainingAttentionSweep
+from dryrun.profiler.kernel.sweep import TrainingAttentionSweep
 from dryrun.profiler.schema import ProfileValidationError
 
 _SLICE = (4, 128, "bfloat16", "padding_causal")
@@ -207,7 +207,7 @@ def test_a_table_measured_on_the_unfused_fallback_is_refused():
     fallback, which materializes the full attention matrix and is several times slower than
     the kernel a training step runs.
     """
-    from dryrun.profiler.kernels.attention_training import _require_fused_backend
+    from dryrun.profiler.kernel.runner.attention_training import _require_fused_backend
 
     with pytest.raises(ProfileValidationError, match="post-release flash-attn wheel"):
         _require_fused_backend({"UnfusedDotProductAttention"})
@@ -215,14 +215,14 @@ def test_a_table_measured_on_the_unfused_fallback_is_refused():
 
 def test_a_table_spanning_two_backends_is_refused():
     """One table must describe one kernel."""
-    from dryrun.profiler.kernels.attention_training import _require_fused_backend
+    from dryrun.profiler.kernel.runner.attention_training import _require_fused_backend
 
     with pytest.raises(ProfileValidationError, match="more than one backend"):
         _require_fused_backend({"FlashAttention", "FusedAttention"})
 
 
 def test_an_empty_sweep_is_refused_rather_than_writing_an_empty_table():
-    from dryrun.profiler.kernels.attention_training import _require_fused_backend
+    from dryrun.profiler.kernel.runner.attention_training import _require_fused_backend
 
     with pytest.raises(ProfileValidationError, match="No attention call was made"):
         _require_fused_backend(set())
@@ -251,7 +251,7 @@ def test_the_dispatch_floor_is_fitted_at_the_top_of_the_candidate_grid():
 
 def test_a_fused_backend_passes():
     """FlashAttention is what TE selects for THD on sm90, measured rather than assumed."""
-    from dryrun.profiler.kernels.attention_training import _require_fused_backend
+    from dryrun.profiler.kernel.runner.attention_training import _require_fused_backend
 
     _require_fused_backend({"FlashAttention"})
     _require_fused_backend({"FusedAttention"})

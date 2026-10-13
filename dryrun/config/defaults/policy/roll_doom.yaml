@@ -1,0 +1,42 @@
+# Staleness policy name.
+name: roll_doom
+
+# Whether to abandon groups that provably cannot meet their deadline.
+# false reproduces `roll` exactly, which is how the ablation gets a matched
+# baseline through the identical code path.
+abandon: true
+
+# Multiplier on the time a trajectory is judged to have. >1 is lenient (abandon
+# only the clearly hopeless), <1 is aggressive. Trades wasted tokens against
+# trajectories that would have just made it.
+safety_margin: 1.0
+
+# Tokens a response must have generated before its observed rate is trusted.
+# A freshly-placed request has no rate to project from.
+min_generated: 256
+
+# Seed for the training-cycle estimate, used only until the first interval is
+# observed. 0 means wait for a real measurement, which leaves the first cycle
+# unfiltered rather than filtering it on a guess.
+training_cycle_s: 0.0
+
+# Cap on in-flight prompt groups. null leaves the token bucket as the only bound.
+max_inflight: null
+
+# Stay inert until GC has actually discarded something. Abandonment can only
+# recover capacity the baseline was already losing: on the heavy-tail trace the
+# baseline GC-drops 528-752 groups and abandoning wins (1.11x at S=1, 1.47x at
+# S=2), while on the aligned DAPO trace it GC-drops zero and abandoning loses
+# 0.861x by cutting work that would have landed. The predictor is length
+# DISPERSION, not tail token share.
+require_observed_waste: true
+
+# Margin used when evidence of waste is thin. A presence-only gate is too coarse:
+# at DAPO S=2 the baseline discards 32 of 1568 groups, so the gate opens, and there
+# only an aggressive margin paid (1.058x at 0.7 against losses at 1.0 and 1.5).
+aggressive_margin: 0.7
+
+# GC-discard fraction at or above which `safety_margin` is trusted verbatim. Below
+# it the margin interpolates down to `aggressive_margin`. The measured transition
+# lies between DAPO S=2 (2.0% discarded) and heavy-tail S=2 (26.9%).
+waste_rate_trusted: 0.15

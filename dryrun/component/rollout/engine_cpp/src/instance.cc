@@ -69,7 +69,11 @@ double NativeInstance::step_time_delta(const RequestPtr& req) const {
 // --- Snapshot / undo ---
 
 void NativeInstance::save_snapshot() {
-  log_ = std::make_unique<UndoLog>();
+  if (spare_log_) {
+    log_ = std::move(spare_log_);
+  } else {
+    log_ = std::make_unique<UndoLog>();
+  }
 
   // Record instance scalar fields.
   log_->record(FieldSnapshot3{
@@ -92,23 +96,17 @@ void NativeInstance::save_snapshot() {
 
   // Record per-request snapshots.
   for (const auto& req : waiting_) {
-    uintptr_t key =
-        reinterpret_cast<uintptr_t>(req.get()) ^ 0x726571ULL;
-    log_->record_once(key, [&]() -> UndoEntry {
-      return RequestSnapshot::capture(req);
-    });
+    log_->record_once(JournalKey::of(req.get(), JournalKey::kRequestFields),
+                      [&]() -> UndoEntry { return RequestSnapshot::capture(req); });
   }
   for (const auto& req : running_) {
-    uintptr_t key =
-        reinterpret_cast<uintptr_t>(req.get()) ^ 0x726571ULL;
-    log_->record_once(key, [&]() -> UndoEntry {
-      return RequestSnapshot::capture(req);
-    });
+    log_->record_once(JournalKey::of(req.get(), JournalKey::kRequestFields),
+                      [&]() -> UndoEntry { return RequestSnapshot::capture(req); });
   }
 }
 
 void NativeInstance::commit_last_event() {
-  log_.reset();
+  recycle_log();
 }
 
 void NativeInstance::undo_last_event() {
@@ -116,7 +114,7 @@ void NativeInstance::undo_last_event() {
     throw std::runtime_error("No snapshot to undo.");
   }
   log_->rollback();
-  log_.reset();
+  recycle_log();
 }
 
 // --- Internal helpers ---
@@ -241,7 +239,6 @@ std::pair<double, std::vector<RequestPtr>> NativeInstance::engine_step(
   int prefill_tokens = 0;
   int n_prefill_reqs = 0;
   int admitted_blocks = 0;
-  int admitted_count = 0;
   std::vector<RequestPtr> finished_prefill;
   int batch_count = n_in_batch();
 
@@ -266,15 +263,10 @@ std::pair<double, std::vector<RequestPtr>> NativeInstance::engine_step(
 
       if (!running_.empty() || admitted_blocks > 0) {
         int want = req->prompt_len + req->generated;
-        int residents = static_cast<int>(running_.size()) + admitted_count;
-        int headroom = residents * block_size_;
-        if (blocks_for(want, block_size_) +
-                blocks_for(headroom, block_size_) >
-            free_blocks() - admitted_blocks) {
+        if (blocks_for(want, block_size_) > free_blocks() - admitted_blocks) {
           break;
         }
         admitted_blocks += blocks_for(want, block_size_);
-        admitted_count += 1;
       }
       batch_count += 1;
       prefill_hit += apply_prefix_hit(req);
@@ -387,30 +379,36 @@ double NativeInstance::step_time_estimate() const {
   double prefill_ctx_sum = 0;
   int prefill_tokens = 0;
   int free = free_blocks();
+  // Replay the decode pass's block demand, so the gates below see the pool and the
+  // blocked flag of this step rather than the previous one.
+  bool decode_blocked = false;
+  for (int i = 0; i < n_decode; ++i) {
+    if (running_[i]->prefilled % block_size_ == 0) {
+      if (free <= 0) {
+        decode_blocked = true;
+      } else {
+        --free;
+      }
+    }
+  }
   std::unordered_map<uintptr_t, int> effective;
   int n_prefill_reqs = 0;
   int admitted_blocks = 0;
-  int admitted_count = 0;
   int batch_count = n_in_batch();
 
   for (const auto& req : waiting_) {
     if (budget <= 0) break;
 
     if (req->prefilled == 0) {
-      if (last_decode_blocked_) break;
+      if (decode_blocked) break;
       if (max_concurrency_ >= 0 && batch_count >= max_concurrency_) break;
 
       if (!running_.empty() || admitted_blocks > 0) {
         int want = req->prompt_len + req->generated;
-        int residents = static_cast<int>(running_.size()) + admitted_count;
-        int headroom = residents * block_size_;
-        if (blocks_for(want, block_size_) +
-                blocks_for(headroom, block_size_) >
-            free - admitted_blocks) {
+        if (blocks_for(want, block_size_) > free - admitted_blocks) {
           break;
         }
         admitted_blocks += blocks_for(want, block_size_);
-        admitted_count += 1;
       }
       batch_count += 1;
     }
@@ -522,7 +520,7 @@ EngineEvent NativeInstance::decode_segment_event(int version) {
 std::optional<EngineEvent> NativeInstance::advance_one_event(int version) {
   promote_ready();
   if (running_.empty() && waiting_.empty()) {
-    log_.reset();
+    recycle_log();
     return std::nullopt;
   }
   save_snapshot();
@@ -534,7 +532,7 @@ std::optional<EngineEvent> NativeInstance::advance_one_event(int version) {
 
 std::optional<EngineEvent> NativeInstance::advance_one_event_committed(
     int version) {
-  log_.reset();
+  recycle_log();
   promote_ready();
   if (running_.empty() && waiting_.empty()) {
     return std::nullopt;
@@ -543,6 +541,31 @@ std::optional<EngineEvent> NativeInstance::advance_one_event_committed(
     return iteration_event(version);
   }
   return decode_segment_event(version);
+}
+
+NativeInstance::IterationBatch NativeInstance::advance_iterations(
+    int version, bool first_speculative, bool iter_speculative, bool has_top,
+    double t_top, int iid_top, double deadline) {
+  IterationBatch out;
+  out.last_committed_t = t_local_;
+  bool speculative = first_speculative;
+  while (true) {
+    out.n_stats_committed = step_stats_.size();
+    std::optional<EngineEvent> ev = speculative
+                                        ? advance_one_event(version)
+                                        : advance_one_event_committed(version);
+    if (!ev.has_value()) return out;
+    bool earliest = !has_top || ev->t < t_top ||
+                    (ev->t == t_top && instance_id_ < iid_top);
+    if (ev->kind != EventKind::kIterationDone || ev->t > deadline || !earliest) {
+      out.pending = std::move(ev);
+      return out;
+    }
+    commit_last_event();
+    out.n_committed += 1;
+    out.last_committed_t = ev->t;
+    speculative = iter_speculative;
+  }
 }
 
 bool NativeInstance::add_request(const RequestPtr& req, double t) {
@@ -765,18 +788,26 @@ std::vector<RequestPtr> NativeInstance::preempt_until_decodable() {
     }
     if (victims.empty()) break;
 
-    // Pick the newest non-oldest victim.
-    auto newest = std::max_element(
-        victims.begin(), victims.end(),
-        [](const RequestPtr& a, const RequestPtr& b) {
-          return std::tie(a->dispatch_time, a->rid) <
-                 std::tie(b->dispatch_time, b->rid);
-        });
-    auto victim = preempt_one(*newest);
+    auto victim = preempt_one(pick_victim(victims));
     if (!victim) break;
     evicted.push_back(victim);
   }
   return evicted;
+}
+
+RequestPtr NativeInstance::pick_victim(
+    const std::vector<RequestPtr>& victims) const {
+  if (eviction_) {
+    RequestPtr chosen = eviction_(victims, t_local_);
+    if (chosen) return chosen;
+  }
+  // The default is newest-dispatched first, vLLM's reverse arrival order.
+  return *std::max_element(
+      victims.begin(), victims.end(),
+      [](const RequestPtr& a, const RequestPtr& b) {
+        return std::tie(a->dispatch_time, a->rid) <
+               std::tie(b->dispatch_time, b->rid);
+      });
 }
 
 void NativeInstance::release(const RequestPtr& req, bool keep_tokens) {

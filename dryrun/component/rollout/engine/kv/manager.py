@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..undo import NULL_RECORDER, AttrSnapshot, Recorder
+from ..undo import NULL_RECORDER, Recorder
 from .block import KvBlock
 from .lineage import block_hashes
 from .pool import BlockPool
@@ -111,10 +111,7 @@ class KvCacheManager:
                 break
             hit.append(block)
 
-        recorder.record_once(
-            ("counters", id(self)),
-            lambda: AttrSnapshot.capture(self, "queries", "hits"),
-        )
+        recorder.record_attrs_once(("counters", id(self)), self, "queries", "hits")
         self.queries += len(hashes)
         self.hits += len(hit)
 
@@ -213,13 +210,20 @@ class KvCacheManager:
         if self.enable_caching:
             computed = req.prefilled + len(hit_blocks) * self.block_size
             n_full = (computed + n_tokens) // self.block_size
-            self.pool.cache_full_blocks(
-                held,
-                block_hashes(req, self.block_size),
-                n_cached=self._n_cached.get(req.rid, len(hit_blocks)),
-                n_full=n_full,
-                recorder=recorder,
-            )
+            n_cached = self._n_cached.get(req.rid, len(hit_blocks))
+            # Only blocks `[n_cached, n_full)` can gain a hash here, so only
+            # their hashes are built. Asking for the whole context rebuilt every
+            # id of a 30k-token request on each decode step -- O(context) work
+            # per token, and the single largest cost in the engine loop.
+            if n_cached < n_full:
+                self.pool.cache_full_blocks(
+                    held,
+                    block_hashes(req, self.block_size, start=n_cached, stop=n_full),
+                    n_cached=n_cached,
+                    n_full=n_full,
+                    hash_offset=n_cached,
+                    recorder=recorder,
+                )
             self._n_cached[req.rid] = n_full
         return fresh
 

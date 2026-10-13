@@ -1,0 +1,92 @@
+# Profiles the TP2/PP4 mesh with THD packing, the layout a real RL trainer uses.
+#
+# THD rather than BSHD, for the reason `qwen3_8b_thd.yaml` sets out at length: under BSHD
+# every sequence in a microbatch is padded to the longest, so `sum_squared_tokens` is
+# identically `sum_tokens^2`, the linear and quadratic token columns are collinear, and the
+# fit cannot tell "many tokens" from "long sequences". `packing: thd` concatenates the
+# microbatch behind `cu_seqlens` and dispatches the varlen attention kernel, which costs
+# `O(sum(s_i^2))`: a different function of the same batch, and one a BSHD-fitted coefficient
+# does not price. On Qwen3-8B the BSHD fit overpredicted real packed steps by 57-60%.
+#
+# TP2/PP4 is the analog of Qwen3-8B's TP2/PP3, chosen to hold the per-stage depth fixed:
+# this model has 48 layers to Qwen3-8B's 36, so PP4 gives the same 12 layers per pipeline
+# stage that PP3 gives there, at the same tensor-parallel degree. It also fills the node
+# exactly (2 * 4 * 1 = 8) where TP2/PP3 left two GPUs idle, and it keeps the per-rank
+# parameter shard at 1.85B, inside the 2.048B ceiling the `optimizer` kernel grid measures
+# up to. Static state is roughly 31 GiB of a 95 GiB card, leaving room for activations.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/DeepSeek-R1-Distill-Qwen-14B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 8
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/deepseek_r1_distill_qwen_14b/megatron_tp2_pp4_thd
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  max_steps: 6
+  warmup_steps: 2
+
+profiling:
+  # A long packed microbatch at a high microbatch count may not fit. An OOM is a
+  # useful upper bound for the memory model and costs the latency fit nothing.
+  allow_incomplete: true
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+search_space:
+  packing: thd
+  tensor_parallel_sizes: [2]
+  pipeline_parallel_sizes: [4]
+  data_parallel_sizes: [1]
+  # Three levels, because each distinct `nmb` contributes exactly one value to the
+  # slot column. Two levels leave the per-slot and per-token costs indistinguishable
+  # along the long arm, which inflates `microbatch_overhead` by an order of magnitude.
+  # 1 anchors the intercept, 4 is a cheap middle, and 64 is the structural ceiling:
+  # a step trains 64 trajectories, so the balanced split yields at most 64
+  # microbatches. Profiling the ceiling keeps every batch in domain by construction,
+  # which matters because `check_feature_range` rejects rather than extrapolates.
+  num_microbatches: [1, 4, 64]
+  recompute: full
+
+  # Each entry is ONE PACKED MICROBATCH: the sequence lengths sharing it.
+  # `micro_batch_size` stays 1 because a pack is a single sample, so `[6144, 6144]`
+  # is one microbatch holding two sequences, not two candidates. A repeated number
+  # is therefore deliberate, and an uneven split puts the remainder in the last
+  # entry.
+  #
+  # Identical to the Qwen3-8B grid, and deliberately so. These lengths are properties
+  # of the workload (a DAPO trajectory's prompt plus its 10240-token generation cap),
+  # not of the model, so holding them fixed makes the two fits comparable coefficient
+  # by coefficient. They also keep the `gemm` and `attention_training` kernel grids in
+  # `deepseek_r1_distill_qwen_14b_h20_tp2.yaml` aligned: those list exactly these
+  # totals so a wgrad or varlen query lands on a measured point rather than raising.
+  #
+  # The first six entries buy identifiability. Five share a 12288-token total while
+  # splitting it differently, which moves `sum_squared_tokens` across a 4x range at
+  # fixed `sum_tokens` and is the only way to separate the linear token column from
+  # the quadratic one. `[4096]` adds a second total so the linear column has a
+  # slope, and `[10240, 2048]` is ragged, as real batches are.
+  #
+  # The last two exist only to cover the top of the token range. Two maximum-length
+  # trajectories is the most a pack can hold, so that total is a hard ceiling rather
+  # than a sample, and it needs only the cheap microbatch counts.
+  sequence_shapes:
+    - [4096]
+    - [12288]
+    - [6144, 6144]
+    - [4096, 4096, 4096]
+    - [3072, 3072, 3072, 3072]
+    - [10240, 2048]
+    - [11264, 11264]
+    - [7510, 7510, 7508]

@@ -20,13 +20,13 @@ from dryrun.profiler.adapters.vllm.execute import (
     _run_vllm_job_pool,
     _sweep_runtime_environment,
 )
-from dryrun.profiler.adapters.vllm.prepare import VLLMSweepJob
 from dryrun.profiler.adapters.vllm.parse import (
     _IterationDetail,
     parse_sweep_log,
     payload_from_iteration,
     trusted_iterations,
 )
+from dryrun.profiler.adapters.vllm.prepare import VLLMSweepJob
 from dryrun.profiler.io import profile_digest, read_records, write_records
 from dryrun.profiler.schema import (
     HardwareDescriptor,
@@ -213,6 +213,35 @@ def test_trusted_iterations_drops_unmeasured_steps_without_shifting_the_rest():
     ]
     kept, trust = trusted_iterations(details, input_len=1024, prompt_token_budget=1024)
     assert [item.index for item in kept] == [1, 3]
+    assert trust.dropped_unmeasured == 2
+    assert trust.truncation_reason is None
+
+
+def test_trusted_iterations_drops_a_large_step_at_an_impossible_token_rate():
+    """
+    A step above the absolute floor is still rejected when its token rate is impossible.
+
+    The absolute `_MIN_MEASURED_ELAPSED_MS` floor is necessary but not sufficient: an
+    async-scheduling overlap artifact on a *large* prefill lands just above 1 ms and so
+    survived it. Qwen3.5-35B-A3B measured 16128 tokens in 1.080 ms (14.9M tok/s) and
+    11317 in 1.030 ms; the psrl fit then scored them as a 39178% residual and dragged
+    tp=1 prefill MRE to 813%.
+
+    The 4096-token step at 400 ms (10k tok/s) is kept, which is the point: the bound sits
+    two orders of magnitude above any real rate, so it cannot discard genuine data. A
+    64-token decode step at the same 1.03 ms is only 62k tok/s and is kept too.
+
+    Prompt lengths here are chosen so no step trips `context-longer-than-prompt`, which
+    truncates the run and would return before the rate guard is ever consulted.
+    """
+    details = [
+        _IterationDetail(0, 63, 16128, 0, 0, 1.080),
+        _IterationDetail(1, 16, 4096, 0, 0, 400.0),
+        _IterationDetail(2, 0, 0, 64, 64, 1.030),
+        _IterationDetail(3, 44, 11264, 53, 53, 1.030),
+    ]
+    kept, trust = trusted_iterations(details, input_len=256, prompt_token_budget=31488)
+    assert [item.index for item in kept] == [1, 2]
     assert trust.dropped_unmeasured == 2
     assert trust.truncation_reason is None
 

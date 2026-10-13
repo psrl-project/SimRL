@@ -37,6 +37,7 @@ class NativeInstance:
         reject_if_waiting: bool = False,
         reject_if_running_full: bool = False,
         enable_prefix_caching: bool = True,
+        eviction=None,
     ):
         self.cost = cost
         self.M = token_budget
@@ -57,6 +58,13 @@ class NativeInstance:
         router reads it, and `DynamicParallelFleet` keys instance reuse on it.
         """
         self.enable_prefix_caching = enable_prefix_caching
+        self.eviction = eviction
+        """Which resident pays when the pool cannot fund a decode step.
+
+        None uses vLLM's own reverse-arrival order. A strategy returning None
+        for a particular call falls back to that too, so one may decline to
+        rank before it has the evidence to.
+        """
 
         # Occupancy, hit lookup, and eviction all live in the pool. Disabling
         # prefix caching leaves the pool doing block accounting and simply
@@ -349,7 +357,6 @@ class NativeInstance:
         # Blocks and slots promised to admissions made in this step. They hold
         # nothing yet, so `free_blocks()` cannot see them.
         admitted_blocks = 0
-        admitted_count = 0
         finished_prefill: list[Request] = []
         n_in_batch = self._n_in_batch()
 
@@ -382,46 +389,16 @@ class NativeInstance:
                     break
                 if self.max_concurrency is not None and n_in_batch >= self.max_concurrency:
                     break
-                # Admission is all-or-nothing: a request enters the batch only
-                # if the pool can hold the context it needs, plus one block of
-                # headroom per resident request so the batch already running can
-                # still take its next decode token.
-                #
-                # vLLM gets this from the shape of its waiting loop rather than
-                # from a reserve. It *peeks* at the head of the queue
-                # (`scheduler.py:679`), tries to allocate, and on failure does
-                # `if new_blocks is None: break` -- leaving the request queued
-                # and popping it only after a successful allocation
-                # (`:978`). So a request that does not fit never gets a partial
-                # foothold.
-                #
-                # Without this the engine hands every request a sliver and none
-                # can finish: 128 requests needing 78,335 blocks against a
-                # 31,294-block pool pin the instance at `running=1,
-                # waiting=127`. Capacity allows about 61 residents, and the real
-                # engine's measured median running on this workload is 59.
-                #
-                # Note this is *not* vLLM's `--watermark`, which defaults to 0.0
-                # and was not set in the run being matched. That knob reserves a
-                # fraction of the whole pool to make preemption rarer; this is
-                # the structural admission test that holds even with it off.
+                # Admission is all-or-nothing, like vLLM's waiting loop: it peeks at the
+                # queue head, tries to allocate, and breaks on failure, so a request
+                # that does not fit never gets a partial foothold. Earlier admissions
+                # in this step hold no blocks yet, so they are charged via
+                # `admitted_blocks`.
                 if self.running or admitted_blocks:
                     want = req.prompt_len + req.generated
-                    # Earlier admissions in THIS step hold no blocks yet: nothing
-                    # is prefilled until below, so `free_blocks()` still reports
-                    # the value the first of them saw. Charging them here is what
-                    # vLLM gets from `allocate_slots` reserving per request, and
-                    # without it a whole backlog passes one gate reading: 129
-                    # requests admitted against 1420 free blocks, then evicted one
-                    # per step for the rest of the segment.
-                    residents = len(self.running) + admitted_count
-                    headroom = residents * self.block_size
-                    if blocks_for(want, self.block_size) + blocks_for(
-                        headroom, self.block_size
-                    ) > self.free_blocks() - admitted_blocks:
+                    if blocks_for(want, self.block_size) > self.free_blocks() - admitted_blocks:
                         break
                     admitted_blocks += blocks_for(want, self.block_size)
-                    admitted_count += 1
                 n_in_batch += 1
                 prefill_hit += self._apply_prefix_hit(req)
                 free = self.free_blocks()
@@ -581,10 +558,18 @@ class NativeInstance:
         prefill_ctx = 0
         prefill_tokens = 0
         free = self.free_blocks()
+        # Replay the decode pass's block demand, so the gates below see the pool and the
+        # blocked flag of this step rather than the previous one.
+        decode_blocked = False
+        for r in self.running[:n_decode]:
+            if r.prefilled % self.block_size == 0:
+                if free <= 0:
+                    decode_blocked = True
+                else:
+                    free -= 1
         effective: dict[int, int] = {}  # id(req) -> effective prefilled
         n_prefill_reqs = 0
         admitted_blocks = 0
-        admitted_count = 0
         n_in_batch = self._n_in_batch()
 
         # List order is the queue policy, not an accident: `_preempt_one`
@@ -600,26 +585,21 @@ class NativeInstance:
                 # Without them this priced a full 12800-token chunk the step
                 # then refuses, reading 0.857 s against a real 0.055 s on a
                 # blocked queue, and `advance_to` advanced its clock by that.
-                if self._last_decode_blocked:
+                if decode_blocked:
                     break
                 if self.max_concurrency is not None and n_in_batch >= self.max_concurrency:
                     break
                 if self.running or admitted_blocks:
                     want = req.prompt_len + req.generated
-                    residents = len(self.running) + admitted_count
-                    headroom = residents * self.block_size
                     # `free` rather than `self.free_blocks()`: the real step
                     # re-reads a pool its own allocations have drained, while
                     # nothing here writes, so the live value would still report
                     # the blocks earlier requests in this same loop consumed.
                     # The twin then admitted one request more than the step
                     # does, pricing 12800 tokens against a real 5452.
-                    if blocks_for(want, self.block_size) + blocks_for(
-                        headroom, self.block_size
-                    ) > free - admitted_blocks:
+                    if blocks_for(want, self.block_size) > free - admitted_blocks:
                         break
                     admitted_blocks += blocks_for(want, self.block_size)
-                    admitted_count += 1
                 n_in_batch += 1
             eff = effective.get(id(req), req.prefilled)
             if eff == 0:
@@ -819,6 +799,55 @@ class NativeInstance:
             return self._iteration_event(version)
         return self._decode_segment_event(version)
 
+    def advance_iterations(
+        self,
+        version: int,
+        first_speculative: bool,
+        iter_speculative: bool,
+        top: tuple[float, int] | None,
+        deadline: float,
+    ) -> tuple[EngineEvent | None, int, float, int]:
+        """
+        Produce events, committing each ITERATION_DONE the simulator would pop next.
+
+        The simulator only commits an ITERATION_DONE and asks for the next event, so doing
+        that here takes the same steps in the same order. An event ends the batch,
+        uncommitted, when it is not ITERATION_DONE, ends past `deadline`, or does not sort
+        below `top`. Mirrors the C++ engine's method of the same name.
+
+        Args:
+            version (int): Rollout version the generated tokens belong to.
+            first_speculative (bool): Whether the first event is produced with a snapshot.
+            iter_speculative (bool): Whether each event after a committed one is.
+            top (tuple[float, int] | None): `(t, instance_id)` of the other instances'
+                earliest pending event, or None if there is none.
+            deadline (float): Latest time a committed event may end at.
+
+        Returns:
+            tuple[EngineEvent | None, int, float, int]: The event left for the caller, how
+                many events were committed, the time of the last of them, and how many
+                `step_stats` rows are committed.
+        """
+        n_committed = 0
+        last_committed_t = self.t_local
+        speculative = first_speculative
+        while True:
+            n_stats = len(self.step_stats)
+            event = (
+                self.advance_one_event(version)
+                if speculative
+                else self.advance_one_event_committed(version)
+            )
+            if event is None:
+                return None, n_committed, last_committed_t, n_stats
+            earliest = top is None or (event.t, self.instance_id) < top
+            if event.kind is not EventKind.ITERATION_DONE or event.t > deadline or not earliest:
+                return event, n_committed, last_committed_t, n_stats
+            self.commit_last_event()
+            n_committed += 1
+            last_committed_t = event.t
+            speculative = iter_speculative
+
     def run_until(self, t_limit: float, version: int) -> list[Request]:
         done = []
         while self.t_local < t_limit:
@@ -959,6 +988,20 @@ class NativeInstance:
             out.append(r)
         return out
 
+    def _pick_victim(self, victims: list[Request]) -> Request:
+        """Return the request to evict, newest-dispatched unless told otherwise.
+
+        vLLM evicts in reverse arrival order, which the default reproduces. It
+        is arbitrary with respect to a deadline, though: the newest arrival may
+        be the one most likely to finish in time. `eviction` lets a strategy
+        that can price a trajectory decide instead.
+        """
+        if self.eviction is not None:
+            chosen = self.eviction.select(victims, self.t_local)
+            if chosen is not None:
+                return chosen
+        return max(victims, key=lambda r: (r.dispatch_time, r.rid))
+
     def _preempt_one(self, victim: Request | None = None) -> Request | None:
         if not self.running:
             return None
@@ -1004,7 +1047,7 @@ class NativeInstance:
             victims = [r for r in self.running if r is not oldest]
             if not victims:
                 break
-            victim = self._preempt_one(max(victims, key=lambda r: (r.dispatch_time, r.rid)))
+            victim = self._preempt_one(self._pick_victim(victims))
             if victim is None:
                 break
             evicted.append(victim)

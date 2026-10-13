@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from ..schema import ModelDescriptor, ProfileValidationError
+from ...schema import ModelDescriptor, ProfileValidationError
 
 
 @runtime_checkable
@@ -90,7 +90,7 @@ def family_for(model: ModelDescriptor) -> ModelFamily:
         known = ", ".join(sorted(FAMILY_REGISTRY)) or "none"
         raise ProfileValidationError(
             f"No kernel-shape family is registered for architecture {architecture!r}. "
-            f"Registered: {known}. Add one in dryrun/profiler/kernels/families_dense.py "
+            f"Registered: {known}. Add one in dryrun/profiler/kernel/grid/families_dense.py "
             f"(or a new families_*.py) and register it, rather than pricing this model with "
             f"another family's shapes."
         )
@@ -103,3 +103,4 @@ def family_for(model: ModelDescriptor) -> ModelFamily:
 # each test imported the family module itself: the same trap the cost layer's ops/__init__.py
 # documents. The import is at the end to avoid a cycle: families_dense imports this module.
 from . import families_dense as _families_dense  # noqa: E402,F401  (registers dense architectures)
+from . import families_moe as _families_moe  # noqa: E402,F401  (registers MoE architectures)

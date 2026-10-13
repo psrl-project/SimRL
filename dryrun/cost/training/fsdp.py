@@ -73,7 +73,13 @@ import numpy as np
 
 from dryrun.cost.artifact import ArtifactEntry, CostArtifact, FitMetrics
 from dryrun.profiler.io import profile_digest
-from dryrun.profiler.schema import Parallelism, ProfileRecord, SequenceStats, TrainingPayload
+from dryrun.profiler.schema import (
+    ModelDescriptor,
+    Parallelism,
+    ProfileRecord,
+    SequenceStats,
+    TrainingPayload,
+)
 
 from .base import (
     TrainingCostEstimate,
@@ -396,10 +402,17 @@ def _fit_latency_entry(
         ),
         feature_ranges=feature_ranges,
         diagnostics={
+            # Spelled in the same terms `LatencyFeatures.design_row` actually builds. The
+            # token terms are SUMS over the rank's microbatches, not the largest microbatch
+            # times the microbatch count: a rank runs every microbatch it is given, so a
+            # step costs the sum of their costs. The two forms coincide on the uniform
+            # microbatches profiling measures, which is why this string once read
+            # `num_microbatches * max_microbatch_tokens` and still fitted correctly -- but
+            # reimplementing it that way scores a ragged batch at 27% error against 0.6%.
             "formula": (
-                "per_step_overhead + num_microbatches * (token_cost * max_microbatch_tokens "
-                "+ token_quadratic_cost * max_microbatch_sum_squared_tokens "
-                "+ microbatch_overhead)"
+                "per_step_overhead + token_cost * sum_over_microbatches(sum_tokens) "
+                "+ token_quadratic_cost * sum_over_microbatches(sum_squared_tokens) "
+                "+ microbatch_overhead * num_microbatches"
             ),
             # There is no pipeline, so the slots multiplier of the shared latency form
             # degenerates to the microbatch count rather than taking a fitted term.
@@ -1044,6 +1057,7 @@ class FsdpTrainingCost(TrainingCostModel):
         return cls(
             latency_model=FsdpLatencyModel(**common),
             memory_model=FsdpMemoryModel(**common),
+            model=ModelDescriptor.from_dict(artifact.model),
         )
 
     def estimate(

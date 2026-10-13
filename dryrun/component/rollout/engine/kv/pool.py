@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Hashable, Optional
 
-from ..undo import AttrSnapshot, MappingKeysAdded, Recorder
+from ..undo import MappingKeysChanged, Recorder
 from .block import KvBlock
 from .free_list import FreeBlockList
 
@@ -100,13 +100,13 @@ class BlockPool:
         taken: list[KvBlock] = []
         for _ in range(n):
             block = self._free.popleft(recorder)
-            # Capture before evicting: `_maybe_evict` clears `_block_hash`, so
-            # recording afterwards would capture None as the "old" value and
-            # rollback would restore the hash map while leaving the block
-            # itself blank. The full-state undo test catches exactly that.
-            self._record_block(block, recorder)
+            # Evict before taking the reference, and let `_maybe_evict` record
+            # the hash it drops. Rollback unwinds newest-first, so the reference
+            # is released before the hash comes back -- the exact reverse of the
+            # order here.
             self._maybe_evict(block, recorder)
             block.incr_ref()
+            recorder.record(_RefIncremented(block))
             taken.append(block)
         return taken
 
@@ -118,10 +118,10 @@ class BlockPool:
         of the list, which is the case the linked list exists to make reversible.
         """
         for block in blocks:
-            self._record_block(block, recorder)
             if block.ref_cnt == 0:
                 self._free.remove(block, recorder)
             block.incr_ref()
+            recorder.record(_RefIncremented(block))
 
     def free_blocks(self, blocks: Iterable[KvBlock], recorder: Recorder) -> None:
         """Release a reference, returning blocks whose last holder left.
@@ -130,8 +130,8 @@ class BlockPool:
         later request with the same prefix can hit it.
         """
         for block in blocks:
-            self._record_block(block, recorder)
             block.decr_ref()
+            recorder.record(_RefDecremented(block))
             if block.ref_cnt == 0:
                 self._free.append(block, recorder)
 
@@ -142,27 +142,40 @@ class BlockPool:
         n_cached: int,
         n_full: int,
         recorder: Recorder,
+        hash_offset: int = 0,
     ) -> None:
         """Record hashes for blocks that have become full.
 
         Args:
             blocks: This request's blocks, in block order.
-            hashes: This request's block hashes, in the same order.
+            hashes: Block hashes for this request, covering block indices
+                `hash_offset` onwards.
             n_cached: How many leading blocks are already recorded.
             n_full: How many leading blocks are now full.
             recorder: Where to register old values for rollback.
+            hash_offset: Block index `hashes[0]` stands for. Non-zero lets a
+                caller build only the hashes of the range about to be cached,
+                which is O(new blocks) rather than O(context).
         """
         if not self.enable_caching or n_cached >= n_full:
             return
-        added = MappingKeysAdded.capture(self._hash_to_block)
-        recorder.record(added)
-        for index in range(n_cached, min(n_full, len(hashes), len(blocks))):
+        changed = MappingKeysChanged.capture(self._hash_to_block)
+        recorder.record(changed)
+        last = min(n_full, hash_offset + len(hashes), len(blocks))
+        for index in range(max(n_cached, hash_offset), last):
             block = blocks[index]
             if block.block_hash is None:
-                self._record_block(block, recorder)
-                block.block_hash = hashes[index]
-                self._hash_to_block[block.block_hash] = block
-                added.note(block.block_hash)
+                block_hash = hashes[index - hash_offset]
+                # Noted *before* the write, so the entry records what this key
+                # displaced. A hash already mapped to another block is the case
+                # that matters: the previous block keeps holding it, so rollback
+                # has to put the old pair back rather than delete the key.
+                changed.note(block_hash)
+                block.block_hash = block_hash
+                self._hash_to_block[block_hash] = block
+                # The block held no hash a line ago, so the inverse is to clear
+                # it. `changed` unwinds the map; this unwinds the block itself.
+                recorder.record(_HashAssigned(block))
 
     def reset_hashes(self, recorder: Recorder) -> None:
         """Empty the hash map, leaving occupancy untouched.
@@ -173,9 +186,10 @@ class BlockPool:
         """
         if not self._hash_to_block:
             return
+        # One entry for the whole map: it already pairs every hash with the
+        # block that held it, which is exactly what restoring both sides needs.
         recorder.record(_HashMapRestore(self, dict(self._hash_to_block)))
         for block in self._hash_to_block.values():
-            self._record_block(block, recorder)
             block.reset_hash()
         self._hash_to_block.clear()
 
@@ -184,30 +198,95 @@ class BlockPool:
         if block.block_hash is None:
             return False
         evicted_hash = block.block_hash
-        recorder.record(_HashMapEntry(self._hash_to_block, evicted_hash, block))
-        recorder.record_once(
-            ("evictions", id(self)),
-            lambda: AttrSnapshot.capture(self, "eviction_count"),
-        )
-        self._hash_to_block.pop(evicted_hash, None)
+        # Restore the *pair* only when this block is the one the map names.
+        # A hash can be held by a block the map no longer points at: two
+        # siblings racing to cache the same prompt block leave the loser holding
+        # its hash while the map names the winner. Re-inserting unconditionally
+        # resurrected the loser's pair on rollback, making a key addressable
+        # that had been absent before the event. The block's own hash is
+        # restored either way -- it is cleared either way.
+        if self._hash_to_block.get(evicted_hash) is block:
+            recorder.record(_HashMapEntry(self._hash_to_block, evicted_hash, block))
+            self._hash_to_block.pop(evicted_hash, None)
+        else:
+            recorder.record(_HashCleared(block, evicted_hash))
+        recorder.record_attrs_once(("evictions", id(self)), self, "eviction_count")
         block.reset_hash()
         self.eviction_count += 1
         return True
 
-    @staticmethod
-    def _record_block(block: KvBlock, recorder: Recorder) -> None:
-        """Capture a block's refcount and hash, once per event."""
-        recorder.record_once(
-            ("block", id(block)),
-            lambda: AttrSnapshot.capture(block, "ref_cnt", "_block_hash"),
-        )
+
+class _RefIncremented:
+    """Undoes one `incr_ref`.
+
+    The refcount is reversed by decrementing rather than by restoring a captured
+    value, which is what lets several references taken within one event unwind
+    independently. Capturing instead meant one keyed `(ref_cnt, _block_hash)`
+    snapshot per touched block per event -- 12.4 million of them in a
+    16-instance run.
+    """
+
+    __slots__ = ("_block",)
+
+    def __init__(self, block: KvBlock) -> None:
+        self._block = block
+
+    def restore(self) -> None:
+        self._block.decr_ref()
+
+
+class _RefDecremented:
+    """Undoes one `decr_ref`."""
+
+    __slots__ = ("_block",)
+
+    def __init__(self, block: KvBlock) -> None:
+        self._block = block
+
+    def restore(self) -> None:
+        self._block.incr_ref()
+
+
+class _HashAssigned:
+    """Undoes assigning a hash to a block that held none."""
+
+    __slots__ = ("_block",)
+
+    def __init__(self, block: KvBlock) -> None:
+        self._block = block
+
+    def restore(self) -> None:
+        self._block.reset_hash()
+
+
+class _HashCleared:
+    """Restores a block's own hash, without touching the map.
+
+    The eviction case where the map named some *other* block for this hash, so
+    only the block side was changed. Restoring the map too would resurrect a
+    pair that did not exist.
+    """
+
+    __slots__ = ("_block", "_key")
+
+    def __init__(self, block: KvBlock, key: Hashable) -> None:
+        self._block, self._key = block, key
+
+    def restore(self) -> None:
+        self._block.reset_hash()
+        self._block.block_hash = self._key
 
 
 class _HashMapEntry:
-    """Restores one evicted `hash -> block` entry.
+    """Restores one evicted `hash -> block` pair, map side and block side.
 
-    Not an `AttrSnapshot`: the old value is a mapping entry rather than an
-    attribute, and `MappingKeysAdded` is for additions rather than removals.
+    Both sides, because eviction clears both: `_hash_to_block.pop` and
+    `block.reset_hash()`. `block_hash`'s setter refuses to overwrite, so the
+    block is cleared first -- a later entry in the same event may already have
+    assigned a new hash to this very block, and unwinding has to pass through
+    that state rather than collide with it.
+
+    Recorded only when the map actually named this block; see `_maybe_evict`.
     """
 
     __slots__ = ("_mapping", "_key", "_block")
@@ -217,6 +296,8 @@ class _HashMapEntry:
 
     def restore(self) -> None:
         self._mapping[self._key] = self._block
+        self._block.reset_hash()
+        self._block.block_hash = self._key
 
 
 class _HashMapRestore:
@@ -225,6 +306,10 @@ class _HashMapRestore:
     This is the one entry whose size is proportional to the map rather than to
     the event, and it is correct for it to be: `reset_hashes` *is* an
     event-sized operation. It fires once per weight update, not per step.
+
+    Each block's own `_block_hash` is restored here too, from the same mapping:
+    `reset_hashes` clears both sides, and the map already pairs every hash with
+    the block that held it.
     """
 
     __slots__ = ("_pool", "_entries")
@@ -234,3 +319,6 @@ class _HashMapRestore:
 
     def restore(self) -> None:
         self._pool._hash_to_block.update(self._entries)
+        for block_hash, block in self._entries.items():
+            block.reset_hash()
+            block.block_hash = block_hash

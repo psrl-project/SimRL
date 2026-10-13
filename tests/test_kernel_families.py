@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.profiler.kernels.families import FAMILY_REGISTRY, family_for, register_family
-from dryrun.profiler.kernels.families_dense import DENSE_LLAMA_FAMILY
+from dryrun.profiler.kernel.grid.families import FAMILY_REGISTRY, family_for, register_family
+from dryrun.profiler.kernel.grid.families_dense import DENSE_LLAMA_FAMILY
 from dryrun.profiler.schema import ModelDescriptor, ProfileValidationError
 
 
@@ -111,3 +111,44 @@ def test_the_registry_is_not_empty_and_every_entry_is_a_family():
         assert hasattr(family, "gemm_shapes")
         assert hasattr(family, "logits_shape")
         assert hasattr(family, "head_counts")
+
+
+def test_flashinfer_decode_group_sizes_exclude_this_checkpoints_ratio():
+    """
+    A 40:8 GQA model has no FlashInfer decode kernel, at any tensor-parallel degree.
+
+    FlashInfer dispatches the GQA ratio as a template parameter and compiles
+    specializations only for the set declared here (`DISPATCH_GQA_GROUP_SIZE` in
+    `flashinfer/data/include/flashinfer/utils.cuh`); anything else raises
+    "Unsupported group_size" from inside the generated kernel. This is asserted rather
+    than discovered at measurement time because the runner skips the generation phase on
+    the strength of it, and because the invariance across TP is the non-obvious part:
+    `rank_head_counts` shards query and KV heads by the same degree, so the ratio cannot
+    be changed by choosing a different topology.
+
+    DeepSeek-R1-Distill-Qwen-14B is the motivating case at 40 query heads to 8 KV heads.
+    """
+    from dryrun.profiler.kernel.grid.attention import rank_head_counts
+    from dryrun.profiler.kernel.runner._flashinfer_attn import (
+        _FLASHINFER_DECODE_GROUP_SIZES,
+    )
+
+    model = ModelDescriptor(
+        name="deepseek-r1-distill-qwen-14b-like",
+        architecture="Qwen2ForCausalLM",
+        num_layers=48,
+        hidden_size=5120,
+        num_attention_heads=40,
+        num_query_groups=8,
+        extra={"intermediate_size": 13824, "vocab_size": 152064, "model_type": "qwen2"},
+    )
+
+    for tensor_parallel in (1, 2, 4, 8):
+        heads, kv_heads = rank_head_counts(model, tensor_parallel=tensor_parallel)
+        assert heads // kv_heads == 5
+        assert 5 not in _FLASHINFER_DECODE_GROUP_SIZES
+
+    # Qwen3-8B's 32:8 is supported, which is why its sweep writes four tables and this
+    # checkpoint's writes three.
+    heads, kv_heads = rank_head_counts(_qwen3_like(), tensor_parallel=1)
+    assert heads // kv_heads in _FLASHINFER_DECODE_GROUP_SIZES

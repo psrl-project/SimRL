@@ -123,6 +123,14 @@ def _torchrun_command(
     spec_path: Path,
     output_path: Path,
 ) -> list[str]:
+    """Build the torchrun argv that launches one topology's ranks.
+
+    The child module is named as a **string**, which is why `collective_launch.py` stays at
+    the package root rather than moving under `runner/` with the in-process measurement loops:
+    no import graph and no grep for a symbol would follow it, so a move breaks this only at
+    sweep time, on a cluster, after the rendezvous. `tests/test_kernel_collective_launch.py`
+    reads the module through `inspect.getsource`, which does fail here in CI.
+    """
     return [
         sys.executable,
         "-m",
@@ -133,7 +141,7 @@ def _torchrun_command(
         f"--master-addr={master_addr}",
         f"--master-port={master_port}",
         "-m",
-        "dryrun.profiler.kernels.collective_launch",
+        "dryrun.profiler.kernel.collective_launch",
         "--spec",
         str(spec_path),
         "--output",

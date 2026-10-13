@@ -15,7 +15,7 @@ from dryrun.cost.kernel.hardware import load_gpu_spec
 from dryrun.cost.kernel.interp import KernelCoverageError
 from dryrun.cost.kernel.ops.base import op_for
 from dryrun.cost.kernel.ops.optimizer import BYTES_PER_PARAMETER, OPTIMIZER_STEP_OP
-from dryrun.profiler.kernels.config import OptimizerSweep
+from dryrun.profiler.kernel.sweep import OptimizerSweep
 from dryrun.profiler.schema import ProfileValidationError
 
 _SLICE = ("adam", "master_fp32")
@@ -149,7 +149,7 @@ def test_an_unallocated_optimizer_state_is_refused_rather_than_timed():
     floor fit accepts it and the holdout MRE *improves*, because the point is easy to
     interpolate.
     """
-    from dryrun.profiler.kernels.optimizer import _require_allocated_state
+    from dryrun.profiler.kernel.runner.optimizer import _require_allocated_state
 
     parameter = object()
     with pytest.raises(ProfileValidationError, match="was not allocated"):
@@ -158,7 +158,7 @@ def test_an_unallocated_optimizer_state_is_refused_rather_than_timed():
 
 def test_a_partially_allocated_optimizer_state_is_refused():
     """All three of master, exp_avg and exp_avg_sq must be present."""
-    from dryrun.profiler.kernels.optimizer import _require_allocated_state
+    from dryrun.profiler.kernel.runner.optimizer import _require_allocated_state
 
     parameter = object()
     state = {"exp_avg": _FakeTensor(1_000), "master_param": _FakeTensor(1_000)}
@@ -168,7 +168,7 @@ def test_a_partially_allocated_optimizer_state_is_refused():
 
 def test_a_state_tensor_of_the_wrong_length_is_refused():
     """A short state tensor means the timed step measures a different size than the grid names."""
-    from dryrun.profiler.kernels.optimizer import _require_allocated_state
+    from dryrun.profiler.kernel.runner.optimizer import _require_allocated_state
 
     parameter = object()
     state = {name: _FakeTensor(500) for name in ("exp_avg", "exp_avg_sq", "master_param")}
@@ -177,7 +177,7 @@ def test_a_state_tensor_of_the_wrong_length_is_refused():
 
 
 def test_a_fully_allocated_state_passes():
-    from dryrun.profiler.kernels.optimizer import _require_allocated_state
+    from dryrun.profiler.kernel.runner.optimizer import _require_allocated_state
 
     parameter = object()
     state = {name: _FakeTensor(1_000) for name in ("exp_avg", "exp_avg_sq", "master_param")}

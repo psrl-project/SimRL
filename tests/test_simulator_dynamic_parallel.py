@@ -19,8 +19,8 @@ from dryrun.component.rollout.engine import Request
 from dryrun.cost import UnifiedRoofline
 from dryrun.policy.psrl import PSRLPolicy
 from dryrun.simulator.config import SimConfig
-from dryrun.simulator.simulator import Simulator
 from dryrun.simulator.dynamic_parallel import FleetPlan, ParallelismSolver
+from dryrun.simulator.simulator import Simulator
 from dryrun.workload.grouped import GroupedWorkload
 
 
@@ -46,7 +46,8 @@ def _config(**overrides) -> SimConfig:
         # so it is unrelated to the fleet. See .superpowers/sdd/progress.md.
         kv_blocks=2000,
         token_budget=1000,
-        routing_strategy="version_aware_tp",
+        routing_strategy="version_capped_tp",
+        max_concurrent_seqs_per_instance=40,
     )
     base.update(overrides)
     return SimConfig(**base)
@@ -61,6 +62,7 @@ def _solver(strategy: str = "search", n_gpus: int = 2) -> ParallelismSolver:
         strategy=strategy,
         fixed_tp_per_instance=(1,) * n_gpus,
         max_concurrency=None,
+        active_cap=40,
     )
 
 
@@ -184,14 +186,19 @@ def test_the_solver_sees_the_published_version_not_the_previous_one():
 
 
 def test_scg_curve_is_monotone_and_bounded_by_total_throughput():
-    """SCG(S) counts a cumulative subset, so it can only rise with S."""
+    """SCG(S) sums a cumulative subset, so it can only rise with S.
+
+    Its last point equals the run's throughput exactly: at the maximum observed
+    staleness no trajectory is excluded, so the filtered token sum is the whole
+    token sum. That identity is the cheapest check that the metric and the
+    throughput it is compared against share a denominator.
+    """
     sim = _simulator()
     result = sim.run()
     curve = result.scg_curve()
     values = [curve[s] for s in sorted(curve)]
     assert values == sorted(values)
-    total_rate = len(result.consumed) / result.sim_time
-    assert values[-1] == pytest.approx(total_rate, rel=1e-9)
+    assert values[-1] == pytest.approx(result.throughput, rel=1e-9)
 
 
 def test_fixed_strategy_reproduces_its_configured_fleet():

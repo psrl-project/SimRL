@@ -9,7 +9,7 @@ import pytest
 from dryrun.cost.kernel.ops.attention import GENERATION_ATTENTION_OP
 from dryrun.cost.kernel.ops.gemm import GEMM_OP
 from dryrun.cost.kernel.table import KernelTable
-from dryrun.profiler.kernels.measurements import PerfTableWriter
+from dryrun.profiler.kernel.measurements import PerfTableWriter
 
 
 def _writer(tmp_path: Path, **overrides) -> PerfTableWriter:

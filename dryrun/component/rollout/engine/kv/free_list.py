@@ -13,11 +13,24 @@ that means putting it back exactly where it was. The node's own `prev_free` /
 
 Sentinel head and tail nodes mean a real block's links are never `None` while it
 is in the list, which removes the branching vLLM's own comment calls out.
+
+**Rollback is a journal of inverse operations, not a snapshot of state.** Each
+of the two mutations has an exact inverse -- unlinking a block is undone by
+re-linking it between the neighbours it had, appending one is undone by
+unlinking it -- and `UndoLog` already unwinds newest-first, which is precisely
+the order those inverses compose in. So one entry per mutation suffices.
+
+Snapshotting instead meant registering three nodes' link pairs plus the free
+count per operation, deduplicated by key: four keyed captures per mutation,
+41 million of them in a 16-instance run, and they were the single largest cost
+in the engine. The journal is also *more* exactly correct, not less: a node
+relinked several times within one event unwinds through each step rather than
+relying on the first capture having been the right one.
 """
 
 from __future__ import annotations
 
-from ..undo import AttrSnapshot, Recorder
+from ..undo import Recorder
 from .block import KvBlock
 
 _SENTINEL_ID = -1
@@ -88,15 +101,12 @@ class FreeBlockList:
         """Put a block at the tail, as the most recently freed."""
         last = self._tail.prev_free
         assert last is not None, "Sentinel tail always has a predecessor."
-        self._record_links(block, recorder)
-        self._record_links(last, recorder)
-        self._record_links(self._tail, recorder)
-        recorder.record(AttrSnapshot(self, ("_num_free",), (self._num_free,)))
         last.next_free = block
         block.prev_free = last
         block.next_free = self._tail
         self._tail.prev_free = block
         self._num_free += 1
+        recorder.record(_Appended(self, block))
 
     def remove(self, block: KvBlock, recorder: Recorder) -> None:
         """Take a block out of the list, wherever it sits.
@@ -117,23 +127,66 @@ class FreeBlockList:
         """Detach `block`, recording enough to re-link it in place."""
         previous, following = block.prev_free, block.next_free
         assert previous is not None and following is not None
-        self._record_links(block, recorder)
-        self._record_links(previous, recorder)
-        self._record_links(following, recorder)
-        recorder.record(AttrSnapshot(self, ("_num_free",), (self._num_free,)))
+        previous.next_free = following
+        following.prev_free = previous
+        block.prev_free = block.next_free = None
+        self._num_free -= 1
+        recorder.record(_Unlinked(self, block, previous, following))
+
+    def _relink(self, block: KvBlock, previous: KvBlock, following: KvBlock) -> None:
+        """Put `block` back between the neighbours it was unlinked from."""
+        previous.next_free = block
+        following.prev_free = block
+        block.prev_free = previous
+        block.next_free = following
+        self._num_free += 1
+
+    def _detach(self, block: KvBlock) -> None:
+        """Remove `block` again, undoing an `append`."""
+        previous, following = block.prev_free, block.next_free
+        assert previous is not None and following is not None, (
+            f"Block {block.block_id} left the free list between its append and "
+            f"the rollback of that append, which the undo journal forbids."
+        )
         previous.next_free = following
         following.prev_free = previous
         block.prev_free = block.next_free = None
         self._num_free -= 1
 
-    @staticmethod
-    def _record_links(block: KvBlock, recorder: Recorder) -> None:
-        """Capture one node's links, once per event.
 
-        Keyed on `id(block)` rather than `block_id` because the two sentinels
-        share id -1, and they do get relinked.
-        """
-        recorder.record_once(
-            ("links", id(block)),
-            lambda: AttrSnapshot.capture(block, "prev_free", "next_free"),
-        )
+class _Unlinked:
+    """Undoes one `_unlink` by re-linking the block between its old neighbours.
+
+    A slotted class rather than a `(callable, args)` pair: both were measured in
+    the full simulator, and the class is 1.6x faster (53 s against 84 s of CPU
+    over three interleaved rounds), because binding a method allocates where
+    constructing this does not. A microbenchmark of the two in isolation says
+    the opposite, which is why the decision was made end to end.
+    """
+
+    __slots__ = ("_list", "_block", "_prev", "_next")
+
+    def __init__(
+        self,
+        free_list: FreeBlockList,
+        block: KvBlock,
+        previous: KvBlock,
+        following: KvBlock,
+    ) -> None:
+        self._list, self._block = free_list, block
+        self._prev, self._next = previous, following
+
+    def restore(self) -> None:
+        self._list._relink(self._block, self._prev, self._next)
+
+
+class _Appended:
+    """Undoes one `append` by taking the block back out of the list."""
+
+    __slots__ = ("_list", "_block")
+
+    def __init__(self, free_list: FreeBlockList, block: KvBlock) -> None:
+        self._list, self._block = free_list, block
+
+    def restore(self) -> None:
+        self._list._detach(self._block)

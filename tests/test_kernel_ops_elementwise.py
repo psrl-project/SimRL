@@ -48,6 +48,12 @@ class _FakeModelOps:
 
     tensor_parallel = 1
     num_layers = 2
+    # `ComposedRollout` charges each attention kind by ITS OWN layer count, because a
+    # hybrid model runs softmax attention on some layers and a gated delta net on the
+    # rest. This fake is a dense model, so every layer is softmax attention and the
+    # gated-delta count is zero -- the degenerate case the split must reduce to.
+    attention_layers = 2
+    gdn_layers = 0
 
     def __init__(self) -> None:
         self.projection_ops = (_FakeGemmOp(4096, 4096), _FakeGemmOp(4096, 11008))

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Hashable
+from typing import Any, Callable, Hashable
 
 from .protocol import Undoable
 
@@ -12,25 +12,44 @@ class UndoLog:
 
     Reverse order matters: a later entry may have been captured after an earlier
     one already changed something, so rollback has to unwind rather than replay.
+    It is load-bearing even under `record_once`, because two different keys can
+    name overlapping state -- `("req", id(req))` and `("hit", id(req))` both
+    capture `prefilled` -- and the earliest capture is the only one holding the
+    true pre-event value. Unwinding newest-first lets it win.
 
     There is deliberately no "capture this whole object" entry point. Callers
     register the specific things they touch, which is what keeps cost
     proportional to the work an event did rather than to the size of the
     subsystem it did the work in. A whole-pool `copy.deepcopy` measured 179 ms
     per event, or 1771 s across a run whose real duration is 3349 s.
+
+    An entry is either an `Undoable` or, for the attribute captures that are
+    almost all of the traffic, an inline `(target, names, values)` tuple. The
+    tuple is the same information an `AttrSnapshot` holds, stored without
+    building one: an event records tens of millions of these across a run and
+    only 16% of events are ever rolled back, so the object was allocated and
+    discarded far more often than it was used. `AttrSnapshot` remains the form
+    callers outside this module pass to `record`.
     """
 
     __slots__ = ("_entries", "_keys")
 
     def __init__(self) -> None:
-        self._entries: list[Undoable] = []
+        self._entries: list[Undoable | tuple[Any, tuple[str, ...], tuple[Any, ...]]] = []
         self._keys: set[Hashable] = set()
 
     def __len__(self) -> int:
         return len(self._entries)
 
     def record(self, entry: Undoable) -> None:
-        """Register an already-captured old value."""
+        """Register an already-captured old value, or an inverse operation.
+
+        The engine's invertible mutations (a refcount, a linked-list insertion)
+        register a small slotted object whose `restore` performs the inverse
+        rather than a captured value. A `(callable, args)` pair was tried for
+        those and measured 1.6x *slower* end to end, because binding a method
+        allocates; see `_Unlinked`.
+        """
         self._entries.append(entry)
 
     def record_once(self, key: Hashable, capture: Callable[[], Undoable]) -> None:
@@ -46,6 +65,37 @@ class UndoLog:
         self._keys.add(key)
         self._entries.append(capture())
 
+    def record_attrs_once(self, key: Hashable, target: Any, *names: str) -> None:
+        """`record_once` for the one case that is almost all of the traffic.
+
+        Every hot-path `record_once` captures attributes of one object, and
+        passing a callable meant building a closure per call -- including for
+        the repeat keys the callable exists to avoid paying for. Taking the
+        target and names directly means a repeat key costs a set lookup and
+        nothing else, which is what the callable was supposed to buy.
+
+        The capture is stored as a plain tuple rather than an `AttrSnapshot`,
+        for the reason given in the class docstring. `rollback` recognises it by
+        shape.
+        """
+        keys = self._keys
+        if key in keys:
+            return
+        keys.add(key)
+        # Unrolled for one and two names: every call site in the engine passes
+        # one or the other, and at this call volume the generator's frame setup
+        # outweighed the attribute reads.
+        if len(names) == 2:
+            self._entries.append(
+                (target, names, (getattr(target, names[0]), getattr(target, names[1])))
+            )
+        elif len(names) == 1:
+            self._entries.append((target, names, (getattr(target, names[0]),)))
+        else:
+            self._entries.append(
+                (target, names, tuple(getattr(target, n) for n in names))
+            )
+
     def rollback(self) -> None:
         """Restore every captured value, newest first, and empty the log.
 
@@ -59,8 +109,17 @@ class UndoLog:
                 "Cannot roll back an empty undo log: either no event was "
                 "recorded, or this event was already rolled back."
             )
+        # Two entry shapes, told apart without an isinstance call: a tuple is an
+        # attribute capture from `record_attrs_once`, anything else is an
+        # `Undoable`. The tuple exists so that the hottest capture path does not
+        # allocate an object per call; see the class docstring.
         for entry in reversed(self._entries):
-            entry.restore()
+            if type(entry) is tuple:
+                target, names, values = entry
+                for i, name in enumerate(names):
+                    setattr(target, name, values[i])
+            else:
+                entry.restore()
         self.clear()
 
     def clear(self) -> None:

@@ -86,7 +86,8 @@ discriminator:
 
 | `event` value | When emitted |
 |--------------|-------------|
-| `admit` | Request accepted by the staleness policy and dispatched to the rollout engine |
+| `enqueue` | Request staged in the router; no policy capacity is consumed yet |
+| `admit` | First group member is placed, atomically admitting the whole group |
 | `complete` | Rollout engine finishes generation |
 | `consume` | Policy takes the request as part of a training batch |
 | `drop` | Policy or engine evicts the request without consuming it |
@@ -99,13 +100,13 @@ Key fields (all events carry `t`, `event`, `rid`, `group_id`, `instance_id`):
 
 | Field | Meaning |
 |-------|---------|
-| `admit_time` | Simulation time when the request was dispatched |
+| `admit_time` | Simulation time when the group's first member was placed |
 | `complete_time` | Time when generation finished (`null` for events before completion) |
 | `consume_version` | Training version that consumed this request (`null` until consume) |
 | `prompt_len` | Prompt length in tokens |
 | `target_len` | Requested output length |
 | `generated` | Tokens actually generated |
-| `v_traj` | Weight version the rollout engine was serving when the request was admitted |
+| `v_traj` | Weight version bound at first placement (staged requests can rebase before then) |
 | `v_min` | Oldest weight version that produced any token for this request |
 | `v_max` | Newest weight version producing any token. Differs from `v_min` only if partial rollout spanned a push |
 | `staleness_true` | `consume_version - v_min` (null until consume) |
@@ -163,7 +164,7 @@ from `smg_routing_status.jsonl`; the reroute counters are simulation-only.
 | Field | Meaning |
 |-------|---------|
 | `t` | Simulation time of this snapshot |
-| `queue_len` | Requests admitted but not yet placed on an instance |
+| `queue_len` | Staged requests plus admitted siblings or reroutes awaiting placement |
 | `pending_request_num` | Duplicate of `queue_len`, as the real gateway reports it |
 | `running_request_num` | Requests the instances hold, running or queued |
 | `n_routed` | Cumulative placements, including re-placements |
