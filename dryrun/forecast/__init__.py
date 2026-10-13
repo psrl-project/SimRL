@@ -8,7 +8,8 @@ from .length import (
     OracleLength,
     build_length_predictor,
 )
-from .snapshot import Arrival, InstanceState, Resident
+from .pipeline import Pipeline, PipelineForecast, TrainState, compare, group_etas
+from .snapshot import Arrival, InstanceState, Interrupt, Resident
 
 __all__ = [
     "LENGTH_PREDICTORS",
@@ -16,9 +17,15 @@ __all__ = [
     "DrainResult",
     "InstanceForecast",
     "InstanceState",
+    "Interrupt",
     "LengthPredictor",
     "NoisyOracleLength",
     "OracleLength",
+    "Pipeline",
+    "PipelineForecast",
     "Resident",
+    "TrainState",
     "build_length_predictor",
+    "compare",
+    "group_etas",
 ]

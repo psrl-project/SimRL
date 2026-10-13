@@ -16,6 +16,7 @@ from dryrun.forecast import (
     Arrival,
     InstanceForecast,
     InstanceState,
+    Interrupt,
     OracleLength,
     Resident,
 )
@@ -289,6 +290,20 @@ def relative_errors(forecast, engine: Engine, skip=()) -> list[float]:
 
 def random_specs(rng: random.Random, n: int, prompt=(100, 30000), target=(1, 5000)) -> list[tuple[int, int]]:
     return [(rng.randint(*prompt), rng.randint(*target)) for _ in range(n)]
+
+
+def apply_interrupt(engine: Engine, ix: Interrupt) -> None:
+    """Drive the real engine through one weight publish, mirroring `_Drain._apply_interrupt`.
+
+    `abort_all` returns running then waiting, in the order `Router.enqueue` would have received them.
+    `Router.dispatch` re-places a layer in `rid` order regardless of that push order
+    (`SortKey.SMALL_ID`), so the re-add here uses `rid` order rather than the list `abort_all` handed back.
+    """
+    engine.cut(ix.time)
+    aborted = engine.inst.abort_all(requeue=False)
+    engine.inst.t_local = ix.time + ix.resume_delay
+    for req in sorted(aborted, key=lambda r: r.rid):
+        engine.inst.add_request(req, engine.inst.t_local)
 
 
 class TestPureDecode:
@@ -801,3 +816,197 @@ class TestSnapshot:
             bare_state(cost, token_budget=1, running=tuple(resident(i, 10, 10, 5, True) for i in range(2)))
         with pytest.raises(ValueError, match="at least one token"):
             Arrival(key=1, arrive_time=0.0, prompt_len=10, generated=0, remaining=0)
+
+
+class TestInterrupts:
+    """Scheduled weight publishes layered onto the replay, mirroring `Simulator._publish_weights`."""
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    def test_single_interrupt_matches_the_engine(self, backend, cost):
+        rng = random.Random(40)
+        worst = []
+        for _ in range(12):
+            n = rng.randint(4, 40)
+            engine = Engine(
+                backend, cost, max_concurrency=rng.choice([None, None, 16]), chunk_cap=rng.choice([None, None, 2048])
+            )
+            for rid, (prompt, target) in enumerate(random_specs(rng, n, prompt=(100, 8000), target=(200, 4000))):
+                engine.add(rid, prompt, target, 0.0)
+            state = engine.state()
+            ix = Interrupt(time=state.now + rng.uniform(1.0, 20.0), resume_delay=rng.choice([0.0, 0.5, 5.0, 20.0]))
+            result = InstanceForecast(state, interrupts=(ix,)).finish_times()
+            apply_interrupt(engine, ix)
+            engine.drain()
+            worst.append(max(relative_errors(result, engine)))
+        assert_cases_close(worst)
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    def test_two_consecutive_interrupts(self, backend, cost):
+        rng = random.Random(41)
+        worst = []
+        for _ in range(10):
+            n = rng.randint(4, 30)
+            engine = Engine(backend, cost, max_concurrency=rng.choice([None, 16]))
+            for rid, (prompt, target) in enumerate(random_specs(rng, n, prompt=(100, 6000), target=(300, 3000))):
+                engine.add(rid, prompt, target, 0.0)
+            state = engine.state()
+            t = state.now
+            interrupts = []
+            for _ in range(2):
+                t += rng.uniform(1.0, 15.0)
+                delay = rng.choice([0.0, 1.0, 8.0])
+                interrupts.append(Interrupt(time=t, resume_delay=delay))
+                t += delay
+            result = InstanceForecast(state, interrupts=tuple(interrupts)).finish_times()
+            for ix in interrupts:
+                apply_interrupt(engine, ix)
+            engine.drain()
+            worst.append(max(relative_errors(result, engine)))
+        assert_cases_close(worst)
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    def test_a_request_spans_two_publishes(self, backend, cost):
+        engine = Engine(backend, cost)
+        engine.add(0, 2000, 6000, 0.0)
+        probe = Engine(backend, cost)
+        probe.add(0, 2000, 6000, 0.0)
+        probe.drain()
+        total = probe.requests[0].complete_time
+        state = engine.state()
+        first = Interrupt(time=total * 0.3, resume_delay=total * 0.05)
+        second = Interrupt(time=total * 0.65, resume_delay=total * 0.05)
+        result = InstanceForecast(state, interrupts=(first, second)).finish_times()
+        apply_interrupt(engine, first)
+        apply_interrupt(engine, second)
+        engine.drain()
+        assert max(relative_errors(result, engine)) <= STRETCH
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    def test_interrupt_during_a_prefill_backlog(self, backend, cost):
+        rng = random.Random(42)
+        worst = []
+        for _ in range(8):
+            n = rng.randint(10, 40)
+            engine = Engine(
+                backend, cost, max_concurrency=rng.choice([None, 16]), chunk_cap=rng.choice([None, 2048])
+            )
+            for rid, (prompt, target) in enumerate(random_specs(rng, n, prompt=(2000, 12000), target=(500, 4000))):
+                engine.add(rid, prompt, target, 0.0)
+            for _ in range(rng.randint(1, 3)):
+                engine.inst.advance_one_event_committed(0)
+            assert engine.n_waiting > 0, "Setup must still be mid-backlog."
+            state = engine.state()
+            ix = Interrupt(time=state.now, resume_delay=rng.choice([0.0, 2.0, 10.0]))
+            result = InstanceForecast(state, interrupts=(ix,)).finish_times()
+            apply_interrupt(engine, ix)
+            engine.drain()
+            worst.append(max(relative_errors(result, engine)))
+        assert_cases_close(worst)
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    def test_interrupt_on_an_empty_instance_is_a_noop(self, backend, cost):
+        rng = random.Random(43)
+        engine = Engine(backend, cost)
+        state = engine.state()
+        ix = Interrupt(time=state.now + 5.0, resume_delay=3.0)
+        specs = random_specs(rng, 6, prompt=(100, 4000), target=(100, 2000))
+        arrivals = tuple(
+            Arrival(key=rid, arrive_time=state.now + 10.0 + rid, prompt_len=prompt, generated=0, remaining=target)
+            for rid, (prompt, target) in enumerate(specs)
+        )
+        result = InstanceForecast(state, arrivals, (ix,)).finish_times()
+        assert result.reprefill_tokens == (0,)
+        apply_interrupt(engine, ix)
+        assert engine.n_waiting == 0
+        for a in arrivals:
+            engine.cut(a.arrive_time)
+            engine.add(a.key, a.prompt_len, a.remaining, a.arrive_time)
+        engine.drain()
+        assert max(relative_errors(result, engine)) <= EXACT
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    def test_an_arrival_inside_the_dead_window_waits_for_resume(self, backend, cost):
+        rng = random.Random(44)
+        engine = Engine(backend, cost)
+        for rid, (prompt, target) in enumerate(random_specs(rng, 6, prompt=(200, 4000), target=(300, 2000))):
+            engine.add(rid, prompt, target, 0.0)
+        state = engine.state()
+        ix = Interrupt(time=state.now + 1.0, resume_delay=5.0)
+        arrival = Arrival(key=900, arrive_time=ix.time + 2.0, prompt_len=1500, generated=0, remaining=400)
+        assert ix.time <= arrival.arrive_time < ix.time + ix.resume_delay
+        result = InstanceForecast(state, (arrival,), (ix,)).finish_times()
+        later = dataclasses.replace(arrival, arrive_time=ix.time + ix.resume_delay + 50.0)
+        apart = InstanceForecast(state, (later,), (ix,)).finish_times()
+        assert result.finish_times[900] != apart.finish_times[900]
+        apply_interrupt(engine, ix)
+        engine.add(arrival.key, arrival.prompt_len, arrival.remaining, engine.inst.t_local)
+        engine.drain()
+        assert max(relative_errors(result, engine)) <= STRETCH
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    def test_resume_delay_zero_reprefills_without_an_idle_gap(self, backend, cost):
+        rng = random.Random(45)
+        worst = []
+        for _ in range(8):
+            n = rng.randint(4, 20)
+            engine = Engine(backend, cost)
+            for rid, (prompt, target) in enumerate(random_specs(rng, n, prompt=(200, 6000), target=(300, 3000))):
+                engine.add(rid, prompt, target, 0.0)
+            engine.settle()
+            state = engine.state()
+            ix = Interrupt(time=state.now + rng.uniform(0.5, 5.0), resume_delay=0.0)
+            result = InstanceForecast(state, interrupts=(ix,)).finish_times()
+            apply_interrupt(engine, ix)
+            engine.drain()
+            worst.append(max(relative_errors(result, engine)))
+        assert_cases_close(worst)
+
+    def test_reprefill_tokens_counts_every_aborted_context(self, cost):
+        rng = random.Random(46)
+        engine = Engine("native", cost)
+        for rid, (prompt, target) in enumerate(random_specs(rng, 10, prompt=(100, 6000), target=(300, 3000))):
+            engine.add(rid, prompt, target, 0.0)
+        state = engine.state()
+        ix = Interrupt(time=state.now + 2.0, resume_delay=3.0)
+        result = InstanceForecast(state, interrupts=(ix,)).finish_times()
+        engine.cut(ix.time)
+        expected = sum(r.ctx for r in engine.requests)
+        assert result.reprefill_tokens == (expected,)
+
+    def test_reprefill_tokens_pads_zero_when_the_pool_overflows_first(self, cost):
+        waiting = tuple(resident(i, 320, 160, 50, False) for i in range(2))
+        state = bare_state(cost, kv_blocks=20, waiting=waiting)
+        ix = Interrupt(time=1000.0, resume_delay=1.0)
+        result = InstanceForecast(state, interrupts=(ix,)).finish_times()
+        assert result.kv_overflow
+        assert result.reprefill_tokens == (0,)
+
+    def test_the_order_interrupts_are_given_in_does_not_matter(self, cost):
+        rng = random.Random(47)
+        state = synthetic_state(cost, rng)
+        interrupts = [Interrupt(state.now + 5.0, 2.0), Interrupt(state.now + 15.0, 1.0)]
+        forward = InstanceForecast(state, interrupts=interrupts).finish_times()
+        backward = InstanceForecast(state, interrupts=interrupts[::-1]).finish_times()
+        assert forward == backward
+
+    def test_with_interrupt_leaves_the_original_forecast_alone(self, cost):
+        state = synthetic_state(cost, random.Random(48))
+        base = InstanceForecast(state)
+        first = base.finish_times()
+        extended = base.with_interrupt(Interrupt(state.now + 5.0, 1.0))
+        assert extended is not base
+        assert base.finish_times() is first
+        assert base.interrupts == ()
+        assert extended.interrupts == (Interrupt(state.now + 5.0, 1.0),)
+
+    def test_extra_interrupts_passed_to_finish_times_equal_with_interrupt(self, cost):
+        state = synthetic_state(cost, random.Random(49))
+        ix = Interrupt(state.now + 3.0, 2.0)
+        assert (
+            InstanceForecast(state).finish_times(interrupts=(ix,))
+            == InstanceForecast(state).with_interrupt(ix).finish_times()
+        )
+
+    def test_negative_resume_delay_is_rejected(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            Interrupt(time=0.0, resume_delay=-1.0)

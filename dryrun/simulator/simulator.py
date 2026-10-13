@@ -21,6 +21,7 @@ from ..cost.rollout import RolloutCostModel
 from ..cost.training import (
     FixedTrainingLatency,
     FixedTrainingMemory,
+    TrainingCostEstimate,
     TrainingCostModel,
     TrainingParallelism,
     TrainingWorkload,
@@ -29,6 +30,7 @@ from ..policy.base import CompleteAction, SimState, StalenessPolicy
 from ..telemetry.store import JsonlStore
 from ..telemetry.writer import SimTelemetry
 from .config import SimConfig, SimResult, clip_total_length
+from .runtime import SchedulingRuntime
 
 
 class Simulator:
@@ -132,6 +134,10 @@ class Simulator:
             cost_model=rollout_cost,
         )
 
+        bind_runtime = getattr(self.router.strategy, "bind_runtime", None)
+        if callable(bind_runtime):
+            bind_runtime(SchedulingRuntime(self))
+
         self.t: float = 0.0
         self.train_version: int = 0
         self.rollout_version: int = 0
@@ -156,6 +162,12 @@ class Simulator:
         self.n_consumed: int = 0
         self.train_timestamps: list[tuple[float, float]] = []
         self.train_peak_memory_bytes: list[int] = []
+        self._training_end: float | None = None
+        """Absolute time the in-progress training step publishes, `None` while idle.
+
+        Set in `_train` before `_run_engine(deadline=...)`, cleared after `_publish_weights`. Read by
+        `SchedulingRuntime.train_state` for a strategy forecasting the training pipeline.
+        """
 
         # `cfg.log_telemetry=False` disables logging even if a `store` was
         # passed in; see `SimTelemetry` for the stream schemas and the
@@ -786,6 +798,40 @@ class Simulator:
         if not self._stage():
             self._dispatch_router()
 
+    def _train_cycle(
+        self,
+        sequence_lengths: tuple[int, ...],
+    ) -> tuple[TrainingCostEstimate, TrainingWorkload, float, float]:
+        """
+        Price one training step: latency plus memory, the workload priced, sync time, and recompute time.
+
+        Shared by `_train` and `SchedulingRuntime.cycle_time` so the two accountings cannot drift.
+
+        Returns:
+            tuple[TrainingCostEstimate, TrainingWorkload, float, float]: The latency and memory
+                estimate, the `TrainingWorkload` it was priced on, the sync time, and the recompute
+                time, in seconds.
+        """
+        training_workload = TrainingWorkload(
+            sequence_lengths=sequence_lengths,
+            micro_batch_size=self.cfg.training_micro_batch_size,
+            max_tokens_per_microbatch=self.cfg.training_max_tokens_per_microbatch,
+            schedule=self.cfg.training_schedule,
+            recompute=self.cfg.activation_recompute,
+            optimizer=self.cfg.training_optimizer,
+        )
+        training_estimate = self.training_cost.estimate(
+            training_workload,
+            self.training_parallelism,
+        )
+        weight_sync = self.policy.will_sync_after_train(self._state())
+        sync_time = self.sync_cost.sync_time(0, self.cfg.n_instances, 0) if weight_sync else 0.0
+        recompute_time = self.recompute_cost.recompute_time(
+            training_workload,
+            self.training_parallelism,
+        )
+        return training_estimate, training_workload, sync_time, recompute_time
+
     def _train(self, batch: list[Request]) -> None:
         """Consume `batch`, expire against the expected version, train, then publish.
 
@@ -820,18 +866,7 @@ class Simulator:
 
         sequence_lengths = tuple(self._training_sequence_length(req) for req in batch)
         total_tokens = sum(sequence_lengths)
-        training_workload = TrainingWorkload(
-            sequence_lengths=sequence_lengths,
-            micro_batch_size=self.cfg.training_micro_batch_size,
-            max_tokens_per_microbatch=self.cfg.training_max_tokens_per_microbatch,
-            schedule=self.cfg.training_schedule,
-            recompute=self.cfg.activation_recompute,
-            optimizer=self.cfg.training_optimizer,
-        )
-        training_estimate = self.training_cost.estimate(
-            training_workload,
-            self.training_parallelism,
-        )
+        training_estimate, training_workload, sync_time, recompute_time = self._train_cycle(sequence_lengths)
         train_time = training_estimate.latency_s
         peak_memory_bytes = training_estimate.peak_memory_bytes
         if (
@@ -842,17 +877,13 @@ class Simulator:
                 f"Predicted training peak memory {peak_memory_bytes} exceeds configured capacity "
                 f"{self.cfg.training_gpu_memory_bytes}."
             )
-        weight_sync = self.policy.will_sync_after_train(self._state())
-        sync_time = self.sync_cost.sync_time(0, self.cfg.n_instances, 0) if weight_sync else 0.0
-        recompute_time = self.recompute_cost.recompute_time(
-            training_workload,
-            self.training_parallelism,
-        )
 
         total_duration = train_time + sync_time + recompute_time
         deadline = self.t + total_duration
+        self._training_end = deadline
         self._run_engine(deadline=deadline)
         self._publish_weights()
+        self._training_end = None
 
         self.train_timestamps.append((train_start, self.t))
         self.train_peak_memory_bytes.append(peak_memory_bytes)

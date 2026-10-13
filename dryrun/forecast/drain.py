@@ -10,6 +10,10 @@ KV is an upper bound. A prompt shared by siblings is charged once per sibling, w
 still skipped on a prefix hit. Preemption is not modelled: the forecast reports the peak block usage
 it would need and flags `kv_overflow` when that exceeds the pool, after which the finish times are
 void.
+
+An `Interrupt` layers a scheduled weight publish onto the replay: every resident is aborted at its
+`time`, the instance idles until `time + resume_delay`, and the aborted set is re-prefilled from
+there, exactly like a prefill backlog.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..component.rollout.engine import blocks_for
-from .snapshot import Arrival, InstanceState
+from .snapshot import Arrival, InstanceState, Interrupt
 
 # Decode-only iterations are priced every this many steps and interpolated between.
 _SAMPLE_STRIDE = 16
@@ -36,14 +40,22 @@ class DrainResult:
     peak_blocks: int
     kv_overflow: bool
     """Whether the pool would have been exceeded, in which case the engine preempts and the times are void."""
+    reprefill_tokens: tuple[int, ...] = ()
+    """Tokens re-prefilled by each `Interrupt`, in ascending time order. 0 for one the replay never reached."""
 
 
 class InstanceForecast:
-    """The drain of one instance, with arrivals layered on without touching the state."""
+    """The drain of one instance, with arrivals and interrupts layered on without touching the state."""
 
-    def __init__(self, state: InstanceState, arrivals: Sequence[Arrival] = ()) -> None:
+    def __init__(
+        self,
+        state: InstanceState,
+        arrivals: Sequence[Arrival] = (),
+        interrupts: Sequence[Interrupt] = (),
+    ) -> None:
         self._state = state
         self._arrivals = tuple(arrivals)
+        self._interrupts = tuple(interrupts)
         self._baseline: DrainResult | None = None
 
     @property
@@ -54,31 +66,49 @@ class InstanceForecast:
     def arrivals(self) -> tuple[Arrival, ...]:
         return self._arrivals
 
+    @property
+    def interrupts(self) -> tuple[Interrupt, ...]:
+        return self._interrupts
+
     def with_arrival(self, arrival: Arrival) -> InstanceForecast:
         """Return the forecast in which `arrival` also reaches the instance."""
-        return InstanceForecast(self._state, (*self._arrivals, arrival))
+        return InstanceForecast(self._state, (*self._arrivals, arrival), self._interrupts)
 
-    def finish_times(self, arrivals: Sequence[Arrival] = ()) -> DrainResult:
+    def with_interrupt(self, interrupt: Interrupt) -> InstanceForecast:
+        """Return the forecast in which `interrupt` also publishes against the instance."""
+        return InstanceForecast(self._state, self._arrivals, (*self._interrupts, interrupt))
+
+    def finish_times(
+        self,
+        arrivals: Sequence[Arrival] = (),
+        interrupts: Sequence[Interrupt] = (),
+    ) -> DrainResult:
         """
-        Forecast every completion, treating `arrivals` as extra requests.
+        Forecast every completion, treating `arrivals` and `interrupts` as extra inputs.
 
         Args:
             arrivals (Sequence[Arrival]): Requests that reach the instance at their `arrive_time`,
                 on top of the ones this forecast already carries. One dated before the
                 instance's `now` is queued at `now`.
+            interrupts (Sequence[Interrupt]): Weight publishes to replay on top of the ones this
+                forecast already carries.
         """
-        if not arrivals:
+        if not arrivals and not interrupts:
             if self._baseline is None:
-                self._baseline = _replay(self._state, self._arrivals)
+                self._baseline = _replay(self._state, self._arrivals, self._interrupts)
             return self._baseline
-        return _replay(self._state, (*self._arrivals, *arrivals))
+        return _replay(self._state, (*self._arrivals, *arrivals), (*self._interrupts, *interrupts))
 
 
-def _replay(state: InstanceState, arrivals: tuple[Arrival, ...]) -> DrainResult:
+def _replay(
+    state: InstanceState,
+    arrivals: tuple[Arrival, ...],
+    interrupts: tuple[Interrupt, ...] = (),
+) -> DrainResult:
     keys = [r.key for r in (*state.waiting, *state.running)] + [a.key for a in arrivals]
     if len(set(keys)) != len(keys):
         raise ValueError("Resident and arrival keys must be unique.")
-    return _Drain(state, arrivals).run()
+    return _Drain(state, arrivals, interrupts).run()
 
 
 class _Queued:
@@ -98,7 +128,12 @@ class _Queued:
 class _Drain:
     """One replay of the engine over an `InstanceState`, used once."""
 
-    def __init__(self, state: InstanceState, arrivals: tuple[Arrival, ...]) -> None:
+    def __init__(
+        self,
+        state: InstanceState,
+        arrivals: tuple[Arrival, ...],
+        interrupts: tuple[Interrupt, ...] = (),
+    ) -> None:
         self.state = state
         self.cost = state.cost
         self.block = state.block_size
@@ -108,6 +143,10 @@ class _Drain:
         self.keys = [r.key for r in by_remaining]
         self.ctx = np.array([r.ctx for r in by_remaining], dtype=np.int64)
         self.rem = np.array([r.remaining for r in by_remaining], dtype=np.int64)
+        # Carried only so an interrupt can turn a running request back into a `_Queued` one
+        # without losing the prompt identity its prefix-cache hit depends on.
+        self.prompt_key = [r.prompt_key for r in by_remaining]
+        self.prompt_len = [r.prompt_len for r in by_remaining]
         self.waiting = [
             _Queued(r.key, r.ctx, r.prefilled, r.remaining, r.prompt_key, r.prompt_len) for r in state.waiting
         ]
@@ -123,25 +162,92 @@ class _Drain:
         self.peak = self.used
         self.finish: dict[int, float] = {}
         self.all_keys = [*(r.key for r in state.waiting), *self.keys, *(a.key for a in arrivals)]
+        self.interrupts = sorted(interrupts, key=lambda ix: ix.time)
+        self.n_interrupt = 0
+        self.resume_at: float | None = None
+        """Set while an interrupt's weight load is in flight. The instance admits nothing until it."""
+        self._pending_abort: list[_Queued] = []
+        self.reprefill_tokens: list[int] = []
 
     def run(self) -> DrainResult:
         stuck = False
         while True:
-            self._admit_due()
-            if not self.keys and not self.waiting:
-                if self.n_arrived == len(self.pending):
-                    break
-                self.t = self.pending[self.n_arrived].arrive_time
+            if self.resume_at is not None:
+                self.t = max(self.t, self.resume_at)
+                self._resume()
                 continue
-            cut = self.pending[self.n_arrived].arrive_time if self.n_arrived < len(self.pending) else math.inf
-            if self.waiting:
-                if not self._iterate(cut):
-                    stuck = True
+            self._admit_due()
+            if self._interrupt_due():
+                self._apply_interrupt()
+                continue
+            if not self.keys and not self.waiting:
+                wake = self._next_wake()
+                if wake is None:
                     break
-            else:
-                self._decode_phase(cut)
+                self.t = wake
+                continue
+            if not self._run_phase(self._next_cut()):
+                stuck = True
+                break
         finish = {key: self.finish.get(key, math.inf) for key in self.all_keys}
-        return DrainResult(finish, self.peak, stuck or self.peak > self.state.kv_blocks)
+        reprefill = tuple(self.reprefill_tokens) + (0,) * (len(self.interrupts) - len(self.reprefill_tokens))
+        return DrainResult(finish, self.peak, stuck or self.peak > self.state.kv_blocks, reprefill)
+
+    def _run_phase(self, cut: float) -> bool:
+        if self.waiting:
+            return self._iterate(cut)
+        self._decode_phase(cut)
+        return True
+
+    def _next_arrival(self) -> float:
+        return self.pending[self.n_arrived].arrive_time if self.n_arrived < len(self.pending) else math.inf
+
+    def _next_interrupt(self) -> float:
+        return self.interrupts[self.n_interrupt].time if self.n_interrupt < len(self.interrupts) else math.inf
+
+    def _interrupt_due(self) -> bool:
+        return self.n_interrupt < len(self.interrupts) and self.t >= self.interrupts[self.n_interrupt].time
+
+    def _next_cut(self) -> float:
+        return min(self._next_arrival(), self._next_interrupt())
+
+    def _next_wake(self) -> float | None:
+        candidates = [t for t in (self._next_arrival(), self._next_interrupt()) if math.isfinite(t)]
+        return min(candidates) if candidates else None
+
+    def _apply_interrupt(self) -> None:
+        """Abort every resident for the publish at `self.t`, then idle until it resumes."""
+        ix = self.interrupts[self.n_interrupt]
+        self.n_interrupt += 1
+        running = [
+            _Queued(key, int(ctx), 0, int(rem), pkey, plen)
+            for key, ctx, rem, pkey, plen in zip(
+                self.keys, self.ctx.tolist(), self.rem.tolist(), self.prompt_key, self.prompt_len
+            )
+        ]
+        for w in self.waiting:
+            w.prefilled = 0
+        # Router dispatch re-places this version layer in `rid` order (`SortKey.SMALL_ID`), not the
+        # engine's own running-then-waiting order.
+        aborted = sorted((*running, *self.waiting), key=lambda w: w.key)
+        self.reprefill_tokens.append(sum(w.ctx for w in aborted))
+        self._pending_abort = aborted
+        self.keys = []
+        self.ctx = np.zeros(0, dtype=np.int64)
+        self.rem = np.zeros(0, dtype=np.int64)
+        self.prompt_key = []
+        self.prompt_len = []
+        self.waiting = []
+        self.used = 0
+        self.cached = {}
+        self.resume_at = ix.time + ix.resume_delay
+
+    def _resume(self) -> None:
+        """Queue the aborted set and whatever arrived during the dead window, aborted set first."""
+        self.resume_at = None
+        self._admit_due()
+        self.waiting = [*self._pending_abort, *self.waiting]
+        self._pending_abort = []
 
     def _note_cached(
         self,
@@ -168,10 +274,14 @@ class _Drain:
         keys = self.keys + [e.key for e in entries]
         ctx = np.concatenate((self.ctx, np.array([e.ctx for e in entries], dtype=np.int64)))
         rem = np.concatenate((self.rem, np.array([e.remaining for e in entries], dtype=np.int64)))
+        prompt_key = self.prompt_key + [e.prompt_key for e in entries]
+        prompt_len = self.prompt_len + [e.prompt_len for e in entries]
         order = np.argsort(rem, kind="stable")
         self.keys = [keys[i] for i in order]
         self.ctx = ctx[order]
         self.rem = rem[order]
+        self.prompt_key = [prompt_key[i] for i in order]
+        self.prompt_len = [prompt_len[i] for i in order]
 
     def _blocks(self, tokens: np.ndarray) -> int:
         b = self.block
@@ -196,6 +306,8 @@ class _Drain:
         self.keys = self.keys[m:]
         self.ctx = self.ctx[m:]
         self.rem = self.rem[m:]
+        self.prompt_key = self.prompt_key[m:]
+        self.prompt_len = self.prompt_len[m:]
 
     def _decode_phase(self, cut: float) -> None:
         """Run closed-form decode segments until the batch drains or `cut` is reached."""
@@ -241,6 +353,8 @@ class _Drain:
         self.ctx = ctx0[i:] + adv
         self.rem = self.rem[i:] - adv
         self.keys = self.keys[i:]
+        self.prompt_key = self.prompt_key[i:]
+        self.prompt_len = self.prompt_len[i:]
         self.used = used_other + self._blocks(self.ctx)
         self.t = t
 

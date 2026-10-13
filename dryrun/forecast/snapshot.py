@@ -77,6 +77,24 @@ class Arrival:
 
 
 @dataclass(frozen=True, slots=True)
+class Interrupt:
+    """A scheduled weight publish: every resident is aborted and the instance idles until resume.
+
+    Mirrors `Simulator._publish_weights` under `partial_rollout`: at `time` every running and
+    waiting request, and any arrival already admitted, is aborted in place (tokens kept, KV and the
+    prefix cache dropped). The instance then does nothing until `time + resume_delay`, when the
+    aborted set is queued again with `prefilled` reset to 0.
+    """
+
+    time: float
+    resume_delay: float
+
+    def __post_init__(self) -> None:
+        if self.resume_delay < 0:
+            raise ValueError(f"resume_delay must be non-negative, got {self.resume_delay!r}.")
+
+
+@dataclass(frozen=True, slots=True)
 class InstanceState:
     """An engine instance at one moment: its limits and the requests it holds."""
 
