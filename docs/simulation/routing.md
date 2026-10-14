@@ -25,6 +25,7 @@ dryrun rollout.router.strategy=kv_cache_aware rollout.n_instances=4
 | `prefix_aware` | Whoever already holds this request's prefix, unless the fleet is skewed |
 | `throughput_balance` | Smallest predicted increase in step latency |
 | `length_aware` | Orders whole prompt groups longest- or shortest-first inside a bounded block, places by predicted remaining load. Reads a `LengthPredictor` from `dryrun/forecast/length.py`, so it runs on the oracle or on a noisy one |
+| `inventory_deadline` | Admits and routes by forecasting each option's effect on the nearest unready psrl training buffer, with `dryrun/forecast/plan.py`'s `PlanSession`. No configured cap: an option that would delay a critical buffer loses to DEFER, one that would not is free. See below |
 
 `request_num_balance` reproduces the former selection exactly, so the default is
 behaviour-preserving: at `n_instances=1` every strategy must produce an identical run, which
@@ -48,8 +49,10 @@ All are optional and duck-typed, so a strategy implements only what it needs.
 | `allow_version_bypass(req, context)` | after a version head cannot be placed | none built in |
 | `select_context(req, candidates, context)` | instead of `select`, with the clock | none built in |
 | `rank_queued(window, now)` | per placement, over `rollout.router.queue_window` queued requests of one version | `length_aware` |
-| `pick_queued(window, views)` | per placement, over the whole version layer, instead of `rank_queued` | none built in |
+| `pick_queued(window, views)` | per placement, over the whole version layer, instead of `rank_queued` | `inventory_deadline` |
 | `observe_enqueue(reqs)` | when a prompt group is first queued | `length_aware` |
+| `bind_runtime(runtime)` | once, when the simulator builds the router | `inventory_deadline` |
+| `begin_dispatch(t)` | once per `dispatch()` call, before any placement in that burst | `inventory_deadline` |
 
 `tests/test_router.py` covers `narrow_candidates` and `allow_version_bypass` through a stub strategy.
 
@@ -66,6 +69,30 @@ ranks last. `window_groups` serves groups in consecutive blocks of that size in 
 reorders only within a block; one training batch of groups is the natural size, since it is the set
 sharing a consumption deadline. Any comparison must also report tokens per consumed group, which
 should match the baseline's. See `docs/design/psrl-scheduling-headroom.md` for what this buys and where.
+
+### `inventory_deadline` forecasts the pipeline instead of capping it
+
+A fixed router cap tuned at the decode knee wins by keeping admission below the point where more
+concurrency slows every resident's decode step, and by not pinning requests to an old trajectory
+version too early. `inventory_deadline` gets both effects from one model instead of a constant:
+`dryrun/forecast/plan.py`'s `PlanSession` forecasts, per candidate instance (or DEFER, staying
+queued), the training-finish time `E_k` of every psrl buffer the fleet's state and the pending
+reservations imply, out to `horizon_buffers`. Options are compared lexicographically buffer by
+buffer with `compare`'s tolerance, so a placement that barely moves the nearest buffer is judged
+on the next one instead. `begin_dispatch` builds one `PlanSession` per dispatch burst from
+`SchedulingRuntime`; every decision inside that burst commits into the same session, so a later
+member sees the effect of an earlier one without replaying the whole fleet.
+
+Two decisions share the model: routing an already-admitted group's queued member (`evaluate_member`),
+and deciding whether to admit a staged group at all (`evaluate_admission`). Both go
+longest-predicted-first, and an admitted group's member always goes ahead of a staged group's,
+since it already holds a reservation a buffer is waiting on. `allow_version_bypass` always returns
+`False`: once one version's head is deferred or blocked, dispatch stops rather than letting a newer
+version jump ahead, which is what keeps the deadline order meaningful across version layers.
+`defer=False` is the ablation that removes DEFER and forces every feasible request onto the
+best-scoring instance. Requires `policy=psrl`, the only policy `SchedulingRuntime.inventory()`
+supports. This strategy's own placement rule has not yet been checked for self-consistency against
+`PlanSession`'s forecast -- see `docs/superpowers/specs/2026-10-13-inventory-deadline-scheduling-design.md`.
 
 ### Two warnings
 

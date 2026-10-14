@@ -5,6 +5,7 @@ Each strategy lives in its own module so selection rules remain independent.
 """
 
 from . import (  # noqa: F401
+    inventory_deadline,
     kv_cache_aware,
     length_aware,
     prefix_aware,

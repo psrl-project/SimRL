@@ -60,7 +60,10 @@ dryrun/
 │   │       │   ├── request_num_balance.py  # default
 │   │       │   ├── round_robin.py, random_choice.py
 │   │       │   ├── kv_cache_aware.py, prefix_aware.py, throughput_balance.py
-│   │       │   └── length_aware.py         # group ordering + predicted-load placement
+│   │       │   ├── length_aware.py         # group ordering + predicted-load placement
+│   │       │   └── inventory_deadline.py   # forecasts each option's effect on the nearest
+│   │       │                               #   unready psrl buffer via forecast/plan.py's
+│   │       │                               #   PlanSession; no configured cap
 │   │       └── router.py        # Router (queue + gate + dispatch), AdmissionGate.
 │   │                            #   Dispatch runs ONLY after a committed capacity release
 │   │                            #   (complete / preempt / weight publish), never mid-segment

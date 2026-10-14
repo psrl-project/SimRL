@@ -289,6 +289,9 @@ class Router:
             "only happen after an event commits, or the placement could be rolled "
             "back while the router still believes it happened."
         )
+        begin = getattr(self.strategy, "begin_dispatch", None)
+        if callable(begin):
+            begin(t)
         placed: list[tuple[Request, int]] = []
         while self.queue:
             blocked_versions: list[int] = []
