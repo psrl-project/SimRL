@@ -124,6 +124,7 @@ class InventoryDeadline:
                 best_option, best_pipeline = option, pipeline
         if best_pipeline is None:
             return None
+        best_option = self._break_tie(best_option, best_pipeline, options, candidates, candidate_ids, eps)
 
         session.commit(req, best_option)
         if best_option is None:
@@ -133,6 +134,36 @@ class InventoryDeadline:
     def allow_version_bypass(self, _req: Request | None, _context) -> bool:
         """Never: letting a newer version jump a blocked or deferred head would break EDF."""
         return False
+
+    def _break_tie(
+        self,
+        best_option: int | None,
+        best_pipeline,
+        options: dict,
+        candidates: list[InstanceView],
+        candidate_ids: set[int],
+        eps: float,
+    ) -> int | None:
+        """Prefer the least-loaded instance among options the buffer forecast cannot tell apart.
+
+        Below the decode knee, most placements tie the lexicographic pipeline within `eps` because
+        nothing is buffer-critical yet; without a secondary signal the loop above keeps whichever
+        instance happens to iterate first, concentrating every admission there.
+        """
+        if best_option is None:
+            return None
+        tied = [
+            option
+            for option, pipeline in options.items()
+            if option is not None
+            and option in candidate_ids
+            and pipeline is not None
+            and compare(pipeline, best_pipeline, eps) == 0
+        ]
+        if len(tied) <= 1:
+            return best_option
+        load = {view.instance_id: view.n_active for view in candidates}
+        return min(tied, key=lambda option: (load[option], option))
 
     def _deadline(self, session: PlanSession, group_id: int) -> int:
         """A group admitted earlier this burst has no snapshot reservation yet.

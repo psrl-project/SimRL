@@ -40,9 +40,9 @@ def member_request(rid: int, prompt_len: int, remaining: int, group_id: int | No
     return Request(rid=rid, prompt_len=prompt_len, target_len=remaining, v_traj=0, group_id=gid, source_group_id=gid)
 
 
-def view(instance_id: int) -> InstanceView:
+def view(instance_id: int, n_running: int = 0) -> InstanceView:
     return InstanceView(
-        instance_id=instance_id, n_waiting=0, n_running=0, kv_utilization=0.0, total_ctx=0,
+        instance_id=instance_id, n_waiting=0, n_running=n_running, kv_utilization=0.0, total_ctx=0,
         free_blocks=0, committed_blocks=0, prefix_hit_tokens=lambda req: 0, step_time_delta=lambda req: 0.0,
     )
 
@@ -246,6 +246,20 @@ class TestSelectContext:
 
         assert index == 0
         assert session.committed == [(0, 0)]
+
+    def test_tied_pipelines_break_by_least_loaded_instance(self):
+        """Without a load tie-break, every tied decision keeps whichever instance iterates first,
+        concentrating admissions on one instance of a multi-instance fleet regardless of load."""
+        s = strategy()
+        session = _FakeSession(members={1})
+        req = member_request(0, 100, 50, group_id=1)
+        session.set_member_options(0, {0: pipeline(100.0), 1: pipeline(100.0), 2: pipeline(100.0)})
+        s._session = session
+
+        index = s.select_context(req, [view(0, n_running=5), view(1, n_running=1), view(2, n_running=3)], None)
+
+        assert index == 1
+        assert session.committed == [(0, 1)]
 
     def test_defer_wins_when_strictly_better(self):
         s = strategy()
