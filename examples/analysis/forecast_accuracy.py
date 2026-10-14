@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import importlib.util
 import json
 import math
@@ -69,6 +70,8 @@ class Regime:
     n_instances: int = 2
     time_per_token: float = 3.0e-4
     horizon: int = 2
+    strategy: str = "request_num_balance"
+    strategy_args: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -168,6 +171,8 @@ def _build(regime: Regime) -> _ForecastingSimulator:
         max_concurrent_seqs_per_instance=regime.cap,
         workload=_workload(regime),
         log_telemetry=False,
+        routing_strategy=regime.strategy,
+        routing_strategy_args=regime.strategy_args,
     )
     policy = _ObservingPolicy()
     sim = _ForecastingSimulator(
@@ -264,10 +269,23 @@ def default_regimes() -> list[Regime]:
     ]
 
 
+def _toy_regimes_for(strategy: str) -> list[Regime]:
+    """`default_regimes()`, or the same axes re-run under `inventory_deadline`.
+
+    A static `cap` is the knob `inventory_deadline` replaces, so forcing it to 0 (disabled) is what
+    running that strategy "on its own terms" means: whatever it does is an effect of its own model,
+    not of also being capped.
+    """
+    if strategy == "request_num_balance":
+        return default_regimes()
+
+    return [dataclasses.replace(r, strategy=strategy, cap=0) for r in default_regimes()]
+
+
 def _run_toy(args: argparse.Namespace) -> None:
     rows = []
     print(f"{'regime':<22}{'disp':>6}{'scored':>7}{'F_med':>8}{'F_p90':>8}{'E_med':>8}{'E_p90':>8}{'lat_ms':>8}")
-    for regime in default_regimes():
+    for regime in _toy_regimes_for(args.strategy):
         run = run_regime(regime)
         row = score(run)
         rows.append(row)
@@ -344,6 +362,8 @@ class MediumRegime:
     batch: int = 32
     group_size: int = 8
     n_instances: int = 2
+    strategy: str = "request_num_balance"
+    strategy_args: dict = field(default_factory=dict)
 
 
 def medium_regimes() -> list[MediumRegime]:
@@ -593,6 +613,8 @@ def _build_medium(regime: MediumRegime, cost_model, mdt_module) -> _MediumSimula
         block_size=MEDIUM_BLOCK_SIZE,
         max_prompt_length=1024,
         max_output_length=regime.length_cap,
+        routing_strategy=regime.strategy,
+        routing_strategy_args=regime.strategy_args,
     )
     return _MediumSimulator(
         rollout_cost=cost_model,
@@ -711,6 +733,17 @@ def _sweep_table(runs: list[MediumRunResult]) -> list[dict]:
     return rows
 
 
+def _medium_regimes_for(strategy: str) -> list[MediumRegime]:
+    """`medium_regimes()`, or the same axes re-run under `inventory_deadline` with its cap forced
+    off -- see `_toy_regimes_for`'s docstring for why that is what running it "on its own terms"
+    means.
+    """
+    if strategy == "request_num_balance":
+        return medium_regimes()
+
+    return [dataclasses.replace(r, strategy=strategy, cap=0) for r in medium_regimes()]
+
+
 def _run_medium(args: argparse.Namespace) -> None:
     mdt_module = _load_dispersed_trace_module()
     cost_model = _composed_cost_model()
@@ -722,7 +755,7 @@ def _run_medium(args: argparse.Namespace) -> None:
         f"{'regime':<16}{'disp':>6}{'samp':>6}{'scored':>7}{'F_med':>8}{'F_p90':>8}"
         f"{'E_med':>8}{'overfl%':>8}{'preempt':>8}{'lat_ms':>8}"
     )
-    for regime in medium_regimes():
+    for regime in _medium_regimes_for(args.strategy):
         run = run_medium_regime(regime, cost_model, mdt_module)
         runs.append(run)
         if run.failed:
@@ -764,6 +797,12 @@ def _run_medium(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scale", choices=["toy", "medium"], default="toy")
+    parser.add_argument(
+        "--strategy",
+        choices=["request_num_balance", "inventory_deadline"],
+        default="request_num_balance",
+        help="Which strategy drives placement, for the self-consistency check.",
+    )
     parser.add_argument("--out", type=Path, default=Path("/tmp/forecast_accuracy.json"))
     parser.add_argument(
         "--out-medium", type=Path, default=ROOT / "outputs" / "analysis" / "forecast_accuracy_medium.json"
