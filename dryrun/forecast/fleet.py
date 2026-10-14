@@ -12,14 +12,17 @@ buffer `k0` with no interrupts fixes `publish_k0`, which fixes the interrupt for
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from psrl.workers.ps.inventory_forecast import InventorySnapshot
+
 from ..component.rollout.engine import Request, TrajView, traj_view
 from .drain import InstanceForecast
 from .length import LengthPredictor
-from .pipeline import Pipeline, PipelineForecast, group_etas
+from .pipeline import Pipeline, PipelineForecast, TrainState, group_etas
 from .snapshot import Arrival, Interrupt
 
 if TYPE_CHECKING:
@@ -78,6 +81,70 @@ def arrival_of(req: Request, now: float, remaining: Callable[[TrajView], float])
     )
 
 
+def placement_order(
+    queued_by_group: Mapping[int, Sequence[Request]],
+    deadline_of: Callable[[int], int],
+    remaining_of: Callable[[TrajView], float],
+) -> list[Request]:
+    """
+    Order queued members by ascending deadline buffer, then longest predicted remaining first.
+
+    This is the greedy order `estimate_queued`, and anything layered on it, folds members in. The
+    sort is stable, so two members equal on both keys keep the order the queue offered them.
+
+    Args:
+        queued_by_group (Mapping[int, Sequence[Request]]): Queued members by group id, all reserved.
+        deadline_of (Callable[[int], int]): A reserved group's deadline buffer, from the snapshot.
+        remaining_of (Callable[[TrajView], float]): Predicted tokens left for a member.
+
+    Returns:
+        list[Request]: The members in the order they are folded.
+    """
+    items: list[tuple[int, float, Request]] = []
+    for group_id, reqs in queued_by_group.items():
+        deadline = deadline_of(group_id)
+        for req in reqs:
+            items.append((deadline, -float(remaining_of(traj_view(req))), req))
+    items.sort(key=lambda item: (item[0], item[1]))
+    return [req for _, _, req in items]
+
+
+def fold_member(
+    fleet: FleetForecast,
+    req: Request,
+    remaining_of: Callable[[TrajView], float],
+    *,
+    now: float,
+) -> tuple[FleetForecast, int | None, float]:
+    """
+    Fold one queued member onto the instance it would finish on soonest.
+
+    Args:
+        fleet (FleetForecast): The committed forecasts, without this member.
+        req (Request): The queued member to place.
+        remaining_of (Callable[[TrajView], float]): Predicted tokens left for the member.
+        now (float): The instant the member would be admitted.
+
+    Returns:
+        tuple[FleetForecast, int | None, float]: The fleet with the member folded in (unchanged when
+            no instance can admit it without overflowing), the chosen instance id or None, and the
+            member's finish time, `inf` when unplaced.
+    """
+    arrival = arrival_of(req, now, remaining_of)
+    best_id: int | None = None
+    best_finish = float("inf")
+    for instance_id, fc in fleet.instances.items():
+        result = fc.with_arrival(arrival).finish_times()
+        if result.kv_overflow:
+            continue
+        candidate = result.finish_times[req.rid]
+        if candidate < best_finish:
+            best_id, best_finish = instance_id, candidate
+    if best_id is None:
+        return fleet, None, math.inf
+    return fleet.with_placement(best_id, arrival), best_id, best_finish
+
+
 def estimate_queued(
     fleet: FleetForecast,
     queued_by_group: Mapping[int, Sequence[Request]],
@@ -106,28 +173,11 @@ def estimate_queued(
         tuple[FleetForecast, dict[int, float]]: The fleet with every placed member folded in, and
             the finish time of each placed member by request id.
     """
-    items: list[tuple[int, float, Request]] = []
-    for group_id, reqs in queued_by_group.items():
-        deadline = deadline_of(group_id)
-        for req in reqs:
-            items.append((deadline, -float(remaining_of(traj_view(req))), req))
-    items.sort(key=lambda item: (item[0], item[1]))
-
     finish: dict[int, float] = {}
-    for _, _, req in items:
-        arrival = arrival_of(req, now, remaining_of)
-        best_id: int | None = None
-        best_finish = float("inf")
-        for instance_id, fc in fleet.instances.items():
-            result = fc.with_arrival(arrival).finish_times()
-            if result.kv_overflow:
-                continue
-            candidate = result.finish_times[req.rid]
-            if candidate < best_finish:
-                best_id, best_finish = instance_id, candidate
+    for req in placement_order(queued_by_group, deadline_of, remaining_of):
+        fleet, best_id, best_finish = fold_member(fleet, req, remaining_of, now=now)
         if best_id is None:
             continue
-        fleet = fleet.with_placement(best_id, arrival)
         finish[req.rid] = best_finish
     return fleet, finish
 
@@ -147,7 +197,7 @@ def _queued_admitted(runtime: SchedulingRuntime, members: Mapping[int, Sequence[
     return {group_id: reqs for group_id, reqs in runtime.queued().items() if group_id in members}
 
 
-def _sequence_hint(
+def sequence_hint(
     group_eta: Mapping[int, float],
     members: Mapping[int, Sequence[int]],
     lengths_by_rid: Mapping[int, int],
@@ -177,7 +227,7 @@ def _sequence_hint(
     return tuple((per_response + [mean] * batch)[:batch])
 
 
-def _group_etas(
+def group_etas_from_fleet(
     fleet: FleetForecast,
     members: Mapping[int, Sequence[int]],
     runtime: SchedulingRuntime,
@@ -229,20 +279,51 @@ def forecast(
         queued = {group_id: [r for r in reqs if r.rid != overridden] for group_id, reqs in queued.items()}
     fleet, _ = estimate_queued(fleet, queued, snapshot.deadline, remaining_of, now=now)
 
-    eta = _group_etas(fleet, members, runtime)
+    eta = group_etas_from_fleet(fleet, members, runtime)
     if sequence_lengths_hint is None:
         lengths_by_rid = {
             req.rid: max(1, round(req.prompt_len + length_predictor.predict_total(traj_view(req))))
             for req in runtime.inflight
         }
-        sequence_lengths_hint = _sequence_hint(
+        sequence_lengths_hint = sequence_hint(
             eta, members, lengths_by_rid, runtime.batch_size, runtime.group_size
         )
     train = runtime.train_state(tuple(sequence_lengths_hint))
-
     horizon = min(horizon_buffers, len(snapshot.buffers))
+    return chain_buffers(fleet, snapshot, train, eta, members, runtime, horizon)
+
+
+def chain_buffers(
+    fleet: FleetForecast,
+    snapshot: InventorySnapshot,
+    train: TrainState,
+    eta: Mapping[int, float],
+    members: Mapping[int, Sequence[int]],
+    runtime: SchedulingRuntime,
+    horizon: int,
+    new_groups: Sequence[tuple[int, float]] = (),
+) -> Pipeline:
+    """
+    Chain `horizon` buffers through the training pipeline, scheduling an `Interrupt` per publish.
+
+    Shared by `forecast` and any evaluator that needs the same multi-buffer projection on top of a
+    different fleet. See the module docstring for why no fixed point is needed.
+
+    Args:
+        fleet (FleetForecast): The fleet whose finish times price buffer 0.
+        snapshot (InventorySnapshot): The inventory snapshot `eta` and `new_groups` replay over.
+        train: The `TrainState` pricing every buffer's cycle.
+        eta (Mapping[int, float]): Buffer-0 group ETAs, mixing placed forecasts and completions.
+        members (Mapping[int, Sequence[int]]): Group id to its member request ids.
+        runtime (SchedulingRuntime): The live simulator facade, for `runtime.pending` completions.
+        horizon (int): How many buffers to project, clamped to the snapshot's own buffers.
+        new_groups (Sequence[tuple[int, float]]): Hypothetical admissions passed to buffer 0 only.
+
+    Returns:
+        Pipeline: `F_k` and `E_k` for buffers `k0 .. k0 + horizon - 1`.
+    """
     proj = PipelineForecast(snapshot, train)
-    pipeline = proj.evaluate(eta)
+    pipeline = proj.evaluate(eta, new_groups)
     interrupts: list[Interrupt] = []
     for step in range(1, horizon):
         # The `step - 1`-th publish is fixed once the buffers before it are priced, so the next
@@ -252,7 +333,7 @@ def forecast(
         staged = fleet
         for interrupt in interrupts:
             staged = staged.with_interrupt(interrupt)
-        pipeline = proj.evaluate(_group_etas(staged, members, runtime))
+        pipeline = proj.evaluate(group_etas_from_fleet(staged, members, runtime))
 
     return Pipeline(
         buffers=pipeline.buffers[:horizon],

@@ -3,10 +3,16 @@
 from .drain import DrainResult, InstanceForecast
 from .fleet import (
     FleetForecast,
+    arrival_of,
+    chain_buffers,
     estimate_queued,
     evaluate_placement,
+    fold_member,
     forecast,
+    group_etas_from_fleet,
     members_of,
+    placement_order,
+    sequence_hint,
 )
 from .length import (
     LENGTH_PREDICTORS,
@@ -16,6 +22,7 @@ from .length import (
     build_length_predictor,
 )
 from .pipeline import Pipeline, PipelineForecast, TrainState, compare, group_etas
+from .plan import PlanSession
 from .snapshot import Arrival, InstanceState, Interrupt, Resident
 
 __all__ = [
@@ -31,13 +38,20 @@ __all__ = [
     "OracleLength",
     "Pipeline",
     "PipelineForecast",
+    "PlanSession",
     "Resident",
     "TrainState",
+    "arrival_of",
     "build_length_predictor",
+    "chain_buffers",
     "compare",
     "estimate_queued",
     "evaluate_placement",
+    "fold_member",
     "forecast",
     "group_etas",
+    "group_etas_from_fleet",
     "members_of",
+    "placement_order",
+    "sequence_hint",
 ]
