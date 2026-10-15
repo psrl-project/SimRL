@@ -208,6 +208,33 @@ class TestPickQueued:
         chosen = s.pick_queued([short_group[0], long_group[0], long_group[1]], [view(0)])
         assert chosen is long_group[0]
 
+    def test_window_groups_bounds_reordering_to_arrival_blocks(self):
+        """A long group that arrived two blocks later must not jump ahead of an earlier one.
+
+        Without a bound, slowest-first search spans the whole staged backlog, which is the
+        exact `length_aware` docstring warns against: it starves whichever end of the length
+        distribution it ranks last. `window_groups=1` here means every group is its own block,
+        so arrival order -- not length -- must decide between groups 1 and 2.
+        """
+        s = InventoryDeadline(length_model="oracle", window_groups=1)
+        early_short = [member_request(10, 100, 50, group_id=1)]
+        late_long = [member_request(20, 100, 9000, group_id=2)]
+        s.observe_enqueue(early_short)
+        s.observe_enqueue(late_long)
+        s._session = _FakeSession(staged_groups={1: early_short, 2: late_long})
+        chosen = s.pick_queued([early_short[0], late_long[0]], [view(0)])
+        assert chosen is early_short[0]
+
+    def test_window_groups_zero_reorders_the_whole_backlog(self):
+        s = InventoryDeadline(length_model="oracle", window_groups=0)
+        early_short = [member_request(10, 100, 50, group_id=1)]
+        late_long = [member_request(20, 100, 9000, group_id=2)]
+        s.observe_enqueue(early_short)
+        s.observe_enqueue(late_long)
+        s._session = _FakeSession(staged_groups={1: early_short, 2: late_long})
+        chosen = s.pick_queued([early_short[0], late_long[0]], [view(0)])
+        assert chosen is late_long[0]
+
     def test_staged_group_offers_only_the_first_member(self):
         s = strategy()
         group = [member_request(10, 100, 500, group_id=1), member_request(11, 100, 500, group_id=1)]

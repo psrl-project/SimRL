@@ -14,7 +14,11 @@ next decision in the same burst sees the last one's effect, without replaying th
 Both decisions go longest-predicted-first. Among an admitted group's queued members, that is
 `PlanSession`'s own tail-fold order (reserved deadline buffer, then longest remaining); among
 staged groups not yet admitted, it is the group's own slowest predicted member, since that
-straggler is what the admission decision is actually about.
+straggler is what the admission decision is actually about -- but only within a `window_groups`
+block of arrival order (same convention as `length_aware`'s knob of the same name). A deadline
+is real urgency and is never window-bounded; a length-only tiebreak ranking the whole backlog
+would starve whichever end of the length distribution it ranks last, exactly the failure mode
+`length_aware`'s own docstring warns against.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ class InventoryDeadline:
         horizon_buffers: int = 2,
         eps_frac: float = 0.01,
         defer: bool = True,
+        window_groups: int = 32,
     ) -> None:
         """
         Args:
@@ -47,6 +52,10 @@ class InventoryDeadline:
                 before one is preferred over the other, on each buffer `compare` checks.
             defer (bool): Whether DEFER is an option at all. False forces every feasible request
                 onto the best-scoring instance, the ablation that isolates what deferral buys.
+            window_groups (int): Staged groups per reordering block, in arrival order (same
+                convention as `length_aware`'s knob of the same name). Zero reorders admission
+                priority across the whole backlog, which starves whichever end of the length
+                distribution the slowest-first rule ranks last.
         """
         self.predictor = build_length_predictor(length_model, **(length_model_args or {}))
         if horizon_buffers < 1:
@@ -56,11 +65,21 @@ class InventoryDeadline:
             raise ValueError(f"eps_frac must be >= 0, got {eps_frac!r}.")
         self.eps_frac = float(eps_frac)
         self.defer = bool(defer)
+        if window_groups < 0:
+            raise ValueError(f"window_groups must be >= 0, got {window_groups!r}.")
+        self.window_groups = int(window_groups)
         self._runtime = None
         self._session: PlanSession | None = None
+        self._arrival: dict[int, int] = {}
 
     def bind_runtime(self, runtime) -> None:
         self._runtime = runtime
+
+    def observe_enqueue(self, reqs: list[Request]) -> None:
+        """Record each group's arrival order, the first time any of its members is queued."""
+        for req in reqs:
+            if req.group_id not in self._arrival:
+                self._arrival[req.group_id] = len(self._arrival)
 
     def begin_dispatch(self, _t: float) -> None:
         """Snapshot a fresh `PlanSession` for this dispatch burst."""
@@ -77,7 +96,7 @@ class InventoryDeadline:
             return None
         remaining_of = self.predictor.remaining
         admitted: list[tuple[int, float, int, Request]] = []
-        staged: list[tuple[float, int, Request]] = []
+        staged: list[tuple[int, float, int, Request]] = []
         staged_seen: set[int] = set()
         for req in window:
             if req.group_id in session.members:
@@ -87,11 +106,12 @@ class InventoryDeadline:
                 staged_seen.add(req.group_id)
                 group = session.staged_groups[req.group_id]
                 slowest = max(remaining_of(traj_view(member)) for member in group)
-                staged.append((-slowest, group[0].rid, group[0]))
+                block = self._arrival.get(req.group_id, 0) // self.window_groups if self.window_groups else 0
+                staged.append((block, -slowest, group[0].rid, group[0]))
         if admitted:
             return min(admitted)[3]
         if staged:
-            return min(staged)[2]
+            return min(staged)[3]
         return None
 
     def select_context(self, req: Request, candidates: list[InstanceView], _context) -> int | None:
