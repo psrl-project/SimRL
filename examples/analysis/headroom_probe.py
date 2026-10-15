@@ -32,7 +32,7 @@ import json
 import statistics
 import sys
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +74,9 @@ class Point:
     group_size: int = 8
     n_instances: int = 2
     weight_load: float = 0.0
+    rho: float = 0.6
+    ours_args: dict = field(default_factory=dict)
+    """Strategy args for the gated `inventory_deadline_wm` arm; empty skips that arm."""
 
 
 @dataclass
@@ -93,16 +96,28 @@ class ArmResult:
 
 def points(grid: str) -> list[Point]:
     """`best`: the doc's strongest named regimes, plus controls at both ends of the tau axis."""
-    if grid != "best":
-        raise KeyError(f"Unknown grid {grid!r}. Known: ['best'].")
-    return [
-        Point("cv0.5_tau600", cv=0.5, train_s=600.0),
-        Point("cv1.0_tau600", cv=1.0, train_s=600.0),
-        Point("cv1.0_tau345", cv=1.0, train_s=345.0),
-        Point("cv0.5_tau345", cv=0.5, train_s=345.0),
-        Point("cv0.5_tau150", cv=0.5, train_s=150.0),
-        Point("cv0.5_tau600_s2", cv=0.5, train_s=600.0, staleness=2),
-    ]
+    if grid == "best":
+        return [
+            Point("cv0.5_tau600", cv=0.5, train_s=600.0),
+            Point("cv1.0_tau600", cv=1.0, train_s=600.0),
+            Point("cv1.0_tau345", cv=1.0, train_s=345.0),
+            Point("cv0.5_tau345", cv=0.5, train_s=345.0),
+            Point("cv0.5_tau150", cv=0.5, train_s=150.0),
+            Point("cv0.5_tau600_s2", cv=0.5, train_s=600.0, staleness=2),
+        ]
+    if grid == "heldout":
+        """Points that played no role in choosing any knob, for validating a value picked on
+        `best`. Two interpolations, one cv extrapolation, and three axes `best` never moved:
+        mean length (the dimensionless-knob claim's strongest test), arrival pressure, S=3."""
+        return [
+            Point("cv0.75_tau475", cv=0.75, train_s=475.0, ours_args={"kv_watermark": 0.6}),
+            Point("cv0.5_tau225", cv=0.5, train_s=225.0, ours_args={"kv_watermark": 0.6}),
+            Point("cv1.5_tau345", cv=1.5, train_s=345.0, ours_args={"kv_watermark": 0.6}),
+            Point("mean12k_tau345", cv=0.5, train_s=345.0, mean=12000, ours_args={"kv_watermark": 0.6}),
+            Point("rho0.5_tau600", cv=0.5, train_s=600.0, rho=0.5, ours_args={"kv_watermark": 0.6}),
+            Point("s3_tau600", cv=0.5, train_s=600.0, staleness=3, ours_args={"kv_watermark": 0.6}),
+        ]
+    raise KeyError(f"Unknown grid {grid!r}. Known: ['best', 'heldout'].")
 
 
 def _regime(fa, point: Point, *, strategy: str, strategy_args: dict, cap: int):
@@ -114,7 +129,7 @@ def _regime(fa, point: Point, *, strategy: str, strategy_args: dict, cap: int):
         cap=cap,
         weight_load=point.weight_load,
         mean=point.mean,
-        rho=0.6,
+        rho=point.rho,
         length_cap=point.length_cap,
         n_versions=point.n_versions,
         batch=point.batch,
@@ -217,6 +232,14 @@ def run_point(fa, point: Point, cost_model, mdt) -> dict:
             arm="inventory_deadline", strategy="inventory_deadline", strategy_args={}, cap=0,
         )
     )
+    if point.ours_args:
+        arms.append(
+            run_arm(
+                fa, point, cost_model, mdt,
+                arm="inventory_deadline_wm", strategy="inventory_deadline",
+                strategy_args=dict(point.ours_args), cap=0,
+            )
+        )
 
     return {
         "point": asdict(point),
@@ -263,7 +286,8 @@ def _report(args: argparse.Namespace) -> None:
     print(header)
     for row in rows:
         base = row["arms"]["psrl_default"]
-        for arm in ("psrl_default", "static_cap", "static_cap_lpt", "inventory_deadline"):
+        arm_names = [a for a in ("psrl_default", "static_cap", "static_cap_lpt", "inventory_deadline", "inventory_deadline_wm") if a in row["arms"]]
+        for arm in arm_names:
             a = row["arms"][arm]
             speedup = base["span"] / a["span"]
             ratio = a["tokens_per_group"] / base["tokens_per_group"]
@@ -274,15 +298,22 @@ def _report(args: argparse.Namespace) -> None:
                 f"{a['preemptions']:>9}{flag}"
             )
         print()
-    print("inventory_deadline vs the better static arm, per point:")
+    print("ours vs the better static arm, per point:")
     for row in rows:
-        ours = row["arms"]["inventory_deadline"]["span"]
-        best_static = min(row["arms"]["static_cap"]["span"], row["arms"]["static_cap_lpt"]["span"])
-        verdict = "WINS" if ours < best_static else "loses"
-        print(f"  {row['point']['name']:<20}{best_static / ours:>8.4f}x  {verdict}")
+        for arm in ("inventory_deadline", "inventory_deadline_wm"):
+            if arm not in row["arms"]:
+                continue
+            ours = row["arms"][arm]["span"]
+            best_static = min(row["arms"]["static_cap"]["span"], row["arms"]["static_cap_lpt"]["span"])
+            cap48 = min(
+                next(r["span"] for r in row["fifo_grid"] if r["cap"] == 48),
+                next(r["span"] for r in row["lpt_grid"] if r["cap"] == 48),
+            )
+            verdict = "WINS" if ours < best_static else "loses"
+            print(f"  {row['point']['name']:<20}{arm:<20}vs best static {best_static / ours:>8.4f}x  vs cap48 {cap48 / ours:>8.4f}x  {verdict}")
 
 
-GRIDS = {"best": None}
+GRIDS = {"best": None, "heldout": None}
 
 
 def main() -> None:

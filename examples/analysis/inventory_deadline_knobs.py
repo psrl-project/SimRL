@@ -41,6 +41,25 @@ KNOBS: dict[str, dict] = {
 }
 """One knob moved at a time from the shipped defaults, plus one combination."""
 
+WM06: dict[str, dict] = {
+    "wm06": {"kv_watermark": 0.6},
+    "wm06_eps0": {"kv_watermark": 0.6, "eps_frac": 0.0},
+    "wm06_eps_small": {"kv_watermark": 0.6, "eps_frac": 0.001},
+    "wm06_eps_big": {"kv_watermark": 0.6, "eps_frac": 0.10},
+    "wm06_h4": {"kv_watermark": 0.6, "horizon_buffers": 4},
+    "wm06_no_defer": {"kv_watermark": 0.6, "defer": False},
+    "wm06_wg0": {"kv_watermark": 0.6, "window_groups": 0},
+    "wm06_wg64": {"kv_watermark": 0.6, "window_groups": 64},
+}
+"""The same knobs re-swept on top of the KV admission gate (wm=0.6).
+
+The original sweep above found `eps` acting as an admission throttle whose correct sign flipped
+across regimes -- but that was measured with no gate. If the watermark has taken over the throttle
+role, `eps` should now be a pure comparison tolerance (eps0 harmless or even free); if it still
+flips sign, the design genuinely needs both knobs. `wm06_wg0` checks whether the arrival-block
+bound still matters once the gate bounds concurrency."""
+KNOBS.update(WM06)
+
 
 def _load_probe():
     """Reuse `headroom_probe.py`'s points, harness and concurrency reconstruction."""
