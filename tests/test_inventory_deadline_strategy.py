@@ -176,6 +176,17 @@ class TestBeginDispatch:
         assert s.pick_queued([req], [view(0)]) is None
         assert s.select_context(req, [view(0)], None) is None
 
+    def test_kv_watermark_reaches_the_session(self):
+        s = InventoryDeadline(length_model="oracle", kv_watermark=0.3)
+        runtime = StubRuntime(
+            instance_states={0: bare_state(cost())},
+            snapshot=make_snapshot({}),
+            train=TrainState(None, 0.0, 10.0, 1.0),
+        )
+        s.bind_runtime(runtime)
+        s.begin_dispatch(0.0)
+        assert s._session.kv_watermark == 0.3
+
 
 class TestPickQueued:
     def test_empty_window_returns_none(self):

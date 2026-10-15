@@ -71,6 +71,7 @@ class PlanSession:
         lengths_by_rid: dict[int, int],
         train_cache: dict[tuple[int, ...], TrainState],
         horizon: int,
+        kv_watermark: float = 0.0,
     ) -> None:
         self.runtime = runtime
         self.length_predictor = length_predictor
@@ -88,6 +89,7 @@ class PlanSession:
         self.lengths_by_rid = lengths_by_rid
         self.train_cache = train_cache
         self.horizon = horizon
+        self.kv_watermark = kv_watermark
 
     # --- construction ---------------------------------------------------
 
@@ -97,6 +99,7 @@ class PlanSession:
         runtime: SchedulingRuntime,
         length_predictor: LengthPredictor,
         horizon_buffers: int = 2,
+        kv_watermark: float = 0.0,
     ) -> PlanSession:
         """
         Snapshot `runtime` and fold its queued admitted-group members into a tentative tail.
@@ -105,6 +108,11 @@ class PlanSession:
             runtime (SchedulingRuntime): The live, read-only simulator facade. Its policy must be psrl.
             length_predictor (LengthPredictor): Predicted remaining length for every request.
             horizon_buffers (int): How many buffers `evaluate_*` projects, clamped to the snapshot.
+            kv_watermark (float): Fraction of an instance's KV pool a staged group's forecast peak
+                may reach before admitting it there is refused, same convention as `length_aware`'s
+                knob of the same name. Zero disables the check, leaving literal `kv_overflow` as the
+                only admission-feasibility bar. Applies to admission only: an already-admitted
+                member already holds a buffer reservation and must still be placed somewhere.
         """
         snapshot = runtime.inventory()
         remaining_of = length_predictor.remaining
@@ -142,6 +150,7 @@ class PlanSession:
             lengths_by_rid=lengths_by_rid,
             train_cache={},
             horizon=horizon,
+            kv_watermark=kv_watermark,
         )
         baseline = session._baseline_pipeline()
         session.defer_until, session.defer_valid = session._compute_defer_until(baseline)
@@ -267,11 +276,16 @@ class PlanSession:
         remaining_of = self.length_predictor.remaining
         return sorted(rest, key=lambda r: -remaining_of(traj_view(r)))
 
+    def _above_watermark(self, fc: InstanceForecast, result) -> bool:
+        if self.kv_watermark <= 0.0:
+            return False
+        return result.peak_blocks > self.kv_watermark * fc.state.kv_blocks
+
     def _price_admission(self, f: Request, rest_sorted: Sequence[Request], instance_id: int) -> Pipeline | None:
         remaining_of = self.length_predictor.remaining
         fleet_eval = self.fleet.with_placement(instance_id, arrival_of(f, self.now, remaining_of))
         first = fleet_eval.instances[instance_id].finish_times()
-        if first.kv_overflow:
+        if first.kv_overflow or self._above_watermark(fleet_eval.instances[instance_id], first):
             return None
         group_eta = first.finish_times[f.rid]
         for member in rest_sorted:
@@ -319,7 +333,8 @@ class PlanSession:
         remaining_of = self.length_predictor.remaining
         rest_sorted = self._rest_sorted(rest)
         fleet_eval = self.fleet.with_placement(option, arrival_of(f, self.now, remaining_of))
-        if fleet_eval.instances[option].finish_times().kv_overflow:
+        first = fleet_eval.instances[option].finish_times()
+        if first.kv_overflow or self._above_watermark(fleet_eval.instances[option], first):
             raise ValueError(f"Cannot admit group {f.group_id!r} on instance {option!r}, which is infeasible.")
         tail_updates: dict[int, int] = {}
         for member in rest_sorted:

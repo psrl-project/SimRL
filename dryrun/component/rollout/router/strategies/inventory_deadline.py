@@ -42,6 +42,7 @@ class InventoryDeadline:
         eps_frac: float = 0.01,
         defer: bool = True,
         window_groups: int = 32,
+        kv_watermark: float = 0.0,
     ) -> None:
         """
         Args:
@@ -56,6 +57,13 @@ class InventoryDeadline:
                 convention as `length_aware`'s knob of the same name). Zero reorders admission
                 priority across the whole backlog, which starves whichever end of the length
                 distribution the slowest-first rule ranks last.
+            kv_watermark (float): Fraction of an instance's forecast KV peak a staged group's
+                admission may reach before that instance is refused as an admission candidate,
+                same convention as `length_aware`'s knob of the same name. Zero disables the check,
+                leaving literal `kv_overflow` as the only admission-feasibility bar -- this is the
+                design's own "admission candidates = instances whose forecast future KV peak fits"
+                limb, applied only to admitting a new group, never to routing an already-admitted
+                member (which already holds a buffer reservation and must still go somewhere).
         """
         self.predictor = build_length_predictor(length_model, **(length_model_args or {}))
         if horizon_buffers < 1:
@@ -68,6 +76,9 @@ class InventoryDeadline:
         if window_groups < 0:
             raise ValueError(f"window_groups must be >= 0, got {window_groups!r}.")
         self.window_groups = int(window_groups)
+        if not 0.0 <= kv_watermark <= 1.0:
+            raise ValueError(f"kv_watermark must be in [0, 1], got {kv_watermark!r}.")
+        self.kv_watermark = float(kv_watermark)
         self._runtime = None
         self._session: PlanSession | None = None
         self._arrival: dict[int, int] = {}
@@ -83,7 +94,9 @@ class InventoryDeadline:
 
     def begin_dispatch(self, _t: float) -> None:
         """Snapshot a fresh `PlanSession` for this dispatch burst."""
-        self._session = PlanSession.build(self._runtime, self.predictor, self.horizon_buffers)
+        self._session = PlanSession.build(
+            self._runtime, self.predictor, self.horizon_buffers, kv_watermark=self.kv_watermark
+        )
 
     def pick_queued(self, window: list[Request], _views: list[InstanceView]) -> Request | None:
         """Offer the highest-priority request in this version's layer.

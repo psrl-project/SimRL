@@ -496,6 +496,31 @@ class TestGroupAdmission:
         result = session.evaluate_admission(members)
         assert result[0] is None
 
+    def test_kv_watermark_refuses_admission_below_literal_overflow(self):
+        """A group that would fit without overflowing can still be refused by the softer watermark.
+
+        prompt_len=16, remaining=144 peaks at 160 tokens = 10 blocks of 16. A 20-block pool never
+        overflows (10 <= 20), so only the watermark -- not `kv_overflow` -- can explain a refusal.
+        """
+        model = cost()
+        state = bare_state(model, running=(), kv_blocks=20)
+        runtime = StubRuntime(
+            instance_states={0: state}, snapshot=make_snapshot({}, num_entries=4),
+            train=TrainState(None, 0.0, 10.0, 1.0),
+        )
+        group_id = 1
+        members = [member_request(group_id * 10, 16, 16, 144, group_id=group_id)]
+        runtime.staged[group_id] = members
+
+        unwatermarked = PlanSession.build(runtime, ORACLE, horizon_buffers=1)
+        assert unwatermarked.evaluate_admission(members)[0] is not None
+
+        half_full = PlanSession.build(runtime, ORACLE, horizon_buffers=1, kv_watermark=0.3)
+        assert half_full.evaluate_admission(members)[0] is None
+
+        loose = PlanSession.build(runtime, ORACLE, horizon_buffers=1, kv_watermark=0.6)
+        assert loose.evaluate_admission(members)[0] is not None
+
     def test_admission_changes_the_pipeline_consistently_with_psrl_forecast_ready_times(self):
         runtime, members = self._runtime_with_staged_group(seed=13)
         session = PlanSession.build(runtime, ORACLE, horizon_buffers=2)
