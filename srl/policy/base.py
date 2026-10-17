@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from ..component.rollout.engine import Request
+from .ledger import GroupView  # noqa: F401  (re-exported through this module)
 
 
 class CompleteAction(Enum):
@@ -34,6 +35,8 @@ class SimState:
     n_consumed: int = 0
     n_instances: int = 1
     sync_in_progress: bool = False
+    groups: tuple[GroupView, ...] = ()
+    """Every live group. Order is ledger insertion, not recency."""
 
     @property
     def responses_per_batch(self) -> int:

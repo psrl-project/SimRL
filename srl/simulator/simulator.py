@@ -27,6 +27,7 @@ from ..cost.training import (
     TrainingWorkload,
 )
 from ..policy.base import CompleteAction, SimState, StalenessPolicy
+from ..policy.ledger import GroupLedger
 from ..telemetry.store import JsonlStore
 from ..telemetry.writer import SimTelemetry
 from .config import SimConfig, SimResult, clip_total_length
@@ -162,6 +163,7 @@ class Simulator:
         self.n_consumed: int = 0
         self.train_timestamps: list[tuple[float, float]] = []
         self.train_peak_memory_bytes: list[int] = []
+        self._ledger = GroupLedger()
         self._training_end: float | None = None
         """Absolute time the in-progress training step publishes, `None` while idle.
 
@@ -189,6 +191,7 @@ class Simulator:
             n_admitted=self.n_admitted,
             n_consumed=self.n_consumed,
             n_instances=self.cfg.n_instances,
+            groups=self._ledger.views(),
         )
 
     def _next_request_shape(self) -> tuple[int, int, int]:
@@ -279,6 +282,7 @@ class Simulator:
             self.inflight.extend(group)
             self.n_admitted += len(group)
             self.policy.on_admit(group, self._state())
+            self._ledger.begin(group, self.rollout_version, self.t)
             for member in group:
                 self.telemetry.write_request("admit", self.t, member)
         self.policy.on_route(req, instance_id, self._state())
@@ -383,6 +387,7 @@ class Simulator:
             # complete_time is already set by _retire via t_local. Do not overwrite.
             self.telemetry.write_request("complete", self.t, req)
             self._observe_completion(req)
+            self._ledger.complete(req.rid, self.t)
             siblings = self.pending.setdefault(req.group_id, [])
             siblings.append(req)
             if len(siblings) < self.cfg.group_size:
@@ -440,6 +445,7 @@ class Simulator:
         for group_id in dropped_groups:
             self.pending.pop(group_id, None)
             self._staged_groups.pop(group_id, None)
+            self._ledger.drop(group_id)
         self.ready_groups = [
             group for group in self.ready_groups if group[0].group_id not in dropped_groups
         ]
