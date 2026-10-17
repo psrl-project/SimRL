@@ -2,7 +2,7 @@
 """G0 gate: how accurately does `forecast` predict the buffer READY and train-finish times?
 
 Instruments a real, small `policy=psrl` simulator run. At every router dispatch, when the training
-pipeline is about to be consulted, it calls `dryrun.forecast.fleet.forecast` on the live
+pipeline is about to be consulted, it calls `srl.forecast.fleet.forecast` on the live
 `SchedulingRuntime` with the **oracle** remaining lengths. It then compares each prediction against
 what actually happened:
 
@@ -37,18 +37,18 @@ from pathlib import Path
 import numpy as np
 from psrl.workers.ps.staleness_controller import BufferStatus
 
-import dryrun.forecast.drain as drain_mod
-from dryrun.component.sync.cost import FixedSyncCost
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.cost.training import FixedTrainingCost, LinearTrainingCost
-from dryrun.forecast import OracleLength, evaluate_placement, forecast
-from dryrun.forecast.fleet import _queued_admitted, baseline_fleet, estimate_queued, members_of
-from dryrun.policy.psrl import PSRLPolicy
-from dryrun.simulator.config import SimConfig
-from dryrun.simulator.runtime import SchedulingRuntime
-from dryrun.simulator.simulator import Simulator
-from dryrun.workload.grouped import GroupedWorkload
-from dryrun.workload.trace import RequestGroup
+import srl.forecast.drain as drain_mod
+from srl.component.sync.cost import FixedSyncCost
+from srl.cost.rollout import UnifiedRoofline
+from srl.cost.training import FixedTrainingCost, LinearTrainingCost
+from srl.forecast import OracleLength, evaluate_placement, forecast
+from srl.forecast.fleet import _queued_admitted, baseline_fleet, estimate_queued, members_of
+from srl.policy.psrl import PSRLPolicy
+from srl.simulator.config import SimConfig
+from srl.simulator.runtime import SchedulingRuntime
+from srl.simulator.simulator import Simulator
+from srl.workload.grouped import GroupedWorkload
+from srl.workload.trace import RequestGroup
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -364,6 +364,7 @@ class MediumRegime:
     n_instances: int = 2
     strategy: str = "request_num_balance"
     strategy_args: dict = field(default_factory=dict)
+    eviction_strategy: str = "vllm_lru"
 
 
 def medium_regimes() -> list[MediumRegime]:
@@ -615,6 +616,7 @@ def _build_medium(regime: MediumRegime, cost_model, mdt_module) -> _MediumSimula
         max_output_length=regime.length_cap,
         routing_strategy=regime.strategy,
         routing_strategy_args=regime.strategy_args,
+        eviction_strategy=regime.eviction_strategy,
     )
     return _MediumSimulator(
         rollout_cost=cost_model,
@@ -627,9 +629,9 @@ def _build_medium(regime: MediumRegime, cost_model, mdt_module) -> _MediumSimula
 
 
 def _composed_cost_model():
-    from dryrun.cost.kernel.database import KernelDatabase
-    from dryrun.cost.kernel.model_ops import ModelOps
-    from dryrun.cost.rollout.composed import ComposedRollout
+    from srl.cost.kernel.database import KernelDatabase
+    from srl.cost.kernel.model_ops import ModelOps
+    from srl.cost.rollout.composed import ComposedRollout
 
     database = KernelDatabase.from_root(MEDIUM_KERNEL_ROOT, gpu="h20", utility_surface="pchip")
     ops = ModelOps.from_checkpoint(MEDIUM_MODEL_PATH, tensor_parallel=1)

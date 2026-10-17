@@ -1,28 +1,28 @@
 # Megatron-Bridge profiling
 
-This page covers the Megatron-Bridge training sweep: what the sweep axes mean, why DryRun-RL owns the
+This page covers the Megatron-Bridge training sweep: what the sweep axes mean, why SimRL owns the
 entry point, how to run it, what ends up on disk, and what every sidecar file contains. For the
 formulas that regression fits to that output, see {doc}`../cost-models/training-megatron`. For
 general measurement rules (warmup policy, dispersion reporting, OOM as data) see {doc}`methodology`.
 
 ---
 
-## Why DryRun owns the entry point
+## Why SimRL owns the entry point
 
 The Megatron-Bridge distribution ships a `scripts/performance` CLI. It is not used here. That CLI
 parses its own known arguments and silently drops everything else, so recompute mode, output-path
 settings, and profiling flags never reached the underlying `ConfigContainer`. Its `--gpu` choices
 also exclude H20 outright.
 
-DryRun-RL's adapter takes the library's published recipe (`megatron.bridge.recipes.<family>`) and
+SimRL's adapter takes the library's published recipe (`megatron.bridge.recipes.<family>`) and
 applies the candidate configuration in Python, where a mistyped field raises an error rather than
-disappearing. The torchrun child is `dryrun.profiler.adapters.megatron.launch`, launched via
-`dryrun-profile megatron run`. Every setting the child needs travels in `launch_spec.json`, and nothing
+disappearing. The torchrun child is `srl.profiler.adapters.megatron.launch`, launched via
+`srl-profile megatron run`. Every setting the child needs travels in `launch_spec.json`, and nothing
 is marshalled through a CLI that could silently lose it.
 
 The official callback API (`megatron.bridge.training.callbacks`) is used to bracket steps and read
 CUDA allocator peaks. This replaces TensorBoard scalar scraping and memory-snapshot pickles: the
-sidecar `dryrun_metrics.json` contains exactly the fields the collector needs, in a stable schema,
+sidecar `srl_metrics.json` contains exactly the fields the collector needs, in a stable schema,
 without parsing logs.
 
 ---
@@ -32,7 +32,7 @@ without parsing logs.
 Install the pinned environment and export the checkpoint path once before running any sweep:
 
 ```bash
-conda activate dryrun-rl
+conda activate simrl
 bash third_party/install.sh
 pip install -e ".[dev]"
 
@@ -75,7 +75,7 @@ key includes `parameter_count`, which separates them automatically.
 ### Multi-node runs
 
 Multiple nodes use the same torchrun launcher path. Pass `--nnodes N --node-rank K` directly to
-`dryrun-profile megatron run`. There is no separate Slurm entry point. Use a Slurm job array that
+`srl-profile megatron run`. There is no separate Slurm entry point. Use a Slurm job array that
 calls the same command with the appropriate `--node-rank`.
 
 ---
@@ -162,7 +162,7 @@ outputs/profile/qwen3_8b/megatron_bridge/
 │       ├── launch_spec.json     ← everything the torchrun child reads
 │       ├── manifest.json        ← immutable record of the candidate (written by prepare)
 │       ├── ConfigContainer.yaml ← what Megatron actually resolved (cross-checked by collect)
-│       ├── dryrun_metrics.json  ← the measurement sidecar (written by rank 0 on success)
+│       ├── srl_metrics.json  ← the measurement sidecar (written by rank 0 on success)
 │       ├── oom_rank{N}.json     ← per-rank OOM marker (written on torch.OutOfMemoryError)
 │       ├── status.json          ← success | oom | failed
 │       └── run.log
@@ -193,7 +193,7 @@ Rank zero serialises the resolved `ConfigContainer` at the path declared in `lau
 A mutation that was applied in Python but failed to stick is caught here rather than silently
 producing a record attributed to the wrong configuration.
 
-### `dryrun_metrics.json`
+### `srl_metrics.json`
 
 Written atomically by rank 0 in `on_train_end`. Contains:
 
@@ -207,7 +207,7 @@ Written atomically by rank 0 in `on_train_end`. Contains:
 - `static_reserved_bytes_at_train_start`: a diagnostic, the allocator state just before the first
   step, used to confirm that peak-reset kept the static pool
 
-The collector reads `dryrun_metrics.json` if it exists and otherwise falls back to TensorBoard
+The collector reads `srl_metrics.json` if it exists and otherwise falls back to TensorBoard
 scalars, and the sidecar is always preferred.
 
 ### `oom_rank{N}.json`
@@ -234,7 +234,7 @@ flag skips candidates with `status: "success"` and re-runs all others, including
 ## Fitting the collected profiles
 
 ```bash
-dryrun-regress training \
+srl-regress training \
     --latency-model hydraulis \
     --memory-model hydraulis \
     --input  outputs/profile/qwen3_8b/megatron_bridge/profiles/megatron_bridge.jsonl \

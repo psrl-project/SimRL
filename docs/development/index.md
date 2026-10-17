@@ -1,6 +1,6 @@
 # Development
 
-DryRun-RL has six extension points. Each is a small protocol with a registry, so adding one
+SimRL has six extension points. Each is a small protocol with a registry, so adding one
 does not require touching the simulator or the CLI.
 
 ## The extension points

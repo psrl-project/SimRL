@@ -6,7 +6,7 @@ INPUT="${INPUT:-${ROOT_DIR}/outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.json
 OUTPUT="${OUTPUT:-${ROOT_DIR}/outputs/cost/qwen3_8b/rollout_distserve.json}"
 
 cd "${ROOT_DIR}"
-dryrun-regress rollout \
+srl-regress rollout \
     --model distserve \
     --input "${INPUT}" \
     --output "${OUTPUT}" \

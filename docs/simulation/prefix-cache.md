@@ -57,7 +57,7 @@ untouched.
 
 ## The pool
 
-`dryrun/component/rollout/engine/kv/` is a line-by-line port of vLLM v1's block
+`srl/component/rollout/engine/kv/` is a line-by-line port of vLLM v1's block
 pool rather than an approximation, because what it has to reproduce is an
 engine's admission and reuse behaviour under pressure, and that behaviour lives
 in the mechanism.
@@ -103,7 +103,7 @@ and not, with zero mismatches.
 
 `advance_one_event` is speculative: the driver advances every instance by one
 event, commits the earliest, and discards the rest. So every pool mutation must
-reverse, which `dryrun/component/rollout/engine/undo/` provides.
+reverse, which `srl/component/rollout/engine/undo/` provides.
 
 Three candidates were measured against the rule the original snapshot code
 already states (`snapshot.py`): capture cost must be proportional to the live

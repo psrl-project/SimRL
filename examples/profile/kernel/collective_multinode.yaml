@@ -29,7 +29,7 @@ hardware:
   node_count: 3
   gpus_per_node: 8
   # Intra-node is NVLink; across nodes it is 8 bonded 400 Gb/s RoCE links, one per GPU.
-  # See the inter_node_bandwidth_bytes_per_s comment in dryrun/cost/kernel/data/gpu_specs.yaml.
+  # See the inter_node_bandwidth_bytes_per_s comment in srl/cost/kernel/data/gpu_specs.yaml.
   interconnect: NVLink+RoCE
 output_dir: ../../../outputs/profile/qwen3_8b/kernel_multinode
 experiment_name: qwen3-8b

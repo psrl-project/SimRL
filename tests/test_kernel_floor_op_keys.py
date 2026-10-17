@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from dryrun.cost.kernel.floor import load_floors, write_floors
-from dryrun.cost.kernel.interp import KernelCoverageError
+from srl.cost.kernel.floor import load_floors, write_floors
+from srl.cost.kernel.interp import KernelCoverageError
 
 
 def test_floors_round_trip_under_op_name_keys(tmp_path):
@@ -35,7 +35,7 @@ def test_an_old_phase_keyed_file_is_rejected_naming_the_fit_command(tmp_path):
 
 
 def test_a_missing_file_falls_back_to_the_hardcoded_map_under_op_keys(tmp_path):
-    from dryrun.cost.kernel.sol import FALLBACK_FLOORS_S
+    from srl.cost.kernel.sol import FALLBACK_FLOORS_S
 
     loaded = load_floors(tmp_path, backend="vllm", warn_missing=True)
     assert loaded == FALLBACK_FLOORS_S["vllm"]
@@ -43,7 +43,7 @@ def test_a_missing_file_falls_back_to_the_hardcoded_map_under_op_keys(tmp_path):
     # assertion quietly describing a subset of what the fallback actually covers. What is
     # being asserted is that every key is an op name, which is the property that replaced
     # the old phase keying.
-    from dryrun.cost.kernel.ops.base import OP_REGISTRY
+    from srl.cost.kernel.ops.base import OP_REGISTRY
 
     assert set(loaded) <= set(OP_REGISTRY)
     assert all(OP_REGISTRY[name].fits_floor for name in loaded)
@@ -54,8 +54,8 @@ def test_a_missing_file_returns_none_when_not_warning(tmp_path):
 
 
 def test_the_fallback_map_is_keyed_by_op_name_not_phase():
-    from dryrun.cost.kernel.ops.base import OP_REGISTRY, ops_for_family
-    from dryrun.cost.kernel.sol import FALLBACK_FLOORS_S
+    from srl.cost.kernel.ops.base import OP_REGISTRY, ops_for_family
+    from srl.cost.kernel.sol import FALLBACK_FLOORS_S
 
     # The attention and elementwise values are the fitted ones and are pinned: they came from
     # a real sweep, and a silent change would move the gate.
@@ -81,7 +81,7 @@ def test_the_fallback_map_is_keyed_by_op_name_not_phase():
 
 def test_the_old_attention_floor_name_is_gone():
     """Leaving both names would let a caller read the phase-keyed map by accident."""
-    import dryrun.cost.kernel.sol as sol_module
+    import srl.cost.kernel.sol as sol_module
 
     assert not hasattr(sol_module, "ATTENTION_FLOOR_S")
 
@@ -90,7 +90,7 @@ def test_floor_fitting_skips_ops_that_declare_no_floor():
     """GEMM is excluded by fits_floor=False, not by absence from a hardcoded map."""
     import inspect
 
-    from dryrun.cost.kernel import floor as floor_module
+    from srl.cost.kernel import floor as floor_module
 
     source = inspect.getsource(floor_module)
     assert "_ATTENTION_OPS" not in source, "the phase map is still there"
@@ -114,8 +114,8 @@ def test_the_database_reads_each_op_familys_own_floors_file(tmp_path):
     read the attention directory, silently applying a zero floor to an all_reduce whose fitted
     floor dominates its whole small-message regime.
     """
-    from dryrun.cost.kernel.database import KernelDatabase
-    from dryrun.cost.kernel.ops.base import op_for
+    from srl.cost.kernel.database import KernelDatabase
+    from srl.cost.kernel.ops.base import op_for
 
     attention_dir = tmp_path / "h20" / "attention" / "vllm" / "0.1.0"
     attention_dir.mkdir(parents=True)

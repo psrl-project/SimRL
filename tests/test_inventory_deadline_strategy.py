@@ -7,10 +7,10 @@ from dataclasses import dataclass, field
 
 from psrl.workers.ps.inventory_forecast import BufferView, InventorySnapshot
 
-from dryrun.component.rollout.engine import InstanceView, Request
-from dryrun.component.rollout.router.strategies.inventory_deadline import InventoryDeadline
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.forecast import InstanceState, Pipeline, PlanSession, Resident, TrainState
+from srl.component.rollout.engine import InstanceView, Request
+from srl.component.rollout.router.strategies.inventory_deadline import InventoryDeadline
+from srl.cost.rollout import UnifiedRoofline
+from srl.forecast import InstanceState, Pipeline, PlanSession, Resident, TrainState
 
 BLOCK = 16
 BUDGET = 8192
@@ -409,13 +409,13 @@ class TestEndToEnd:
     def _run(*, n_instances: int, max_staleness: int, routing_strategy_args=None):
         import random
 
-        from dryrun.component.sync.cost import FixedSyncCost
-        from dryrun.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
-        from dryrun.policy.psrl import PSRLPolicy
-        from dryrun.simulator.config import SimConfig
-        from dryrun.simulator.simulator import Simulator
-        from dryrun.workload.grouped import GroupedWorkload
-        from dryrun.workload.trace import RequestGroup
+        from srl.component.sync.cost import FixedSyncCost
+        from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
+        from srl.policy.psrl import PSRLPolicy
+        from srl.simulator.config import SimConfig
+        from srl.simulator.simulator import Simulator
+        from srl.workload.grouped import GroupedWorkload
+        from srl.workload.trace import RequestGroup
 
         rng = random.Random(0)
         groups = [

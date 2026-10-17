@@ -43,11 +43,11 @@ production trainer runs, so the profiled cell matches what will actually execute
 
 ```bash
 CFG=examples/profile/fsdp/qwen3_8b.yaml
-dryrun-profile fsdp generate --config $CFG
-dryrun-profile fsdp run      --config $CFG            # --resume, or --candidate-id ID
-dryrun-profile fsdp collect  --config $CFG
+srl-profile fsdp generate --config $CFG
+srl-profile fsdp run      --config $CFG            # --resume, or --candidate-id ID
+srl-profile fsdp collect  --config $CFG
 
-dryrun-regress training --latency-model fsdp --memory-model fsdp \
+srl-regress training --latency-model fsdp --memory-model fsdp \
     --input  outputs/profile/qwen3_8b/fsdp/profiles/fsdp.jsonl \
     --output outputs/cost/qwen3_8b/training_fsdp.json
 ```

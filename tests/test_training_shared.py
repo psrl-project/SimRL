@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.adapters.base import (
+from srl.profiler.adapters.base import (
     OOM_EXIT_CODE,
     iter_candidate_dirs,
     load_sidecar_metrics,
@@ -17,7 +17,7 @@ from dryrun.profiler.adapters.base import (
     run_candidate,
     slice_warmup,
 )
-from dryrun.profiler.schema import RankMemory
+from srl.profiler.schema import RankMemory
 
 
 def test_oom_exit_code_is_forty_two():
@@ -109,9 +109,9 @@ def test_load_sidecar_metrics_returns_none_when_absent(tmp_path: Path):
 
 
 def test_load_sidecar_metrics_rejects_a_non_object_document(tmp_path: Path):
-    from dryrun.profiler.schema import ProfileValidationError
+    from srl.profiler.schema import ProfileValidationError
 
-    (tmp_path / "dryrun_metrics.json").write_text("[1, 2]", encoding="utf-8")
+    (tmp_path / "srl_metrics.json").write_text("[1, 2]", encoding="utf-8")
     with pytest.raises(ProfileValidationError):
         load_sidecar_metrics(tmp_path)
 

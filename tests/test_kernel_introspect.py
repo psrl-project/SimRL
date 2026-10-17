@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.kernel.introspect import _fuse, verify_shapes
-from dryrun.profiler.schema import ModelDescriptor, ProfileValidationError
+from srl.profiler.kernel.introspect import _fuse, verify_shapes
+from srl.profiler.schema import ModelDescriptor, ProfileValidationError
 
 _QWEN3 = Path("/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B")
 _QWEN2 = Path("/apdcephfs_zwfy/share_303760348/lhy/models/SWE-agent-LM-7B")
@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _descriptor(path: Path) -> ModelDescriptor:
-    from dryrun.profiler.hf import load_hf_model_descriptor
+    from srl.profiler.hf import load_hf_model_descriptor
 
     return load_hf_model_descriptor(path)
 
@@ -100,7 +100,7 @@ def test_a_wrong_declared_shape_is_caught():
         name: str = "deliberately_wrong"
 
         def gemm_shapes(self, model, *, tensor_parallel):
-            from dryrun.profiler.kernel.grid.shape import GemmShape
+            from srl.profiler.kernel.grid.shape import GemmShape
 
             # qkv_proj is off by one row; everything else is right.
             return (
@@ -111,14 +111,14 @@ def test_a_wrong_declared_shape_is_caught():
             )
 
         def logits_shape(self, model, *, tensor_parallel):
-            from dryrun.profiler.kernel.grid.shape import GemmShape
+            from srl.profiler.kernel.grid.shape import GemmShape
 
             return GemmShape("lm_head", 151936, 4096)
 
         def head_counts(self, model, *, tensor_parallel):
             return 32, 8
 
-    from dryrun.profiler.kernel.grid import families
+    from srl.profiler.kernel.grid import families
 
     saved = families.FAMILY_REGISTRY["Qwen3ForCausalLM"]
     families.FAMILY_REGISTRY["Qwen3ForCausalLM"] = _WrongFamily()
@@ -155,7 +155,7 @@ def test_fuse_scales_the_two_expert_projections_on_different_axes():
     (it fuses gate AND up, so 2x) and down is 8.4M. Scaling the wrong axis would change
     those numbers, so this is a costing check and not only a bookkeeping one.
     """
-    from dryrun.profiler.kernel.introspect import _fuse
+    from srl.profiler.kernel.introspect import _fuse
 
     layer = {
         "mlp.experts.gate_up_proj": (1024, 2048),
@@ -182,7 +182,7 @@ def test_fuse_reads_expert_stacks_and_the_router_from_a_moe_layer():
     """
     import torch
 
-    from dryrun.profiler.kernel.introspect import _linear_shapes
+    from srl.profiler.kernel.introspect import _linear_shapes
 
     class _Experts(torch.nn.Module):
         def __init__(self):

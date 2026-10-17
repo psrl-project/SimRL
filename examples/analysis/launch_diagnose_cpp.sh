@@ -5,12 +5,12 @@
 # measured, then times all four arms and profiles the C++ arms with py-spy.
 # Results land in <snapshot>/outputs_diag/ on the shared filesystem.
 set -euo pipefail
-SRC=/apdcephfs_zwfy/share_303760348/lhy/DryRun-RL
+SRC=/apdcephfs_zwfy/share_303760348/lhy/SimRL
 SNAP=/apdcephfs_zwfy/share_303760348/lhy/bench_snapshot_diag
 rm -rf "${SNAP}"
 mkdir -p "${SNAP}"
 rsync -a --exclude '__pycache__' --exclude 'build/' --exclude '*.pyc' \
-    "${SRC}/dryrun" "${SRC}/examples" "${SRC}/tests" "${SNAP}/"
+    "${SRC}/srl" "${SRC}/examples" "${SRC}/tests" "${SNAP}/"
 ln -s "${SRC}/outputs" "${SNAP}/outputs"
 ln -s "${SRC}/third_party" "${SNAP}/third_party"
 (cd "${SRC}" && git rev-parse HEAD >"${SNAP}/GIT_HEAD" && git diff >"${SNAP}/WORKTREE.diff")
@@ -18,11 +18,11 @@ ln -s "${SRC}/third_party" "${SNAP}/third_party"
 cd "${SNAP}"
 set +u
 # shellcheck disable=SC1091
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh >/dev/null 2>&1
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh >/dev/null 2>&1
 set -u
 RES="${SNAP}/outputs_diag"
 mkdir -p "${RES}"
-export DRYRUN_KV_CACHE="${SNAP}/outputs/bench_backends/kv_capacity.json"
+export SIMRL_KV_CACHE="${SNAP}/outputs/bench_backends/kv_capacity.json"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4}"
 export MAX_OUTPUT_LENGTH=65536 N_VERSIONS=4 POLICY=psrl ACTIVE_CAP=160
 TRACE="${SNAP}/outputs/workload/dapo_64k/joint.jsonl"

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.policy.psrl import PSRLPolicy
-from dryrun.simulator import SimConfig, Simulator
-from dryrun.telemetry.store import JsonlStore
-from dryrun.workload.distributions import uniform
-from dryrun.workload.grouped import GroupedWorkload
+from srl.cost.rollout import UnifiedRoofline
+from srl.policy.psrl import PSRLPolicy
+from srl.simulator import SimConfig, Simulator
+from srl.telemetry.store import JsonlStore
+from srl.workload.distributions import uniform
+from srl.workload.grouped import GroupedWorkload
 
 
 def _run_with_store(tmp_path, n_instances=2, n_versions=6):

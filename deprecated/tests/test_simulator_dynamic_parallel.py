@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.component.rollout.engine import Request
-from dryrun.cost import UnifiedRoofline
-from dryrun.policy.psrl import PSRLPolicy
-from dryrun.simulator.config import SimConfig
-from dryrun.simulator.dynamic_parallel import FleetPlan, ParallelismSolver
-from dryrun.simulator.simulator import Simulator
-from dryrun.workload.grouped import GroupedWorkload
+from srl.component.rollout.engine import Request
+from srl.cost import UnifiedRoofline
+from srl.policy.psrl import PSRLPolicy
+from srl.simulator.config import SimConfig
+from srl.simulator.dynamic_parallel import FleetPlan, ParallelismSolver
+from srl.simulator.simulator import Simulator
+from srl.workload.grouped import GroupedWorkload
 
 
 def _cost() -> UnifiedRoofline:

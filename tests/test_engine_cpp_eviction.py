@@ -11,19 +11,19 @@ import json
 
 import pytest
 
-pytest.importorskip("dryrun._engine_cpp")
+pytest.importorskip("srl._engine_cpp")
 
-from dryrun.cost.rollout import UnifiedRoofline  # noqa: E402
-from dryrun.cost.training import (  # noqa: E402
+from srl.cost.rollout import UnifiedRoofline  # noqa: E402
+from srl.cost.training import (  # noqa: E402
     FixedTrainingLatency,
     FixedTrainingMemory,
     TrainingCostModel,
 )
-from dryrun.policy.psrl import PSRLPolicy  # noqa: E402
-from dryrun.simulator import SimConfig, Simulator  # noqa: E402
-from dryrun.telemetry.store import JsonlStore  # noqa: E402
-from dryrun.workload.distributions import bimodal, uniform  # noqa: E402
-from dryrun.workload.grouped import GroupedWorkload  # noqa: E402
+from srl.policy.psrl import PSRLPolicy  # noqa: E402
+from srl.simulator import SimConfig, Simulator  # noqa: E402
+from srl.telemetry.store import JsonlStore  # noqa: E402
+from srl.workload.distributions import bimodal, uniform  # noqa: E402
+from srl.workload.grouped import GroupedWorkload  # noqa: E402
 
 
 def _run(backend: str, eviction: str, tmp_path):

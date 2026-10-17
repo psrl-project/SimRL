@@ -17,22 +17,22 @@ ACTION="${1:-all}"
 
 case "${ACTION}" in
     run)
-        dryrun-profile kernels run --config "${CONFIG}" --family "${FAMILY}"
+        srl-profile kernels run --config "${CONFIG}" --family "${FAMILY}"
         ;;
     fit-floor)
-        dryrun-profile kernels fit-floor --config "${CONFIG}"
+        srl-profile kernels fit-floor --config "${CONFIG}"
         ;;
     holdout)
-        dryrun-profile kernels holdout --config "${CONFIG}"
+        srl-profile kernels holdout --config "${CONFIG}"
         ;;
     all)
         # fit-floor must follow run and precede holdout: it reads the tables that run
         # writes, and holdout scores the surface using the floors it fits. Skipping it
         # leaves every query falling back to floors fitted for H20: correct here, wrong
         # on any other GPU or backend version, and only a log warning says so.
-        dryrun-profile kernels run --config "${CONFIG}" --family "${FAMILY}"
-        dryrun-profile kernels fit-floor --config "${CONFIG}"
-        dryrun-profile kernels holdout --config "${CONFIG}"
+        srl-profile kernels run --config "${CONFIG}" --family "${FAMILY}"
+        srl-profile kernels fit-floor --config "${CONFIG}"
+        srl-profile kernels holdout --config "${CONFIG}"
         ;;
     *)
         echo "Usage: $0 [run|fit-floor|holdout|all]" >&2

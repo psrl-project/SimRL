@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.interp import UtilitySample
-from dryrun.cost.kernel.surface import PchipSurface, ShepardSurface
+from srl.cost.kernel.interp import UtilitySample
+from srl.cost.kernel.surface import PchipSurface, ShepardSurface
 
 # A 3x3 lattice over (batch_size, step), shaped like the real generation-attention surface:
 # utility rises with both batch size and KV depth, and saturates.

@@ -9,14 +9,14 @@ takes a few seconds and confirms the install works end to end.
 Nothing beyond the base install:
 
 ```bash
-conda activate dryrun-rl
+conda activate simrl
 pip install -e ".[dev]"
 ```
 
 ## The command
 
 ```bash
-dryrun policy=areal rollout_cost=roofline training_cost=fixed workload=uniform \
+srl policy=areal rollout_cost=roofline training_cost=fixed workload=uniform \
     job.n_versions=5 job.batch_size=32 rollout.n_instances=2
 ```
 
@@ -42,7 +42,7 @@ Each override selects one config group:
 
 `workload=uniform`
 : Prompt and response lengths drawn uniformly from the defaults in
-  `dryrun/config/defaults/workload/uniform.yaml`. No checkpoint, no dataset.
+  `srl/config/defaults/workload/uniform.yaml`. No checkpoint, no dataset.
 
 `job.n_versions=5`
 : Five training versions, meaning five gradient updates. Each one waits for a full batch.
@@ -141,10 +141,10 @@ After stage 3 or 4 both carry predicted values, and the simulator will refuse a
 configuration whose predicted peak exceeds `training_gpu_memory_bytes`.
 
 The five PNGs render from the JSONL streams. Regenerate them without re-simulating by
-pointing `dryrun-plot` at the run directory:
+pointing `srl-plot` at the run directory:
 
 ```bash
-dryrun-plot outputs
+srl-plot outputs
 ```
 
 It takes the run directory as a positional argument and looks for `logs/` and `plots/`
@@ -160,7 +160,7 @@ A progress bar, a summary block, and files under `outputs/`. If the throughput r
 Swap the workload shape:
 
 ```bash
-dryrun policy=areal rollout_cost=roofline training_cost=fixed workload=bimodal \
+srl policy=areal rollout_cost=roofline training_cost=fixed workload=bimodal \
     job.n_versions=5 job.batch_size=32 rollout.n_instances=2 \
     workload.output.short_len=1000 workload.output.long_len=8192 \
     workload.output.long_frac=0.4
@@ -173,7 +173,7 @@ real thing.
 Sweep several configurations in one invocation, using Hydra's multirun:
 
 ```bash
-dryrun --multirun policy=areal,roll rollout.n_instances=1,2,4 \
+srl --multirun policy=areal,roll rollout.n_instances=1,2,4 \
     rollout_cost=roofline training_cost=fixed workload=uniform \
     job.n_versions=5 job.batch_size=32
 ```
@@ -183,7 +183,7 @@ Six runs execute in sequence, each writing to its own subdirectory.
 Check that an override landed where you meant it to, without running anything:
 
 ```bash
-dryrun --cfg job policy=areal rollout_cost=roofline training_cost=fixed workload=uniform
+srl --cfg job policy=areal rollout_cost=roofline training_cost=fixed workload=uniform
 ```
 
 `--cfg job` prints the resolved config and exits. This is the cheapest way to verify a

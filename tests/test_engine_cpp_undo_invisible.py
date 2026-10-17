@@ -16,7 +16,7 @@ import random
 import pytest
 
 try:
-    from dryrun._engine_cpp import CppInstance, CppRequest, UnifiedRooflineCostModel
+    from srl._engine_cpp import CppInstance, CppRequest, UnifiedRooflineCostModel
 
     HAS_CPP = True
 except ImportError:

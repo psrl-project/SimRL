@@ -16,10 +16,10 @@ TRAINING_ARTIFACT=../../outputs/cost/qwen3_8b/training_fsdp.json \
 bash simulate.sh
 ```
 
-Or drive `dryrun` directly, overriding whichever config groups you need:
+Or drive `srl` directly, overriding whichever config groups you need:
 
 ```bash
-dryrun policy=verl workload=normal rollout_cost=roofline training_cost=fixed \
+srl policy=verl workload=normal rollout_cost=roofline training_cost=fixed \
     job.n_versions=20 job.batch_size=256 rollout.n_instances=4
 ```
 

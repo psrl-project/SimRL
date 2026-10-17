@@ -19,7 +19,7 @@ for three reasons.
 
 2. **The prompt/output join is fictional.** `Simulator._next_prompt_length` and
    `_next_length` independently index two separate lists by `rid % len(...)`
-   (`dryrun/simulator/simulator.py:120-127`). For synthetic distributions this
+   (`srl/simulator/simulator.py:120-127`). For synthetic distributions this
    is harmless. For real data it fabricates pairings that never occurred, and it
    cannot express DAPO's `n=8` group structure at all.
 
@@ -69,7 +69,7 @@ returning per-choice `token_ids` plus `prompt_token_ids`. Verified
 
 > ⚠️ **`usage.completion_tokens` is the SUM over all `n` choices** (measured 4800
 > for 8×600), not a per-response length. `collect_output_lengths` currently reads
-> exactly this field (`dryrun/workload/inference.py:137`). Adding `n` without
+> exactly this field (`srl/workload/inference.py:137`). Adding `n` without
 > changing that line would silently record 8× lengths. Per-response lengths must
 > come from `len(choice["token_ids"])`.
 
@@ -148,7 +148,7 @@ An explicit `workload.source` switch, so "these two blocks are actually one
 joint distribution" cannot hide inside two independent-looking blocks:
 
 ```yaml
-# dryrun/config/defaults/workload/dapo_trace.yaml
+# srl/config/defaults/workload/dapo_trace.yaml
 source: trace                # trace | distributions
 trace:
   path: outputs/workload/qwen3_8b_dapo_tp1/joint.jsonl
@@ -161,7 +161,7 @@ Existing groups (`normal`, `uniform`, ...) gain `source: distributions`.
 ### 4. Simulator changes
 
 - `Request.group_id: int = 0`: a new field on the request data model.
-- A `GroupedWorkload` source in `dryrun/workload/` that owns the group list and
+- A `GroupedWorkload` source in `srl/workload/` that owns the group list and
   yields `(group_id, prompt_len, output_len)` per request, wrapping at group
   boundaries.
 - `Simulator` consumes that one source, replacing the two independent

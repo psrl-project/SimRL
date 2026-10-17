@@ -43,8 +43,8 @@ def _load_probe():
 
 def _register_recording() -> None:
     """A `InventoryDeadline` that records its own priced options, without changing a decision."""
-    from dryrun.component.rollout.router.strategies.inventory_deadline import InventoryDeadline
-    from dryrun.component.rollout.router.strategy import STRATEGY_REGISTRY, register_strategy
+    from srl.component.rollout.router.strategies.inventory_deadline import InventoryDeadline
+    from srl.component.rollout.router.strategy import STRATEGY_REGISTRY, register_strategy
 
     if RECORDING in STRATEGY_REGISTRY:
         return
@@ -61,6 +61,10 @@ def _register_recording() -> None:
             self.admission_waits = 0
             """Admission decisions the strategy itself resolved to DEFER_GROUP."""
             self.admission_places = 0
+            self.admission_forced = 0
+            """Admission decisions where defer was not an option (defer_valid=False or no feasible instance)."""
+            self.admission_defer_wins = 0
+            """Admission decisions where DEFER had a lower E than the best instance (delta > eps)."""
             self.concurrency_at_admission: list[int] = []
             """Fleet-wide active requests at each admission decision, from the strategy's own views."""
             self.deltas: list[float] = []
@@ -80,11 +84,18 @@ def _register_recording() -> None:
                     if defer is not None and instances:
                         best = min(instances, key=lambda p: p.train_end[0])
                         delta = best.train_end[0] - defer.train_end[0]
+                        eps = self._eps(session)
                         if math.isfinite(delta):
                             self.deltas.append(delta)
                         else:
                             self.deltas.append(math.inf if best.train_end[0] > defer.train_end[0] else -math.inf)
-                        self.epss.append(self._eps(session))
+                        self.epss.append(eps)
+                        if delta > eps:
+                            self.admission_defer_wins += 1
+                    elif not instances:
+                        self.admission_forced += 1  # no feasible instance, will DEFER anyway
+                    elif defer is None:
+                        self.admission_forced += 1  # defer_valid=False, forced to place
                     self.concurrency_at_admission.append(sum(v.n_active for v in candidates))
                     self.admission_decisions += 1
             chosen = super().select_context(req, candidates, context)
@@ -113,7 +124,13 @@ def main() -> None:
     cost_model = fa._composed_cost_model()
 
     for name in sys.argv[1:]:
-        point = next(p for p in probe.points("best") if p.name == name)
+        point = next(
+            (p for grid in ("best", "heldout") for p in probe.points(grid) if p.name == name),
+            None,
+        )
+        if point is None:
+            print(f"Unknown point {name!r}. Known: {[p.name for g in ('best','heldout') for p in probe.points(g)]}")
+            continue
         for label, strategy, cap in (
             ("static_cap(48)", "request_num_balance", 48),
             ("inventory_deadline", RECORDING, 0),
@@ -131,6 +148,8 @@ def main() -> None:
             print(
                 f"{'':16}admission decisions chose DEFER on "
                 f"{strat.admission_waits}/{strat.admission_decisions}; "
+                f"forced (no DEFER option): {strat.admission_forced}; "
+                f"defer wins vs eps: {strat.admission_defer_wins}/{len(strat.deltas)}; "
                 f"fleet active at that moment: median={statistics.median(strat.concurrency_at_admission):.0f} "
                 f"p90={_pct(strat.concurrency_at_admission, 0.90):.0f}"
             )

@@ -6,8 +6,8 @@ import math
 
 import pytest
 
-from dryrun.cost.kernel.interp import KernelCoverageError, UtilitySample
-from dryrun.cost.kernel.surface import SURFACE_REGISTRY, PchipSurface, ShepardSurface
+from srl.cost.kernel.interp import KernelCoverageError, UtilitySample
+from srl.cost.kernel.surface import SURFACE_REGISTRY, PchipSurface, ShepardSurface
 
 _RISING = (
     UtilitySample(coords=(1.0,), utility=0.5),

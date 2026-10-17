@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.component.rollout.router.strategy import STRATEGY_REGISTRY
-from dryrun.component.sync.cost import FixedSyncCost
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
-from dryrun.forecast import OracleLength
-from dryrun.policy.psrl import PSRLPolicy
-from dryrun.simulator.config import SimConfig
-from dryrun.simulator.simulator import Simulator
-from dryrun.workload.distributions import uniform
-from dryrun.workload.grouped import GroupedWorkload
+from srl.component.rollout.router.strategy import STRATEGY_REGISTRY
+from srl.component.sync.cost import FixedSyncCost
+from srl.cost.rollout import UnifiedRoofline
+from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
+from srl.forecast import OracleLength
+from srl.policy.psrl import PSRLPolicy
+from srl.simulator.config import SimConfig
+from srl.simulator.simulator import Simulator
+from srl.workload.distributions import uniform
+from srl.workload.grouped import GroupedWorkload
 
 TRAIN_C = 3.0
 SYNC_C = 0.5

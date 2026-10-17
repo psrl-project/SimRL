@@ -1,6 +1,6 @@
 # Writing documentation
 
-This page is the maintainer guide for the DryRun-RL Sphinx site. It is a page in the toctree and
+This page is the maintainer guide for the SimRL Sphinx site. It is a page in the toctree and
 is built as part of the site, because a maintainer guide that is never rendered goes stale at the
 same rate as the site it is supposed to govern.
 
@@ -162,7 +162,7 @@ a JavaScript snippet is legitimate and only prose matters.
 ## No absolute paths
 
 Commands in the documentation use `$MODEL_PATH` and repo-relative paths, never absolute paths like
-`/path/to/checkpoint` or `/home/user/DryRun-RL`. An absolute path works on exactly one machine.
+`/path/to/checkpoint` or `/home/user/SimRL`. An absolute path works on exactly one machine.
 Export `MODEL_PATH` before running any profiling command:
 
 ```bash

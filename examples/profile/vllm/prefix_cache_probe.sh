@@ -12,7 +12,7 @@
 # vLLM servers contaminate each other's measurements.
 set -euo pipefail
 
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
 cd "$(git rev-parse --show-toplevel)"
 
 MODEL="${MODEL:-/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}"
@@ -20,7 +20,7 @@ PORT="${PORT:-8000}"
 OUT="${OUT:-outputs/profile/prefix_cache_probe}"
 mkdir -p "$OUT"
 
-python -m dryrun.workload.prefix_probe_run \
+python -m srl.workload.prefix_probe_run \
   --config examples/profile/vllm/prefix_cache_probe.yaml \
   --model "$MODEL" \
   --port "$PORT" \

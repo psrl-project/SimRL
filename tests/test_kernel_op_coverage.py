@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.cost.kernel.ops.base import OP_REGISTRY, families
+from srl.cost.kernel.ops.base import OP_REGISTRY, families
 
 _REPO = Path(__file__).resolve().parents[1]
 _TABLES = _REPO / "outputs" / "profile" / "qwen3_8b" / "kernel_tp1" / "kernel"
@@ -34,8 +34,8 @@ def test_the_registry_covers_every_op_module_in_a_fresh_interpreter():
     probe = """
 import pathlib
 
-import dryrun.cost.kernel.ops as ops_pkg
-import dryrun.cost.kernel.ops.base as base
+import srl.cost.kernel.ops as ops_pkg
+import srl.cost.kernel.ops.base as base
 
 modules = sorted(
     path.stem
@@ -59,7 +59,7 @@ def test_the_registry_covers_every_op_module_in_process():
     """The same coverage property, cheap and readable, for a fast local signal."""
     import pathlib
 
-    import dryrun.cost.kernel.ops as ops_pkg
+    import srl.cost.kernel.ops as ops_pkg
 
     modules = sorted(
         path.stem
@@ -74,7 +74,7 @@ def test_the_registry_covers_every_op_module_in_process():
 
 def test_the_cli_family_choices_come_from_the_registry():
     """A hardcoded choices list is the last place adding an op means editing the CLI."""
-    from dryrun.cli.profile import build_parser
+    from srl.cli.profile import build_parser
 
     parser = build_parser()
     args = parser.parse_args(["kernels", "run", "--config", "c.yaml"])
@@ -85,7 +85,7 @@ def test_the_cli_family_choices_come_from_the_registry():
 
 
 def test_an_unknown_family_is_rejected():
-    from dryrun.cli.profile import build_parser
+    from srl.cli.profile import build_parser
 
     parser = build_parser()
     with pytest.raises(SystemExit):
@@ -100,8 +100,8 @@ def test_the_family_choices_are_not_a_hardcoded_literal():
     fully hardcoded five-family list satisfied the old assertion exactly. The derived list has
     to actually move for this to pass.
     """
-    from dryrun.cli.profile import build_parser
-    from dryrun.cost.kernel.ops.base import OP_REGISTRY
+    from srl.cli.profile import build_parser
+    from srl.cost.kernel.ops.base import OP_REGISTRY
 
     before = _family_choices(build_parser())
     assert "widgets" not in before

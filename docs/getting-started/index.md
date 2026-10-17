@@ -1,6 +1,6 @@
 # Getting Started
 
-DryRun-RL has two halves. One measures a real system and reduces the measurements to
+SimRL has two halves. One measures a real system and reduces the measurements to
 coefficients. The other simulates configurations you never ran, using those coefficients.
 
 The fastest way to understand it is to walk both halves once on a real model.

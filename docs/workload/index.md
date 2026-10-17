@@ -79,7 +79,7 @@ is wrong.
 
 ## The six families
 
-All samplers live in `dryrun/workload/distributions.py`, take an integer count and a
+All samplers live in `srl/workload/distributions.py`, take an integer count and a
 seed, and return `list[int]`.
 
 | Name | Parameters | Shape |
@@ -94,7 +94,7 @@ seed, and return `list[int]`.
 Select one with `workload=<name>` and override its keys:
 
 ```bash
-dryrun workload=normal \
+srl workload=normal \
     workload.output.mu=8192 workload.output.sigma=512 \
     workload.prompt.mu=1024 workload.prompt.sigma=256
 ```

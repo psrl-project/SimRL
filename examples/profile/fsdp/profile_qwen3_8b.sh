@@ -30,19 +30,19 @@ fi
 
 case "${ACTION}" in
     generate)
-        dryrun-profile fsdp generate \
+        srl-profile fsdp generate \
             --config "${CONFIG}" \
             --candidates "${CANDIDATES}"
         ;;
     run)
-        dryrun-profile fsdp run \
+        srl-profile fsdp run \
             --config "${CONFIG}" \
             --candidates "${CANDIDATES}" \
             "${selection_args[@]}" \
             "${@:2}"
         ;;
     collect)
-        dryrun-profile fsdp collect \
+        srl-profile fsdp collect \
             --config "${CONFIG}" \
             --candidates "${CANDIDATES}" \
             "${selection_args[@]}"

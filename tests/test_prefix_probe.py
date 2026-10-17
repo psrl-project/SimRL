@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.workload.prefix_probe import PrefixCacheCounters, parse_prefix_cache_counters
+from srl.workload.prefix_probe import PrefixCacheCounters, parse_prefix_cache_counters
 
 _SAMPLE = """\
 # HELP vllm:prefix_cache_queries GPU prefix cache queries, in terms of number of queried blocks.

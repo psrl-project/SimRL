@@ -7,12 +7,12 @@ import sys
 
 import pytest
 
-from dryrun.component.rollout.engine import NativeInstance, Request
-from dryrun.component.rollout.engine.state import InstanceLoad
-from dryrun.component.rollout.router import Router
-from dryrun.component.rollout.router.strategy import build_strategy
-from dryrun.cost import UnifiedRoofline
-from dryrun.simulator.dynamic_parallel import DynamicParallelFleet, FleetPlan
+from srl.component.rollout.engine import NativeInstance, Request
+from srl.component.rollout.engine.state import InstanceLoad
+from srl.component.rollout.router import Router
+from srl.component.rollout.router.strategy import build_strategy
+from srl.cost import UnifiedRoofline
+from srl.simulator.dynamic_parallel import DynamicParallelFleet, FleetPlan
 
 _INSTANCE_CFG = dict(
     token_budget=4096,
@@ -168,7 +168,7 @@ def test_the_package_is_not_imported_unless_used():
             del sys.modules[name]
     import importlib
 
-    import dryrun.simulator.simulator as sim_module
+    import srl.simulator.simulator as sim_module
 
     importlib.reload(sim_module)
     leaked = [n for n in sys.modules if "dynamic_parallel" in n]

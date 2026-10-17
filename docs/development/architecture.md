@@ -1,6 +1,6 @@
 # Architecture
 
-DryRun-RL separates three concerns that are usually tangled together in a real RL
+SimRL separates three concerns that are usually tangled together in a real RL
 training loop: measurement, modelling, and simulation. This page describes how those
 three pieces fit together and the decisions behind the design.
 
@@ -21,7 +21,7 @@ cost models for latency and peak memory as it goes. The simulator never touches 
 GPU.
 
 The boundary between the first two layers is a documented JSONL schema (`ProfileRecord`
-in `dryrun/profiler/schema.py`). Adding a new backend means writing a new adapter, and
+in `srl/profiler/schema.py`). Adding a new backend means writing a new adapter, and
 adding a new cost model means writing a new fitter. Neither change requires touching the
 other side.
 
@@ -99,7 +99,7 @@ The roofline decode cost per step is modelled as `tau(k) = max(F, alpha + beta*k
 where `k` is the KV history length (prompt + previously generated tokens). For a
 segment where all requests' contexts grow together, the sum of step times over any
 contiguous range has a closed-form expression. The `advance` function in
-`dryrun/cost/rollout/advance.py` evaluates this closed form and returns the simulated
+`srl/cost/rollout/advance.py` evaluates this closed form and returns the simulated
 time for the entire segment in one call.
 
 The closed form applies whenever a decode segment's running set is unchanged from step
@@ -123,24 +123,24 @@ default 10,000) limits the total engine steps to catch infinite loops.
 
 | Package | Responsibility |
 |---|---|
-| `dryrun/simulator/` | Event loop, `SimConfig`, `SimResult` |
-| `dryrun/component/rollout/` | Request state, `NativeInstance`, closed-form advance |
-| `dryrun/component/recompute/` | Re-prefill cost models |
-| `dryrun/component/sync/` | Weight sync cost models |
-| `dryrun/component/training/` | Training workload helpers |
-| `dryrun/policy/` | PSRL, AReaL, ROLL, Slime, verl staleness policies |
-| `dryrun/cost/rollout/` | Roofline, PSRL, DistServe, and ComposedRollout inference models |
-| `dryrun/cost/training/` | Hydraulis and FSDP latency and memory models |
-| `dryrun/cost/kernel/` | Kernel op registry, SOL formulas, perf-table database, holdout |
-| `dryrun/cost/artifact.py` | `CostArtifact` and `ArtifactEntry` envelope |
-| `dryrun/profiler/` | `ProfileRecord` schema, constrained candidate generation, adapters |
-| `dryrun/profiler/adapters/` | vLLM, Megatron-Bridge, FSDP2, and kernel adapters |
-| `dryrun/telemetry/` | JSONL stream writers (`train`, `request`, `rollout_step`, `instance`) |
-| `dryrun/visualizer/` | Offline plots from JSONL streams |
-| `dryrun/workload/` | Parametric distributions and joint group traces |
-| `dryrun/config/` | Hydra config dataclasses and defaults |
-| `dryrun/cli/` | Console scripts: `dryrun`, `dryrun-profile`, `dryrun-regress`, `dryrun-plot`, `dryrun-workload` |
-| `dryrun/buffer/` | Priority queue used by the staleness buffer |
+| `srl/simulator/` | Event loop, `SimConfig`, `SimResult` |
+| `srl/component/rollout/` | Request state, `NativeInstance`, closed-form advance |
+| `srl/component/recompute/` | Re-prefill cost models |
+| `srl/component/sync/` | Weight sync cost models |
+| `srl/component/training/` | Training workload helpers |
+| `srl/policy/` | PSRL, AReaL, ROLL, Slime, verl staleness policies |
+| `srl/cost/rollout/` | Roofline, PSRL, DistServe, and ComposedRollout inference models |
+| `srl/cost/training/` | Hydraulis and FSDP latency and memory models |
+| `srl/cost/kernel/` | Kernel op registry, SOL formulas, perf-table database, holdout |
+| `srl/cost/artifact.py` | `CostArtifact` and `ArtifactEntry` envelope |
+| `srl/profiler/` | `ProfileRecord` schema, constrained candidate generation, adapters |
+| `srl/profiler/adapters/` | vLLM, Megatron-Bridge, FSDP2, and kernel adapters |
+| `srl/telemetry/` | JSONL stream writers (`train`, `request`, `rollout_step`, `instance`) |
+| `srl/visualizer/` | Offline plots from JSONL streams |
+| `srl/workload/` | Parametric distributions and joint group traces |
+| `srl/config/` | Hydra config dataclasses and defaults |
+| `srl/cli/` | Console scripts: `srl`, `srl-profile`, `srl-regress`, `srl-plot`, `srl-workload` |
+| `srl/buffer/` | Priority queue used by the staleness buffer |
 
 ---
 
@@ -158,18 +158,18 @@ couple the adapter interface to the model's input type. Any change to a cost mod
 feature set would require an adapter change. The JSONL boundary breaks that coupling:
 adapters record everything they observe, and cost models read what they need.
 
-### 2. DryRun-RL owns the training entry point
+### 2. SimRL owns the training entry point
 
-The Megatron-Bridge adapter (`dryrun/profiler/adapters/megatron/`) does not use the
+The Megatron-Bridge adapter (`srl/profiler/adapters/megatron/`) does not use the
 vendored `scripts/performance` CLI from Megatron-Bridge. That wrapper is designed for
 the Slurm and NeMo-Run container flow: it parses a fixed set of known arguments and
 silently discards everything else. Profiling settings, activation recompute flags, and
 output-path overrides therefore never reach the training config when routed through that
 wrapper.
 
-The DryRun-RL adapter writes a launch spec in Python, applies it to a `ConfigContainer`
+The SimRL adapter writes a launch spec in Python, applies it to a `ConfigContainer`
 directly, and records step times and per-rank memory peaks through the official callback
-API. The vendored tree is pinned and installed, but the entry point is DryRun-RL's own.
+API. The vendored tree is pinned and installed, but the entry point is SimRL's own.
 
 ---
 
@@ -178,16 +178,16 @@ API. The vendored tree is pinned and installed, but the entry point is DryRun-RL
 The simulator is directly importable for use outside the Hydra CLI:
 
 ```python
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.cost.training import (
+from srl.cost.rollout import UnifiedRoofline
+from srl.cost.training import (
     FixedTrainingLatency,
     FixedTrainingMemory,
     TrainingCostModel,
 )
-from dryrun.policy.areal import ArealPolicy
-from dryrun.simulator import SimConfig, Simulator
-from dryrun.workload.distributions import bimodal
-from dryrun.workload.grouped import GroupedWorkload
+from srl.policy.areal import ArealPolicy
+from srl.simulator import SimConfig, Simulator
+from srl.workload.distributions import bimodal
+from srl.workload.grouped import GroupedWorkload
 
 rollout_cost = UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_d=1e-7)
 training_cost = TrainingCostModel(

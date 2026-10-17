@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.ops.base import families, op_for, ops_for_family
-from dryrun.cost.kernel.sol import FALLBACK_FLOORS_S, gdn_context_sol, gdn_decode_sol
-from dryrun.profiler.kernel.runner.gdn import gdn_head_counts
-from dryrun.profiler.schema import ModelDescriptor, ProfileValidationError
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.ops.base import families, op_for, ops_for_family
+from srl.cost.kernel.sol import FALLBACK_FLOORS_S, gdn_context_sol, gdn_decode_sol
+from srl.profiler.kernel.runner.gdn import gdn_head_counts
+from srl.profiler.schema import ModelDescriptor, ProfileValidationError
 
 # Qwen3.5-35B-A3B's GDN geometry, read from its config.json.
 _KEY_HEADS, _VALUE_HEADS, _HEAD_DIM = 16, 32, 128

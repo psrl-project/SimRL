@@ -110,10 +110,10 @@ dominates a small-message measurement.
 For cross-node coverage, which needs hostnames and passwordless ssh:
 
 ```bash
-dryrun-profile kernels run      --config examples/profile/kernel/collective_multinode.yaml \
+srl-profile kernels run      --config examples/profile/kernel/collective_multinode.yaml \
                                 --family collective
-dryrun-profile kernels fit-floor --config examples/profile/kernel/collective_multinode.yaml
-dryrun-profile kernels holdout   --config examples/profile/kernel/collective_multinode.yaml
+srl-profile kernels fit-floor --config examples/profile/kernel/collective_multinode.yaml
+srl-profile kernels holdout   --config examples/profile/kernel/collective_multinode.yaml
 ```
 
 `world_size` and `nodes` are both **slice** columns, so an unmeasured topology raises a
@@ -158,7 +158,7 @@ The grid must match the `tp=1` grid if you want the two comparable bucket for bu
 CFG=examples/profile/kernel/qwen3_8b_h20_tp2.yaml
 BASE=outputs/profile/qwen3_8b/vllm_tp2_serial/profiles/vllm.jsonl
 
-dryrun-profile kernels validate --config $CFG --baseline $BASE \
+srl-profile kernels validate --config $CFG --baseline $BASE \
     --model-path $MODEL_PATH --surface pchip --min-samples 1 --gate 100
 
 python examples/profile/kernel/decompose_tp.py --config $CFG --baseline $BASE \

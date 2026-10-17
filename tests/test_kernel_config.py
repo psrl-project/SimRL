@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.kernel.config import KernelProfileConfig
-from dryrun.profiler.schema import ProfileValidationError
+from srl.profiler.kernel.config import KernelProfileConfig
+from srl.profiler.schema import ProfileValidationError
 
 _FIXTURE_MODEL = Path("tests/fixtures/hf/qwen3_8b").resolve()
 

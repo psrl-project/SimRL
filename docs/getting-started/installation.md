@@ -14,8 +14,8 @@ Create and activate a fresh conda environment before touching any of the install
 below. Everything that follows assumes the environment is active.
 
 ```bash
-conda create -n dryrun-rl python=3.12
-conda activate dryrun-rl
+conda create -n simrl python=3.12
+conda activate simrl
 ```
 
 All documented commands use **repo-relative paths** from the repository root, so begin
@@ -29,7 +29,7 @@ This site uses two environment variables throughout its examples. Set them once 
 session and every documented command will resolve correctly without editing:
 
 ```bash
-conda activate dryrun-rl
+conda activate simrl
 export MODEL_PATH=/path/to/Qwen3-8B
 export DATASET_PATH=/path/to/dapo-math-17k.parquet
 ```
@@ -118,9 +118,9 @@ glibc 2.28 the script detects this at install time, skips the locked wheel, and 
 
 ---
 
-## Step 2: DryRun-RL itself
+## Step 2: SimRL itself
 
-Install DryRun-RL in editable mode with development dependencies:
+Install SimRL in editable mode with development dependencies:
 
 ```bash
 pip install -e ".[dev]"
@@ -130,17 +130,17 @@ This registers five console scripts:
 
 | Script | Purpose |
 |---|---|
-| `dryrun` | Run a simulation |
-| `dryrun-profile` | Profile a backend |
-| `dryrun-regress` | Fit a cost model |
-| `dryrun-plot` | Render offline plots |
-| `dryrun-workload` | Workload utilities |
+| `srl` | Run a simulation |
+| `srl-profile` | Profile a backend |
+| `srl-regress` | Fit a cost model |
+| `srl-plot` | Render offline plots |
+| `srl-workload` | Workload utilities |
 
 Verify the install:
 
 ```bash
-dryrun --help
-dryrun-profile --help
+srl --help
+srl-profile --help
 ```
 
 ---
@@ -177,7 +177,7 @@ message.
 Confirm the simulator itself works without profiling data or a GPU:
 
 ```bash
-dryrun policy=areal rollout_cost=roofline training_cost=fixed workload=uniform \
+srl policy=areal rollout_cost=roofline training_cost=fixed workload=uniform \
     job.n_versions=5 job.batch_size=32 rollout.n_instances=2
 ```
 

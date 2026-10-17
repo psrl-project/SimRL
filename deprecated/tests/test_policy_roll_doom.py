@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.component.rollout.engine import Request
-from dryrun.policy.base import SimState
-from dryrun.policy.roll import RollPolicy
-from dryrun.policy.roll_doom import RollDoomPolicy
+from srl.component.rollout.engine import Request
+from srl.policy.base import SimState
+from srl.policy.roll import RollPolicy
+from srl.policy.roll_doom import RollDoomPolicy
 
 
 def make_request(

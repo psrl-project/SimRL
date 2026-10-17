@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-_PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "dryrun" / "profiler" / "kernel"
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "srl" / "profiler" / "kernel"
 
 # Modules that must stay free of the GPU stack. `utils/timing.py` is deliberately absent: it owns
 # the CUDA event loop, which is why it is the one `utils` module `grid/` and `sweep/` may not
@@ -45,7 +45,7 @@ def _module_name(path: Path) -> str:
     """Return the dotted import path of one module under the kernel package."""
     relative = path.relative_to(_PACKAGE_ROOT).with_suffix("")
     parts = [part for part in relative.parts if part != "__init__"]
-    return ".".join(("dryrun", "profiler", "kernel", *parts))
+    return ".".join(("srl", "profiler", "kernel", *parts))
 
 
 def _torch_free_modules() -> list[str]:
@@ -55,8 +55,8 @@ def _torch_free_modules() -> list[str]:
         for path in sorted((_PACKAGE_ROOT / directory).glob("*.py")):
             names.add(_module_name(path))
     # The package root itself: it re-exports `KernelProfileConfig`, so importing
-    # `dryrun.profiler.kernel` must not drag the runners in either.
-    names.add("dryrun.profiler.kernel")
+    # `srl.profiler.kernel` must not drag the runners in either.
+    names.add("srl.profiler.kernel")
     return sorted(names)
 
 
@@ -72,15 +72,15 @@ def test_the_discovery_found_the_modules_it_claims_to_guard():
     modules = _torch_free_modules()
     assert len(modules) >= 15, f"Discovered only {len(modules)} torch-free modules: {modules}"
     for expected in (
-        "dryrun.profiler.kernel",
-        "dryrun.profiler.kernel.config",
-        "dryrun.profiler.kernel.sweep",
-        "dryrun.profiler.kernel.sweep.gemm",
-        "dryrun.profiler.kernel.grid.gemm",
-        "dryrun.profiler.kernel.grid.elementwise",
-        "dryrun.profiler.kernel.grid.optimizer",
-        "dryrun.profiler.kernel.grid.attention_training",
-        "dryrun.profiler.kernel.utils.model_dims",
+        "srl.profiler.kernel",
+        "srl.profiler.kernel.config",
+        "srl.profiler.kernel.sweep",
+        "srl.profiler.kernel.sweep.gemm",
+        "srl.profiler.kernel.grid.gemm",
+        "srl.profiler.kernel.grid.elementwise",
+        "srl.profiler.kernel.grid.optimizer",
+        "srl.profiler.kernel.grid.attention_training",
+        "srl.profiler.kernel.utils.model_dims",
     ):
         assert expected in modules, f"{expected} is not being guarded."
 
@@ -108,7 +108,7 @@ def test_the_runner_package_defers_its_gpu_imports(directory: str):
     which is why they are reached lazily from `runner/attention.py` rather than re-exported here.
     """
     result = _run(
-        f"import dryrun.profiler.kernel.{directory} as pkg, sys\n"
+        f"import srl.profiler.kernel.{directory} as pkg, sys\n"
         "loaded = sorted(m for m in sys.modules if m.split('.')[0] in ('torch', 'vllm', "
         "'transformer_engine', 'flashinfer'))\n"
         f"assert not loaded, 'importing {directory} pulled in ' + ', '.join(loaded)\n"
@@ -139,8 +139,8 @@ import inspect
 import sys
 import textwrap
 
-import dryrun.cost.kernel.ops as _  # populates the registry
-from dryrun.cost.kernel.ops.base import OP_REGISTRY
+import srl.cost.kernel.ops as _  # populates the registry
+from srl.cost.kernel.ops.base import OP_REGISTRY
 
 
 def lazy_imports(function):
@@ -167,7 +167,7 @@ checked = 0
 for op in sorted(OP_REGISTRY.values(), key=lambda o: o.name):
     imports, source_fn = lazy_imports(type(op).measure)
     assert imports, f"{op.name}.measure has no import to resolve"
-    owner = source_fn.__module__          # e.g. dryrun.cost.kernel.ops.optimizer
+    owner = source_fn.__module__          # e.g. srl.cost.kernel.ops.optimizer
     for node in imports:
         # A `level` of N inside module `a.b.c.d` strips N trailing segments of that module's
         # dotted name: one dot means the containing package. Resolved by hand rather than by
@@ -197,7 +197,7 @@ def test_the_package_root_exports_only_the_config():
     A wide root is what the PEP 562 `__getattr__` existed to make safe, and keeping both the
     layering and the lazy table would leave two reachable paths to every symbol.
     """
-    import dryrun.profiler.kernel as kernel
+    import srl.profiler.kernel as kernel
 
     assert kernel.__all__ == ["KernelProfileConfig"]
     assert not hasattr(kernel, "__getattr__"), (

@@ -15,25 +15,25 @@ cd "${ROOT_DIR}"
 
 case "${ACTION}" in
     generate)
-        dryrun-profile vllm generate --config "${CONFIG}" --phase "${PHASE}"
+        srl-profile vllm generate --config "${CONFIG}" --phase "${PHASE}"
         ;;
     run)
-        dryrun-profile vllm run \
+        srl-profile vllm run \
             --config "${CONFIG}" \
             --phase "${PHASE}" \
             "${RUN_ARGS[@]}" \
             "${@:2}"
         ;;
     collect)
-        dryrun-profile vllm collect --config "${CONFIG}" --phase "${PHASE}"
+        srl-profile vllm collect --config "${CONFIG}" --phase "${PHASE}"
         ;;
     all)
-        dryrun-profile vllm generate --config "${CONFIG}" --phase "${PHASE}"
-        dryrun-profile vllm run \
+        srl-profile vllm generate --config "${CONFIG}" --phase "${PHASE}"
+        srl-profile vllm run \
             --config "${CONFIG}" \
             --phase "${PHASE}" \
             "${RUN_ARGS[@]}"
-        dryrun-profile vllm collect --config "${CONFIG}" --phase "${PHASE}"
+        srl-profile vllm collect --config "${CONFIG}" --phase "${PHASE}"
         ;;
     *)
         echo "Usage: $0 [generate|run|collect|all]" >&2

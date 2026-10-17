@@ -170,7 +170,7 @@ distribution.
 ### 3.1 Module layout
 
 ```
-dryrun/component/rollout/engine/kv/
+srl/component/rollout/engine/kv/
     block.py      KvBlock: block_id, ref_cnt, block_hash, free-list links
     free_list.py  FreeBlockList: the doubly linked LRU queue
     pool.py       BlockPool: allocation, hash -> block map, eviction
@@ -285,7 +285,7 @@ intact, so the periodic-linear derivation stays exact. No fallback to an O(cap) 
 
 ## 4. Validation
 
-Four controlled vLLM scenarios on H20. `dryrun/workload/inference.py` already starts and stops
+Four controlled vLLM scenarios on H20. `srl/workload/inference.py` already starts and stops
 a server and drives `/v1/completions`; this adds a `/metrics` reader for
 `vllm:prefix_cache_queries` and `vllm:prefix_cache_hits`
 (`third_party/vllm/vllm/v1/metrics/loggers.py:584-601`). Both counters are **per block**, which
@@ -316,7 +316,7 @@ versus simulated table in `docs/`.
 
 `StepStat` gains `n_prefill_hit` and `n_prefill_computed`, named to match the real log's own
 columns (`prefill_tokens` / `computed (cache miss)` in `SMG_LOOPBACK_FIX.md`) so
-`dryrun-compare` puts like against like. `Request` gains a cumulative `prefix_hit_tokens`, which
+`srl-compare` puts like against like. `Request` gains a cumulative `prefix_hit_tokens`, which
 splits the re-prefill residual into "tokens the cache saved" and "what still fails to reconcile".
 
 ### 4.2 Acceptance gates

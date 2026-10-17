@@ -7,9 +7,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from dryrun.telemetry.psrl_log import PsrlLogLayout, convert_psrl_logs
-from dryrun.telemetry.store import JsonlStore
-from dryrun.visualizer.plots import SimPlotter
+from srl.telemetry.psrl_log import PsrlLogLayout, convert_psrl_logs
+from srl.telemetry.store import JsonlStore
+from srl.visualizer.plots import SimPlotter
 
 # The fixture writes UTC into the JSON sinks and this offset into the text logs,
 # exactly as PSRL does, so the converter has a real offset to recover.
@@ -164,7 +164,7 @@ class TestClockAlignment:
 
     def test_a_wrong_offset_is_reported_as_out_of_span(self, tmp_path, caplog):
         log_dir = _build_log_dir(tmp_path)
-        with caplog.at_level("WARNING", logger="dryrun"):
+        with caplog.at_level("WARNING", logger="srl"):
             _convert(tmp_path, log_dir, utc_offset_hours=0.0)
         assert "offset is probably wrong" in caplog.text
 

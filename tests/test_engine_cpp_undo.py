@@ -9,7 +9,7 @@ For now, just verify the module still imports after adding the undo sources.
 import pytest
 
 try:
-    from dryrun._engine_cpp import version
+    from srl._engine_cpp import version
     HAS_CPP = True
 except ImportError:
     HAS_CPP = False

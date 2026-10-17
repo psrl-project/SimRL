@@ -1,10 +1,10 @@
 # Prior art and comparisons
 
-DryRun-RL's kernel cost model was designed by reading two existing simulators, aiconfigurator
+SimRL's kernel cost model was designed by reading two existing simulators, aiconfigurator
 and Frontier, before committing to a design. This page records what was taken from them, what
 is genuinely different, and which papers the other cost models follow.
 
-The short version: **on the decision that matters most, DryRun-RL and aiconfigurator made the
+The short version: **on the decision that matters most, SimRL and aiconfigurator made the
 same choice, and Frontier made the opposite one.** The design document
 (`docs/superpowers/specs/2026-08-24-kernel-cost-model-design.md`, decision D2) adopted
 aiconfigurator's approach deliberately rather than arriving at it independently.
@@ -16,7 +16,7 @@ aiconfigurator's approach deliberately rather than arriving at it independently.
 All three predict one kernel's latency from a table of measurements. They differ in *what the
 table stores* and *what gets interpolated*.
 
-| | aiconfigurator | Frontier | DryRun-RL |
+| | aiconfigurator | Frontier | SimRL |
 |---|---|---|---|
 | table holds | raw `(shape → latency)` | raw `(shape → latency)` | raw `(shape → latency)` |
 | interpolates | **SOL-normalised utility** | latency, via RandomForest | **SOL-normalised utility** |
@@ -33,8 +33,8 @@ aiconfigurator's own source states this. From
    points in joint log2 space with tapered (modified-Shepard) weights
 ```
 
-Utility, log2 spacing, Shepard tapering, and the boundary hold are all shared. DryRun-RL's
-`dryrun/cost/kernel/interp.py` is the same construction.
+Utility, log2 spacing, Shepard tapering, and the boundary hold are all shared. SimRL's
+`srl/cost/kernel/interp.py` is the same construction.
 
 ### Why utility rather than latency
 
@@ -91,14 +91,14 @@ neither of the others does: a CPU-overhead table keyed on
 
 ---
 
-## What is actually different about DryRun-RL
+## What is actually different about SimRL
 
 Three things, none of which is the utility idea.
 
 ### A dispatch floor inside the max
 
 Attention, elementwise, and collective ops carry a per-call cost the roofline does not express.
-DryRun-RL fits one per backend and op and evaluates
+SimRL fits one per backend and op and evaluates
 $\text{latency} = \max(\text{compute}, \text{memory}, \text{floor})$.
 
 The floor goes *inside* the max rather than being added, because adding it would double-count in
@@ -112,7 +112,7 @@ cannot reproduce a flat region.
 
 ### `kernels verify-shapes`
 
-All three derive their per-layer operator list analytically from `config.json`. DryRun-RL ships
+All three derive their per-layer operator list analytically from `config.json`. SimRL ships
 an **optional** self-check that the other two do not have: build the model on the meta device,
 enumerate every 2-D weight, apply the engine's fusion rules, and compare against the declared
 shapes. On Qwen3-8B it costs 3.09 s and 0 MiB of VRAM.
@@ -165,7 +165,7 @@ built their own synthetic shapes. Refusing is honest. Guessing is not.
 Worth stating plainly, because it determines when a sweep has to be repeated.
 
 `(n, k)` is **fully determined by the architecture**, and it is looked up by exact match. For
-Qwen3-8B at TP=1, `dryrun/profiler/kernels/families_dense.py` computes five pairs:
+Qwen3-8B at TP=1, `srl/profiler/kernels/families_dense.py` computes five pairs:
 
 | shape | n | k |
 |---|---|---|
@@ -225,18 +225,18 @@ into a communication-aware sum over microbatches:
 $$\text{latency} = a_Q \cdot Q_\text{eff} + b_T \cdot T_\text{eff}
     + c_\text{pipeline} \cdot (\text{num\_microbatches} + PP - 1) + \text{update\_overhead}$$
 
-DryRun-RL restructures this into four separately identifiable terms and fits it against
+SimRL restructures this into four separately identifiable terms and fits it against
 Megatron-Bridge records. The FSDP model shares the same form with `slots = num_microbatches`.
 See {doc}`training-megatron` and {doc}`training-fsdp`.
 
 ## Rollout cost structure: DistServe
 
 The DistServe rollout model ([arXiv:2401.09670](https://arxiv.org/abs/2401.09670)) separates
-prefill and decode attention costs explicitly. DryRun-RL's roofline model generalises that
+prefill and decode attention costs explicitly. SimRL's roofline model generalises that
 structure into one formula covering mixed batches by summing a `sum_l2` term (prefill) and a
 `ctxsum` term (decode), while keeping DistServe's approach of fitting effective hardware
 constants from measured profiles rather than using vendor peaks.
 
-`dryrun/cost/rollout/distserve.py` is the DistServe calibration itself. The `roofline` model is
+`srl/cost/rollout/distserve.py` is the DistServe calibration itself. The `roofline` model is
 the mixed-phase generalisation, which the original formulation does not cover. See
 {doc}`rollout`.

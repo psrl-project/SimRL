@@ -12,12 +12,12 @@ from pathlib import Path
 import pytest
 import torch
 
-from dryrun.profiler.adapters.fsdp.launch import (
+from srl.profiler.adapters.fsdp.launch import (
     build_model,
     read_spec,
     synthetic_batch,
 )
-from dryrun.profiler.adapters.fsdp.measure import (
+from srl.profiler.adapters.fsdp.measure import (
     FsdpMeasurement,
     is_nccl_memory_exhaustion,
     write_oom_sidecar,
@@ -155,7 +155,7 @@ def test_a_step_runs_every_microbatch_before_one_optimizer_step(tmp_path: Path):
     one microbatch regardless, the sweep would vary a number that changed nothing measured
     and the fit would see a rank-deficient design carrying rank-three labels.
     """
-    from dryrun.profiler.adapters.fsdp.launch import run_accumulated_step
+    from srl.profiler.adapters.fsdp.launch import run_accumulated_step
 
     calls: list[str] = []
 
@@ -190,7 +190,7 @@ def test_a_step_runs_every_microbatch_before_one_optimizer_step(tmp_path: Path):
 
 
 def test_a_single_microbatch_step_is_one_forward_backward_and_one_step(tmp_path: Path):
-    from dryrun.profiler.adapters.fsdp.launch import run_accumulated_step
+    from srl.profiler.adapters.fsdp.launch import run_accumulated_step
 
     calls: list[str] = []
 
@@ -281,7 +281,7 @@ def test_the_root_module_is_never_resharded_after_forward(tmp_path: Path, monkey
     """
     import torch.distributed.fsdp as fsdp_module
 
-    from dryrun.profiler.adapters.fsdp.launch import apply_fsdp
+    from srl.profiler.adapters.fsdp.launch import apply_fsdp
 
     calls: list[tuple[object, bool]] = []
 
@@ -315,7 +315,7 @@ def test_a_declared_optimizer_state_dtype_that_did_not_happen_is_an_error(tmp_pa
     optimizer state from the declared one. A silent disagreement is a wrong coefficient
     at fit time, so it is a loud failure at profile time instead.
     """
-    from dryrun.profiler.adapters.fsdp.launch import check_optimizer_state_dtype
+    from srl.profiler.adapters.fsdp.launch import check_optimizer_state_dtype
 
     class _Optimizer:
         state = {object(): {"exp_avg": torch.zeros(4, dtype=torch.bfloat16)}}
@@ -325,7 +325,7 @@ def test_a_declared_optimizer_state_dtype_that_did_not_happen_is_an_error(tmp_pa
 
 
 def test_a_matching_optimizer_state_dtype_passes(tmp_path: Path):
-    from dryrun.profiler.adapters.fsdp.launch import check_optimizer_state_dtype
+    from srl.profiler.adapters.fsdp.launch import check_optimizer_state_dtype
 
     class _Optimizer:
         state = {object(): {"exp_avg": torch.zeros(4, dtype=torch.float32)}}

@@ -10,18 +10,18 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.training.activation import (
+from srl.cost.training.activation import (
     LOGIT_OVERHEAD,
     ActivationGeometry,
     activation_bytes,
     in_flight_microbatches,
 )
-from dryrun.cost.training.base import TrainingParallelism
-from dryrun.cost.training.inventory import (
+from srl.cost.training.base import TrainingParallelism
+from srl.cost.training.inventory import (
     heaviest_stage_parameters,
     parameter_inventory,
 )
-from dryrun.profiler.schema import ModelDescriptor, SequenceStats
+from srl.profiler.schema import ModelDescriptor, SequenceStats
 
 GiB = 2**30
 QWEN3_8B_PARAMS = 8_190_735_360

@@ -28,7 +28,7 @@
 #   `half_va` only against it would flatter the routing strategy.
 #
 # ⚠️ READING THE OUTPUT
-#   `dryrun.cli.main` prints the SCG(S) curve itself, so this script only relays it.
+#   `srl.cli.main` prints the SCG(S) curve itself, so this script only relays it.
 #   SCG is a RATE in tokens/s, so it is comparable across arms ONLY when every arm
 #   consumed the same number of trajectories -- check the `Consumed:` lines agree
 #   before comparing any two SCG rows. An arm that ended early divides a smaller
@@ -44,10 +44,10 @@ echo "Console log:   ${LOG_FILE}"
 
 FIGURE_DIR="${FIGURE_DIR:-${ROOT_DIR}/examples/visualize}"
 
-DRYRUN_ENV="${DRYRUN_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh}"
-if [[ -f "${DRYRUN_ENV}" ]]; then
+SIMRL_ENV="${SIMRL_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh}"
+if [[ -f "${SIMRL_ENV}" ]]; then
     # shellcheck disable=SC1090
-    source "${DRYRUN_ENV}"
+    source "${SIMRL_ENV}"
 fi
 
 MODEL_PATH="${MODEL_PATH:-/apdcephfs_zwfy/share_303760348/lhy/models/DeepSeek-R1-Distill-Qwen-14B}"
@@ -64,7 +64,7 @@ for required in "${ROLLOUT_ARTIFACT}" "${TRAINING_ARTIFACT}" "${TRACE}"; do
         echo "The rollout artifact must carry BOTH TP degrees. Build it with:" >&2
         echo "  cat outputs/profile/deepseek_r1_distill_qwen_14b/vllm_tp{1,2}/profiles/vllm.jsonl \\" >&2
         echo "    > ${COST_DIR}/vllm_merged.jsonl" >&2
-        echo "  dryrun-regress rollout --model psrl --input ${COST_DIR}/vllm_merged.jsonl \\" >&2
+        echo "  srl-regress rollout --model psrl --input ${COST_DIR}/vllm_merged.jsonl \\" >&2
         echo "    --output ${ROLLOUT_ARTIFACT}" >&2
         exit 1
     fi

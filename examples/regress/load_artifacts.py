@@ -5,13 +5,13 @@ from __future__ import annotations
 import argparse
 import logging
 
-from dryrun.cost.rollout import PSRLFitted, RolloutWorkload
-from dryrun.cost.training import (
+from srl.cost.rollout import PSRLFitted, RolloutWorkload
+from srl.cost.training import (
     HydraulisTrainingCost,
     TrainingParallelism,
     TrainingWorkload,
 )
-from dryrun.profiler.schema import Parallelism
+from srl.profiler.schema import Parallelism
 
 
 def main() -> None:

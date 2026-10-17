@@ -1,4 +1,4 @@
-"""Tests for the DryRun-owned Megatron launcher.
+"""Tests for the SimRL-owned Megatron launcher.
 
 `build_config` is where every candidate setting is applied to the library recipe.
 The vendored performance CLI used to swallow unknown arguments, so a setting that
@@ -14,24 +14,24 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.adapters.megatron import (
+from srl.profiler.adapters.megatron import (
     MegatronBridgeConfig,
     build_launch_command,
     build_launch_spec,
     prepare_bridge_candidate,
 )
-from dryrun.profiler.adapters.megatron.config import (
+from srl.profiler.adapters.megatron.config import (
     RECOMPUTE_METHOD,
     RECOMPUTE_NUM_LAYERS,
 )
-from dryrun.profiler.adapters.megatron.prepare import LAUNCH_MODULE
-from dryrun.profiler.schema import (
+from srl.profiler.adapters.megatron.prepare import LAUNCH_MODULE
+from srl.profiler.schema import (
     HardwareDescriptor,
     ModelDescriptor,
     Parallelism,
     ProfileValidationError,
 )
-from dryrun.profiler.search_space import TrainingCandidate
+from srl.profiler.search_space import TrainingCandidate
 
 MODEL_PATH = "/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B"
 
@@ -113,7 +113,7 @@ def test_launch_spec_requires_vocab_size(tmp_path: Path):
         build_launch_spec(config, _candidate(), tmp_path / "run")
 
 
-def test_single_node_command_targets_the_dryrun_launcher(tmp_path: Path):
+def test_single_node_command_targets_the_srl_launcher(tmp_path: Path):
     command = build_launch_command(_candidate(), tmp_path / "launch_spec.json")
     assert command[0] == "torchrun"
     assert "--standalone" in command
@@ -192,7 +192,7 @@ def applied_config(tmp_path_factory):
     """Apply one candidate to the real library recipe once, then assert on it."""
     if not Path(MODEL_PATH).is_dir():
         pytest.skip(f"The local checkpoint {MODEL_PATH} is not available.")
-    from dryrun.profiler.adapters.megatron.launch import build_config
+    from srl.profiler.adapters.megatron.launch import build_config
 
     tmp_path = tmp_path_factory.mktemp("build_config")
     config = _config(tmp_path)
@@ -262,7 +262,7 @@ def test_build_config_redirects_output_and_disables_profilers(applied_config):
 def test_build_config_rejects_an_unknown_recompute_mode(tmp_path: Path):
     if not Path(MODEL_PATH).is_dir():
         pytest.skip(f"The local checkpoint {MODEL_PATH} is not available.")
-    from dryrun.profiler.adapters.megatron.launch import build_config
+    from srl.profiler.adapters.megatron.launch import build_config
 
     spec = build_launch_spec(_config(tmp_path), _candidate(), tmp_path / "run")
     spec["recompute"] = "selective"
@@ -280,7 +280,7 @@ def test_build_config_rejects_a_dtype_declaration_mismatch(tmp_path: Path):
     """
     if not Path(MODEL_PATH).is_dir():
         pytest.skip(f"The local checkpoint {MODEL_PATH} is not available.")
-    from dryrun.profiler.adapters.megatron.launch import build_config
+    from srl.profiler.adapters.megatron.launch import build_config
 
     config = _config(tmp_path, distributed_optimizer=False)
     spec = build_launch_spec(config, _candidate(), tmp_path / "run")
@@ -291,7 +291,7 @@ def test_build_config_rejects_a_dtype_declaration_mismatch(tmp_path: Path):
 def test_build_config_honors_the_layer_override(tmp_path: Path):
     if not Path(MODEL_PATH).is_dir():
         pytest.skip(f"The local checkpoint {MODEL_PATH} is not available.")
-    from dryrun.profiler.adapters.megatron.launch import build_config
+    from srl.profiler.adapters.megatron.launch import build_config
 
     config = _config(tmp_path, num_layers_override=2)
     spec = build_launch_spec(config, _candidate(), tmp_path / "run")

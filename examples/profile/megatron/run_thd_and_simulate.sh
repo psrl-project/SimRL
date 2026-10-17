@@ -17,7 +17,7 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${ROOT_DIR}"
 
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
 
 CONFIG="examples/profile/megatron/qwen3_8b_thd.yaml"
 PROFILE_DIR="${ROOT_DIR}/outputs/profile/qwen3_8b/megatron_tp2_pp3_thd"
@@ -27,21 +27,21 @@ COST_OUT="${ROOT_DIR}/outputs/cost/qwen3_8b_tp2_pp3_thd"
 mkdir -p "${PROFILE_DIR}/control/megatron_bridge" "${COST_OUT}"
 
 echo "=== PHASE 1: generate candidates ==="
-dryrun-profile megatron generate --config "${CONFIG}" --candidates "${CANDIDATES}"
+srl-profile megatron generate --config "${CONFIG}" --candidates "${CANDIDATES}"
 
 echo ""
 echo "=== PHASE 2: run every candidate ==="
 # Omitting --index runs them all. `allow_incomplete: true` in the config means an
 # OOM at the largest packs is recorded rather than aborting the sweep.
-dryrun-profile megatron run --config "${CONFIG}" --candidates "${CANDIDATES}"
+srl-profile megatron run --config "${CONFIG}" --candidates "${CANDIDATES}"
 
 echo ""
 echo "=== PHASE 3: collect ==="
-dryrun-profile megatron collect --config "${CONFIG}" --candidates "${CANDIDATES}"
+srl-profile megatron collect --config "${CONFIG}" --candidates "${CANDIDATES}"
 
 echo ""
 echo "=== PHASE 4: fit the cost model ==="
-dryrun-regress training \
+srl-regress training \
     --latency-model hydraulis \
     --memory-model hydraulis \
     --input "${PROFILE_DIR}/profiles/megatron_bridge.jsonl" \

@@ -13,12 +13,12 @@ import json
 
 import pytest
 
-from dryrun.cost.rollout.kv_cache import (
+from srl.cost.rollout.kv_cache import (
     KvCacheGeometry,
     kv_blocks_from_memory,
     parameter_bytes_from_checkpoint,
 )
-from dryrun.cost.rollout.kv_probe import (
+from srl.cost.rollout.kv_probe import (
     KvProbeKey,
     checkpoint_fingerprint,
     probe_kv_capacity,
@@ -112,9 +112,9 @@ class TestProbeCache:
         def explode(*_args, **_kwargs):
             raise AssertionError("probe ran despite a cache hit")
 
-        monkeypatch.setattr("dryrun.cost.rollout.kv_probe._run_probe", explode)
+        monkeypatch.setattr("srl.cost.rollout.kv_probe._run_probe", explode)
         monkeypatch.setattr(
-            "dryrun.cost.rollout.kv_probe._vllm_version", lambda: "test-version"
+            "srl.cost.rollout.kv_probe._vllm_version", lambda: "test-version"
         )
         key = KvProbeKey(
             checkpoint_fingerprint=checkpoint_fingerprint(model),
@@ -146,14 +146,14 @@ class TestProbeCache:
         model = _write_checkpoint(tmp_path / "model", total_size=1000)
         cache = tmp_path / "kv.json"
         monkeypatch.setattr(
-            "dryrun.cost.rollout.kv_probe._run_probe",
+            "srl.cost.rollout.kv_probe._run_probe",
             lambda *a, **k: {"num_gpu_blocks": 777, "block_size": 16},
         )
         first = probe_kv_capacity(model, cache_path=cache)
         assert first.source == "probe"
 
         monkeypatch.setattr(
-            "dryrun.cost.rollout.kv_probe._run_probe",
+            "srl.cost.rollout.kv_probe._run_probe",
             lambda *a, **k: (_ for _ in ()).throw(AssertionError("re-probed")),
         )
         second = probe_kv_capacity(model, cache_path=cache)
@@ -175,7 +175,7 @@ class TestProbeCache:
         cache = tmp_path / "kv.json"
         cache.write_text(contents)
         monkeypatch.setattr(
-            "dryrun.cost.rollout.kv_probe._run_probe",
+            "srl.cost.rollout.kv_probe._run_probe",
             lambda *a, **k: {"num_gpu_blocks": 5, "block_size": 16},
         )
         assert probe_kv_capacity(model, cache_path=cache).source == "probe"
@@ -184,7 +184,7 @@ class TestProbeCache:
         """A wrong capacity rescales every occupancy number without failing."""
         model = _write_checkpoint(tmp_path / "model", total_size=1000)
         monkeypatch.setattr(
-            "dryrun.cost.rollout.kv_probe._run_probe",
+            "srl.cost.rollout.kv_probe._run_probe",
             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("engine died")),
         )
         with pytest.raises(RuntimeError, match="engine died"):

@@ -3,7 +3,7 @@
 #
 # Every concern is handled in a dedicated conf/ file, which this script sources
 # in order. Each conf/ file reads env vars and sets one array of Hydra overrides;
-# this script concatenates them and passes them to dryrun.cli.main.
+# this script concatenates them and passes them to srl.cli.main.
 #
 # QUICKSTART (14B with Megatron training, psrl rollout):
 #   MODEL_PATH=... \
@@ -117,7 +117,7 @@ source "${CONF_DIR}/recompute.sh"
 # ── invoke the simulator ───────────────────────────────────────────────────────
 cd "${ROOT_DIR}"
 export PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
-python -m dryrun.cli.main \
+python -m srl.cli.main \
     workload="${WORKLOAD}" \
     policy="${POLICY}" \
     rollout_cost="${ROLLOUT_MODEL}" \

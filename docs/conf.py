@@ -1,4 +1,4 @@
-# -- DryRun-RL documentation configuration --------------------------------
+# -- SimRL documentation configuration --------------------------------
 # Sphinx with pydata-sphinx-theme, MyST Markdown throughout.
 
 import os
@@ -8,9 +8,9 @@ sys.path.insert(0, os.path.abspath(".."))
 
 # -- Project information --------------------------------------------------
 
-project = "DryRun-RL"
-copyright = "2026, DryRun-RL contributors"
-author = "DryRun-RL contributors"
+project = "SimRL"
+copyright = "2026, SimRL contributors"
+author = "SimRL contributors"
 release = "0.1.0"
 
 # -- General configuration ------------------------------------------------
@@ -63,10 +63,10 @@ nitpicky = False
 # -- HTML output ----------------------------------------------------------
 
 html_theme = "pydata_sphinx_theme"
-html_title = "DryRun-RL Documentation"
+html_title = "SimRL Documentation"
 
 html_theme_options = {
-    "logo": {"text": "DryRun-RL"},
+    "logo": {"text": "SimRL"},
     "show_toc_level": 2,
     "navigation_depth": 3,
     "show_nav_level": 1,

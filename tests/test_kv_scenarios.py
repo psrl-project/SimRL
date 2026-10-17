@@ -1,7 +1,7 @@
 """Simulated counterparts of the four controlled prefix-cache scenarios.
 
 These run the simulator's own block pool through the same four shapes
-`dryrun/workload/prefix_probe_run.py` drives a real vLLM server through, so the
+`srl/workload/prefix_probe_run.py` drives a real vLLM server through, so the
 two sides of the comparison in {doc}`../docs/simulation/prefix-cache` are both
 committed code rather than one of them being a transcript.
 
@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.component.rollout.engine import NativeInstance, Request
-from dryrun.cost.rollout import UnifiedRoofline
+from srl.component.rollout.engine import NativeInstance, Request
+from srl.cost.rollout import UnifiedRoofline
 
 _BLOCK = 16
 _PROMPT = 2048

@@ -14,8 +14,8 @@ from collections.abc import Callable
 
 import pytest
 
-from dryrun.component.rollout.engine import Request
-from dryrun.simulator.config import SimResult
+from srl.component.rollout.engine import Request
+from srl.simulator.config import SimResult
 
 
 def _make_request(rid: int, v_min: int, v_max: int, consume_version: int) -> Request:

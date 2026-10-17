@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.cost.rollout.base import RolloutWorkload
+from srl.cost.rollout.base import RolloutWorkload
 
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL_ROOT = ROOT / "outputs/profile/qwen3_8b/kernel_tp1/kernel"
@@ -26,9 +26,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def model():
-    from dryrun.cost.kernel.database import KernelDatabase
-    from dryrun.cost.kernel.model_ops import ModelOps
-    from dryrun.cost.rollout.composed import ComposedRollout
+    from srl.cost.kernel.database import KernelDatabase
+    from srl.cost.kernel.model_ops import ModelOps
+    from srl.cost.rollout.composed import ComposedRollout
 
     db = KernelDatabase.from_root(str(KERNEL_ROOT), gpu="h20")
     ops = ModelOps.from_checkpoint(str(MODEL), tensor_parallel=1)
@@ -118,7 +118,7 @@ def _edge_steps():
 
 def test_cpp_term_fast_path_is_bit_identical(model):
     """Check that the engine's own key derivation and summation give `predict`'s exact float."""
-    cpp = pytest.importorskip("dryrun._engine_cpp")
+    cpp = pytest.importorskip("srl._engine_cpp")
     wrapped = cpp.PyWrappedCostModel(model)
     assert wrapped.term_fast_path, "ComposedRollout did not enable the C++ term path."
     steps = _edge_steps()

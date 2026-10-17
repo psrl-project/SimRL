@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.component.rollout.engine import NativeInstance, Request
-from dryrun.component.rollout.engine.eviction import (
+from srl.component.rollout.engine import NativeInstance, Request
+from srl.component.rollout.engine.eviction import (
     EVICTION_REGISTRY,
     build_eviction,
     register_eviction,
 )
-from dryrun.cost.rollout import UnifiedRoofline
+from srl.cost.rollout import UnifiedRoofline
 
 
 def _req(rid: int, generated: int = 0, dispatch_time: float = 0.0, prompt_len: int = 512):
@@ -23,7 +23,7 @@ def _req(rid: int, generated: int = 0, dispatch_time: float = 0.0, prompt_len: i
 
 class TestRegistry:
     def test_every_built_in_strategy_is_registered(self):
-        assert set(EVICTION_REGISTRY) == {"vllm_lru", "longest_ctx"}
+        assert set(EVICTION_REGISTRY) == {"vllm_lru", "longest_ctx", "latest_deadline"}
 
     def test_an_unknown_name_lists_the_known_ones(self):
         with pytest.raises(KeyError, match="longest_ctx"):

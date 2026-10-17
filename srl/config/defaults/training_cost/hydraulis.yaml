@@ -1,0 +1,80 @@
+# Fitted Hydraulis V1 training cost. Requires a profile JSONL regression artifact.
+name: hydraulis
+
+# Path to a CostArtifact produced by `srl-regress training`.
+artifact_path: ""
+
+# Simulated training mesh. Lookup is exact in TP/PP/CP; DP is the V1 analytical extension.
+parallelism:
+  tp: 1
+  pp: 1
+  dp: 1
+  cp: 1
+
+# Sequences per microbatch on one DP rank. Splits the global batch. Ignored when
+# max_tokens_per_microbatch is set.
+micro_batch_size: 1
+
+# Token budget per microbatch. null groups by micro_batch_size (a fixed sequence
+# count); a number packs to the budget instead, as verl and PSRL do with
+# use_dynamic_bsz=True.
+#
+# Pass the already-multiplied value. verl computes
+# `max_token_len = ppo_max_token_len_per_gpu * sp_size`
+# (verl/workers/engine/utils.py) and Megatron sequence parallelism makes sp_size
+# equal TP, so a run configured with 12800 at TP=2 packs to 25600.
+#
+# The distinction is worth a factor, not a few percent: 64 ragged sequences
+# averaging 9360 tokens give 66 pipeline slots at PP=3 by count but about 31 when
+# packed, and the per-slot cost is charged once per slot.
+max_tokens_per_microbatch: null
+
+# Pipeline schedule. V1 only accepts 1f1b.
+schedule: 1f1b
+
+# Activation checkpoint policy. Must match a profiled discrete cell.
+activation_recompute: none
+
+# Optimizer name. Must match a profiled discrete cell.
+optimizer: adam
+
+# Dtypes used by the static parameter inventory and cell lookup.
+parameter_dtype: bf16
+gradient_dtype: fp32
+optimizer_state_dtype: fp32
+
+# When true, optimizer state is additionally sharded by DP.
+distributed_optimizer: true
+
+
+# Feature names for which out-of-domain queries are permitted instead of rejected.
+# Empty (the default) means strict. When a name is listed the prediction proceeds and the
+# exceedance is recorded in the estimate's diagnostics under 'extrapolation_notes'.
+# An unknown name raises at construction rather than silently enabling nothing.
+#
+# Selectable names for Hydraulis (Megatron):
+#   micro_batch_size      : LATENCY: sequences per microbatch. Enters the latency form
+#                             as a guard feature only; the linear form does not depend on it
+#                             nonlinearly. Modest upward extrapolation is low-risk if the
+#                             pipeline schedule is otherwise in-domain.
+#   pipeline_slots        : LATENCY: number of microbatch slots filling the pipeline
+#                             (num_microbatches * pp). The latency form is linear in this
+#                             term (per_step + slots*(token_cost*tokens + overhead)), so
+#                             extrapolation risk is similar to num_microbatches in FSDP.
+#   tokens                : LATENCY: total tokens on the critical rank per microbatch.
+#                             Extrapolating beyond the profiled token range risks predicting
+#                             configurations that cannot run on the hardware. Do not list
+#                             this name without profiled data covering the target range.
+#   activation_bytes      : MEMORY: activation working-set bytes. Extrapolating beyond
+#                             the profiled range produces memory predictions for workloads
+#                             that may OOM; do not list unless you have supporting data.
+#   profiled_dp           : MEMORY: the canonical DP degree used when fitting. Needed
+#                             only when the artifact covers a single DP value and the query
+#                             is for a different degree via the analytical DP extension.
+#
+# Example Hydra override:
+#   training_cost.extrapolate=[pipeline_slots]
+extrapolate: []
+
+# Per-GPU capacity in MiB used by the simulator to flag OOM. null disables the check.
+gpu_memory_mib: null

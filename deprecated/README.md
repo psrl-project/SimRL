@@ -8,11 +8,11 @@ reasoning behind them stay recoverable.
 
 | Group | Paths under `deprecated/` |
 |---|---|
-| Value pricing | `dryrun/value/` (length models, deadline budget, marginal valuator, tool-time model) |
-| Routing strategies | `dryrun/component/rollout/router/strategies/{scg_admission,planned_tier_tp,version_aware_tp,version_capped_tp}.py`, `dryrun/component/rollout/router/estimator.py` |
-| Eviction | `dryrun/component/rollout/engine/eviction/scg_value.py` |
-| Fleet solvers | `dryrun/simulator/dynamic_parallel/{solver,scg_value,planner}.py` (`ParallelismSolver`, the SCG plan scorer, `TierPlanner`) |
-| Policy | `dryrun/policy/roll_doom.py`, `dryrun/config/defaults/policy/roll_doom.yaml` |
+| Value pricing | `srl/value/` (length models, deadline budget, marginal valuator, tool-time model) |
+| Routing strategies | `srl/component/rollout/router/strategies/{scg_admission,planned_tier_tp,version_aware_tp,version_capped_tp}.py`, `srl/component/rollout/router/estimator.py` |
+| Eviction | `srl/component/rollout/engine/eviction/scg_value.py` |
+| Fleet solvers | `srl/simulator/dynamic_parallel/{solver,scg_value,planner}.py` (`ParallelismSolver`, the SCG plan scorer, `TierPlanner`) |
+| Policy | `srl/policy/roll_doom.py`, `srl/config/defaults/policy/roll_doom.yaml` |
 | Tests | `tests/test_scg_admission.py`, `test_tier_planner.py`, `test_value_length.py`, `test_value_marginal.py`, `test_policy_roll_doom.py`, `test_dynamic_parallel.py` (routing preference and solver halves only), `test_simulator_dynamic_parallel.py` |
 | Examples | `examples/simulate/{scg_sweep.sh,scg_14b_fleet_shapes.sh,scg_14b_sweep_conditions.sh,scg_admission_sweep.sh}`, three `README_*` notes beside them, `examples/workload/make_heavy_tail_trace.py` |
 | Figures | `outputs/simulate/scg_sweep/compare/*.png` |
@@ -35,15 +35,15 @@ staleness buffer becomes ready and admits, routes, and reshapes the fleet agains
 ## What stayed in the live tree
 
 - The SCG(S) metric: `SimResult.scg`, `scg_count`, `scg_curve`, `scg_w`, the plots, and `tests/test_scg.py`.
-- `TrajView` (now in the engine) and `dryrun/forecast/` for length prediction.
-- `dryrun/simulator/dynamic_parallel/{plan,fleet}.py` with `tests/test_dynamic_parallel_fleet.py`.
+- `TrajView` (now in the engine) and `srl/forecast/` for length prediction.
+- `srl/simulator/dynamic_parallel/{plan,fleet}.py` with `tests/test_dynamic_parallel_fleet.py`.
   Nothing in `Simulator` constructs the fleet today.
 - The eviction framework, `roll.py`, and the `length_aware` router strategy.
 
 ## This directory is inert
 
-- **Not packaged.** `pyproject.toml` sets `[tool.setuptools.packages.find] include = ["dryrun*"]`.
-  `deprecated` does not match, and `deprecated/dryrun` has the dotted name `deprecated.dryrun`, which
+- **Not packaged.** `pyproject.toml` sets `[tool.setuptools.packages.find] include = ["srl*"]`.
+  `deprecated` does not match, and `deprecated/srl` has the dotted name `deprecated.srl`, which
   does not match either.
 - **Not collected.** `[tool.pytest.ini_options] testpaths = ["tests"]`, so a bare `pytest` never
   descends here.

@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.component.rollout.engine import NativeInstance, Request, TrajView, traj_view
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.forecast import (
+from srl.component.rollout.engine import NativeInstance, Request, TrajView, traj_view
+from srl.cost.rollout import UnifiedRoofline
+from srl.forecast import (
     Arrival,
     InstanceForecast,
     InstanceState,
@@ -22,7 +22,7 @@ from dryrun.forecast import (
 )
 
 try:
-    from dryrun._engine_cpp import CppInstance, CppRequest, PyWrappedCostModel
+    from srl._engine_cpp import CppInstance, CppRequest, PyWrappedCostModel
 
     HAS_CPP = True
 except ImportError:
@@ -51,9 +51,9 @@ def cost(request):
         return UnifiedRoofline(F=0.006, W=0.002, G=4e-6, A_p=3e-10, A_d=5e-8, b=16)
     if not (KERNEL_ROOT.is_dir() and MODEL.is_dir()):
         pytest.skip("Needs the profiled Qwen3-8B kernel tables and checkpoint.")
-    from dryrun.cost.kernel.database import KernelDatabase
-    from dryrun.cost.kernel.model_ops import ModelOps
-    from dryrun.cost.rollout.composed import ComposedRollout
+    from srl.cost.kernel.database import KernelDatabase
+    from srl.cost.kernel.model_ops import ModelOps
+    from srl.cost.rollout.composed import ComposedRollout
 
     database = KernelDatabase.from_root(str(KERNEL_ROOT), gpu="h20", utility_surface="pchip")
     return ComposedRollout(database, ModelOps.from_checkpoint(str(MODEL), tensor_parallel=1), tensor_parallel=1)

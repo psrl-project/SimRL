@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from dryrun.component.rollout.engine.undo import (
+from srl.component.rollout.engine.undo import (
     NULL_RECORDER,
     AttrSnapshot,
     MappingKeysChanged,

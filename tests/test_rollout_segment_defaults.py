@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.rollout import PSRLFitted, UnifiedRoofline, advance
+from srl.cost.rollout import PSRLFitted, UnifiedRoofline, advance
 
 _BATCHES = (1, 4, 16, 48, 64)
 _CONTEXTS = (1024.0, 8192.0, 65536.0, 262144.0)

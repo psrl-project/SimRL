@@ -6,8 +6,8 @@ import random
 
 import pytest
 
-from dryrun.component.rollout.engine import NativeInstance, Request
-from dryrun.cost.rollout import UnifiedRoofline
+from srl.component.rollout.engine import NativeInstance, Request
+from srl.cost.rollout import UnifiedRoofline
 
 
 def _inst(**kwargs) -> NativeInstance:
@@ -311,7 +311,7 @@ class TestThePoolNeverOvercommits:
     @staticmethod
     def _derived_blocks(inst) -> int:
         """What occupancy would be if each request held its context privately."""
-        from dryrun.component.rollout.engine import blocks_for
+        from srl.component.rollout.engine import blocks_for
 
         return sum(
             blocks_for(r.prefilled, inst.block_size)
@@ -418,7 +418,7 @@ class TestExhaustionAccountsForSharing:
         The pool after k steps is `pool(0)` plus each running request's private
         growth, since sharing is fixed at the prompt.
         """
-        from dryrun.component.rollout.engine import blocks_for
+        from srl.component.rollout.engine import blocks_for
 
         cap = max((r.remaining for r in inst.running), default=0)
         if cap == 0:
@@ -475,7 +475,7 @@ class TestExhaustionAccountsForSharing:
     def test_sharing_never_makes_the_estimate_optimistic(self):
         """The intercept must never be below the pool's true occupancy, or the
         estimate would authorise a step the pool cannot fund."""
-        from dryrun.component.rollout.engine import blocks_for
+        from srl.component.rollout.engine import blocks_for
 
         inst = _inst(kv_blocks=4000)
         for rid in range(8):

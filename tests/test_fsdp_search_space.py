@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from dryrun.profiler.fsdp_search_space import FsdpCandidate, enumerate_fsdp_candidates
-from dryrun.profiler.schema import ProfileValidationError
+from srl.profiler.fsdp_search_space import FsdpCandidate, enumerate_fsdp_candidates
+from srl.profiler.schema import ProfileValidationError
 
 
 def _candidate(**overrides) -> FsdpCandidate:

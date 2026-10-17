@@ -6,7 +6,7 @@ import json
 from enum import Enum
 from fractions import Fraction
 
-from dryrun.telemetry.store import JsonlStore
+from srl.telemetry.store import JsonlStore
 
 
 class _Color(Enum):

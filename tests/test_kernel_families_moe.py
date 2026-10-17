@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.profiler.kernel.grid.families import FAMILY_REGISTRY, family_for
-from dryrun.profiler.kernel.grid.families_moe import QWEN35_MOE_FAMILY, Qwen35MoeFamily
-from dryrun.profiler.schema import ModelDescriptor, ProfileValidationError
+from srl.profiler.kernel.grid.families import FAMILY_REGISTRY, family_for
+from srl.profiler.kernel.grid.families_moe import QWEN35_MOE_FAMILY, Qwen35MoeFamily
+from srl.profiler.schema import ModelDescriptor, ProfileValidationError
 
 
 def _qwen35_descriptor(
@@ -64,7 +64,7 @@ class TestRegistration:
         assert family_for(model) is QWEN35_MOE_FAMILY
 
     def test_dense_arch_still_resolves_to_dense(self):
-        from dryrun.profiler.kernel.grid.families_dense import DENSE_LLAMA_FAMILY
+        from srl.profiler.kernel.grid.families_dense import DENSE_LLAMA_FAMILY
 
         dense = ModelDescriptor(
             name="test",

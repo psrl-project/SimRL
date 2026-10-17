@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.component.rollout.engine import NativeInstance, Request
-from dryrun.component.rollout.router import (
+from srl.component.rollout.engine import NativeInstance, Request
+from srl.component.rollout.router import (
     AdmissionGate,
     Router,
     RouterQueue,
     SortKey,
     build_strategy,
 )
-from dryrun.cost.rollout import LinearLPS
+from srl.cost.rollout import LinearLPS
 
 
 def _req(rid: int, prompt_len: int = 100, group_id: int = 0, v_traj: int = 0) -> Request:

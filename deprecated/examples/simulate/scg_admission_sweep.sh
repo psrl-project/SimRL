@@ -39,7 +39,7 @@ MAX_STALENESS="${MAX_STALENESS:-2}"
 # psrl_aligned prices rollout with ComposedRollout, which has no C++ equivalent,
 # so the whole sweep runs on the Python engine. Without this the first arm dies
 # in `_make_cpp_cost`.
-export DRYRUN_BACKEND="${DRYRUN_BACKEND:-native}"
+export SIMRL_BACKEND="${SIMRL_BACKEND:-native}"
 
 mkdir -p "${SWEEP_DIR}"
 

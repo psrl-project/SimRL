@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 import torch
 
-from dryrun.cost.kernel.database import KernelDatabase
-from dryrun.cost.kernel.ops.attention import GENERATION_ATTENTION_OP
-from dryrun.cost.kernel.table import KernelTable
-from dryrun.profiler.hf import model_descriptor_from_yaml
-from dryrun.profiler.kernel.config import KernelProfileConfig
-from dryrun.profiler.kernel.measurements import PerfTableWriter
+from srl.cost.kernel.database import KernelDatabase
+from srl.cost.kernel.ops.attention import GENERATION_ATTENTION_OP
+from srl.cost.kernel.table import KernelTable
+from srl.profiler.hf import model_descriptor_from_yaml
+from srl.profiler.kernel.config import KernelProfileConfig
+from srl.profiler.kernel.measurements import PerfTableWriter
 
 _FIXTURE_MODEL = Path("tests/fixtures/hf/qwen3_8b").resolve()
 
@@ -58,13 +58,13 @@ def _factory(config):
 def test_kernel_source_reports_the_flashinfer_version():
     import flashinfer
 
-    from dryrun.profiler.kernel.runner._flashinfer_attn import flashinfer_kernel_source
+    from srl.profiler.kernel.runner._flashinfer_attn import flashinfer_kernel_source
 
     assert flashinfer_kernel_source() == f"flashinfer_{flashinfer.__version__}"
 
 
 def test_profile_writes_a_loadable_generation_table(tmp_path):
-    from dryrun.profiler.kernel.runner._flashinfer_attn import profile_flashinfer_attention
+    from srl.profiler.kernel.runner._flashinfer_attn import profile_flashinfer_attention
 
     config = _config(tmp_path)
     model = model_descriptor_from_yaml(str(_FIXTURE_MODEL), base_dir=Path.cwd())
@@ -75,8 +75,8 @@ def test_profile_writes_a_loadable_generation_table(tmp_path):
 
 
 def test_both_backends_are_visible_to_the_database(tmp_path):
-    from dryrun.profiler.kernel.runner._flashinfer_attn import profile_flashinfer_attention
-    from dryrun.profiler.kernel.runner._vllm_attn import profile_vllm_attention
+    from srl.profiler.kernel.runner._flashinfer_attn import profile_flashinfer_attention
+    from srl.profiler.kernel.runner._vllm_attn import profile_vllm_attention
 
     config = _config(tmp_path)
     model = model_descriptor_from_yaml(str(_FIXTURE_MODEL), base_dir=Path.cwd())

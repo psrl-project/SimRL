@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.component.rollout.engine import InstanceView, Request
-from dryrun.component.rollout.router import build_strategy
-from dryrun.component.rollout.router.strategy import RoutingContext
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.policy.roll import RollPolicy
-from dryrun.simulator.config import SimConfig
-from dryrun.simulator.simulator import Simulator
-from dryrun.value import TrajView
-from dryrun.workload.grouped import GroupedWorkload
+from srl.component.rollout.engine import InstanceView, Request
+from srl.component.rollout.router import build_strategy
+from srl.component.rollout.router.strategy import RoutingContext
+from srl.cost.rollout import UnifiedRoofline
+from srl.policy.roll import RollPolicy
+from srl.simulator.config import SimConfig
+from srl.simulator.simulator import Simulator
+from srl.value import TrajView
+from srl.workload.grouped import GroupedWorkload
 
 
 class SaturatedCost:
@@ -88,7 +88,7 @@ def _context(now: float = 1.0) -> RoutingContext:
 
 def _rates(view: InstanceView, req: Request) -> tuple[float, float]:
     """Return the rates the strategy itself would price this placement at."""
-    from dryrun.value import BatchState, decode_rates, traj_view
+    from srl.value import BatchState, decode_rates, traj_view
 
     n_decode, ctxsum = view.decode_batch()
     return decode_rates(
@@ -140,8 +140,8 @@ class TestContextPlumbing:
                 seen.append(context.now)
                 return 0
 
-        from dryrun.component.rollout.engine import NativeInstance
-        from dryrun.component.rollout.router import Router
+        from srl.component.rollout.engine import NativeInstance
+        from srl.component.rollout.router import Router
 
         cost = UnifiedRoofline(F=0.01, W=1e-4, G=1e-6, A_p=1e-9, A_d=1e-9, b=1.0)
         inst = NativeInstance(cost, token_budget=8192, kv_blocks=10000, block_size=16)
@@ -154,7 +154,7 @@ class TestContextPlumbing:
 class TestCostModelRequirement:
     def test_a_router_without_a_cost_model_is_refused(self):
         """Silently pricing against None would make every dilution zero."""
-        from dryrun.component.rollout.router import Router
+        from srl.component.rollout.router import Router
 
         with pytest.raises(ValueError, match="cost model"):
             Router(strategy=_strategy(), instances=[])

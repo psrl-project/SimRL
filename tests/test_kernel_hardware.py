@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.hardware import (
+from srl.cost.kernel.hardware import (
     GpuSpec,
     canonical_dtype,
     dtype_bytes,

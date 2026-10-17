@@ -37,7 +37,7 @@ lines and `#` comments are ignored, and a missing count defaults to 1:
 Expand it into the worker table before committing to a run:
 
 ```bash
-dryrun-workload list-workers --hosts-file examples/workload/hosts.txt
+srl-workload list-workers --hosts-file examples/workload/hosts.txt
 ```
 
 Each row is `index host gpu port`, one worker per GPU, with ports counting up from
@@ -81,7 +81,7 @@ per host.
 
 1. Expands the hosts file into workers via `list-workers`.
 2. Skips any worker whose shard is already complete, so a rerun resumes.
-3. Launches `dryrun-workload collect-groups` per worker, locally when the host matches
+3. Launches `srl-workload collect-groups` per worker, locally when the host matches
    over `ssh` otherwise.
 4. Waits for all workers, reporting log paths for any that failed.
 5. Merges shards by `group_id` into one trace, then runs `verify-collection`.
@@ -128,9 +128,9 @@ recorded in its own header. Checking the header count alone would accept a run t
 interrupted after writing the header but before finishing the records.
 
 ```bash
-dryrun-workload check-shard --path outputs/workload/.../shards/worker-00.jsonl
+srl-workload check-shard --path outputs/workload/.../shards/worker-00.jsonl
 
-dryrun-workload verify-collection \
+srl-workload verify-collection \
     --trace outputs/workload/.../joint.jsonl \
     --expected-groups 1024 \
     --shard-dir outputs/workload/.../shards \
@@ -151,7 +151,7 @@ not belong in one trace.
 ## Simulating from it
 
 ```bash
-dryrun workload=dapo_trace \
+srl workload=dapo_trace \
     workload.trace.path=outputs/workload/qwen3_8b_dapo_tp1/joint.jsonl \
     job.n_versions=16 job.batch_size=512 rollout.n_instances=16 \
     job.max_prompt_length=1024 job.max_output_length=10240

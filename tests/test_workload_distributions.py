@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dryrun.workload.distributions import fixed, normal
+from srl.workload.distributions import fixed, normal
 
 
 class TestNormal:

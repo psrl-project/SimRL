@@ -2,11 +2,11 @@
 
 Every other rollout cost model in this project (`roofline`, `psrl`, `distserve`) is fitted to
 end-to-end vLLM server measurements. That means running the vLLM profiling sweep and the
-`dryrun-regress rollout` step before any simulation. `ComposedRollout` takes a different
+`srl-regress rollout` step before any simulation. `ComposedRollout` takes a different
 approach: it predicts one inference engine iteration by **summing the measured latencies of the
 individual GPU kernels** the engine runs. The kernel tables are measured once per GPU and are
 parameterised by hardware speed-of-light (SOL), so a GPU change requires only a new calibrated
-utility surface, not a new end-to-end vLLM sweep. There is no `dryrun-regress` step before
+utility surface, not a new end-to-end vLLM sweep. There is no `srl-regress` step before
 using it.
 
 Per-kernel holdout accuracy, the performance table layout, dispatch floor fitting, and the
@@ -168,7 +168,7 @@ comparing a step count against its time budget.
 
 ### LatticeIntegrator
 
-`LatticeIntegrator` (`dryrun/cost/rollout/segment.py`) is monotone by construction. Lattice
+`LatticeIntegrator` (`srl/cost/rollout/segment.py`) is monotone by construction. Lattice
 nodes at offsets $0, s, 2s, \ldots$ (where $s$ is `decode_integration_stride`) are sampled once.
 Each node carries a fixed per-step rate (the trapezoid average of the cost at that node and the
 next) and a cumulative total:
@@ -246,7 +246,7 @@ magnitudes and proposed fixes in {doc}`../reference/limitations`.
 To score `ComposedRollout` against a real vLLM profiling baseline:
 
 ```bash
-dryrun-profile kernels validate \
+srl-profile kernels validate \
     --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
     --baseline outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl \
     --model-path $MODEL_PATH \

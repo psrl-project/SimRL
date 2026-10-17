@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.sol import (
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.sol import (
     FALLBACK_FLOORS_S,
     SolComponents,
     context_attention_sol,
@@ -307,7 +307,7 @@ def test_every_floor_taking_op_has_a_fallback_under_some_backend():
     Deriving the check off the registry makes the invariant self-maintaining: a sixth
     floor-taking op fails here rather than relying on its author remembering.
     """
-    from dryrun.cost.kernel.ops.base import OP_REGISTRY
+    from srl.cost.kernel.ops.base import OP_REGISTRY
 
     covered = {op_name for floors in FALLBACK_FLOORS_S.values() for op_name in floors}
     for name, op in sorted(OP_REGISTRY.items()):
@@ -329,7 +329,7 @@ def test_every_floor_taking_op_has_a_fallback_under_some_backend():
 )
 def test_every_fallback_floor_is_a_positive_number_for_a_registered_op(backend, op_name):
     """A stale key or a zero value would make the fallback quietly equivalent to no floor."""
-    from dryrun.cost.kernel.ops.base import op_for
+    from srl.cost.kernel.ops.base import op_for
 
     assert op_for(op_name).fits_floor, (
         f"FALLBACK_FLOORS_S has a floor for {backend!r}/{op_name!r} but that op declares "

@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.hf import model_descriptor_from_yaml
-from dryrun.profiler.kernel.grid.attention import (
+from srl.profiler.hf import model_descriptor_from_yaml
+from srl.profiler.kernel.grid.attention import (
     AttentionPoint,
     context_sweep_points,
     generation_sweep_points,
     rank_head_counts,
 )
-from dryrun.profiler.kernel.sweep import AttentionSweep
-from dryrun.profiler.schema import ProfileValidationError
+from srl.profiler.kernel.sweep import AttentionSweep
+from srl.profiler.schema import ProfileValidationError
 
 _FIXTURE_MODEL = Path("tests/fixtures/hf/qwen3_8b").resolve()
 

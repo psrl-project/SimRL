@@ -39,7 +39,7 @@ latency comparison suggests. Shortest span of the four.
 heterogeneous comparison misleads. `request_num_balance` counts requests and ignores
 TP, so instances 4-5 (TP2, red) peak at the same ~64 as instances 0-3 (TP1, blue)
 while holding twice the hardware. Half the GPU capacity on those rows is idle, and
-the arm is the *worst* of the four (0.829x at S=2). `dryrun` emits a warning for
+the arm is the *worst* of the four (0.829x at S=2). `srl` emits a warning for
 exactly this configuration.
 
 **`heterogeneous_tp`** — the same fleet with legacy `version_aware_tp`, which sends the

@@ -8,15 +8,15 @@ import pytest
 from psrl.workers.ps.inventory_forecast import BufferView, InventorySnapshot
 from psrl.workers.ps.staleness_controller import BufferStatus
 
-from dryrun.component.sync.cost import FixedSyncCost
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
-from dryrun.forecast import Pipeline, PipelineForecast, TrainState, compare, group_etas
-from dryrun.policy.psrl import PSRLPolicy
-from dryrun.simulator.config import SimConfig
-from dryrun.simulator.simulator import Simulator
-from dryrun.workload.distributions import uniform
-from dryrun.workload.grouped import GroupedWorkload
+from srl.component.sync.cost import FixedSyncCost
+from srl.cost.rollout import UnifiedRoofline
+from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
+from srl.forecast import Pipeline, PipelineForecast, TrainState, compare, group_etas
+from srl.policy.psrl import PSRLPolicy
+from srl.simulator.config import SimConfig
+from srl.simulator.simulator import Simulator
+from srl.workload.distributions import uniform
+from srl.workload.grouped import GroupedWorkload
 
 EPS = 0.25
 """A power of two so every tolerance boundary below is exact in binary floating point."""

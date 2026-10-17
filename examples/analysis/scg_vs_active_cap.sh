@@ -18,10 +18,10 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # Activate the env first, or a child python resolves scipy against the wrong numpy.
-DRYRUN_ENV="${DRYRUN_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh}"
-if [[ -f "${DRYRUN_ENV}" ]]; then
+SIMRL_ENV="${SIMRL_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh}"
+if [[ -f "${SIMRL_ENV}" ]]; then
     # shellcheck disable=SC1090
-    source "${DRYRUN_ENV}"
+    source "${SIMRL_ENV}"
 fi
 
 CAP_START="${CAP_START:-8}"
@@ -40,7 +40,7 @@ REUSE="${REUSE:-true}"
 MAX_STALENESS="${MAX_STALENESS:-2}"
 
 # Pin the backend rather than `auto`, so every cap runs on one implementation.
-export DRYRUN_BACKEND="${DRYRUN_BACKEND:-native}"
+export SIMRL_BACKEND="${SIMRL_BACKEND:-native}"
 
 CAPS=()
 for ((cap = CAP_START; cap <= CAP_END; cap += CAP_STEP)); do

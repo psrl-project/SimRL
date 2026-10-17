@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from omegaconf import OmegaConf
 
-import dryrun.config
-from dryrun.cli.main import (
+import srl.config
+from srl.cli.main import (
     build_distribution,
     build_policy,
     build_recompute_cost,
@@ -19,18 +19,17 @@ from dryrun.cli.main import (
     build_training_parallelism,
     build_workload,
 )
-from dryrun.component.recompute.cost import FixedRecomputeCost, TrainingForwardRecomputeCost
-from dryrun.component.sync.cost import FixedSyncCost
-from dryrun.config.schema import (
+from srl.component.recompute.cost import FixedRecomputeCost, TrainingForwardRecomputeCost
+from srl.component.sync.cost import FixedSyncCost
+from srl.config.schema import (
     DistributionConfig,
     PolicyConfig,
     RolloutCostConfig,
     SimulateConfig,
     WorkloadConfig,
 )
-from dryrun.cost.rollout import DistServe, UnifiedRoofline
-from dryrun.profiler.schema import ModelDescriptor
-from dryrun.cost.training import (
+from srl.cost.rollout import DistServe, UnifiedRoofline
+from srl.cost.training import (
     AnalyticalTrainingLatency,
     FixedTrainingCost,
     FixedTrainingLatency,
@@ -42,11 +41,12 @@ from dryrun.cost.training import (
     TrainingParallelism,
     TrainingWorkload,
 )
-from dryrun.policy.areal import ArealPolicy
-from dryrun.policy.psrl import PSRLPolicy
-from dryrun.policy.roll import RollPolicy
-from dryrun.policy.slime import SlimePolicy
-from dryrun.policy.verl import VerlPolicy
+from srl.policy.areal import ArealPolicy
+from srl.policy.psrl import PSRLPolicy
+from srl.policy.roll import RollPolicy
+from srl.policy.slime import SlimePolicy
+from srl.policy.verl import VerlPolicy
+from srl.profiler.schema import ModelDescriptor
 
 
 class TestStructuredConfigs:
@@ -361,7 +361,7 @@ class TestWorkloadSource:
         assert build_workload(cfg).group_size == 1
 
     def test_trace_source_reads_groups(self, tmp_path):
-        from dryrun.workload.trace import RequestGroup, write_group_trace
+        from srl.workload.trace import RequestGroup, write_group_trace
 
         path = write_group_trace(
             [RequestGroup(0, 100, (7, 8)), RequestGroup(1, 200, (9, 10))],
@@ -388,10 +388,10 @@ class TestWorkloadConfigGroups:
     def test_dapo_trace_group_selects_the_trace_source(self):
         from hydra import compose, initialize_config_dir
 
-        from dryrun.config import register_configs
+        from srl.config import register_configs
 
         register_configs()
-        config_dir = str(Path(dryrun.config.__file__).parent / "defaults")
+        config_dir = str(Path(srl.config.__file__).parent / "defaults")
         with initialize_config_dir(config_dir=config_dir, version_base=None):
             cfg = compose(config_name="simulate", overrides=["workload=dapo_trace"])
         assert cfg.workload.source == "trace"

@@ -2,7 +2,7 @@
 
 A completed simulation writes four JSONL streams and five plots under its output
 directory. Every file is derived from the streams, so nothing is lost if the plots are
-deleted, because `dryrun-plot` can regenerate them from the logs alone without re-simulating.
+deleted, because `srl-plot` can regenerate them from the logs alone without re-simulating.
 
 Setting `log_telemetry: false` in the Hydra config writes nothing to disk at all.
 The simulation still runs, but the output directory will contain only `run.log`. This
@@ -158,7 +158,7 @@ always produce a record.
 
 One record per change in the router's queue, de-duplicated the same way. A simulation and a
 converted real run write the **same** schema, which is what lets one `plot_instance_load` draw
-both and `dryrun-compare` put like against like. On the real side the first four fields come
+both and `srl-compare` put like against like. On the real side the first four fields come
 from `smg_routing_status.jsonl`; the reroute counters are simulation-only.
 
 | Field | Meaning |
@@ -232,26 +232,26 @@ a strong bimodal length distribution.
 
 ---
 
-## Re-rendering plots with `dryrun-plot`
+## Re-rendering plots with `srl-plot`
 
 If you want to iterate on plot styling, or if the plots were not generated (e.g. because
 you ran with an older version), you can regenerate them from an existing `logs/`
 directory without re-simulating:
 
 ```bash
-dryrun-plot outputs/simulate/<name>
+srl-plot outputs/simulate/<name>
 ```
 
 This reads `logs/` under the given directory and writes to `plots/` in the same
 directory. Both paths can be overridden:
 
 ```bash
-dryrun-plot outputs/simulate/<name> \
+srl-plot outputs/simulate/<name> \
     --logs-subdir logs \
     --plots-subdir plots_v2
 ```
 
-`dryrun-plot` never touches the JSONL logs. It is safe to run on a completed simulation
+`srl-plot` never touches the JSONL logs. It is safe to run on a completed simulation
 as many times as needed. If `logs/` does not exist, for example because the run used
 `log_telemetry: false`, it exits with a clear error rather than silently writing empty
 plots.
@@ -286,7 +286,7 @@ correct figure of a different experiment.
 ---
 
 (plotting-a-real-psrl-run)=
-## Plotting a real PSRL run with `dryrun-psrl-plot`
+## Plotting a real PSRL run with `srl-psrl-plot`
 
 To judge whether a simulation is accurate, draw the real run the same way. The
 simulator's accuracy claim is only as good as the comparison, and two figures produced
@@ -301,7 +301,7 @@ bash examples/visualize/plot_psrl_run.sh
 or directly:
 
 ```bash
-dryrun-psrl-plot /path/to/megatron_psrl_log/<experiment> \
+srl-psrl-plot /path/to/megatron_psrl_log/<experiment> \
     --output-dir outputs/visualize/<experiment>
 ```
 
@@ -346,14 +346,14 @@ since the block is claiming the interval during which the trainer was busy.
 Every filename and marker above is a field on `PsrlLogLayout` with a matching command-line
 flag, so a run that names things differently is retargeted without editing the converter.
 
-### Quantifying the error with `dryrun-compare`
+### Quantifying the error with `srl-compare`
 
 Two figures side by side show that a simulation is wrong, not by how much or where,
 and eyeballing a KV curve cannot separate a cost-model error from a workload
-mismatch. `dryrun-compare` reports the scalars that localise the disagreement:
+mismatch. `srl-compare` reports the scalars that localise the disagreement:
 
 ```bash
-dryrun-compare outputs/simulate/<name> outputs/visualize/<experiment>
+srl-compare outputs/simulate/<name> outputs/visualize/<experiment>
 ```
 
 ```

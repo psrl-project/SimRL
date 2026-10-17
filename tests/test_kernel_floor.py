@@ -1,4 +1,4 @@
-"""Tests for `dryrun.cost.kernel.floor`: fitting, persistence, and loading."""
+"""Tests for `srl.cost.kernel.floor`: fitting, persistence, and loading."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from dryrun.cost.kernel.floor import (
+from srl.cost.kernel.floor import (
     CANDIDATE_FLOORS_US,
     fit_floors,
     fit_floors_report,
     load_floors,
     write_floors,
 )
-from dryrun.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.hardware import load_gpu_spec
 
 _VERSION = "0.26.1.dev0"
 _BACKEND = "vllm"
@@ -91,7 +91,7 @@ def _write_context_table(version_dir: Path, backend: str, points: list[tuple[int
 def _roofline_generation_points(floor_s: float) -> list[tuple[int, int, float]]:
     """Return generation points where floor_s is the binding constraint everywhere."""
     spec = load_gpu_spec("h20")
-    from dryrun.cost.kernel.sol import generation_attention_sol
+    from srl.cost.kernel.sol import generation_attention_sol
 
     points = []
     for batch_size in (1, 2, 4, 8, 16, 32):
@@ -173,9 +173,9 @@ def test_write_floors_produces_loadable_json(tmp_path):
 
 def test_floor_override_is_used_instead_of_the_fallback_map(tmp_path):
     """Passing floor_override must change the MRE for attention ops."""
-    from dryrun.cost.kernel.holdout import evaluate_holdout
-    from dryrun.cost.kernel.ops.attention import GENERATION_ATTENTION_OP
-    from dryrun.cost.kernel.table import KernelTable
+    from srl.cost.kernel.holdout import evaluate_holdout
+    from srl.cost.kernel.ops.attention import GENERATION_ATTENTION_OP
+    from srl.cost.kernel.table import KernelTable
 
     version_dir = _attention_version_dir(tmp_path)
     floor_s = 20e-6
@@ -214,11 +214,11 @@ def test_floor_override_is_ignored_for_gemm(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from dryrun.cost.kernel.hardware import load_gpu_spec
-    from dryrun.cost.kernel.holdout import evaluate_holdout
-    from dryrun.cost.kernel.ops.gemm import GEMM_OP
-    from dryrun.cost.kernel.sol import gemm_sol
-    from dryrun.cost.kernel.table import KernelTable
+    from srl.cost.kernel.hardware import load_gpu_spec
+    from srl.cost.kernel.holdout import evaluate_holdout
+    from srl.cost.kernel.ops.gemm import GEMM_OP
+    from srl.cost.kernel.sol import gemm_sol
+    from srl.cost.kernel.table import KernelTable
 
     spec = load_gpu_spec("h20")
     ms = (512, 1024, 2048, 4096, 8192, 16384)
@@ -259,7 +259,7 @@ def test_floor_override_is_ignored_for_gemm(tmp_path):
 def test_fit_floors_finds_zero_floor_when_data_has_no_floor(tmp_path):
     """When the measured latency equals pure roofline, floor=0 should win."""
     spec = load_gpu_spec("h20")
-    from dryrun.cost.kernel.sol import generation_attention_sol
+    from srl.cost.kernel.sol import generation_attention_sol
 
     version_dir = _attention_version_dir(tmp_path)
     points = []
@@ -313,10 +313,10 @@ def test_fit_floors_returns_metadata(tmp_path):
 
 def test_holdout_report_uses_floors_json_when_present(tmp_path, caplog):
     """When floors.json is present the warning must NOT be emitted."""
-    from dryrun.cost.kernel.holdout import holdout_report
+    from srl.cost.kernel.holdout import holdout_report
 
     spec = load_gpu_spec("h20")
-    from dryrun.cost.kernel.sol import generation_attention_sol
+    from srl.cost.kernel.sol import generation_attention_sol
 
     version_dir = _attention_version_dir(tmp_path)
     floor_s = 22e-6
@@ -360,10 +360,10 @@ def test_holdout_report_uses_floors_json_when_present(tmp_path, caplog):
 
 def test_holdout_report_warns_when_floors_json_absent(tmp_path, caplog):
     """When floors.json is absent holdout_report must emit a warning."""
-    from dryrun.cost.kernel.holdout import holdout_report
+    from srl.cost.kernel.holdout import holdout_report
 
     spec = load_gpu_spec("h20")
-    from dryrun.cost.kernel.sol import generation_attention_sol
+    from srl.cost.kernel.sol import generation_attention_sol
 
     version_dir = _attention_version_dir(tmp_path)
     floor_s = 22e-6
@@ -435,8 +435,8 @@ def _kernel_tree(tmp_path: Path) -> Path:
 
 def test_floors_are_read_once_per_backend_not_once_per_query(tmp_path, monkeypatch):
     """A path-keyed cache still scanned the backend directory on every query."""
-    import dryrun.cost.kernel.database as database_mod
-    from dryrun.cost.kernel.database import AttentionQuery, KernelDatabase
+    import srl.cost.kernel.database as database_mod
+    from srl.cost.kernel.database import AttentionQuery, KernelDatabase
 
     calls: list[str] = []
     real_load = database_mod._load_floors
@@ -459,7 +459,7 @@ def test_a_query_does_not_scan_the_filesystem(tmp_path, monkeypatch):
     """listdir on every query made one attention query 2337 us; the interpolation is 17 us."""
     import os
 
-    from dryrun.cost.kernel.database import AttentionQuery, KernelDatabase
+    from srl.cost.kernel.database import AttentionQuery, KernelDatabase
 
     database = KernelDatabase.from_root(_kernel_tree(tmp_path), gpu="h20")
     query = AttentionQuery(

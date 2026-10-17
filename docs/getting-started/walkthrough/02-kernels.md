@@ -35,10 +35,10 @@ measurement:
 
 ```bash
 CFG=examples/profile/kernel/qwen3_8b_h20_tp1.yaml
-dryrun-profile kernels run       --config $CFG
-dryrun-profile kernels fit-floor --config $CFG
-dryrun-profile kernels holdout   --config $CFG --fraction 1.0
-dryrun-profile kernels validate  --config $CFG \
+srl-profile kernels run       --config $CFG
+srl-profile kernels fit-floor --config $CFG
+srl-profile kernels holdout   --config $CFG --fraction 1.0
+srl-profile kernels validate  --config $CFG \
     --baseline outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl --min-samples 1
 ```
 

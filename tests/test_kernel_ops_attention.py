@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.ops.attention import CONTEXT_ATTENTION_OP, GENERATION_ATTENTION_OP
-from dryrun.cost.kernel.ops.base import op_for
-from dryrun.cost.kernel.sol import context_attention_sol, generation_attention_sol
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.ops.attention import CONTEXT_ATTENTION_OP, GENERATION_ATTENTION_OP
+from srl.cost.kernel.ops.base import op_for
+from srl.cost.kernel.sol import context_attention_sol, generation_attention_sol
 
 # (num_kv_heads, head_dim, attn_dtype, kv_cache_dtype, block_size, window_size)
 _SLICE = (8, 128, "bfloat16", "bfloat16", 16, 0)

@@ -22,15 +22,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
-from dryrun.policy.psrl import PSRLPolicy
-from dryrun.policy.verl import VerlPolicy
-from dryrun.simulator import SimConfig, Simulator
-from dryrun.telemetry.store import JsonlStore
-from dryrun.workload.distributions import bimodal, uniform
-from dryrun.workload.grouped import GroupedWorkload
-
+from srl.cost.rollout import UnifiedRoofline
+from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
+from srl.policy.psrl import PSRLPolicy
+from srl.policy.verl import VerlPolicy
+from srl.simulator import SimConfig, Simulator
+from srl.telemetry.store import JsonlStore
+from srl.workload.distributions import bimodal, uniform
+from srl.workload.grouped import GroupedWorkload
 
 _COST_CACHE: dict = {}
 
@@ -43,16 +42,16 @@ def build_cost(name: str):
     if name == "roofline":
         cost = UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=1e-6, A_d=1e-7)
     elif name in ("psrl", "distserve"):
-        from dryrun.cost.rollout import ROLLOUT_MODEL_REGISTRY
-        from dryrun.profiler.schema import Parallelism
+        from srl.cost.rollout import ROLLOUT_MODEL_REGISTRY
+        from srl.profiler.schema import Parallelism
 
         cost = ROLLOUT_MODEL_REGISTRY[name].from_artifact(
             str(root / f"outputs/cost/qwen3_8b/rollout_{name}.json"), Parallelism()
         )
     elif name == "composed":
-        from dryrun.cost.kernel.database import KernelDatabase
-        from dryrun.cost.kernel.model_ops import ModelOps
-        from dryrun.cost.rollout.composed import ComposedRollout
+        from srl.cost.kernel.database import KernelDatabase
+        from srl.cost.kernel.model_ops import ModelOps
+        from srl.cost.rollout.composed import ComposedRollout
 
         db = KernelDatabase.from_root(
             str(root / "outputs/profile/qwen3_8b/kernel_tp1/kernel"), gpu="h20"
@@ -84,7 +83,7 @@ def run(
     if group_size == 1:
         workload = GroupedWorkload.from_lengths(prompts, lengths)
     else:
-        from dryrun.workload.trace import RequestGroup
+        from srl.workload.trace import RequestGroup
 
         groups = [
             RequestGroup(
@@ -139,9 +138,9 @@ def first_difference(a_dir: Path, b_dir: Path):
 
 def build(policy_name: str):
     """Construct a policy with the CLI's defaults, so the harness tests what users run."""
-    from dryrun.policy.areal import ArealPolicy
-    from dryrun.policy.roll import RollPolicy
-    from dryrun.policy.slime import SlimePolicy
+    from srl.policy.areal import ArealPolicy
+    from srl.policy.roll import RollPolicy
+    from srl.policy.slime import SlimePolicy
 
     return {
         "psrl": lambda: PSRLPolicy(),

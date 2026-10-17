@@ -276,7 +276,7 @@ explicitly because they are not symmetric:
 - **kernel-composed**: 5 GEMM lookups + 1-2 attention lookups + 1 collective lookup, summed. This
   is the *prediction*.
 
-`dryrun-profile kernels validate` buckets the former and scores the latter against it.
+`srl-profile kernels validate` buckets the former and scores the latter against it.
 
 ### Prefill (tp=2 serial)
 

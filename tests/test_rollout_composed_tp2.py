@@ -31,7 +31,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _workload(batch: int = 16, depth: int = 2048):
-    from dryrun.cost.rollout import RolloutWorkload
+    from srl.cost.rollout import RolloutWorkload
 
     return RolloutWorkload(
         phase="decode",
@@ -43,9 +43,9 @@ def _workload(batch: int = 16, depth: int = 2048):
 
 
 def _model(tensor_parallel: int, root: Path):
-    from dryrun.cost.kernel.database import KernelDatabase
-    from dryrun.cost.kernel.model_ops import ModelOps
-    from dryrun.cost.rollout.composed import ComposedRollout
+    from srl.cost.kernel.database import KernelDatabase
+    from srl.cost.kernel.model_ops import ModelOps
+    from srl.cost.rollout.composed import ComposedRollout
 
     database = KernelDatabase.from_root(root, gpu="h20", utility_surface="pchip")
     ops = ModelOps.from_checkpoint(_CHECKPOINT, tensor_parallel=tensor_parallel)
@@ -116,8 +116,8 @@ def test_an_unmeasured_world_size_raises_rather_than_extrapolating():
     nodes). The behaviour under test is unchanged: a slice column refuses rather than
     blending two topologies.
     """
-    from dryrun.cost.kernel.database import CommQuery, KernelDatabase
-    from dryrun.cost.kernel.interp import KernelCoverageError
+    from srl.cost.kernel.database import CommQuery, KernelDatabase
+    from srl.cost.kernel.interp import KernelCoverageError
 
     database = KernelDatabase.from_root(_TP2_TABLES, gpu="h20")
     with pytest.raises(KernelCoverageError):
@@ -140,8 +140,8 @@ def test_an_unmeasured_node_count_raises_at_a_measured_world_size():
     a ~9x optimistic error that interpolates perfectly smoothly and so would never look
     like a coverage gap.
     """
-    from dryrun.cost.kernel.database import CommQuery, KernelDatabase
-    from dryrun.cost.kernel.interp import KernelCoverageError
+    from srl.cost.kernel.database import CommQuery, KernelDatabase
+    from srl.cost.kernel.interp import KernelCoverageError
 
     database = KernelDatabase.from_root(_TP2_TABLES, gpu="h20")
     measured = database.query_comm(

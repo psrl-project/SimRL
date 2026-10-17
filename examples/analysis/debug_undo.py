@@ -12,10 +12,10 @@ Usage:
 import random
 import sys
 
-from dryrun._engine_cpp import CppInstance, CppRequest, UnifiedRooflineCostModel
-from dryrun.component.rollout.engine.instance import NativeInstance
-from dryrun.component.rollout.engine.request import Request
-from dryrun.cost.rollout import UnifiedRoofline
+from srl._engine_cpp import CppInstance, CppRequest, UnifiedRooflineCostModel
+from srl.component.rollout.engine.instance import NativeInstance
+from srl.component.rollout.engine.request import Request
+from srl.cost.rollout import UnifiedRoofline
 
 seed, caching, kv_blocks = int(sys.argv[1]), bool(int(sys.argv[2])), int(sys.argv[3])
 rng = random.Random(seed * 1000 + kv_blocks)

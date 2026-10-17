@@ -242,7 +242,7 @@ neighbour identity, not neighbour count.
 a different and harder claim.
 
 ```bash
-dryrun-profile kernels validate \
+srl-profile kernels validate \
     --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
     --baseline outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl \
     --model-path /path/to/Qwen3-8B \

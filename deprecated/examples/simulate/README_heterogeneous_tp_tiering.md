@@ -137,7 +137,7 @@ S=1 下的 SCG（4k+32k，DP=4）：
 
 ## 5. 算法
 
-代码均在 `/tmp/capstudy/snap/dryrun/component/rollout/router/strategies/`。
+代码均在 `/tmp/capstudy/snap/srl/component/rollout/router/strategies/`。
 
 ### 5.1 `length_tiered_tp`：按预测长度分两层
 
@@ -300,7 +300,7 @@ no-cap = 同构 fleet、不设 router cap（`ACTIVE_CAP=0`，只受 KV 容量与
 
 ## 11. 长度感知规划器（`TierPlanner`）：TailSieve 与异构并行的结合
 
-代码已进仓库：`dryrun/simulator/dynamic_parallel/planner.py`、`dryrun/component/rollout/router/{estimator.py,strategies/planned_tier_tp.py}`、`tests/test_tier_planner.py`。
+代码已进仓库：`srl/simulator/dynamic_parallel/planner.py`、`srl/component/rollout/router/{estimator.py,strategies/planned_tier_tp.py}`、`tests/test_tier_planner.py`。
 配置：`dynamic_parallel.strategy=planner`、`dynamic_parallel.algorithm=dp|pp|twopool`、`dynamic_parallel.switch_margin`、`rollout.router.strategy=planned_tier_tp`。
 旧的 `ParallelismSolver` 没有删除。
 
@@ -350,7 +350,7 @@ rescue（请求长出所在 tier 后暂停并重新放置）在 S=1 有帮助，
 | 两类 trace | `/tmp/hetero/traces/mix4k_32k.jsonl` 等 |
 | 批量运行与汇总脚本 | `/tmp/hetero/run.sh`、`summ.py`、`report.py` |
 
-TP4 KV 容量（probe 实测）：2,330,112 tokens（已缓存在 `~/.cache/dryrun/kv_capacity.json`）。
+TP4 KV 容量（probe 实测）：2,330,112 tokens（已缓存在 `~/.cache/srl/kv_capacity.json`）。
 
 **trace 构造**：每组 8 条、prompt 32 token；全部 4096 token，每 16 组把第一条换成 32768 token。
 每个 batch（64 组 = 512 条）恰好 508×4096 + 4×32768：均值 4320，CV 0.58，straggler 占请求 0.78%、占 token 5.9%。
@@ -359,10 +359,10 @@ TP4 KV 容量（probe 实测）：2,330,112 tokens（已缓存在 `~/.cache/dryr
 
 ```bash
 SNAP=/tmp/capstudy/snap
-K=/apdcephfs_zwfy/share_303760348/lhy/DryRun-RL/outputs/profile/qwen3_8b
+K=/apdcephfs_zwfy/share_303760348/lhy/SimRL/outputs/profile/qwen3_8b
 K4=/tmp/hetero/profile/kernel_tp4/kernel
 source /tmp/hetero/env_light.sh
-export PYTHONPATH=$SNAP DRYRUN_BACKEND=native CUDA_VISIBLE_DEVICES="" POLICY=psrl \
+export PYTHONPATH=$SNAP SIMRL_BACKEND=native CUDA_VISIBLE_DEVICES="" POLICY=psrl \
        MAX_STALENESS=1 TRAINING_DP=4 BATCH_SIZE=64 N_VERSIONS=8 MAX_OUTPUT_LENGTH=32768
 BASE="workload.trace.path=/tmp/hetero/traces/mix4k_32k.jsonl rollout.max_concurrency=1024 \
 rollout.router.max_waiting_after_preempt=1024 rollout.router.reject_preempted_on_waiting=true \

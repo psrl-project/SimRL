@@ -8,9 +8,9 @@ from dataclasses import dataclass, field
 import pytest
 from psrl.workers.ps.inventory_forecast import BufferView, InventorySnapshot
 
-from dryrun.component.rollout.engine import NativeInstance, Request
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.forecast import (
+from srl.component.rollout.engine import NativeInstance, Request
+from srl.cost.rollout import UnifiedRoofline
+from srl.forecast import (
     Arrival,
     FleetForecast,
     InstanceForecast,
@@ -358,14 +358,14 @@ class TestPriorityQueuedPlacement:
 
 class TestMembersOfAgainstARealRun:
     def test_membership_covers_inflight_and_pending(self):
-        from dryrun.component.sync.cost import FixedSyncCost
-        from dryrun.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
-        from dryrun.policy.psrl import PSRLPolicy
-        from dryrun.simulator.config import SimConfig
-        from dryrun.simulator.runtime import SchedulingRuntime
-        from dryrun.simulator.simulator import Simulator
-        from dryrun.workload.grouped import GroupedWorkload
-        from dryrun.workload.trace import RequestGroup
+        from srl.component.sync.cost import FixedSyncCost
+        from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
+        from srl.policy.psrl import PSRLPolicy
+        from srl.simulator.config import SimConfig
+        from srl.simulator.runtime import SchedulingRuntime
+        from srl.simulator.simulator import Simulator
+        from srl.workload.grouped import GroupedWorkload
+        from srl.workload.trace import RequestGroup
 
         workload = GroupedWorkload.from_groups(
             [

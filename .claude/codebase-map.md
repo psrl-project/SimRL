@@ -2,18 +2,18 @@
 
 ## System Architecture
 
-DryRun-RL is a discrete-event simulator for async disaggregate RL training.
+SimRL is a discrete-event simulator for async disaggregate RL training.
 The simulation loop: admit → generate (closed-form) → complete → select batch →
 (recompute) → train → weight update → abort/re-prefill.
 
 Code is organised around the RL loop components. Everything that models a stage
-of the loop lives under `dryrun/component/` (rollout, training, sync, recompute),
-while `dryrun/simulator/` drives them and `dryrun/policy/` decides staleness. `dryrun/forecast/` holds
+of the loop lives under `srl/component/` (rollout, training, sync, recompute),
+while `srl/simulator/` drives them and `srl/policy/` decides staleness. `srl/forecast/` holds
 what a scheduler may know about a trajectory, and `deprecated/` archives the abandoned SCG scheduling
 line (inert: not packaged, not collected, not importable).
 
 Configuration is Hydra-based: structured `@dataclass` configs in `schema.py`,
-YAML defaults in `config/defaults/`, CLI overrides via `dryrun key=value`.
+YAML defaults in `config/defaults/`, CLI overrides via `srl key=value`.
 
 Profiling pipeline: vLLM/Megatron benchmarks → CSV → two-stage regression
 fitter → JSON cost model → `PSRLFitted.from_json()`.
@@ -21,9 +21,9 @@ fitter → JSON cost model → `PSRLFitted.from_json()`.
 ## Directory Tree
 
 ```
-dryrun/
+srl/
 ├── __init__.py
-├── _logging.py              # dryrun_logger
+├── _logging.py              # srl_logger
 ├── component/               # One subpackage per RL loop stage
 │   ├── rollout/
 │   │   ├── engine/
@@ -46,7 +46,7 @@ dryrun/
 │   │   │       ├── protocol.py      # What a reversible mutation is
 │   │   │       ├── entries.py       # Captured-old-value shapes
 │   │   │       └── log.py           # UndoLog for one event
-│   │   ├── engine_cpp/          # C++ engine (pybind11), built to dryrun/_engine_cpp*.so
+│   │   ├── engine_cpp/          # C++ engine (pybind11), built to srl/_engine_cpp*.so
 │   │   │   ├── CMakeLists.txt, bindings.cc
 │   │   │   ├── include/engine/  # block, cost_model, event, free_list, instance, kv_manager,
 │   │   │   │                    #   lineage, pool, request, undo, version headers
@@ -149,7 +149,7 @@ dryrun/
 │   │   ├── base/            # Shared base of megatron+fsdp (run_candidate, OOM helpers, sidecar).
 │   │   │                    #   NOT a backend: named `base` like cost/*/base.py, because sitting
 │   │   │                    #   beside megatron/fsdp/vllm made `training/` read as a fourth one
-│   │   ├── fsdp/            # DryRun-owned FSDP2/HSDP profiling adapter
+│   │   ├── fsdp/            # SimRL-owned FSDP2/HSDP profiling adapter
 │   │   │   ├── __init__.py      # Public exports (safe on CLI import path; excludes launch/measure)
 │   │   │   ├── collect.py       # collect_fsdp_record, collect_fsdp_records
 │   │   │   ├── config.py        # FsdpProfileConfig
@@ -209,14 +209,14 @@ dryrun/
     ├── main.py              # Hydra CLI entrypoint (@hydra.main); build_training_cost passes batching_mode
     ├── plot.py              # Re-render plots from a simulation's logs
     ├── psrl_plot.py         # Render instance_load from a real PSRL run's logs
-    ├── compare.py           # dryrun-compare: quantify simulated-vs-real error
+    ├── compare.py           # srl-compare: quantify simulated-vs-real error
     ├── profile.py           # Profiling CLI: vllm, kernels, megatron, fsdp subcommands
     ├── regress.py           # Regression CLI: rollout, training (--latency-model hydraulis|fsdp)
     └── workload.py          # Collect and validate joint grouped workloads
-deprecated/                  # Archived SCG scheduling line. NOT packaged (pyproject packages dryrun*),
+deprecated/                  # Archived SCG scheduling line. NOT packaged (pyproject packages srl*),
 │                            #   NOT collected (pytest testpaths=tests), NOT importable. See its README.md
 ├── README.md                # What moved, why, and where the measurements live
-├── dryrun/                  # value/, abandoned router strategies and estimator, scg_value eviction,
+├── srl/                  # value/, abandoned router strategies and estimator, scg_value eviction,
 │                            #   dynamic_parallel solver/planner, roll_doom policy and its YAML
 ├── tests/                   # Tests of the moved modules
 ├── examples/                # SCG sweep scripts, READMEs, make_heavy_tail_trace.py
@@ -233,18 +233,18 @@ tests/
 
 ## Key Interfaces
 
-### Request (dryrun/component/rollout/engine/request.py)
+### Request (srl/component/rollout/engine/request.py)
 The unit of work every component handles. Import it from the engine package:
 `from ..component.rollout.engine import Request`.
 - `remaining`, `ctx`, `v_min`, `v_max` properties
 - `add_tokens(version, n) -> None` appends to the current `Segment`
 - `staleness_true()`, `staleness_reported()`
 
-### CostModel (dryrun/cost/base.py)
+### CostModel (srl/cost/base.py)
 - `step_time(n_tokens, t2, ctxsum, n_reqs) -> float`
 - `decode_coeffs(n_d, ctxsum) -> (F, alpha, beta)`
 
-### NativeInstance (dryrun/component/rollout/engine/instance.py)
+### NativeInstance (srl/component/rollout/engine/instance.py)
 - `add_request(req, t) -> bool` (the authority on admission; the router only gates eligibility)
 - `advance_to(t_limit, version) -> (completed, reached_limit)`
 - `advance_one_event(version) -> EngineEvent | None`, paired with `undo_last_event()` or
@@ -256,7 +256,7 @@ The unit of work every component handles. Import it from the engine package:
 - `committed_blocks()` / `free_blocks()`: a queued request holds no blocks yet, so a router
   comparing raw free blocks sees no difference between instances. Use both
 
-### Router (dryrun/component/rollout/router/router.py)
+### Router (srl/component/rollout/router/router.py)
 - `enqueue(reqs, t)`, `remove(reqs)`, `dispatch(t) -> [(req, instance_id)]`
 - `has_dispatchable()`: the engine loop must break out for this as well as for admit quota,
   or a saturated policy strands the queue
@@ -267,7 +267,7 @@ The unit of work every component handles. Import it from the engine package:
   `getattr`, and `RoutingContext` carries the blocked versions, fleet TP bounds, and the clock.
   `docs/simulation/routing.md` has the table
 
-### StalenessPolicy (dryrun/policy/base.py)
+### StalenessPolicy (srl/policy/base.py)
 - `admit_quota(st: SimState) -> int`
 - `on_admit(req, st) -> None`
 - `on_complete(req, st) -> CompleteAction`
@@ -276,15 +276,15 @@ The unit of work every component handles. Import it from the engine package:
 - `expire(st) -> list[Request]`
 - `engine_version_after_train(st) -> int`
 
-### Simulator (dryrun/simulator/simulator.py)
+### Simulator (srl/simulator/simulator.py)
 - `__init__(rollout_cost, policy, cfg, training_cost, sync_cost, recompute_cost, store)`
 - `run() -> SimResult`
 
-### CostModelFitter (dryrun/profiling/fit.py)
+### CostModelFitter (srl/profiling/fit.py)
 - `fit_cost_model(data_or_path, key) -> FitResult`
 - `save_fit_result(result, path, key) -> Path`
 
-### ProfileRunner (dryrun/profiling/runner.py)
+### ProfileRunner (srl/profiling/runner.py)
 - `launch() -> Popen`
 - `wait_healthy() -> None`
 - `shutdown() -> None`

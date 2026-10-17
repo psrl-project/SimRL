@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-26
 **Status:** approved, not implemented
-**Repo:** `/apdcephfs_zwfy/share_303760348/lhy/DryRun-RL`
+**Repo:** `/apdcephfs_zwfy/share_303760348/lhy/SimRL`
 
 ## Problem
 
@@ -87,7 +87,7 @@ class KernelOp(Protocol):
 Layout:
 
 ```
-dryrun/cost/kernel/ops/
+srl/cost/kernel/ops/
 ├── base.py          KernelOp protocol + OP_REGISTRY + four lookups
 ├── gemm.py          GemmOp
 ├── attention.py     ContextAttentionOp, GenerationAttentionOp
@@ -189,7 +189,7 @@ fail.
 **This is a breaking format change,** which the project contract permits (no backward
 compatibility; remove obsolete paths rather than adding migrations). A `floors.json`
 carrying the old phase keys is **rejected with a message naming
-`dryrun-profile kernels fit-floor`**, never silently misread: a lenient reader would apply
+`srl-profile kernels fit-floor`**, never silently misread: a lenient reader would apply
 a zero floor and quietly degrade the gate by more than 20 percentage points (measured: floor
 0 scores 34.89% MRE against 6.63% at the fitted 22 us).
 

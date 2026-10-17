@@ -4,16 +4,16 @@
 
 ### New Files
 - `tests/test_fsdp_cli.py` — 8 tests covering parser wiring, regress choices, TrainingCostConfig schema, YAML loadability, sweep identifiability axes, and build_training_cost fsdp resolution
-- `dryrun/config/defaults/training_cost/fsdp.yaml` — Hydra defaults YAML with 9 comments (satisfies the >= 6 comment gate)
+- `srl/config/defaults/training_cost/fsdp.yaml` — Hydra defaults YAML with 9 comments (satisfies the >= 6 comment gate)
 - `examples/profile/fsdp/qwen3_8b.yaml` — Full sweep config with shard_sizes=[2,4,8], n_seqs_per_rank=[1,2,4,8], sequence_lengths=[512,1024,2048,4096,8192,16384], num_microbatches=[1,2,4]
 - `examples/profile/fsdp/profile_qwen3_8b.sh` — Driver script mirroring the Megatron one; executable
 
 ### Modified Files
-- `dryrun/cli/profile.py` — Added FSDP imports (with aliased read/write_candidate_manifest), `_fsdp_config`, `_fsdp_candidate_path`, `_generate_fsdp_candidates`, `cmd_fsdp_generate`, `cmd_fsdp_run`, `cmd_fsdp_collect`, and the `fsdp` subparser block registered after the Megatron block
-- `dryrun/cli/regress.py` — Widened `--latency-model` and `--memory-model` choices to include `fsdp`; rewrote `cmd_training` to dispatch to `FsdpTrainingCost.fit` when both models are `fsdp`; imported `FsdpTrainingCost`
-- `dryrun/config/schema.py` — Added `batching_mode: str = "pad_to_max"` and `max_tokens_per_rank: int | None = None` to `TrainingCostConfig`
-- `dryrun/cli/main.py` — Passed `batching_mode` and `max_tokens_per_rank` through `build_training_cost` to `from_artifact` for registry models
-- `dryrun/profiler/adapters/__init__.py` — Added FSDP adapter exports (`FsdpProfileConfig`, `collect_fsdp_record`, `collect_fsdp_records`, `prepare_fsdp_candidate`, `run_fsdp_candidate`, `read_fsdp_candidate_manifest`, `write_fsdp_candidate_manifest`) with `__all__` alphabetically ordered
+- `srl/cli/profile.py` — Added FSDP imports (with aliased read/write_candidate_manifest), `_fsdp_config`, `_fsdp_candidate_path`, `_generate_fsdp_candidates`, `cmd_fsdp_generate`, `cmd_fsdp_run`, `cmd_fsdp_collect`, and the `fsdp` subparser block registered after the Megatron block
+- `srl/cli/regress.py` — Widened `--latency-model` and `--memory-model` choices to include `fsdp`; rewrote `cmd_training` to dispatch to `FsdpTrainingCost.fit` when both models are `fsdp`; imported `FsdpTrainingCost`
+- `srl/config/schema.py` — Added `batching_mode: str = "pad_to_max"` and `max_tokens_per_rank: int | None = None` to `TrainingCostConfig`
+- `srl/cli/main.py` — Passed `batching_mode` and `max_tokens_per_rank` through `build_training_cost` to `from_artifact` for registry models
+- `srl/profiler/adapters/__init__.py` — Added FSDP adapter exports (`FsdpProfileConfig`, `collect_fsdp_record`, `collect_fsdp_records`, `prepare_fsdp_candidate`, `run_fsdp_candidate`, `read_fsdp_candidate_manifest`, `write_fsdp_candidate_manifest`) with `__all__` alphabetically ordered
 - `.claude/codebase-map.md` — Added `cost/training/` subpackage tree, `cost/artifact.py`, the full `profiler/adapters/` tree with fsdp/megatron/training/vllm subpackages, `profiler/fsdp_search_space.py`, updated `config/defaults/training_cost/` listing, updated CLI and tests sections, and expanded import dependency order from 27 to 44 entries
 
 ## Smoke YAML fix applied
@@ -42,19 +42,19 @@ Baseline was 725. The 29-test increase: 8 new from this task, and 21 from previo
 
 ### Ruff on modified files
 ```
-python -m ruff check dryrun/cli/profile.py dryrun/cli/regress.py dryrun/cli/main.py \
-    dryrun/config/schema.py dryrun/profiler/adapters/__init__.py tests/test_fsdp_cli.py
+python -m ruff check srl/cli/profile.py srl/cli/regress.py srl/cli/main.py \
+    srl/config/schema.py srl/profiler/adapters/__init__.py tests/test_fsdp_cli.py
 All checks passed!
 ```
-Pre-existing errors in `dryrun/profiler/kernels/elementwise.py` and unrelated test/vllm files are from the concurrent refactor session and were not introduced by this task.
+Pre-existing errors in `srl/profiler/kernels/elementwise.py` and unrelated test/vllm files are from the concurrent refactor session and were not introduced by this task.
 
 ## Smoke End-to-End Result
 
 Ran with `examples/profile/fsdp/qwen3_8b_smoke.yaml` (2-layer override):
-- `dryrun-profile fsdp generate`: 16 candidates written
-- `dryrun-profile fsdp run --resume` (all 16): all succeeded, ~90 s each
-- `dryrun-profile fsdp collect` (all 16): 16 normalized records written
-- `dryrun-regress training --latency-model fsdp --memory-model fsdp`: fit succeeded, 4 entries (2 cells × latency+memory)
+- `srl-profile fsdp generate`: 16 candidates written
+- `srl-profile fsdp run --resume` (all 16): all succeeded, ~90 s each
+- `srl-profile fsdp collect` (all 16): 16 normalized records written
+- `srl-regress training --latency-model fsdp --memory-model fsdp`: fit succeeded, 4 entries (2 cells × latency+memory)
 
 ### Fit diagnostics
 
@@ -86,7 +86,7 @@ Both the Megatron and FSDP adapters export `read_candidate_manifest` and `write_
 
 ## What Was Left Alone
 - The full production sweep (`examples/profile/fsdp/qwen3_8b.yaml`) was not run — left for the user per the brief's Step 10 exclusion.
-- Nothing under `dryrun/profiler/kernels/` or `dryrun/cost/kernel/` was touched.
+- Nothing under `srl/profiler/kernels/` or `srl/cost/kernel/` was touched.
 - The existing test suite's pre-existing ruff errors (in vllm/megatron/kernel files modified by the concurrent session) were not fixed.
 
 ## Commit
@@ -106,7 +106,7 @@ This is not noise -- it is a structural misspecification.
 
 ## What Changed
 
-- `dryrun/cost/training/fsdp.py`:
+- `srl/cost/training/fsdp.py`:
   - Module docstring extended with physical explanation and measured flatness evidence.
   - Replaced `_activation_tokens` (1 scalar) with `_memory_features` returning `(num_microbatches, max_tokens)`.
   - `_MemoryFit` extended from `slope` to `microbatch_slope` + `activation_slope`; `train_feature` and
@@ -140,7 +140,7 @@ python -m pytest tests/ -q [ignoring 6 concurrent-session files]
 
 ### Ruff
 ```
-python -m ruff check dryrun/cost/training/fsdp.py tests/test_fsdp_cost.py
+python -m ruff check srl/cost/training/fsdp.py tests/test_fsdp_cost.py
 All checks passed!
 ```
 
@@ -173,12 +173,12 @@ gradient checkpointing makes activations flat across token range.
 
 ## What Changed
 
-- `dryrun/profiler/adapters/fsdp/measure.py`:
+- `srl/profiler/adapters/fsdp/measure.py`:
   - Added `is_nccl_memory_exhaustion(error)` helper: returns True iff the lowercased error message contains `"failed to cuda calloc"` or `"out of memory"`. A bare `ncclUnhandledCudaError` with no memory phrase returns False.
   - Updated `write_oom_sidecar` to accept `oom_source: str = "torch_oom"` keyword argument. The payload now includes `"oom_source"` in addition to `"torch_oom": True`, allowing readers to distinguish text-matched from exact-type records.
   - Added `is_nccl_memory_exhaustion` to `__all__`.
 
-- `dryrun/profiler/adapters/fsdp/launch.py`:
+- `srl/profiler/adapters/fsdp/launch.py`:
   - Added `except dist.DistBackendError` branch after the existing `except torch.OutOfMemoryError` branch.
   - Calls `is_nccl_memory_exhaustion`; re-raises unchanged if it returns False (preserving `failed` classification for timeouts, rendezvous failures, real network faults).
   - On a memory match: calls `write_oom_sidecar(..., oom_source="nccl_alloc")` and exits with `OOM_EXIT_CODE`.
@@ -198,7 +198,7 @@ gradient checkpointing makes activations flat across token range.
 python -m pytest tests/test_fsdp_launch.py tests/test_fsdp_collect.py tests/test_training_shared.py -q
 68 passed in 34.45s
 
-python -m ruff check dryrun/profiler/adapters/fsdp/ tests/test_fsdp_launch.py
+python -m ruff check srl/profiler/adapters/fsdp/ tests/test_fsdp_launch.py
 All checks passed!
 ```
 
@@ -221,7 +221,7 @@ in-domain. `TOKEN_BUDGET` was unaffected because it derives its own split from t
 
 ## What Changed
 
-### `dryrun/cost/training/microbatch.py`
+### `srl/cost/training/microbatch.py`
 - `plan()` gains a keyword-only `micro_batch_size` parameter with no default (forcing callers
   to be explicit). Validated positive before use.
 - `_microbatches()` now accepts `micro_batch_size` and delegates to two new static helpers:
@@ -232,7 +232,7 @@ in-domain. `TOKEN_BUDGET` was unaffected because it derives its own split from t
   sequence-count constraint demands more microbatches than the token budget alone, the
   larger count wins. Comment explains precedence.
 
-### `dryrun/cost/training/fsdp.py`
+### `srl/cost/training/fsdp.py`
 - `_microbatches()` now passes `micro_batch_size=workload.micro_batch_size` to `plan()`.
 
 ### `tests/test_microbatch_planner.py`
@@ -300,22 +300,22 @@ Replaced `allow_extrapolation: bool` with `extrapolate: list[str]` (frozenset in
 
 ## Files Changed
 
-- `dryrun/cost/training/fitting.py`: `check_feature_range` now takes `extrapolate: frozenset[str]`
+- `srl/cost/training/fitting.py`: `check_feature_range` now takes `extrapolate: frozenset[str]`
   and returns `str | None` (the note string, or None if in range). Added `validate_extrapolate_names`.
-- `dryrun/cost/training/fsdp.py`: `_FsdpCellModel`, `FsdpLatencyModel`, `FsdpMemoryModel` use
+- `srl/cost/training/fsdp.py`: `_FsdpCellModel`, `FsdpLatencyModel`, `FsdpMemoryModel` use
   `extrapolate: frozenset[str]`. Added `predict_with_notes()` to both model classes.
   `FsdpTrainingCost.from_artifact` accepts `extrapolate: list[str] | None`, validates names against
   `entry.feature_ranges` keys. `FsdpTrainingCost.estimate()` overridden to collect and record notes.
-- `dryrun/cost/training/hydraulis.py`: Same pattern for `HydraulisLatencyModel`,
+- `srl/cost/training/hydraulis.py`: Same pattern for `HydraulisLatencyModel`,
   `HydraulisMemoryModel`, `HydraulisTrainingCost`. Added `estimate()` override.
-- `dryrun/cli/main.py`: `allow_extrapolation` → `extrapolate` with `list(cfg.get("extrapolate", []))`.
-- `dryrun/config/schema.py`: `allow_extrapolation: bool = False` → `extrapolate: list = field(default_factory=list)`.
-- `dryrun/config/defaults/training_cost/fsdp.yaml`: removed `allow_extrapolation`, added
+- `srl/cli/main.py`: `allow_extrapolation` → `extrapolate` with `list(cfg.get("extrapolate", []))`.
+- `srl/config/schema.py`: `allow_extrapolation: bool = False` → `extrapolate: list = field(default_factory=list)`.
+- `srl/config/defaults/training_cost/fsdp.yaml`: removed `allow_extrapolation`, added
   `extrapolate: []` with per-feature documentation of what the measured evidence says.
-- `dryrun/config/defaults/training_cost/hydraulis.yaml`: same.
-- `dryrun/simulator/simulator.py`: passes `extrapolation_notes` from estimate diagnostics to
+- `srl/config/defaults/training_cost/hydraulis.yaml`: same.
+- `srl/simulator/simulator.py`: passes `extrapolation_notes` from estimate diagnostics to
   `write_train`.
-- `dryrun/telemetry/writer.py`: `write_train` accepts optional `extrapolation_notes: list[str] | None`;
+- `srl/telemetry/writer.py`: `write_train` accepts optional `extrapolation_notes: list[str] | None`;
   field is omitted from the JSONL event when empty (no noise for the common case).
 - `examples/simulate/simulate.sh`: `EXTRAPOLATE` env var (default empty) → appended to FSDP
   overrides as `training_cost.extrapolate=${EXTRAPOLATE}`.

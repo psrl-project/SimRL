@@ -56,7 +56,7 @@ many reserved entries have become stragglers. The optional `proactive_filter` kn
 the policy evict reserved entries proactively when only `proactive_threshold` or fewer
 remain, unblocking a stuck buffer at the cost of dropping those requests.
 
-### Configurable knobs (`dryrun/config/defaults/policy/psrl.yaml`)
+### Configurable knobs (`srl/config/defaults/policy/psrl.yaml`)
 
 | Key | Default | Meaning |
 |-----|---------|---------|
@@ -66,7 +66,7 @@ remain, unblocking a stuck buffer at the cost of dropping those requests.
 ### Known rough edge: external dependency
 
 **`psrl` requires the `psrl` package to be importable.** The module contains a
-hard-coded absolute path in `dryrun/policy/psrl.py` and falls back to inserting it on
+hard-coded absolute path in `srl/policy/psrl.py` and falls back to inserting it on
 `sys.path` when the package is not already importable. On any machine where that path
 does not exist, constructing the default policy raises `ImportError` before the
 simulation begins.
@@ -183,7 +183,7 @@ The `rollout_version_after_train` hook drives weight-push synchronisation: the r
 engine's visible weight version only advances every `update_weights_interval` steps,
 not after every training step.
 
-### Configurable knobs (`dryrun/config/defaults/policy/slime.yaml`)
+### Configurable knobs (`srl/config/defaults/policy/slime.yaml`)
 
 | Key | Default | Meaning |
 |-----|---------|---------|
@@ -225,7 +225,7 @@ request completes and the queue is full, the oldest entry is evicted (`CompleteA
 and the `dropped` counter increments. This matches verl's behaviour of discarding
 overproduced samples rather than blocking the rollout engine.
 
-### Configurable knobs (`dryrun/config/defaults/policy/verl.yaml`)
+### Configurable knobs (`srl/config/defaults/policy/verl.yaml`)
 
 | Key | Default | Meaning |
 |-----|---------|---------|
@@ -262,7 +262,7 @@ dependency.
 
 ## Writing your own policy
 
-The `StalenessPolicy` ABC in `dryrun/policy/base.py` defines the full interface. Only
+The `StalenessPolicy` ABC in `srl/policy/base.py` defines the full interface. Only
 two methods are abstract and must be implemented:
 
 - `admit_quota(st: SimState) -> int`: how many staged responses may commit their
@@ -294,5 +294,5 @@ admission counters. The policy may not mutate `SimState` directly.
 A minimal policy that simply caps admission at a fixed count and batches greedily is
 roughly thirty lines, following the same pattern as `ArealPolicy`. Register it by adding
 a case in the policy factory and a corresponding YAML under
-`dryrun/config/defaults/policy/`. For the development workflow, see
+`srl/config/defaults/policy/`. For the development workflow, see
 {doc}`../development/index`.

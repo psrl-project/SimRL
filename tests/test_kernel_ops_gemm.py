@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.ops.base import op_for
-from dryrun.cost.kernel.ops.gemm import GEMM_OP
-from dryrun.cost.kernel.sol import gemm_sol
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.ops.base import op_for
+from srl.cost.kernel.ops.gemm import GEMM_OP
+from srl.cost.kernel.sol import gemm_sol
 
 
 @pytest.fixture(scope="module")
@@ -75,7 +75,7 @@ def test_parse_sweep_builds_the_gemm_grid():
 
 
 def test_parse_sweep_rejects_an_empty_grid():
-    from dryrun.profiler.schema import ProfileValidationError
+    from srl.profiler.schema import ProfileValidationError
 
     with pytest.raises(ProfileValidationError, match="token_counts"):
         GEMM_OP.parse_sweep({"token_counts": []})

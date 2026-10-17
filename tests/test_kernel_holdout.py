@@ -8,17 +8,17 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.holdout import (
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.holdout import (
     HoldoutResult,
     _log2_compatible,
     bracketing_indices,
     evaluate_holdout,
     holdout_report,
 )
-from dryrun.cost.kernel.ops.gemm import GEMM_OP
-from dryrun.cost.kernel.sol import gemm_sol
-from dryrun.cost.kernel.table import KernelTable
+from srl.cost.kernel.ops.gemm import GEMM_OP
+from srl.cost.kernel.sol import gemm_sol
+from srl.cost.kernel.table import KernelTable
 
 _VERSION = "0.26.1.dev0"
 _MS = (256, 512, 1024, 2048, 4096, 8192)
@@ -155,7 +155,7 @@ def test_report_on_an_empty_tree_is_empty(tmp_path):
 
 
 def test_holdout_agrees_with_the_database_on_a_full_table_point(tmp_path):
-    from dryrun.cost.kernel.database import GemmQuery, KernelDatabase
+    from srl.cost.kernel.database import GemmQuery, KernelDatabase
 
     path = _write_gemm(tmp_path, _uniform_utility_rows(0.5))
     table = KernelTable.load(path, GEMM_OP)

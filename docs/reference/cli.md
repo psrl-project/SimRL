@@ -1,19 +1,19 @@
 # CLI reference
 
 Five console scripts are installed into the active environment. Four of them are conventional
-argparse programmes. `dryrun` is a Hydra app and is documented separately at the end of this
+argparse programmes. `srl` is a Hydra app and is documented separately at the end of this
 page. See {doc}`configuration` for every config key and
 {doc}`../getting-started/walkthrough/index` for the end-to-end walkthrough.
 
 ---
 
-## `dryrun-profile`
+## `srl-profile`
 
 Profiles a real system and normalises the raw artifacts into
 {doc}`../reference/schemas`-compliant JSONL. Four backends, each with three verbs.
 
 ```
-dryrun-profile {vllm,kernels,megatron,fsdp} ...
+srl-profile {vllm,kernels,megatron,fsdp} ...
 ```
 
 ### Common pattern
@@ -21,15 +21,15 @@ dryrun-profile {vllm,kernels,megatron,fsdp} ...
 Every backend except `kernels` exposes the same three verbs:
 
 ```bash
-dryrun-profile <backend> generate --config CFG   # enumerate candidates; no GPU needed
-dryrun-profile <backend> run      --config CFG   # execute them
-dryrun-profile <backend> collect  --config CFG   # normalise into JSONL
+srl-profile <backend> generate --config CFG   # enumerate candidates; no GPU needed
+srl-profile <backend> run      --config CFG   # execute them
+srl-profile <backend> collect  --config CFG   # normalise into JSONL
 ```
 
 `run --resume` skips candidates already marked `success`, but **re-runs every OOM candidate**.
 See {doc}`../profiling/methodology` for why OOM results are data rather than failures to retry.
 
-### `dryrun-profile vllm`
+### `srl-profile vllm`
 
 | Subcommand | Key flags | Notes |
 |---|---|---|
@@ -37,7 +37,7 @@ See {doc}`../profiling/methodology` for why OOM results are data rather than fai
 | `run` | `--config CFG`, `--phase`, `--dry-run`, `--resume`, `--max-parallel auto\|N` | Defaults to all GPU slots |
 | `collect` | `--config CFG`, `--phase`, `--output PATH` | Missing scheduler logs fail hard |
 
-### `dryrun-profile kernels`
+### `srl-profile kernels`
 
 The kernel pipeline does not follow the three-verb model. It has five subcommands that must run
 in order:
@@ -58,7 +58,7 @@ both from a typical vLLM run.
 measured 20.85% and 34.89% MRE for context and generation attention respectively before the fix.
 See {doc}`../profiling/kernels` for the full accuracy table.
 
-### `dryrun-profile megatron`
+### `srl-profile megatron`
 
 | Subcommand | Key flags | Notes |
 |---|---|---|
@@ -66,7 +66,7 @@ See {doc}`../profiling/kernels` for the full accuracy table.
 | `run` | `--config CFG`, `--candidates PATH`, `--candidate-id ID \| --index N`, `--dry-run`, `--resume` | |
 | `collect` | `--config CFG`, `--candidates PATH`, `--candidate-id ID \| --index N`, `--output PATH` | |
 
-### `dryrun-profile fsdp`
+### `srl-profile fsdp`
 
 | Subcommand | Key flags | Notes |
 |---|---|---|
@@ -76,18 +76,18 @@ See {doc}`../profiling/kernels` for the full accuracy table.
 
 ---
 
-## `dryrun-regress`
+## `srl-regress`
 
 Fits cost model coefficients from a versioned profiling JSONL and writes a `CostArtifact` JSON.
 
 ```
-dryrun-regress {rollout,training} ...
+srl-regress {rollout,training} ...
 ```
 
-### `dryrun-regress rollout`
+### `srl-regress rollout`
 
 ```
-dryrun-regress rollout --model {roofline,psrl,distserve}
+srl-regress rollout --model {roofline,psrl,distserve}
                        --input INPUT
                        --output OUTPUT
                        [--block-size BLOCK_SIZE]
@@ -106,10 +106,10 @@ dryrun-regress rollout --model {roofline,psrl,distserve}
 | `--hidden-size` | | Architecture override (used by `psrl` and `distserve`) |
 | `--intermediate-size` | | Architecture override |
 
-### `dryrun-regress training`
+### `srl-regress training`
 
 ```
-dryrun-regress training [--latency-model {hydraulis,fsdp}]
+srl-regress training [--latency-model {hydraulis,fsdp}]
                         [--memory-model {hydraulis,fsdp}]
                         --input INPUT
                         --output OUTPUT
@@ -132,13 +132,13 @@ fit cannot separate two coefficients, and the resulting artifact is degenerate. 
 
 ---
 
-## `dryrun-workload`
+## `srl-workload`
 
 Collects and validates joint `(prompt, n responses)` group traces used by the `workload=dapo_trace`
 simulation source.
 
 ```
-dryrun-workload {collect-groups,merge-shards,list-workers,check-shard,verify-collection} ...
+srl-workload {collect-groups,merge-shards,list-workers,check-shard,verify-collection} ...
 ```
 
 ### `collect-groups`
@@ -146,7 +146,7 @@ dryrun-workload {collect-groups,merge-shards,list-workers,check-shard,verify-col
 Runs one worker's shard: spawns a vLLM server and generates `n` responses per assigned prompt.
 
 ```
-dryrun-workload collect-groups
+srl-workload collect-groups
     --dataset DATASET          # Parquet dataset path
     --tokenizer TOKENIZER      # Tokenizer name or path
     --model MODEL              # Model passed to `vllm serve`
@@ -172,7 +172,7 @@ dryrun-workload collect-groups
 Merges the completed worker shards into a single joint trace, sorted by `group_id`.
 
 ```
-dryrun-workload merge-shards
+srl-workload merge-shards
     --shard-dir DIR            # Directory of worker-NN.jsonl shards
     --n-workers N              # Shards expected
     --output OUTPUT            # Merged joint trace path
@@ -184,7 +184,7 @@ dryrun-workload merge-shards
 Expands a hosts file into `index host gpu port` rows, used to drive parallel collection.
 
 ```
-dryrun-workload list-workers
+srl-workload list-workers
     --hosts-file PATH          # Path to host/GPU inventory
     [--base-port N]
 ```
@@ -195,7 +195,7 @@ Exits successfully only when a worker shard is complete (header `n_groups_reques
 matched). Used by collection scripts to decide whether to skip re-running a worker.
 
 ```
-dryrun-workload check-shard --path PATH
+srl-workload check-shard --path PATH
 ```
 
 ### `verify-collection`
@@ -203,7 +203,7 @@ dryrun-workload check-shard --path PATH
 Verifies the merged group count and diagnoses which worker shards are short.
 
 ```
-dryrun-workload verify-collection
+srl-workload verify-collection
     --trace PATH               # Merged joint trace path
     --expected-groups N
     --shard-dir DIR
@@ -212,24 +212,24 @@ dryrun-workload verify-collection
 
 ---
 
-## `dryrun-plot`
+## `srl-plot`
 
 Renders plots from an existing simulation run without re-simulating.
 
 ```
-dryrun-plot run_dir [--logs-subdir NAME] [--plots-subdir NAME]
+srl-plot run_dir [--logs-subdir NAME] [--plots-subdir NAME]
 ```
 
-`run_dir` is a **positional** argument: the `--output_dir` from a prior `dryrun` run.
+`run_dir` is a **positional** argument: the `--output_dir` from a prior `srl` run.
 `--logs-subdir` selects the subdirectory under `run_dir` that holds the telemetry JSONL streams
 (default `logs`). `--plots-subdir` names the output subdirectory to write under `run_dir`
 (default `plots`).
 
 ---
 
-## `dryrun`: the Hydra simulator
+## `srl`: the Hydra simulator
 
-`dryrun` is not an argparse app. It is powered by
+`srl` is not an argparse app. It is powered by
 [Hydra](https://hydra.cc/) and accepts config-group overrides, not flags.
 
 ### Config-group overrides
@@ -246,19 +246,19 @@ The full set of config groups is:
 Override a group on the command line:
 
 ```bash
-dryrun rollout_cost=roofline training_cost=hydraulis policy=verl workload=dapo_trace
+srl rollout_cost=roofline training_cost=hydraulis policy=verl workload=dapo_trace
 ```
 
 Override individual keys inside a group:
 
 ```bash
-dryrun job.batch_size=512 job.n_versions=16 rollout.n_instances=4
+srl job.batch_size=512 job.n_versions=16 rollout.n_instances=4
 ```
 
 Point to a cost artifact:
 
 ```bash
-dryrun rollout_cost=roofline rollout_cost.artifact_path=outputs/cost/qwen3_8b/rollout_roofline.json
+srl rollout_cost=roofline rollout_cost.artifact_path=outputs/cost/qwen3_8b/rollout_roofline.json
 ```
 
 ### Useful Hydra flags
@@ -273,10 +273,10 @@ dryrun rollout_cost=roofline rollout_cost.artifact_path=outputs/cost/qwen3_8b/ro
 
 ```bash
 # Print the resolved config without running anything
-dryrun --cfg job rollout_cost=roofline
+srl --cfg job rollout_cost=roofline
 
 # Sweep two batch sizes
-dryrun --multirun job.batch_size=256,512
+srl --multirun job.batch_size=256,512
 ```
 
 See {doc}`configuration` for every config key and its default value.

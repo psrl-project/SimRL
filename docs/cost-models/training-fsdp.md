@@ -43,7 +43,7 @@ where:
 - $c_{\text{mb}}$ is a per-microbatch overhead charged once per microbatch regardless of
   sequence length.
 
-In code (`dryrun/cost/training/latency.py`, shared with the Megatron model):
+In code (`srl/cost/training/latency.py`, shared with the Megatron model):
 
 ```python
 latency = coefficients["per_step_overhead"] + features.slots * (
@@ -220,7 +220,7 @@ No second master-weight tensor exists. Megatron needs one because its module liv
 narrow dtype and the master is a separate fp32 buffer. FSDP2 has no such buffer: the module
 itself is already the master.
 
-In `dryrun/cost/training/fsdp_inventory.py`:
+In `srl/cost/training/fsdp_inventory.py`:
 
 ```python
 local = parameter_count / world_size
@@ -243,7 +243,7 @@ FSDP training in verl uses gradient accumulation over multiple microbatches. How
 batch's real trajectory lengths are divided into microbatches determines the token count each
 rank actually runs, which is the input the cost model evaluates.
 
-Three modes are supported (`dryrun/cost/training/microbatch.py`):
+Three modes are supported (`srl/cost/training/microbatch.py`):
 
 | mode | description |
 |---|---|
@@ -292,7 +292,7 @@ bash examples/simulate/simulate.sh
 ## Fitting
 
 ```bash
-dryrun-regress training --latency-model fsdp --memory-model fsdp \
+srl-regress training --latency-model fsdp --memory-model fsdp \
     --input  outputs/profile/qwen3_8b/fsdp/profiles/fsdp.jsonl \
     --output outputs/cost/qwen3_8b/training_fsdp.json
 ```

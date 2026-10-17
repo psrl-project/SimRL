@@ -144,10 +144,10 @@ head count moves the decode kernel off the dispatch floor where TP1's small shap
 ## Megatron-Bridge training
 
 ```bash
-dryrun-profile megatron generate --config examples/profile/megatron/deepseek_r1_distill_qwen_14b_thd.yaml \
+srl-profile megatron generate --config examples/profile/megatron/deepseek_r1_distill_qwen_14b_thd.yaml \
     --candidates outputs/profile/deepseek_r1_distill_qwen_14b/megatron_tp2_pp4_thd/control/megatron_bridge/candidates.json
-dryrun-profile megatron run     --config ... --candidates ...
-dryrun-profile megatron collect --config ... --candidates ...
+srl-profile megatron run     --config ... --candidates ...
+srl-profile megatron collect --config ... --candidates ...
 ```
 
 `megatron/deepseek_r1_distill_qwen_14b_thd.yaml`, 24 candidates. THD packing rather than
@@ -193,7 +193,7 @@ shapes could not tell those apart.
 ### The fitted artifact
 
 ```bash
-dryrun-regress training --latency-model hydraulis --memory-model hydraulis \
+srl-regress training --latency-model hydraulis --memory-model hydraulis \
     --input  outputs/profile/deepseek_r1_distill_qwen_14b/megatron_tp2_pp4_thd/profiles/megatron_bridge.jsonl \
     --output outputs/cost/deepseek_r1_distill_qwen_14b/training_hydraulis.json
 ```
@@ -297,7 +297,7 @@ not be read as a validation on its own.
 Three families are fitted from the same `vllm.jsonl`, at both degrees:
 
 ```bash
-dryrun-regress rollout --model psrl \
+srl-regress rollout --model psrl \
     --input  outputs/profile/deepseek_r1_distill_qwen_14b/vllm_tp1/profiles/vllm.jsonl \
     --output outputs/cost/deepseek_r1_distill_qwen_14b/rollout_psrl.json
 # distserve additionally needs --hidden-size 5120 --intermediate-size 13824

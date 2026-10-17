@@ -23,9 +23,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from dryrun.cost.kernel.database import KernelDatabase
-from dryrun.cost.kernel.ops.base import OP_REGISTRY, register_op
-from dryrun.cost.kernel.sol import SolComponents
+from srl.cost.kernel.database import KernelDatabase
+from srl.cost.kernel.ops.base import OP_REGISTRY, register_op
+from srl.cost.kernel.sol import SolComponents
 
 _VERSION = "0.0.1"
 # The backend whose floor is fitted for the query below, and the one the database defaults to.

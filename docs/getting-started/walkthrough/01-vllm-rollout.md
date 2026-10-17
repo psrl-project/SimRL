@@ -39,9 +39,9 @@ bash examples/profile/vllm/profile_qwen3_8b.sh all
 That runs the three verbs every profiling backend exposes, in order:
 
 ```bash
-dryrun-profile vllm generate --config CFG   # enumerate sweep points, no GPU touched
-dryrun-profile vllm run      --config CFG   # start servers, benchmark
-dryrun-profile vllm collect  --config CFG   # normalise into JSONL
+srl-profile vllm generate --config CFG   # enumerate sweep points, no GPU touched
+srl-profile vllm run      --config CFG   # start servers, benchmark
+srl-profile vllm collect  --config CFG   # normalise into JSONL
 ```
 
 `generate` is free and writes a job manifest, so it is the cheapest way to see what a
@@ -127,7 +127,7 @@ covers `ProfileRecord` as a schema, {doc}`../../reference/schemas` has every fie
 ## Fitting the cost model
 
 ```bash
-dryrun-regress rollout --model roofline \
+srl-regress rollout --model roofline \
     --input  outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl \
     --output outputs/cost/qwen3_8b/rollout_roofline.json
 ```

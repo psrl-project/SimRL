@@ -31,7 +31,7 @@
 #   TP1 and TP2 arms with the router active cap disabled.
 #
 # ⚠️ READING THE OUTPUT
-#   `dryrun.cli.main` prints the SCG(S) curve, so this script only relays it. SCG is
+#   `srl.cli.main` prints the SCG(S) curve, so this script only relays it. SCG is
 #   a RATE in tokens/s: compare two arms ONLY when their `Consumed:` lines agree. An
 #   arm that ended early divides a smaller token total by a smaller span and scores
 #   arbitrarily well -- a cap=60000 cell was once read as a 2.54x win that way, when
@@ -47,10 +47,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-DRYRUN_ENV="${DRYRUN_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh}"
-if [[ -f "${DRYRUN_ENV}" ]]; then
+SIMRL_ENV="${SIMRL_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh}"
+if [[ -f "${SIMRL_ENV}" ]]; then
     # shellcheck disable=SC1090
-    source "${DRYRUN_ENV}"
+    source "${SIMRL_ENV}"
 fi
 
 MODEL_PATH="${MODEL_PATH:-/apdcephfs_zwfy/share_303760348/lhy/models/DeepSeek-R1-Distill-Qwen-14B}"

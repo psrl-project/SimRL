@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.training.base import TrainingParallelism
-from dryrun.cost.training.latency import (
+from srl.cost.training.base import TrainingParallelism
+from srl.cost.training.latency import (
     latency_features,
     pipeline_slots,
     robust_step_time,
     step_time_dispersion,
 )
-from dryrun.profiler.schema import SequenceStats
+from srl.profiler.schema import SequenceStats
 
 
 def _microbatches(seq_length: int, count: int) -> tuple[SequenceStats, ...]:

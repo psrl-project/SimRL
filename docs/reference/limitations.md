@@ -4,7 +4,7 @@ This page consolidates every known gap, with the source of each item and what wo
 Items are grouped by kind. Acceptance criteria from the design document are quoted in full,
 because they are the valuable part: they define what "done" means for each deferred item.
 
-## What DryRun-RL does not do at all
+## What SimRL does not do at all
 
 Three limits are structural rather than gaps to be closed by more profiling.
 
@@ -64,7 +64,7 @@ match no cell and raise `KeyError` at simulation time. Fix: run a separate sweep
 **Kernel sweep: TP=1 `holdout_report.json` is stale.**
 The committed `holdout_report.json` under the TP=1 tree was written before the `elementwise`
 and `all_reduce` families were swept and holds only five of the current six rows. Re-running
-`dryrun-profile kernels holdout` generates six rows, which disagree with the committed file.
+`srl-profile kernels holdout` generates six rows, which disagree with the committed file.
 See {doc}`../profiling/kernels` for the canonical regenerated table.
 
 ---
@@ -78,7 +78,7 @@ known to be limited.
 MRE 8.13%, signed mean -8.13%, on the 22 out-of-sample THD records against the fitted
 polynomial's 2.73% in-sample. The record whose kernels were traced predicts to -0.12%.
 
-A CUDA kernel trace of rank 0 at 12288 tokens (`DRYRUN_TRACE_STEP=4 dryrun-profile megatron
+A CUDA kernel trace of rank 0 at 12288 tokens (`SIMRL_TRACE_STEP=4 srl-profile megatron
 run --config examples/profile/megatron/qwen3_8b_thd.yaml --candidates ... --index 1`, and
 `--index 9` for nmb=4) compares term by term against the composition's per-stage cost:
 
@@ -289,7 +289,7 @@ denser `context_seq_lens` grid points below 1024 to the profiling config.
 These are operational gaps that do not cause wrong predictions but require manual workarounds.
 
 **`policy=psrl` requires a machine-specific path.**
-`psrl` is the **default policy**. The implementation (`dryrun/policy/psrl.py`) falls back to
+`psrl` is the **default policy**. The implementation (`srl/policy/psrl.py`) falls back to
 a hard-coded source-tree path when the `psrl` package is not already importable. That path is
 machine-specific and will not resolve on a different machine. If the fallback also fails, the
 constructor raises `ImportError` with an install hint. Install `psrl` into your environment

@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from dryrun.cost.rollout.segment import LatticeIntegrator
+from srl.cost.rollout.segment import LatticeIntegrator
 
 
 def _linear(offset: int) -> float:

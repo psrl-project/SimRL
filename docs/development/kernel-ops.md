@@ -14,8 +14,8 @@ axis, SOL, utility, and floor vocabulary, see {doc}`../getting-started/concepts`
 ## Why `KernelOp` is a class, not a table of functions
 
 The visible symptom of the old design was edit count: adding a kernel op used to mean touching ten
-separate sites. The actual defect was narrower and more dangerous. `dryrun/cost/kernel/database.py`
-and `dryrun/cost/kernel/holdout.py` each held their own independent implementation of the same
+separate sites. The actual defect was narrower and more dangerous. `srl/cost/kernel/database.py`
+and `srl/cost/kernel/holdout.py` each held their own independent implementation of the same
 binding, the function mapping `(spec, slice_key, coords, floor_s)` onto a SOL call. Utility is
 `SOL / measured_latency`, and the holdout gate computes utility on both sides of a round trip, so
 any drift between those two copies would have silently changed the measured interpolation accuracy
@@ -28,7 +28,7 @@ each op unpacks what it needs from *its own* `slice_key`, whose column order tha
 `GemmKernelOp.sol` reads `(gemm_dtype, n, k)`, and `AllReduceKernelOp.sol` reads `(dtype, world_size)`.
 Each op knows its own coordinate space.
 
-The `KernelOp` protocol is defined in `dryrun/cost/kernel/ops/base.py`. Every op must implement:
+The `KernelOp` protocol is defined in `srl/cost/kernel/ops/base.py`. Every op must implement:
 
 | Attribute / method | Purpose |
 |---|---|
@@ -70,7 +70,7 @@ coverage error rather than extrapolating.
 
 Four steps are required, and the order is important.
 
-**Step 1.** Write the class in `dryrun/cost/kernel/ops/<family>.py`, implementing all attributes
+**Step 1.** Write the class in `srl/cost/kernel/ops/<family>.py`, implementing all attributes
 and methods in the `KernelOp` protocol. Choose the right `family` value: ops sharing a directory
 are measured together and stored together.
 
@@ -78,7 +78,7 @@ are measured together and stored together.
 raises `KernelCoverageError` rather than silently overwriting, so two ops sharing a name cannot
 exist.
 
-**Step 3.** Add the module import to `dryrun/cost/kernel/ops/__init__.py`. This step is more
+**Step 3.** Add the module import to `srl/cost/kernel/ops/__init__.py`. This step is more
 important than it looks and is the one most likely to be forgotten.
 
 `op_for` is called from the perf-table writer, `database.py`, and `floor.py`. None of those
@@ -95,7 +95,7 @@ F401` because ruff cannot see that the import's purpose is its side effect.
 `examples/profile/kernel/`. Floor fitting, holdout discovery, the perf-table writer, and the CLI
 need no edits: they loop over `ops_in()` / `ops_for_family()` and check `fits_floor`. This was
 verified empirically: the commits adding `elementwise` and `all_reduce` touched neither
-`dryrun/cost/kernel/floor.py` nor `dryrun/cli/profile.py`.
+`srl/cost/kernel/floor.py` nor `srl/cli/profile.py`.
 
 If the op declares `fits_floor = True`, it must also appear in `sol.FALLBACK_FLOORS_S` under at
 least one backend. `tests/test_kernel_sol.py` enforces this off the live registry. The reason the
@@ -108,7 +108,7 @@ a zero floor when `floors.json` is absent. For `elementwise` that costs 5.01% ag
 ## The four lookups
 
 `OP_REGISTRY` is never indexed directly. Everything goes through four stable functions defined in
-`dryrun/cost/kernel/ops/base.py`:
+`srl/cost/kernel/ops/base.py`:
 
 | Lookup | Returns |
 |---|---|
@@ -140,7 +140,7 @@ backend, version)` and stored beside the tables it was fitted for. The keys in `
 names: `context_attention`, `generation_attention`, `elementwise`, `all_reduce`.
 
 An older format keyed by phase (`context`, `generation`) is **rejected** with an explicit error
-message naming `dryrun-profile kernels fit-floor`, never read leniently. The reason leniency is
+message naming `srl-profile kernels fit-floor`, never read leniently. The reason leniency is
 refused: a leniently-read old-format file applies a zero floor, which produces generation attention
 MRE of 34.89% against 6.63% at the fitted 22 µs. Silently incorrect is worse than explicitly
 broken.
@@ -191,7 +191,7 @@ table.
 
 ## Torch-free cost path
 
-`dryrun/cost/kernel/ops/base.py` must stay importable without `torch`. A simulator run prices
+`srl/cost/kernel/ops/base.py` must stay importable without `torch`. A simulator run prices
 kernels from parquet and should not pay a 4.2-second GPU-stack import to do it. Any op that must
 measure on a GPU imports its GPU dependencies (`torch`, vLLM modules, FlashInfer) inside the
 `measure()` and `parse_sweep()` method bodies. The `parse_sweep` and `measure` methods are

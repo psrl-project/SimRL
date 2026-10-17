@@ -24,7 +24,7 @@ import argparse
 
 import numpy as np
 
-from dryrun.workload.trace import RequestGroup, write_group_trace
+from srl.workload.trace import RequestGroup, write_group_trace
 
 
 def draw_lengths(n: int, mean: int, cv: float, cap: int, rng: np.random.Generator) -> np.ndarray:

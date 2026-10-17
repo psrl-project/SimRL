@@ -8,16 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.cost.kernel.database import AttentionQuery, GemmQuery, KernelDatabase
-from dryrun.cost.kernel.model_ops import ModelOps
-from dryrun.cost.rollout import ROLLOUT_MODEL_REGISTRY, RolloutWorkload
-from dryrun.cost.rollout.composed import (
+from srl.cost.kernel.database import AttentionQuery, GemmQuery, KernelDatabase
+from srl.cost.kernel.model_ops import ModelOps
+from srl.cost.rollout import ROLLOUT_MODEL_REGISTRY, RolloutWorkload
+from srl.cost.rollout.composed import (
     _MAX_CACHE_ENTRIES,
     _SEGMENT_CAP,
     CLOSED_FORM_DISABLED,
     ComposedRollout,
 )
-from dryrun.cost.rollout.segment import DEFAULT_STRIDE
+from srl.cost.rollout.segment import DEFAULT_STRIDE
 
 # Anchored to the repo root, not the working directory: `outputs/` is gitignored, so
 # these are real local artifacts. Absent them the tests skip rather than fail, matching
@@ -309,8 +309,8 @@ def test_importing_the_registry_does_not_load_the_parquet_stack():
     """A run using a fitted model must not pay for the composed model's dependencies."""
     probe = """
 import sys
-import dryrun.cost.rollout  # noqa: F401
-kernel = sorted(name for name in sys.modules if name.startswith("dryrun.cost.kernel"))
+import srl.cost.rollout  # noqa: F401
+kernel = sorted(name for name in sys.modules if name.startswith("srl.cost.kernel"))
 assert not kernel, f"eagerly imported {kernel}"
 assert "pyarrow" not in sys.modules, "eagerly imported pyarrow"
 print("clean")

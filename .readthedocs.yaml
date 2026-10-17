@@ -1,5 +1,5 @@
 # Read the Docs build configuration.
-# Docs build without importing DryRun-RL, so no GPU stack is installed here.
+# Docs build without importing SimRL, so no GPU stack is installed here.
 version: 2
 
 build:

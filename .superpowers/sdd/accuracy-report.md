@@ -86,7 +86,7 @@ Attention families still fail (separate dispatch-floor issue, not in scope for t
 ### Where the floor values live and why
 
 The per-backend dispatch floors are stored in `ATTENTION_FLOOR_S` in
-`dryrun/cost/kernel/sol.py` — a module-level dict keyed by backend name and phase.
+`srl/cost/kernel/sol.py` — a module-level dict keyed by backend name and phase.
 
 **Alternatives considered:**
 
@@ -216,7 +216,7 @@ per point as the existing loop does.
 
 ### GEMM holdout gate after sweep
 
-Re-run: `dryrun-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml --fraction 1.0`
+Re-run: `srl-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml --fraction 1.0`
 
 | family | backend | points | MRE | p90 | max | gate |
 |---|---|---|---|---|---|---|

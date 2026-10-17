@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from dryrun.cli.profile import build_parser
+from srl.cli.profile import build_parser
 
 
 def test_parser_exposes_the_three_fsdp_workflows():
@@ -30,7 +30,7 @@ def test_fsdp_run_accepts_selection_and_resume():
 
 
 def test_regress_accepts_the_fsdp_models():
-    from dryrun.cli.regress import build_parser as regress_parser
+    from srl.cli.regress import build_parser as regress_parser
 
     args = regress_parser().parse_args(
         [
@@ -50,7 +50,7 @@ def test_regress_accepts_the_fsdp_models():
 
 
 def test_training_cost_config_carries_the_batching_mode():
-    from dryrun.config.schema import TrainingCostConfig
+    from srl.config.schema import TrainingCostConfig
 
     config = TrainingCostConfig()
     assert config.batching_mode == "pad_to_max"
@@ -58,7 +58,7 @@ def test_training_cost_config_carries_the_batching_mode():
 
 
 def test_fsdp_defaults_yaml_is_loadable_and_documented():
-    path = Path("dryrun/config/defaults/training_cost/fsdp.yaml")
+    path = Path("srl/config/defaults/training_cost/fsdp.yaml")
     value = yaml.safe_load(path.read_text())
     assert value["name"] == "fsdp"
     assert "batching_mode" in value
@@ -88,7 +88,7 @@ def test_example_sweep_retains_eight_steps():
 def test_build_training_cost_resolves_the_fsdp_name(tmp_path: Path, monkeypatch):
     from omegaconf import OmegaConf
 
-    from dryrun.cli.main import build_training_cost
+    from srl.cli.main import build_training_cost
 
     # A name with no artifact must fail loudly rather than silently falling back.
     cfg = OmegaConf.create({"name": "fsdp", "artifact_path": ""})

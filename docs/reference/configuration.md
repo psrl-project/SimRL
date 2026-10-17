@@ -1,7 +1,7 @@
 # Configuration reference
 
-`dryrun` is a [Hydra](https://hydra.cc/) app. Configuration is assembled from *config groups*:
-named directories under `dryrun/config/defaults/` where each YAML file is one selectable
+`srl` is a [Hydra](https://hydra.cc/) app. Configuration is assembled from *config groups*:
+named directories under `srl/config/defaults/` where each YAML file is one selectable
 option. The top-level `simulate.yaml` sets the default selections and the top-level `job` and
 `rollout` blocks.
 
@@ -15,7 +15,7 @@ Cross-references: {doc}`../simulation/policies` for policy semantics,
 
 The default selections and the `job` / `rollout` blocks live here.
 
-```{literalinclude} ../../dryrun/config/defaults/simulate.yaml
+```{literalinclude} ../../srl/config/defaults/simulate.yaml
 :language: yaml
 ```
 
@@ -31,9 +31,9 @@ Available options: `roofline`, `psrl`, `distserve`, `composed`.
 
 Parametric roofline model fitted from vLLM profiling JSONL. No profiling needed when
 using the default hand-set constants. Replace them with a fitted artifact from
-`dryrun-regress rollout --model roofline` for a calibrated result.
+`srl-regress rollout --model roofline` for a calibrated result.
 
-```{literalinclude} ../../dryrun/config/defaults/rollout_cost/roofline.yaml
+```{literalinclude} ../../srl/config/defaults/rollout_cost/roofline.yaml
 :language: yaml
 ```
 
@@ -62,17 +62,17 @@ profiling records. The YAML is identical to `roofline` except `name: psrl`.
 DistServe C3/C4 formula. Re-expresses the same roofline fit through architecture constants
 (`h`, `m`, `C1` through `C5`). Default constants are placeholders. Replace with fitted values.
 
-```{literalinclude} ../../dryrun/config/defaults/rollout_cost/distserve.yaml
+```{literalinclude} ../../srl/config/defaults/rollout_cost/distserve.yaml
 :language: yaml
 ```
 
 ### `composed`
 
 `ComposedRollout`: sums measured per-kernel latencies rather than evaluating a parametric
-formula. No `dryrun-regress` step. Requires the kernel profiling sweep to have been run first.
+formula. No `srl-regress` step. Requires the kernel profiling sweep to have been run first.
 See {doc}`../cost-models/composed-rollout` for the full accuracy discussion.
 
-```{literalinclude} ../../dryrun/config/defaults/rollout_cost/composed.yaml
+```{literalinclude} ../../srl/config/defaults/rollout_cost/composed.yaml
 :language: yaml
 ```
 
@@ -118,7 +118,7 @@ Available options: `fixed`, `analytical`, `linear`, `hydraulis`, `fsdp`.
 Constant step time and peak memory. No profiling needed. The simplest option for
 getting-started runs.
 
-```{literalinclude} ../../dryrun/config/defaults/training_cost/fixed.yaml
+```{literalinclude} ../../srl/config/defaults/training_cost/fixed.yaml
 :language: yaml
 ```
 
@@ -127,7 +127,7 @@ getting-started runs.
 Roofline training cost: `max(compute_time, memory_time) * overhead_factor`. Useful for
 rough estimates without profiling data.
 
-```{literalinclude} ../../dryrun/config/defaults/training_cost/analytical.yaml
+```{literalinclude} ../../srl/config/defaults/training_cost/analytical.yaml
 :language: yaml
 ```
 
@@ -135,16 +135,16 @@ rough estimates without profiling data.
 
 `latency = time_per_token * total_tokens`, `peak_memory = base_memory_bytes / world_size`.
 
-```{literalinclude} ../../dryrun/config/defaults/training_cost/linear.yaml
+```{literalinclude} ../../srl/config/defaults/training_cost/linear.yaml
 :language: yaml
 ```
 
 ### `hydraulis`
 
 Fitted Megatron / Hydraulis V1 training cost. Requires a `CostArtifact` from
-`dryrun-regress training --latency-model hydraulis`. See {doc}`../cost-models/training-megatron`.
+`srl-regress training --latency-model hydraulis`. See {doc}`../cost-models/training-megatron`.
 
-```{literalinclude} ../../dryrun/config/defaults/training_cost/hydraulis.yaml
+```{literalinclude} ../../srl/config/defaults/training_cost/hydraulis.yaml
 :language: yaml
 ```
 
@@ -157,9 +157,9 @@ Fitted Megatron / Hydraulis V1 training cost. Requires a `CostArtifact` from
 ### `fsdp`
 
 Fitted FSDP2/HSDP training cost. Requires a `CostArtifact` from
-`dryrun-regress training --latency-model fsdp`. See {doc}`../cost-models/training-fsdp`.
+`srl-regress training --latency-model fsdp`. See {doc}`../cost-models/training-fsdp`.
 
-```{literalinclude} ../../dryrun/config/defaults/training_cost/fsdp.yaml
+```{literalinclude} ../../srl/config/defaults/training_cost/fsdp.yaml
 :language: yaml
 ```
 
@@ -193,7 +193,7 @@ Reserve/Occupy/Consume staleness inventory. Requires the external `psrl` package
 package is unavailable, constructing this policy raises `ImportError`. See
 {doc}`../reference/limitations` for the dependency note.
 
-```{literalinclude} ../../dryrun/config/defaults/policy/psrl.yaml
+```{literalinclude} ../../srl/config/defaults/policy/psrl.yaml
 :language: yaml
 ```
 
@@ -205,7 +205,7 @@ Simpler staleness policies with no additional configuration fields beyond `name`
 
 Loop-barrier policy: push new weights every `update_weights_interval` training steps.
 
-```{literalinclude} ../../dryrun/config/defaults/policy/slime.yaml
+```{literalinclude} ../../srl/config/defaults/policy/slime.yaml
 :language: yaml
 ```
 
@@ -213,7 +213,7 @@ Loop-barrier policy: push new weights every `update_weights_interval` training s
 
 Overage-ratio policy. `staleness_threshold: null` falls back to `job.max_staleness`.
 
-```{literalinclude} ../../dryrun/config/defaults/policy/verl.yaml
+```{literalinclude} ../../srl/config/defaults/policy/verl.yaml
 :language: yaml
 ```
 
@@ -227,7 +227,7 @@ Available options: `uniform`, `bimodal`, `lognormal`, `normal`, `powerlaw`, `dap
 
 ### `uniform` (and other parametric distributions)
 
-```{literalinclude} ../../dryrun/config/defaults/workload/uniform.yaml
+```{literalinclude} ../../srl/config/defaults/workload/uniform.yaml
 :language: yaml
 ```
 
@@ -237,7 +237,7 @@ distribution-specific parameters in the `output` block. See {doc}`../workload/in
 
 ### `dapo_trace`
 
-```{literalinclude} ../../dryrun/config/defaults/workload/dapo_trace.yaml
+```{literalinclude} ../../srl/config/defaults/workload/dapo_trace.yaml
 :language: yaml
 ```
 

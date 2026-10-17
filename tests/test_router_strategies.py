@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.component.rollout.engine import InstanceView, Request
-from dryrun.component.rollout.router import (
+from srl.component.rollout.engine import InstanceView, Request
+from srl.component.rollout.router import (
     STRATEGY_REGISTRY,
     AdmissionGate,
     build_strategy,

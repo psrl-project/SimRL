@@ -7,21 +7,21 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.cli.profile import _generate_bridge_candidates
-from dryrun.profiler.adapters.megatron import (
+from srl.cli.profile import _generate_bridge_candidates
+from srl.profiler.adapters.megatron import (
     MegatronBridgeConfig,
     infer_bridge_recipe,
     prepare_bridge_candidate,
 )
-from dryrun.profiler.adapters.vllm import VLLMSweepConfig
-from dryrun.profiler.hf import load_hf_model_descriptor, model_descriptor_from_yaml
-from dryrun.profiler.schema import (
+from srl.profiler.adapters.vllm import VLLMSweepConfig
+from srl.profiler.hf import load_hf_model_descriptor, model_descriptor_from_yaml
+from srl.profiler.schema import (
     HardwareDescriptor,
     ModelDescriptor,
     Parallelism,
     ProfileValidationError,
 )
-from dryrun.profiler.search_space import ModelConstraints, TrainingCandidate, enumerate_training_candidates
+from srl.profiler.search_space import ModelConstraints, TrainingCandidate, enumerate_training_candidates
 
 FIXTURES = Path(__file__).parent / "fixtures"
 HF_QWEN = FIXTURES / "hf" / "qwen3_8b"

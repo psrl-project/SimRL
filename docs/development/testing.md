@@ -21,9 +21,9 @@ bash -n examples/profile/megatron/profile_qwen3_8b.sh
 bash -n examples/simulate/simulate.sh
 
 # Smoke-test every CLI entry point.
-dryrun --help
-dryrun-profile --help
-dryrun-regress --help
+srl --help
+srl-profile --help
+srl-regress --help
 ```
 
 The suite collects 946 tests. With `MODEL_PATH` set to a local checkpoint, all 946 pass. Without
@@ -91,7 +91,7 @@ pytest tests/test_kernel_baseline_regression.py --update-snapshots 2>/dev/null |
 ```
 
 Check which flag the test accepts by reading its source, since the mechanism varies. Alternatively,
-re-run `dryrun-profile kernels holdout --fraction 1.0` and copy the resulting MRE values into the
+re-run `srl-profile kernels holdout --fraction 1.0` and copy the resulting MRE values into the
 test's expected-values table manually. Whatever the mechanism, the numbers in the test and the
 numbers in `holdout_report.json` must come from the same sweep.
 
@@ -103,16 +103,16 @@ Two tests exist specifically to ensure that the cost path and shape-derivation p
 the GPU stack at import time:
 
 **`tests/test_kernel_shapes_import.py`** runs a subprocess probe that imports
-`dryrun.profiler.kernels.shapes` in a fresh interpreter and asserts that neither `torch` nor
+`srl.profiler.kernels.shapes` in a fresh interpreter and asserts that neither `torch` nor
 `vllm` appear in `sys.modules` afterward. A 4.2-second GPU-stack import has no place on the cost
 path that reads parquet and prices kernels.
 
 **`tests/test_kernel_package_imports.py`** tests four related isolation properties:
-`dryrun.profiler.kernels.config` imports without loading torch.
-`dryrun.profiler.kernels.attention` imports without loading torch.
-`dryrun.profiler.kernels.profile_gemm` is callable and *does* load torch (confirming the lazy-load
+`srl.profiler.kernels.config` imports without loading torch.
+`srl.profiler.kernels.attention` imports without loading torch.
+`srl.profiler.kernels.profile_gemm` is callable and *does* load torch (confirming the lazy-load
 mechanism works in both directions).
-`dryrun.profiler.kernels.PerfTableWriter` is accessible without torch.
+`srl.profiler.kernels.PerfTableWriter` is accessible without torch.
 
 What these tests protect: if any torch-importing module is pulled into a package `__init__` at the
 wrong level, the cost path starts paying the GPU import cost on every simulator invocation. Because

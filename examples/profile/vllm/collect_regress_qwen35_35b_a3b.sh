@@ -2,8 +2,8 @@
 # Collect and regress vLLM timing profiles for Qwen3.5-35B-A3B at tp=1 and tp=2.
 #
 # PIPELINE
-#   1. dryrun-profile vllm collect  (parses raw timing JSON → profiles/vllm.jsonl)
-#   2. dryrun-regress rollout        (fits psrl coefficients → rollout_psrl.json)
+#   1. srl-profile vllm collect  (parses raw timing JSON → profiles/vllm.jsonl)
+#   2. srl-regress rollout        (fits psrl coefficients → rollout_psrl.json)
 #
 # The collect step reads all raw JSON from raw/vllm_timing/**, converts each
 # scheduler-iteration record to a ProfileRecord, and writes a single JSONL.
@@ -29,7 +29,7 @@ mkdir -p "${COST_DIR}"
 
 cd "${ROOT_DIR}"
 
-source "${ROOT_DIR}/env/dryrun-rl.sh" 2>/dev/null || true
+source "${ROOT_DIR}/env/simrl.sh" 2>/dev/null || true
 
 # --------------------------------------------------------------------------
 # Step 1: collect each TP profile into a profiles/vllm.jsonl
@@ -41,7 +41,7 @@ for TP in 2 1; do
         continue
     fi
     echo "=== Collecting TP=${TP} profile ==="
-    MODEL_PATH="${MODEL_PATH}" dryrun-profile vllm collect \
+    MODEL_PATH="${MODEL_PATH}" srl-profile vllm collect \
         --config "${ROOT_DIR}/examples/profile/vllm/qwen35_35b_a3b_tp${TP}.yaml"
     echo "Collected: ${PROF_DIR}/profiles/vllm.jsonl"
 done
@@ -49,7 +49,7 @@ done
 # --------------------------------------------------------------------------
 # Step 2: merge collected JSONL files and fit a single psrl artifact
 # --------------------------------------------------------------------------
-# dryrun-regress accepts a single --input path; combine both TP profiles into
+# srl-regress accepts a single --input path; combine both TP profiles into
 # one file so the fit sees both parallelism degrees and produces entries for both.
 MERGED="${COST_DIR}/vllm_merged.jsonl"
 > "${MERGED}"
@@ -63,7 +63,7 @@ done
 
 echo ""
 echo "=== Fitting psrl model from ${MERGED} ==="
-dryrun-regress rollout \
+srl-regress rollout \
     --model psrl \
     --input "${MERGED}" \
     --output "${COST_DIR}/rollout_psrl.json"

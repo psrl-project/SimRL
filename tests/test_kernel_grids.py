@@ -13,20 +13,20 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.cost.kernel.ops.elementwise import ELEMENTWISE_KINDS
-from dryrun.profiler.hf import model_descriptor_from_yaml
-from dryrun.profiler.kernel.grid.attention_training import training_attention_points
-from dryrun.profiler.kernel.grid.elementwise import (
+from srl.cost.kernel.ops.elementwise import ELEMENTWISE_KINDS
+from srl.profiler.hf import model_descriptor_from_yaml
+from srl.profiler.kernel.grid.attention_training import training_attention_points
+from srl.profiler.kernel.grid.elementwise import (
     elementwise_dims,
     elementwise_sweep_points,
 )
-from dryrun.profiler.kernel.grid.optimizer import optimizer_param_counts
-from dryrun.profiler.kernel.sweep import (
+from srl.profiler.kernel.grid.optimizer import optimizer_param_counts
+from srl.profiler.kernel.sweep import (
     ElementwiseSweep,
     OptimizerSweep,
     TrainingAttentionSweep,
 )
-from dryrun.profiler.schema import ProfileValidationError
+from srl.profiler.schema import ProfileValidationError
 
 _FIXTURE_MODEL = Path("tests/fixtures/hf/qwen3_8b").resolve()
 

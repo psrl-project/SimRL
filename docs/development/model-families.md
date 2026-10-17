@@ -11,7 +11,7 @@ touching a single op.
 
 ## The `ModelFamily` protocol
 
-`ModelFamily` is a `runtime_checkable` protocol defined in `dryrun/profiler/kernels/families.py`.
+`ModelFamily` is a `runtime_checkable` protocol defined in `srl/profiler/kernels/families.py`.
 Every family class must implement three methods:
 
 | Method | Returns |
@@ -29,7 +29,7 @@ floor-divides.
 
 ## `dense_llama`: four fused shapes per layer
 
-The one registered family, `DenseLlamaFamily` (in `dryrun/profiler/kernels/families_dense.py`),
+The one registered family, `DenseLlamaFamily` (in `srl/profiler/kernels/families_dense.py`),
 covers `Qwen3ForCausalLM`, `Qwen2ForCausalLM`, `LlamaForCausalLM`, and `MistralForCausalLM`. It
 produces four GEMM shapes per layer:
 
@@ -78,7 +78,7 @@ string is registered:
 : Compressed-KV attention (MLA). Has no `(heads + 2*kv_heads)*head_dim` QKV projection
   at all, so every GEMM shape this family derives would be wrong.
 
-Each error message names the specific kernel that would be omitted. `dryrun/profiler/hf.py`
+Each error message names the specific kernel that would be omitted. `srl/profiler/hf.py`
 forwards these keys into `ModelDescriptor.extra` for the sole purpose of making the refusal
 reachable. MoE and MLA families are deliberately not implemented: no checkpoint of either type is
 available for validation, and an untested family is likely to produce the same kind of
@@ -93,7 +93,7 @@ can verify that the arithmetic still matches what a real engine module graph act
 `kernels verify-shapes` subcommand is the oracle that can:
 
 ```bash
-dryrun-profile kernels verify-shapes --model-path $MODEL_PATH
+srl-profile kernels verify-shapes --model-path $MODEL_PATH
 ```
 
 It builds the real model on the **meta device**, with no weights and no GPU memory, enumerates every 2-D
@@ -132,7 +132,7 @@ pretending otherwise.
 
 Three steps are required.
 
-**Step 1.** Create `dryrun/profiler/kernels/families_<name>.py` with a class satisfying the
+**Step 1.** Create `srl/profiler/kernels/families_<name>.py` with a class satisfying the
 `ModelFamily` protocol. The class must implement `gemm_shapes`, `logits_shape`, and `head_counts`.
 If layers are heterogeneous, return `(shape, count)` pairs rather than one shape per layer.
 `ModelOps.gemm_queries` already handles `(query, multiplier)` pairs, so this is a protocol
@@ -142,7 +142,7 @@ widening, not a break.
 family_instance)` at module level. Registering the same architecture twice raises
 `ProfileValidationError` rather than silently overwriting.
 
-**Step 3.** Import the new module at the bottom of `dryrun/profiler/kernels/families.py`.
+**Step 3.** Import the new module at the bottom of `srl/profiler/kernels/families.py`.
 
 The last step is not optional and not obvious. `family_for` is called from the cost path, which
 has no reason to know which specific family modules exist. Registration happens as a side effect of

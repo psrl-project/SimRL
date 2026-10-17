@@ -2,7 +2,7 @@
 
 from fractions import Fraction
 
-from dryrun.cost.rollout import advance
+from srl.cost.rollout import advance
 
 
 def test_elapsed_matches_brute_force():

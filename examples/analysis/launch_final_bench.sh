@@ -9,11 +9,11 @@ SNAP="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${SNAP}"
 set +u
 # shellcheck disable=SC1091
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh >/dev/null 2>&1
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh >/dev/null 2>&1
 set -u
 RES="${SNAP}/outputs_bench"
 mkdir -p "${RES}"
-export DRYRUN_KV_CACHE="${SNAP}/outputs/bench_backends/kv_capacity.json"
+export SIMRL_KV_CACHE="${SNAP}/outputs/bench_backends/kv_capacity.json"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4}"
 export CAP=160 N_VERSIONS=4 REPEATS=3 PARALLEL=1 MAX_OUTPUT_LENGTH=65536
 export TRACE="${SNAP}/outputs/workload/dapo_64k/joint.jsonl"

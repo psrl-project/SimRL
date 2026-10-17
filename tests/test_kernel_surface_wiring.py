@@ -6,11 +6,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from dryrun.cost.kernel.database import GemmQuery, KernelDatabase
-from dryrun.cost.kernel.interp import KernelCoverageError
-from dryrun.cost.kernel.ops.gemm import GEMM_OP
-from dryrun.cost.kernel.surface import PchipSurface, ShepardSurface
-from dryrun.cost.kernel.table import KernelTable
+from srl.cost.kernel.database import GemmQuery, KernelDatabase
+from srl.cost.kernel.interp import KernelCoverageError
+from srl.cost.kernel.ops.gemm import GEMM_OP
+from srl.cost.kernel.surface import PchipSurface, ShepardSurface
+from srl.cost.kernel.table import KernelTable
 
 _SLICE = ("bfloat16", 4096, 4096)
 # Utility must VARY across m, or Shepard and PCHIP agree everywhere and the wiring test

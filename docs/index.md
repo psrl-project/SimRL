@@ -2,11 +2,11 @@
 sd_hide_title: true
 ---
 
-# DryRun-RL Documentation
+# SimRL Documentation
 
-## What DryRun-RL is
+## What SimRL is
 
-DryRun-RL answers questions of the form *"I have Qwen3-8B on eight H20s, rollout and
+SimRL answers questions of the form *"I have Qwen3-8B on eight H20s, rollout and
 training splitting the cluster, staleness bounded at 2. What does that system look like
 when it runs? What throughput, how much time spent waiting, does training memory fit?"*
 It answers them without running the job.

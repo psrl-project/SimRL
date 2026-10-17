@@ -5,26 +5,26 @@ from __future__ import annotations
 import pytest
 
 try:
-    from dryrun._engine_cpp import CppInstance, CppRequest  # noqa: F401
+    from srl._engine_cpp import CppInstance, CppRequest  # noqa: F401
 
     HAS_CPP = True
 except ImportError:
     HAS_CPP = False
 
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.cost.training import (
+from srl.cost.rollout import UnifiedRoofline
+from srl.cost.training import (
     FixedTrainingLatency,
     FixedTrainingMemory,
     TrainingCostModel,
 )
-from dryrun.policy.areal import ArealPolicy
-from dryrun.policy.psrl import PSRLPolicy
-from dryrun.policy.roll import RollPolicy
-from dryrun.policy.verl import VerlPolicy
-from dryrun.simulator import SimConfig, Simulator
-from dryrun.telemetry.store import JsonlStore
-from dryrun.workload.distributions import bimodal, uniform
-from dryrun.workload.grouped import GroupedWorkload
+from srl.policy.areal import ArealPolicy
+from srl.policy.psrl import PSRLPolicy
+from srl.policy.roll import RollPolicy
+from srl.policy.verl import VerlPolicy
+from srl.simulator import SimConfig, Simulator
+from srl.telemetry.store import JsonlStore
+from srl.workload.distributions import bimodal, uniform
+from srl.workload.grouped import GroupedWorkload
 
 pytestmark = pytest.mark.skipif(not HAS_CPP, reason="C++ engine not compiled")
 
@@ -249,7 +249,7 @@ class TestCppBackendGrouping:
     """Verify that grouping works correctly with the C++ backend."""
 
     def test_grouped_workload(self):
-        from dryrun.workload.trace import RequestGroup
+        from srl.workload.trace import RequestGroup
 
         groups = [
             RequestGroup(group_id=i, prompt_len=128, output_lens=(50, 60, 70, 80))

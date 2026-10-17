@@ -176,7 +176,7 @@ def build_env(job: Job) -> dict[str, str]:
             ]
     env = dict(os.environ)
     env.update(
-        DRYRUN_BACKEND="native",
+        SIMRL_BACKEND="native",
         POLICY="psrl",
         WORKLOAD="dapo_trace",
         MODEL_PATH=MODEL_PATH,

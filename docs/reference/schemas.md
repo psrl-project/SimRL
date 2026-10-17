@@ -6,7 +6,7 @@ Three on-disk contracts hold everything between the measurement and the simulati
 
 ## `ProfileRecord`: the JSONL profiling boundary
 
-Defined in `dryrun/profiler/schema.py`. Every line of a profiling JSONL file is one
+Defined in `srl/profiler/schema.py`. Every line of a profiling JSONL file is one
 `ProfileRecord` serialised with `json.dumps(record.to_dict())`.
 
 ### Common envelope
@@ -153,7 +153,7 @@ optional `lengths` tuple. `RankMemory` holds `rank`, `allocated_bytes`, and
 
 ## `CostArtifact`: the regression output
 
-Defined in `dryrun/cost/artifact.py`. Written by `dryrun-regress` and read by the simulator.
+Defined in `srl/cost/artifact.py`. Written by `srl-regress` and read by the simulator.
 
 ### Outer envelope
 
@@ -275,7 +275,7 @@ zero or more than one entry matches. There is no silent fallback to a neighbour 
 ## Telemetry streams
 
 The simulator writes four JSONL streams under `{output_dir}/logs/` when `log_telemetry: true`.
-The streams are the primary output of a simulation run, and `dryrun-plot` reads them to produce
+The streams are the primary output of a simulation run, and `srl-plot` reads them to produce
 figures without re-simulating. Schema details (field names, units, and the meaning of each event
 type) are documented in {doc}`../simulation/outputs`, which owns the telemetry topic.
 

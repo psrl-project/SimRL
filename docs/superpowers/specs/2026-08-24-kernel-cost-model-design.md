@@ -5,26 +5,26 @@ Status: Approved design, pending implementation plan
 
 ## 1. Context
 
-DryRun-RL predicts rollout and training latency from cost models fitted to profiling data.
-Today two end-to-end paths exist and work: `dryrun-profile vllm` drives a real vLLM server and
-`dryrun-profile megatron` drives Megatron-Bridge; `dryrun-regress` fits `UnifiedRoofline` /
+SimRL predicts rollout and training latency from cost models fitted to profiling data.
+Today two end-to-end paths exist and work: `srl-profile vllm` drives a real vLLM server and
+`srl-profile megatron` drives Megatron-Bridge; `srl-regress` fits `UnifiedRoofline` /
 `PSRLFitted` / `DistServe` / `HydraulisTrainingCost` from those records.
 
-A third path was added recently under `dryrun/profiler/kernels/`, intended to predict latency by
+A third path was added recently under `srl/profiler/kernels/`, intended to predict latency by
 profiling individual kernels instead of a whole server. It does not work as a cost model, for
 three independent reasons.
 
 ### 1.1 The current kernel path destroys its own measurements
 
-The flow is `kernels run` → raw JSON → `kernels synthesize` → `kernel.jsonl` → `dryrun-regress`.
+The flow is `kernels run` → raw JSON → `kernels synthesize` → `kernel.jsonl` → `srl-regress`.
 `compose.py:fit_composed_terms` collapses the entire attention sweep into four scalars
 (`prefill_attn_b/k`, `decode_attn_b/k`) by ordinary least squares, then
 `synthesize.py:synthesize_rollout_records` evaluates those scalars on a denser grid to emit
-synthetic `ProfileRecord`s, and `dryrun-regress rollout` fits coefficients *again* from that
+synthetic `ProfileRecord`s, and `srl-regress rollout` fits coefficients *again* from that
 synthetic data.
 
 The second regression is close to an identity transform: the data is noise-free and was generated
-by the very linear model being fitted. `synthesize` exists only to bridge into `dryrun-regress`'s
+by the very linear model being fitted. `synthesize` exists only to bridge into `srl-regress`'s
 input format. Meanwhile the first regression is lossy in a way that cannot be recovered: tile
 quantization, FlashAttention's 128-alignment staircase, and the latency-bound regime at low token
 counts are all flattened into a straight line before any consumer sees them.
@@ -244,7 +244,7 @@ wgrad shapes minus 2 that coincide with forward shapes).
 ## 4. Architecture
 
 ```
-dryrun/profiler/kernels/          measure only → parquet
+srl/profiler/kernels/          measure only → parquet
 ├── attention.py       context / generation; vLLM-selected backend and FlashInfer
 ├── attention_bwd.py   FlashAttention backward                        [training]
 ├── gemm.py            unified (m, n, k, dtype) table
@@ -254,7 +254,7 @@ dryrun/profiler/kernels/          measure only → parquet
 └── overhead.py        CPU: schedule / sampler / prepare_inputs        [rollout]
      → outputs/kernel/{gpu}/{family}/{backend}/{version}/{op}_perf.parquet
 
-dryrun/cost/kernel/               lookup + SOL (new)
+srl/cost/kernel/               lookup + SOL (new)
 ├── hardware.py   GPU specs: per-dtype tc_flops, mem_bw, link_bw
 ├── sol.py        analytical SOL per op family
 ├── table.py      KernelTable: load parquet, derive utility
@@ -262,8 +262,8 @@ dryrun/cost/kernel/               lookup + SOL (new)
 ├── database.py   KernelDatabase.query_{gemm,attention,comm,elementwise}
 └── model_ops.py  declarative op list + TP sharding rules
 
-dryrun/cost/rollout/composed.py   ComposedRollout(RolloutCostModel)
-dryrun/cost/training/composed.py  ComposedTraining(TrainingCostModel)
+srl/cost/rollout/composed.py   ComposedRollout(RolloutCostModel)
+srl/cost/training/composed.py  ComposedTraining(TrainingCostModel)
 ```
 
 `roofline.py`, `psrl.py`, `distserve.py`, `hydraulis.py` are **not modified**. The composed models
@@ -272,19 +272,19 @@ are two additional registry keys in `ROLLOUT_MODEL_REGISTRY` and `TRAINING_MODEL
 ### Interfaces preserved
 
 `ComposedRollout` implements the existing `RolloutCostModel` ABC
-(`dryrun/cost/rollout/base.py:49`): `predict(RolloutWorkload)`, `decode_coeffs(n_d, ctxsum)`,
+(`srl/cost/rollout/base.py:49`): `predict(RolloutWorkload)`, `decode_coeffs(n_d, ctxsum)`,
 `saturated(...)`. `step_time` is inherited. `ComposedTraining` implements
 `estimate(TrainingWorkload, TrainingParallelism) -> TrainingCostEstimate`
-(`dryrun/cost/training/base.py:153`). Neither `instance.py` nor `simulator.py` changes.
+(`srl/cost/training/base.py:153`). Neither `instance.py` nor `simulator.py` changes.
 
 ### CLI surface
 
 ```
-dryrun-profile kernels run       --config <yaml> [--family gemm|attention|comm|...]
-dryrun-profile kernels inspect   --config <yaml>          # coverage / utility report, no GPU
-dryrun-regress   rollout    --model {roofline,psrl,distserve}      real vLLM e2e     (unchanged)
-dryrun-regress   training   --latency-model hydraulis              real Megatron e2e (unchanged)
-dryrun-regress   calibrate  --composed <tables> --against <jsonl>  kernel-sum → real gap (new)
+srl-profile kernels run       --config <yaml> [--family gemm|attention|comm|...]
+srl-profile kernels inspect   --config <yaml>          # coverage / utility report, no GPU
+srl-regress   rollout    --model {roofline,psrl,distserve}      real vLLM e2e     (unchanged)
+srl-regress   training   --latency-model hydraulis              real Megatron e2e (unchanged)
+srl-regress   calibrate  --composed <tables> --against <jsonl>  kernel-sum → real gap (new)
 ```
 
 `kernels synthesize` is removed. Note there is no regression on the kernel tables themselves : 
@@ -296,42 +296,42 @@ Frontier's per-op `calibration_scale`.
 
 ### New
 
-- `dryrun/cost/kernel/{hardware,sol,table,interp,database,model_ops}.py`
-- `dryrun/cost/rollout/composed.py`, `dryrun/cost/training/composed.py`
-- `dryrun/profiler/kernels/{gemm,elementwise,attention_bwd,optimizer}.py`
-- `dryrun/cli/`: `kernels inspect` and `regress calibrate` handlers
+- `srl/cost/kernel/{hardware,sol,table,interp,database,model_ops}.py`
+- `srl/cost/rollout/composed.py`, `srl/cost/training/composed.py`
+- `srl/profiler/kernels/{gemm,elementwise,attention_bwd,optimizer}.py`
+- `srl/cli/`: `kernels inspect` and `regress calibrate` handlers
 - `examples/profile/kernel/qwen3_8b_h20_tp1.yaml`, `..._tp2.yaml`
 
 ### Deleted
 
-- `dryrun/profiler/kernels/compose.py` (regression at the wrong layer, §1.1)
-- `dryrun/profiler/kernels/synthesize.py` (bridge to a format we no longer target)
-- `cmd_kernels_synthesize` in `dryrun/cli/profile.py`
+- `srl/profiler/kernels/compose.py` (regression at the wrong layer, §1.1)
+- `srl/profiler/kernels/synthesize.py` (bridge to a format we no longer target)
+- `cmd_kernels_synthesize` in `srl/cli/profile.py`
 - `examples/regress/regress_rollout_{psrl,roofline}_kernel.sh` (fit-on-synthetic-data scripts)
 
 ### Rewritten
 
-- `dryrun/profiler/kernels/attention.py`: paged KV via vLLM's selected backend, replacing dense SDPA
-- `dryrun/profiler/kernels/linear.py` → `gemm.py`: unified table, per-rank shapes
-- `dryrun/profiler/kernels/overhead.py`: measure and tabulate CPU overhead
+- `srl/profiler/kernels/attention.py`: paged KV via vLLM's selected backend, replacing dense SDPA
+- `srl/profiler/kernels/linear.py` → `gemm.py`: unified table, per-rank shapes
+- `srl/profiler/kernels/overhead.py`: measure and tabulate CPU overhead
   (schedule / sampler / prepare_inputs, keyed as in Frontier's schema); the file keeps its name but
   `resolve_scheduling_overhead` and the `DEFAULT_SCHEDULING_OVERHEAD_S` constant are removed (D7)
-- `dryrun/profiler/kernels/measurements.py`: parquet writer instead of JSON bundle
-- `dryrun/profiler/kernels/config.py`: sweep grids per op family; drop `synthesis`
+- `srl/profiler/kernels/measurements.py`: parquet writer instead of JSON bundle
+- `srl/profiler/kernels/config.py`: sweep grids per op family; drop `synthesis`
 
 Docs to refresh once behavior changes: `examples/profile/README.md`, `examples/regress/README.md`
 (both already carry uncommitted edits describing the `synthesize` flow being removed here).
 
 ### Reused (do not reimplement)
 
-- `dryrun/profiler/schema.py`: `ModelDescriptor`, `HardwareDescriptor`, `Parallelism`,
+- `srl/profiler/schema.py`: `ModelDescriptor`, `HardwareDescriptor`, `Parallelism`,
   `ProfileRecord`; `ProfileValidationError` for all validation
-- `dryrun/profiler/kernels/_timing.py`: `time_cuda_call`, `torch_dtype`
-- `dryrun/profiler/kernels/config.py`: `model_head_dim`, `model_intermediate_size`
-- `dryrun/cost/artifact.py`: `CostArtifact`, `ArtifactEntry`, `FitMetrics` for the calibrate output
-- `dryrun/cost/rollout/_fit.py`: `robust_nonnegative_fit`, `split_by_run` for calibrate
-- `dryrun/cost/training/inventory.py`: `parameter_inventory` for training memory
-- `dryrun/component/rollout/engine/advance.py`: untouched, satisfied via D5
+- `srl/profiler/kernels/_timing.py`: `time_cuda_call`, `torch_dtype`
+- `srl/profiler/kernels/config.py`: `model_head_dim`, `model_intermediate_size`
+- `srl/cost/artifact.py`: `CostArtifact`, `ArtifactEntry`, `FitMetrics` for the calibrate output
+- `srl/cost/rollout/_fit.py`: `robust_nonnegative_fit`, `split_by_run` for calibrate
+- `srl/cost/training/inventory.py`: `parameter_inventory` for training memory
+- `srl/component/rollout/engine/advance.py`: untouched, satisfied via D5
 
 ## 6. Phasing
 
@@ -378,14 +378,14 @@ Hence D8, plus a top-up sweep.
 4. **Composed vs real (the number that matters)**: for each record in the baseline plus the
    top-up, compare `ComposedRollout.predict` against measured `latency_s`. Report
    **prefill MRE% / decode MRE% / mixed MRE% separately**, with counts. Gate for 1b.
-5. **Simulator equivalence**: run `dryrun` end-to-end with `rollout_cost=composed` against
+5. **Simulator equivalence**: run `srl` end-to-end with `rollout_cost=composed` against
    `rollout_cost=psrl`; confirm the D5 tangent does not distort long decode segments (compare
    `rollout_step.jsonl` step counts and total time).
 6. **Training**: `ComposedTraining` vs real Megatron iteration time from
-   `dryrun-profile megatron`, reported per (TP, PP, recompute) cell. Gate for phase 2.
+   `srl-profile megatron`, reported per (TP, PP, recompute) cell. Gate for phase 2.
 
 All profiling and simulation runs require
-`source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh`.
+`source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh`.
 
 ### Environment (verified)
 

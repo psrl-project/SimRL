@@ -9,33 +9,33 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.adapters.megatron import (
+from srl.profiler.adapters.megatron import (
     MegatronBridgeConfig,
     collect_bridge_record,
     prepare_bridge_candidate,
 )
-from dryrun.profiler.adapters.vllm import VLLMSweepConfig, collect_vllm_records
-from dryrun.profiler.adapters.vllm.execute import (
+from srl.profiler.adapters.vllm import VLLMSweepConfig, collect_vllm_records
+from srl.profiler.adapters.vllm.execute import (
     _prefix_console_bytes,
     _run_vllm_job_pool,
     _sweep_runtime_environment,
 )
-from dryrun.profiler.adapters.vllm.parse import (
+from srl.profiler.adapters.vllm.parse import (
     _IterationDetail,
     parse_sweep_log,
     payload_from_iteration,
     trusted_iterations,
 )
-from dryrun.profiler.adapters.vllm.prepare import VLLMSweepJob
-from dryrun.profiler.io import profile_digest, read_records, write_records
-from dryrun.profiler.schema import (
+from srl.profiler.adapters.vllm.prepare import VLLMSweepJob
+from srl.profiler.io import profile_digest, read_records, write_records
+from srl.profiler.schema import (
     HardwareDescriptor,
     ModelDescriptor,
     Parallelism,
     ProfileValidationError,
     TrainingPayload,
 )
-from dryrun.profiler.search_space import (
+from srl.profiler.search_space import (
     ModelConstraints,
     TrainingCandidate,
     enumerate_training_candidates,
@@ -352,7 +352,7 @@ def _prepare_bridge_fixture(
     shutil.copy(fixture_dir / "ConfigContainer.yaml", run_dir / "ConfigContainer.yaml")
     if success:
         shutil.copy(fixture_dir / "status_success.json", run_dir / "status.json")
-        shutil.copy(fixture_dir / "dryrun_metrics.json", run_dir / "dryrun_metrics.json")
+        shutil.copy(fixture_dir / "srl_metrics.json", run_dir / "srl_metrics.json")
     else:
         shutil.copy(fixture_dir / "status_failed.json", run_dir / "status.json")
         # A log that merely mentions the phrase is not evidence of an OOM.
@@ -385,7 +385,7 @@ def test_megatron_bridge_success_without_measurements_is_rejected(tmp_path: Path
         repeat=0,
         success=True,
     )
-    (run_dir / "dryrun_metrics.json").unlink()
+    (run_dir / "srl_metrics.json").unlink()
     with pytest.raises(ProfileValidationError, match="No measured step time"):
         collect_bridge_record(config, candidate, run_dir=run_dir)
 

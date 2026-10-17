@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.training.microbatch import BatchingMode, MicrobatchPlanner, verl_workload
+from srl.cost.training.microbatch import BatchingMode, MicrobatchPlanner, verl_workload
 
 
 def test_verl_workload_matches_the_reference_proxy():

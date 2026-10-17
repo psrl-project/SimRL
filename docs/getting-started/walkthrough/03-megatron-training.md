@@ -57,7 +57,7 @@ bash examples/profile/megatron/profile_qwen3_8b.sh generate
 bash examples/profile/megatron/profile_qwen3_8b.sh run       # --resume to continue
 bash examples/profile/megatron/profile_qwen3_8b.sh collect
 
-dryrun-regress training --latency-model hydraulis --memory-model hydraulis \
+srl-regress training --latency-model hydraulis --memory-model hydraulis \
     --input  outputs/profile/qwen3_8b/megatron_bridge/profiles/megatron_bridge.jsonl \
     --output outputs/cost/qwen3_8b/training_hydraulis.json
 ```

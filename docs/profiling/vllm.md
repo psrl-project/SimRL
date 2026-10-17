@@ -2,7 +2,7 @@
 
 The vLLM pipeline measures end-to-end scheduler iterations from an official
 `vllm bench sweep serve` run. Its output is a JSONL file of `ProfileRecord` objects,
-one per scheduler step, which `dryrun-regress rollout` then fits into a rollout cost
+one per scheduler step, which `srl-regress rollout` then fits into a rollout cost
 model. Of the four profiling pipelines, this one is by far the cheapest, roughly six minutes
 for a 30-point sweep, because the adapter runs an existing vLLM benchmark
 rather than launching independent training workers. See {doc}`index` for the three-verb
@@ -14,7 +14,7 @@ Install the pinned vLLM and Megatron-Bridge packages before first use, then set
 `MODEL_PATH` to the checkpoint once per shell:
 
 ```bash
-conda activate dryrun-rl
+conda activate simrl
 bash third_party/install.sh
 pip install -e ".[dev]"
 export MODEL_PATH=/path/to/Qwen3-8B
@@ -30,10 +30,10 @@ Or call the verbs individually when you want to inspect candidates before commit
 GPU time, resume a partial sweep, or redirect the collected output:
 
 ```bash
-dryrun-profile vllm generate --config examples/profile/vllm/qwen3_8b_tp1.yaml
-dryrun-profile vllm run      --config examples/profile/vllm/qwen3_8b_tp1.yaml \
+srl-profile vllm generate --config examples/profile/vllm/qwen3_8b_tp1.yaml
+srl-profile vllm run      --config examples/profile/vllm/qwen3_8b_tp1.yaml \
                               [--resume] [--dry-run] [--max-parallel auto|N]
-dryrun-profile vllm collect  --config examples/profile/vllm/qwen3_8b_tp1.yaml \
+srl-profile vllm collect  --config examples/profile/vllm/qwen3_8b_tp1.yaml \
                               [--output PATH]
 ```
 
@@ -47,7 +47,7 @@ remaining list before a second pass.
 Once collection finishes, fit a rollout cost model from the JSONL:
 
 ```bash
-dryrun-regress rollout --model roofline \
+srl-regress rollout --model roofline \
     --input  outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl \
     --output outputs/cost/qwen3_8b/rollout_roofline.json
 ```
@@ -82,7 +82,7 @@ Measured on Qwen3-8B / 8x H20 / 2026-08-31:
 | Prefill sweep | ~1 min |
 | Decode sweep | ~5 min |
 | `collect` | seconds |
-| `dryrun-regress rollout` (49 k points) | ~10 s |
+| `srl-regress rollout` (49 k points) | ~10 s |
 
 **Total ≈ 6 minutes.** The 30 sweep points expand to 49,208 `ProfileRecord` objects
 because each scheduler iteration in every decode run becomes one record.
@@ -250,5 +250,5 @@ would do before touching a GPU:
 
 ```bash
 bash examples/profile/vllm/profile_qwen3_8b.sh generate
-dryrun-profile vllm run --config examples/profile/vllm/qwen3_8b_tp1.yaml --dry-run
+srl-profile vllm run --config examples/profile/vllm/qwen3_8b_tp1.yaml --dry-run
 ```

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from dryrun.component.rollout.engine import StepStat
-from dryrun.config.schema import RolloutConfig
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.policy.areal import ArealPolicy
-from dryrun.simulator.config import SimConfig
-from dryrun.simulator.simulator import Simulator
-from dryrun.workload.grouped import GroupedWorkload
-from dryrun.workload.trace import RequestGroup
+from srl.component.rollout.engine import StepStat
+from srl.config.schema import RolloutConfig
+from srl.cost.rollout import UnifiedRoofline
+from srl.policy.areal import ArealPolicy
+from srl.simulator.config import SimConfig
+from srl.simulator.simulator import Simulator
+from srl.workload.grouped import GroupedWorkload
+from srl.workload.trace import RequestGroup
 
 
 def _workload(group_size: int = 8) -> GroupedWorkload:
@@ -73,12 +73,12 @@ class TestTelemetryColumns:
         assert stat.n_prefill_computed == 6
 
     def test_the_rollout_step_stream_reports_both_columns(self, tmp_path):
-        """`dryrun-compare` lines these up against the real engine's own
+        """`srl-compare` lines these up against the real engine's own
         `prefill_tokens` / `computed (cache miss)` columns, so they have to
         reach the log rather than staying in memory."""
         import json
 
-        from dryrun.telemetry.store import JsonlStore
+        from srl.telemetry.store import JsonlStore
 
         store = JsonlStore(tmp_path)
         sim = _sim(store=store, batch_size=2, n_versions=1, kv_blocks=2000)

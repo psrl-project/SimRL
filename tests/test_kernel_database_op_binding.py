@@ -18,7 +18,7 @@ def test_the_database_has_no_isinstance_branch_on_query_type():
     """A type switch here is the duplication that let database and holdout drift apart."""
     import inspect
 
-    from dryrun.cost.kernel.database import KernelDatabase
+    from srl.cost.kernel.database import KernelDatabase
 
     source = inspect.getsource(KernelDatabase._sol)
     assert "isinstance" not in source, "_sol still branches on query type instead of asking the op"
@@ -26,8 +26,8 @@ def test_the_database_has_no_isinstance_branch_on_query_type():
 
 
 def test_a_gemm_query_prices_through_the_gemm_op():
-    from dryrun.cost.kernel.database import GemmQuery, KernelDatabase
-    from dryrun.cost.kernel.ops.gemm import GEMM_OP
+    from srl.cost.kernel.database import GemmQuery, KernelDatabase
+    from srl.cost.kernel.ops.gemm import GEMM_OP
 
     database = KernelDatabase.from_root(_TABLES, gpu="h20")
     query = GemmQuery(m=128, n=24576, k=4096)
@@ -39,8 +39,8 @@ def test_a_gemm_query_prices_through_the_gemm_op():
 
 
 def test_an_attention_query_prices_through_its_phase_op():
-    from dryrun.cost.kernel.database import AttentionQuery, KernelDatabase
-    from dryrun.cost.kernel.ops.attention import GENERATION_ATTENTION_OP
+    from srl.cost.kernel.database import AttentionQuery, KernelDatabase
+    from srl.cost.kernel.ops.attention import GENERATION_ATTENTION_OP
 
     database = KernelDatabase.from_root(_TABLES, gpu="h20")
     query = AttentionQuery(
@@ -59,9 +59,9 @@ def test_an_attention_query_prices_through_its_phase_op():
 
 def test_a_measured_shape_still_prices_to_its_measurement():
     """The round trip SOL/utility must return the stored latency at a measured point."""
-    from dryrun.cost.kernel.database import GemmQuery, KernelDatabase
-    from dryrun.cost.kernel.ops.base import op_for
-    from dryrun.cost.kernel.table import KernelTable
+    from srl.cost.kernel.database import GemmQuery, KernelDatabase
+    from srl.cost.kernel.ops.base import op_for
+    from srl.cost.kernel.table import KernelTable
 
     parquet = next((_TABLES / "h20" / "gemm" / "vllm").glob("*/gemm_perf.parquet"))
     table = KernelTable.load(parquet, op_for("gemm"))

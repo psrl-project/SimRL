@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.ops.base import op_for, ops_for_family
-from dryrun.cost.kernel.ops.collective import (
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.ops.base import op_for, ops_for_family
+from srl.cost.kernel.ops.collective import (
     ALL_GATHER_OP,
     ALL_REDUCE_OP,
     BROADCAST_OP,
@@ -207,7 +207,7 @@ def test_parse_sweep_builds_the_message_and_topology_grid():
 
 
 def test_a_comm_query_exposes_the_ops_slice_and_coords():
-    from dryrun.cost.kernel.database import CommQuery
+    from srl.cost.kernel.database import CommQuery
 
     query = CommQuery(op="all_reduce", world_size=4, nodes=1, message_bytes=1 << 20)
     assert query.op_name == "all_reduce"
@@ -217,7 +217,7 @@ def test_a_comm_query_exposes_the_ops_slice_and_coords():
 
 def test_a_comm_query_names_the_op_it_prices():
     """One query type for five ops, so the op must be explicit rather than implied."""
-    from dryrun.cost.kernel.database import CommQuery
+    from srl.cost.kernel.database import CommQuery
 
     for name in ("reduce_scatter", "all_gather", "broadcast", "p2p"):
         query = CommQuery(op=name, world_size=8, nodes=2, message_bytes=1 << 20)
@@ -227,24 +227,24 @@ def test_a_comm_query_names_the_op_it_prices():
 
 def test_a_comm_query_rejects_a_non_collective_op():
     """Caught at construction so a typo is not mistaken for an unswept topology."""
-    from dryrun.cost.kernel.database import CommQuery
-    from dryrun.cost.kernel.interp import KernelCoverageError
+    from srl.cost.kernel.database import CommQuery
+    from srl.cost.kernel.interp import KernelCoverageError
 
     with pytest.raises(KernelCoverageError, match="not a collective"):
         CommQuery(op="gemm", world_size=2, nodes=1, message_bytes=1 << 20)
 
 
 def test_a_comm_query_rejects_a_non_positive_world_size():
-    from dryrun.cost.kernel.database import CommQuery
-    from dryrun.cost.kernel.interp import KernelCoverageError
+    from srl.cost.kernel.database import CommQuery
+    from srl.cost.kernel.interp import KernelCoverageError
 
     with pytest.raises(KernelCoverageError, match="world_size"):
         CommQuery(op="all_reduce", world_size=0, nodes=1, message_bytes=1 << 20)
 
 
 def test_a_comm_query_rejects_more_nodes_than_ranks():
-    from dryrun.cost.kernel.database import CommQuery
-    from dryrun.cost.kernel.interp import KernelCoverageError
+    from srl.cost.kernel.database import CommQuery
+    from srl.cost.kernel.interp import KernelCoverageError
 
     with pytest.raises(KernelCoverageError, match="exceeds world_size"):
         CommQuery(op="all_reduce", world_size=2, nodes=8, message_bytes=1 << 20)
@@ -258,8 +258,8 @@ def test_query_comm_no_longer_raises_unconditionally(tmp_path):
     reaches the tables is the failure mode: a missing collective table produces a coverage
     error naming the sweep to run, which a placeholder raise could not.
     """
-    from dryrun.cost.kernel.database import CommQuery, KernelDatabase
-    from dryrun.cost.kernel.interp import KernelCoverageError
+    from srl.cost.kernel.database import CommQuery, KernelDatabase
+    from srl.cost.kernel.interp import KernelCoverageError
 
     (tmp_path / "h20").mkdir()
     database = KernelDatabase.from_root(tmp_path, gpu="h20")
@@ -277,7 +277,7 @@ def test_a_comm_query_reads_the_vllm_table_by_default():
     A silent revert of this default to `nccl` would price a kernel no server invokes, and would
     be invisible: both tables exist, so the wrong one still resolves and still interpolates.
     """
-    from dryrun.cost.kernel.database import CommQuery
+    from srl.cost.kernel.database import CommQuery
 
     query = CommQuery(op="all_reduce", world_size=2, nodes=1, message_bytes=1 << 20)
     assert query.backend == "vllm"
@@ -285,7 +285,7 @@ def test_a_comm_query_reads_the_vllm_table_by_default():
 
 def test_the_nccl_control_table_stays_reachable():
     """Quantifying the old table's bias requires reading it, so the field stays overridable."""
-    from dryrun.cost.kernel.database import CommQuery
+    from srl.cost.kernel.database import CommQuery
 
     query = CommQuery(
         op="all_reduce", world_size=2, nodes=1, message_bytes=1 << 20, backend="nccl"
@@ -302,7 +302,7 @@ def test_every_measured_collective_backend_has_a_fallback_floor():
     launders it into a plausible-looking MRE. Both the dispatched table and the control need an
     entry, because the backend selects which `FALLBACK_FLOORS_S` subtree is read.
     """
-    from dryrun.cost.kernel.sol import FALLBACK_FLOORS_S
+    from srl.cost.kernel.sol import FALLBACK_FLOORS_S
 
     for op in _COLLECTIVES:
         assert op.fits_floor is True

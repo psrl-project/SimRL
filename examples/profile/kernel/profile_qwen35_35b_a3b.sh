@@ -13,28 +13,28 @@ ACTION="${1:-all}"
 
 case "${ACTION}" in
     run)
-        dryrun-profile kernels run --config "${CONFIG}" --family "${FAMILY}"
+        srl-profile kernels run --config "${CONFIG}" --family "${FAMILY}"
         ;;
     verify-shapes)
-        dryrun-profile kernels verify-shapes --config "${CONFIG}"
+        srl-profile kernels verify-shapes --config "${CONFIG}"
         ;;
     fit-floor)
-        dryrun-profile kernels fit-floor --config "${CONFIG}"
+        srl-profile kernels fit-floor --config "${CONFIG}"
         ;;
     holdout)
         # --fraction 1.0 deliberately. The default 0.2 scores a random fifth of the
         # eligible points, and a small sample flatters the surface: on the first H20 sweep
         # GEMM measured 3.38% MRE over 13 sampled points but 8.48% over all 64.
-        dryrun-profile kernels holdout --config "${CONFIG}" --fraction 1.0
+        srl-profile kernels holdout --config "${CONFIG}" --fraction 1.0
         ;;
     all)
         # fit-floor must follow run and precede holdout: it reads the tables that run
         # writes, and holdout scores the surface using the floors it fits. Skipping it
         # leaves every query falling back to floors fitted for Qwen3-8B on H20, and only a
         # log warning says so.
-        dryrun-profile kernels run --config "${CONFIG}" --family "${FAMILY}"
-        dryrun-profile kernels fit-floor --config "${CONFIG}"
-        dryrun-profile kernels holdout --config "${CONFIG}" --fraction 1.0
+        srl-profile kernels run --config "${CONFIG}" --family "${FAMILY}"
+        srl-profile kernels fit-floor --config "${CONFIG}"
+        srl-profile kernels holdout --config "${CONFIG}" --fraction 1.0
         ;;
     *)
         echo "Usage: $0 [run|verify-shapes|fit-floor|holdout|all]" >&2

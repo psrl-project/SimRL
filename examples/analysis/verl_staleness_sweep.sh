@@ -25,15 +25,15 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-DRYRUN_ENV="${DRYRUN_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh}"
-if [[ -f "${DRYRUN_ENV}" ]]; then
+SIMRL_ENV="${SIMRL_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh}"
+if [[ -f "${SIMRL_ENV}" ]]; then
     # shellcheck disable=SC1090
-    source "${DRYRUN_ENV}"
+    source "${SIMRL_ENV}"
 fi
 
 # Pinned rather than `auto` so every point comes from one engine; see
 # policy_cap_sweep.sh for the parity check behind choosing C++.
-export DRYRUN_BACKEND="${DRYRUN_BACKEND:-cpp}"
+export SIMRL_BACKEND="${SIMRL_BACKEND:-cpp}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4}"
 
 TRACE="${TRACE:-${ROOT_DIR}/outputs/workload/dapo_32k/joint.jsonl}"
@@ -60,11 +60,11 @@ for ((t = THR_START_TENTHS; t <= THR_END_TENTHS; t += THR_STEP_TENTHS)); do
     THRESHOLDS+=("$(printf '%d.%d' $((t / 10)) $((t % 10)))")
 done
 
-so="${ROOT_DIR}/dryrun/_engine_cpp.cpython-312-x86_64-linux-gnu.so"
+so="${ROOT_DIR}/srl/_engine_cpp.cpython-312-x86_64-linux-gnu.so"
 so_md5_before="$(md5sum "${so}" | cut -d' ' -f1)"
 
 echo "Sweeping ${#THRESHOLDS[@]} verl thresholds at N_VERSIONS=${N_VERSIONS}: ${THRESHOLDS[*]}"
-echo "  job.max_staleness=${MAX_STALENESS}  active cap=${ACTIVE_CAP}  backend=${DRYRUN_BACKEND}"
+echo "  job.max_staleness=${MAX_STALENESS}  active cap=${ACTIVE_CAP}  backend=${SIMRL_BACKEND}"
 echo "  Runs:     ${RUN_BASE}/thr<X>"
 echo "  Figures:  ${OUT_DIR}"
 
@@ -106,7 +106,7 @@ done
 # Another session rebuilding the engine in place kills running sims with a
 # native signal that reads like an engine bug, and silently mixes binaries
 # across points when it does not.
-if [[ "${DRYRUN_BACKEND}" == "cpp" && "$(md5sum "${so}" | cut -d' ' -f1)" != "${so_md5_before}" ]]; then
+if [[ "${SIMRL_BACKEND}" == "cpp" && "$(md5sum "${so}" | cut -d' ' -f1)" != "${so_md5_before}" ]]; then
     echo "  ${so} changed during the sweep; points may come from different builds." >&2
     failed=1
 fi

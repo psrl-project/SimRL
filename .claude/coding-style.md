@@ -1,6 +1,6 @@
 # Coding Style Guide
 
-All new and modified code in DryRun-RL must follow these conventions.
+All new and modified code in SimRL must follow these conventions.
 Sections are ordered by risk: rules that cause **silent runtime bugs** come first,
 cosmetic formatting rules come last.
 
@@ -49,8 +49,8 @@ it is an identifier. Everything else is a message.
 ```python
 # GOOD: identifier strings are exact; message strings have period
 assert hasattr(self, "device_mesh"), "device_mesh is not initialized."
-assert self.dryrun_config.ps_mode in ("nixl_cpu", "nixl_gpu"), (
-    f"Expected nixl_cpu or nixl_gpu, got {self.dryrun_config.ps_mode!r}."
+assert self.srl_config.ps_mode in ("nixl_cpu", "nixl_gpu"), (
+    f"Expected nixl_cpu or nixl_gpu, got {self.srl_config.ps_mode!r}."
 )
 self.ps_wg.execute_all_async("get_nixl_train_storage_client_name")
 if config.routing_strategy.method == "throughput_balance":
@@ -95,8 +95,8 @@ Text after `MARKER(author):` and `[prefix]:` always starts **uppercase**:
 # TODO(lhy): Add timeout handling for fault tolerance.     # GOOD
 # TODO(lhy): add timeout handling for fault tolerance.     # BAD
 
-dryrun_logger.warning(f"[{log_prefix}]: Failed to log {name}: {e}.")   # GOOD
-dryrun_logger.warning(f"[{log_prefix}]: failed to log {name}: {e}.")   # BAD
+srl_logger.warning(f"[{log_prefix}]: Failed to log {name}: {e}.")   # GOOD
+srl_logger.warning(f"[{log_prefix}]: failed to log {name}: {e}.")   # BAD
 ```
 
 ### 2.3 Forbidden Endings
@@ -119,7 +119,7 @@ or **seen at runtime** (terminal output):
 # The rollout_coordinator dispatches requests to GenWorker instances.
 
 # GOOD: plain text in logs and assertions
-dryrun_logger.debug("Calling pull_model_state_dict_nixl for model update.")
+srl_logger.debug("Calling pull_model_state_dict_nixl for model update.")
 assert self.nixl_storage_client is not None, "nixl_storage_client is not initialized."
 ```
 
@@ -143,9 +143,9 @@ In log messages and assertion messages, use `!r` for any dynamic value whose typ
 might be ambiguous (strings, None, enums). This makes debugging output unambiguous:
 
 ```python
-dryrun_logger.error(f"Unexpected status {status!r} for request {request_id}.")
-assert self.dryrun_config.ps_mode in ("nixl_cpu", "nixl_gpu"), (
-    f"Expected nixl_cpu or nixl_gpu, got {self.dryrun_config.ps_mode!r}."
+srl_logger.error(f"Unexpected status {status!r} for request {request_id}.")
+assert self.srl_config.ps_mode in ("nixl_cpu", "nixl_gpu"), (
+    f"Expected nixl_cpu or nixl_gpu, got {self.srl_config.ps_mode!r}."
 )
 ```
 
@@ -199,13 +199,13 @@ Use **implicit string concatenation** inside parentheses.
 
 ```python
 # GOOD
-dryrun_logger.info(
+srl_logger.info(
     f"Pushing key {key} shards {shards_to_transfer} to {target_client_name} "
     f"for version {next_ps_model_version} with {len(shards_to_transfer)} shards."
 )
 
 # BAD: backslash continuation
-dryrun_logger.info(
+srl_logger.info(
     f"Pushing key {key} shards {shards_to_transfer} to {target_client_name} " \
     f"for version {next_ps_model_version} with {len(shards_to_transfer)} shards."
 )
@@ -218,14 +218,14 @@ Break **before** each boolean operator.
 ```python
 # GOOD
 if (
-    self.dryrun_config.ps_mode in ("nixl_cpu", "nixl_gpu")
+    self.srl_config.ps_mode in ("nixl_cpu", "nixl_gpu")
     and self.nixl_storage_client is not None
     and version > self.current_version
 ):
     ...
 
 # BAD: breaks after operator
-if (self.dryrun_config.ps_mode in ("nixl_cpu", "nixl_gpu") and
+if (self.srl_config.ps_mode in ("nixl_cpu", "nixl_gpu") and
     self.nixl_storage_client is not None and
     version > self.current_version):
     ...
@@ -249,7 +249,7 @@ names = [w.name for w in workers if w.is_active]
 names = [
     worker.name
     for worker in workers
-    if worker.is_active and worker.role == DryRun_Role.Actor
+    if worker.is_active and worker.role == Srl_Role.Actor
 ]
 ```
 
@@ -433,9 +433,9 @@ Plain text for identifiers (§2.4). Include actual value with `!r` (§2.5).
 assert self.nixl_storage_client is not None, "nixl_storage_client is not initialized."
 
 # Multi-line: parenthesized, 4-space indent
-assert self.dryrun_config.ps_mode in ("nixl_cpu", "nixl_gpu"), (
+assert self.srl_config.ps_mode in ("nixl_cpu", "nixl_gpu"), (
     "push_model_state_dict_nixl should only be used in nixl_cpu or nixl_gpu mode, "
-    f"got: {self.dryrun_config.ps_mode!r}."
+    f"got: {self.srl_config.ps_mode!r}."
 )
 ```
 
@@ -446,10 +446,10 @@ assert self.dryrun_config.ps_mode in ("nixl_cpu", "nixl_gpu"), (
 ### 7.1 Setup
 
 ```python
-dryrun_logger = logging.getLogger(__file__)
+srl_logger = logging.getLogger(__file__)
 ```
 
-- Always `dryrun_logger`, never `print()`.
+- Always `srl_logger`, never `print()`.
 - Prefix with `[component_name]` at key entry points.
 
 ### 7.2 Message Format
@@ -460,10 +460,10 @@ dryrun_logger = logging.getLogger(__file__)
 - Plain text for identifiers, no backticks (§2.4).
 
 ```python
-dryrun_logger.debug("Getting the current PS model version...")
-dryrun_logger.info("[validate_config] All configuration checks passed!")
-dryrun_logger.info(f"PS mode set to {self.dryrun_config.ps_mode!r}.")
-dryrun_logger.warning(f"[{log_prefix}]: Failed to log {name}: {e}.")
+srl_logger.debug("Getting the current PS model version...")
+srl_logger.info("[validate_config] All configuration checks passed!")
+srl_logger.info(f"PS mode set to {self.srl_config.ps_mode!r}.")
+srl_logger.warning(f"[{log_prefix}]: Failed to log {name}: {e}.")
 ```
 
 ### 7.3 Multi-line
@@ -471,7 +471,7 @@ dryrun_logger.warning(f"[{log_prefix}]: Failed to log {name}: {e}.")
 Implicit string concatenation, 4-space indent:
 
 ```python
-dryrun_logger.info(
+srl_logger.info(
     f"Worker {self.worker_rank} completed NIXL push for version {version} "
     f"with {num_shards} shards to {target_name} in {elapsed:.2f}s."
 )
@@ -502,7 +502,7 @@ import time
 import ray
 from omegaconf import DictConfig
 
-from dryrun.utils.logger import (
+from srl.utils.logger import (
     EventType,
     deprecated,
     get_ps_logger,

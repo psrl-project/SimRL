@@ -7,15 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.cost.artifact import CostArtifact
-from dryrun.cost.rollout import (
+from srl.cost.artifact import CostArtifact
+from srl.cost.rollout import (
     DistServe,
     PSRLFitted,
     RolloutWorkload,
     UnifiedRoofline,
 )
-from dryrun.cost.rollout.plot import plot_vllm_rollout_regression
-from dryrun.profiler.schema import (
+from srl.cost.rollout.plot import plot_vllm_rollout_regression
+from srl.profiler.schema import (
     HardwareDescriptor,
     ModelDescriptor,
     Parallelism,

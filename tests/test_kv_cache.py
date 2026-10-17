@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from dryrun.cost.rollout.kv_cache import KvCacheGeometry, dtype_bytes, kv_blocks_from_memory
+from srl.cost.rollout.kv_cache import KvCacheGeometry, dtype_bytes, kv_blocks_from_memory
 
 # Qwen3-8B, from its config.json.
 _QWEN3_8B = {

@@ -21,7 +21,7 @@ python examples/regress/load_artifacts.py \
 Use the same artifacts in a simulation:
 
 ```bash
-dryrun \
+srl \
   rollout_cost=psrl \
   rollout_cost.artifact_path=outputs/cost/qwen3_8b/rollout_psrl.json \
   training_cost=hydraulis \

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.component.rollout.engine import Request
-from dryrun.component.rollout.engine.kv import (
+from srl.component.rollout.engine import Request
+from srl.component.rollout.engine.kv import (
     BlockPool,
     FreeBlockList,
     KvBlock,
     KvCacheManager,
     block_hashes,
 )
-from dryrun.component.rollout.engine.undo import NULL_RECORDER, UndoLog
+from srl.component.rollout.engine.undo import NULL_RECORDER, UndoLog
 
 
 def _req(rid: int, prompt_len: int, source_group_id: int, generated: int = 0) -> Request:

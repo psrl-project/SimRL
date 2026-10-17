@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-04
 **Status:** implemented and gated. A0-A4 complete; see the phase table in section 7.
-**Repo:** `/apdcephfs_zwfy/share_303760348/lhy/DryRun-RL`
+**Repo:** `/apdcephfs_zwfy/share_303760348/lhy/SimRL`
 **Sequencing:** this is spec 1 of 2. Spec B (kernel-composed training latency) consumes
 A's tables and is designed separately, after A's gates pass. §9 states the contract B
 relies on, so A's interfaces can be judged against their only consumer.
@@ -10,21 +10,21 @@ relies on, so A's interfaces can be judged against their only consumer.
 ## 1. Context
 
 The rollout side already predicts end-to-end latency by summing measured kernels:
-`dryrun/cost/kernel/` holds a parquet-backed `(shape -> latency)` table per op,
+`srl/cost/kernel/` holds a parquet-backed `(shape -> latency)` table per op,
 interpolates SOL-normalized utility at query time, and `ComposedRollout` sums a
 declarative op list from `ModelOps`. Validated at `tp=2` on H20 / Qwen3-8B: prefill
 3.60%, decode (`requests >= 5`) 2.96%, mixed 3.64% MRE.
 
 The training side has no such path. `HydraulisTrainingCost` and `FsdpTrainingCost` fit a
-4-term polynomial to whole-step wall times (`dryrun/cost/training/latency.py`). That
+4-term polynomial to whole-step wall times (`srl/cost/training/latency.py`). That
 module's own docstring names the fix: "feeding training GEMMs through the same kernel
 tables is the principled next step rather than another fitted polynomial term."
 
 Two things block it, and both live in the collective layer:
 
 **1.1 There is exactly one collective op, and it is the wrong one for training.**
-`dryrun/cost/kernel/ops/collective.py` registers `all_reduce` and nothing else. But
-`dryrun/profiler/adapters/megatron/launch.py:282` sets
+`srl/cost/kernel/ops/collective.py` registers `all_reduce` and nothing else. But
+`srl/profiler/adapters/megatron/launch.py:282` sets
 `cfg.model.sequence_parallel = (tp > 1)`, and with sequence parallelism on, Megatron's
 `RowParallelLinear` calls `reduce_scatter_to_sequence_parallel_region` instead of
 `reduce_from_tensor_model_parallel_region`, paired with
@@ -37,7 +37,7 @@ would be wrong in op identity, message size, and count simultaneously.
 Also absent: pipeline `p2p` send/recv, and the DP gradient reduction.
 
 **1.2 Topology is unrepresented, so a cross-node group is priced as an NVLink group.**
-`dryrun/profiler/kernels/collective.py:126` pins `MASTER_ADDR=127.0.0.1` and spawns with
+`srl/profiler/kernels/collective.py:126` pins `MASTER_ADDR=127.0.0.1` and spawns with
 `mp.spawn`, so every measured world size is intra-node over NVLink.
 `GpuSpec.link_bandwidth_bytes_per_s` is a single constant. `docs/profiling/tensor-parallel.md`
 already records this as a known defect and names the trigger: "Acceptable for rollout,
@@ -237,10 +237,10 @@ fitted per topology, so a systematically-wrong SOL at `nodes=2` is absorbed into
 `profile_collective` is rewritten as two pieces, mirroring how the training adapters
 already split a torchrun child from its driver:
 
-- `dryrun/profiler/kernels/collective_launch.py` — the torchrun child. Reads a JSON spec,
+- `srl/profiler/kernels/collective_launch.py` — the torchrun child. Reads a JSON spec,
   joins the process group, times each `(op, message_size)` pair, and rank 0 writes rows.
   Imports torch at call time only.
-- `dryrun/profiler/kernels/collective.py` — the driver. For `nodes == 1`, runs torchrun
+- `srl/profiler/kernels/collective.py` — the driver. For `nodes == 1`, runs torchrun
   locally. For `nodes > 1`, ssh-launches torchrun on each host with a shared
   `--master_addr` / `--master_port` rendezvous and `--node_rank` per host, then waits.
 
@@ -389,7 +389,7 @@ message size if ever enabled, so B must read the resolved DDP config rather than
 recompute the default.
 
 `float32` is not optional: Megatron reduces gradients in fp32
-(`dryrun/cost/training/inventory.py` documents the fp32 gradient buffer), so a
+(`srl/cost/training/inventory.py` documents the fp32 gradient buffer), so a
 bf16-only table cannot price the DP reduction Spec B needs.
 
 Cross-node runs at `world_size` 16 and 24 only, because fewer ranks spread over 2-3 nodes
@@ -411,22 +411,22 @@ a mesh can form; it has no meaning at `world_size=2, nodes=3`.
 ## 6. Files
 
 ### New
-- `dryrun/cost/kernel/ops/collective.py` — rewritten: `_CollectiveOp` base plus five
+- `srl/cost/kernel/ops/collective.py` — rewritten: `_CollectiveOp` base plus five
   registered subclasses
-- `dryrun/profiler/kernels/collective_launch.py` — torchrun child
+- `srl/profiler/kernels/collective_launch.py` — torchrun child
 - `examples/profile/kernel/collective_multinode.yaml`, `profile_collective.sh`
 - `docs/superpowers/specs/2026-10-04-collective-ops-design.md` — this spec, committed
 
 ### Modified
-- `dryrun/profiler/kernels/collective.py` — driver: local torchrun, ssh multi-node
-- `dryrun/profiler/kernels/config.py` — `CollectiveSweep` gains `ops`, `world_sizes`,
+- `srl/profiler/kernels/collective.py` — driver: local torchrun, ssh multi-node
+- `srl/profiler/kernels/config.py` — `CollectiveSweep` gains `ops`, `world_sizes`,
   `nodes`, `hostnames`, `dtypes`
-- `dryrun/cost/kernel/hardware.py` + `data/gpu_specs.yaml` — `inter_node_bandwidth_bytes_per_s`
-- `dryrun/cost/kernel/database.py` — `CommQuery` gains `nodes` and an `op` field;
+- `srl/cost/kernel/hardware.py` + `data/gpu_specs.yaml` — `inter_node_bandwidth_bytes_per_s`
+- `srl/cost/kernel/database.py` — `CommQuery` gains `nodes` and an `op` field;
   `op_name` currently returns the literal `"all_reduce"` (`database.py:156`) and becomes
   the query's own op. `query_comm` and `_price` are otherwise untouched: `_price` is
   already op-agnostic
-- `dryrun/cost/kernel/model_ops.py` — `comm_queries` passes `op="all_reduce"`, `nodes=1`
+- `srl/cost/kernel/model_ops.py` — `comm_queries` passes `op="all_reduce"`, `nodes=1`
   explicitly, which keeps the rollout path's behaviour identical while making both
   assumptions visible rather than defaulted
 - `docs/profiling/tensor-parallel.md`, `docs/reference/limitations.md`,
@@ -593,7 +593,7 @@ intra-node tables support, and say so when it reports.
    must not drag `torch` into the cost path.
 3. **Op coverage.** `tests/test_kernel_op_coverage.py` must see all five registered, and
    every parquet stem in the table tree must map to an op.
-4. **Holdout, per op and per topology.** `dryrun-profile kernels holdout` reporting MRE
+4. **Holdout, per op and per topology.** `srl-profile kernels holdout` reporting MRE
    per `(op, backend, world_size, nodes)` with an explicit `point_count > 0` check, since a
    zero-point result is a coverage failure that currently only warns.
 5. **Neutrality, end to end.** Re-run `kernels validate` against
@@ -621,7 +621,7 @@ intra-node tables support, and say so when it reports.
    size, including cross-node, and record which backend fires per message size. The existing
    `DISPATCH.md` table is intra-node only.
 
-All GPU work requires `source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh`.
+All GPU work requires `source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh`.
 Multi-node runs use `28.49.55.85`, `29.162.247.148`, `28.49.196.175`.
 
 ### Test files

@@ -6,9 +6,9 @@ from collections import Counter
 
 import pytest
 
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.ops.base import op_for
-from dryrun.cost.kernel.ops.elementwise import ELEMENTWISE_KINDS, ELEMENTWISE_OP
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.ops.base import op_for
+from srl.cost.kernel.ops.elementwise import ELEMENTWISE_KINDS, ELEMENTWISE_OP
 
 
 class _RecordingDatabase:
@@ -61,7 +61,7 @@ class _FakeModelOps:
 
     def gemm_queries(self, token_count: int, request_count: int):
         """Return `(query, multiplier)` pairs for the projections plus the logits GEMM."""
-        from dryrun.cost.kernel.database import GemmQuery
+        from srl.cost.kernel.database import GemmQuery
 
         pairs = [
             (GemmQuery(m=token_count, n=op.n, k=op.k), self.num_layers)
@@ -76,7 +76,7 @@ class _FakeModelOps:
 
     def attention_query(self, phase: str, *, batch_size: int, seq_len: int = 1, step: int = 0, backend=None):
         """Return the attention query of one step at this fixture's head counts."""
-        from dryrun.cost.kernel.database import AttentionQuery
+        from srl.cost.kernel.database import AttentionQuery
 
         return AttentionQuery(
             phase=phase,
@@ -175,7 +175,7 @@ def test_parse_sweep_builds_the_token_grid():
 
 
 def test_parse_sweep_rejects_an_empty_grid():
-    from dryrun.profiler.schema import ProfileValidationError
+    from srl.profiler.schema import ProfileValidationError
 
     with pytest.raises(ProfileValidationError, match="token_counts"):
         ELEMENTWISE_OP.parse_sweep({"token_counts": []})
@@ -194,9 +194,9 @@ def test_the_composed_model_does_not_add_an_elementwise_term():
     source for the word "elementwise" guards a spelling, not the behaviour: a real
     `_pointwise_seconds` term passed the whole file.
     """
-    from dryrun.cost.kernel.database import GemmQuery
-    from dryrun.cost.rollout import RolloutWorkload
-    from dryrun.cost.rollout.composed import ComposedRollout
+    from srl.cost.kernel.database import GemmQuery
+    from srl.cost.rollout import RolloutWorkload
+    from srl.cost.rollout.composed import ComposedRollout
 
     ops = _FakeModelOps()
     spy = _RecordingDatabase()
@@ -224,7 +224,7 @@ def test_the_composed_model_source_never_mentions_elementwise():
     """A cheap second line of defence, kept because it reads at a glance."""
     import inspect
 
-    from dryrun.cost.rollout.composed import ComposedRollout
+    from srl.cost.rollout.composed import ComposedRollout
 
     source = inspect.getsource(ComposedRollout)
     assert "elementwise" not in source.lower(), (

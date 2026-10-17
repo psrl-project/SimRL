@@ -7,7 +7,7 @@ The hypothesis under test is that only TP needs measuring:
 - a 1F1B stage holds `num_layers / pp` of the layers, so its per-microbatch cost
   should fall by `pp`;
 - the critical path is `num_microbatches + pp - 1` slots, which is already
-  analytic in `dryrun.cost.training.latency.pipeline_slots`;
+  analytic in `srl.cost.training.latency.pipeline_slots`;
 - point-to-point activation sends between stages are small next to the layer
   compute, so ignoring them should cost little accuracy.
 

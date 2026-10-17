@@ -8,8 +8,8 @@ import json
 
 import pytest
 
-from dryrun.cost.rollout import RolloutWorkload
-from dryrun.cost.rollout.base import RolloutCostModel
+from srl.cost.rollout import RolloutWorkload
+from srl.cost.rollout.base import RolloutCostModel
 
 
 class _Exact(RolloutCostModel):
@@ -57,7 +57,7 @@ def _decode(request_count, ctxsum, latency_s):
 
 
 def test_repeated_iterations_collapse_into_one_bucket(tmp_path):
-    from dryrun.cost.kernel.validate import load_baseline
+    from srl.cost.kernel.validate import load_baseline
 
     path = _write_baseline(
         tmp_path / "vllm.jsonl",
@@ -72,7 +72,7 @@ def test_repeated_iterations_collapse_into_one_bucket(tmp_path):
 
 def test_the_context_bucket_does_not_snap_to_a_power_of_two(tmp_path):
     """Snapping 7300 to 4096 once manufactured a 19.1% error that did not exist."""
-    from dryrun.cost.kernel.validate import load_baseline
+    from srl.cost.kernel.validate import load_baseline
 
     path = _write_baseline(
         tmp_path / "vllm.jsonl", [_decode(16, 16 * 7300, 0.05) for _ in range(3)]
@@ -82,7 +82,7 @@ def test_the_context_bucket_does_not_snap_to_a_power_of_two(tmp_path):
 
 
 def test_iterations_at_different_contexts_stay_in_different_buckets(tmp_path):
-    from dryrun.cost.kernel.validate import load_baseline
+    from srl.cost.kernel.validate import load_baseline
 
     path = _write_baseline(
         tmp_path / "vllm.jsonl",
@@ -93,7 +93,7 @@ def test_iterations_at_different_contexts_stay_in_different_buckets(tmp_path):
 
 
 def test_thin_buckets_are_dropped(tmp_path):
-    from dryrun.cost.kernel.validate import load_baseline
+    from srl.cost.kernel.validate import load_baseline
 
     path = _write_baseline(
         tmp_path / "vllm.jsonl",
@@ -105,7 +105,7 @@ def test_thin_buckets_are_dropped(tmp_path):
 
 
 def test_prefill_and_decode_are_scored_separately(tmp_path):
-    from dryrun.cost.kernel.validate import load_baseline, score_model
+    from srl.cost.kernel.validate import load_baseline, score_model
 
     records = [_decode(16, 16 * 2048, 0.030) for _ in range(3)]
     records += [
@@ -128,7 +128,7 @@ def test_prefill_and_decode_are_scored_separately(tmp_path):
 
 
 def test_an_exact_model_scores_zero_error(tmp_path):
-    from dryrun.cost.kernel.validate import load_baseline, score_model
+    from srl.cost.kernel.validate import load_baseline, score_model
 
     path = _write_baseline(
         tmp_path / "vllm.jsonl",
@@ -143,7 +143,7 @@ def test_an_exact_model_scores_zero_error(tmp_path):
 
 
 def test_a_uniformly_biased_model_scores_its_bias(tmp_path):
-    from dryrun.cost.kernel.validate import load_baseline, score_model
+    from srl.cost.kernel.validate import load_baseline, score_model
 
     path = _write_baseline(
         tmp_path / "vllm.jsonl",
@@ -159,7 +159,7 @@ def test_a_uniformly_biased_model_scores_its_bias(tmp_path):
 
 def test_a_mixed_iteration_is_labelled_mixed(tmp_path):
     """sum_l2 > 0 and ctxsum > 0 together is the case with no measured attention row."""
-    from dryrun.cost.kernel.validate import load_baseline
+    from srl.cost.kernel.validate import load_baseline
 
     path = _write_baseline(
         tmp_path / "vllm.jsonl",
@@ -179,7 +179,7 @@ def test_a_mixed_iteration_is_labelled_mixed(tmp_path):
 
 
 def test_an_empty_baseline_yields_no_results(tmp_path):
-    from dryrun.cost.kernel.validate import load_baseline, score_model
+    from srl.cost.kernel.validate import load_baseline, score_model
 
     path = _write_baseline(tmp_path / "vllm.jsonl", [])
     assert load_baseline(path) == ()
@@ -187,7 +187,7 @@ def test_an_empty_baseline_yields_no_results(tmp_path):
 
 
 def test_a_non_positive_latency_record_is_skipped(tmp_path):
-    from dryrun.cost.kernel.validate import load_baseline
+    from srl.cost.kernel.validate import load_baseline
 
     path = _write_baseline(
         tmp_path / "vllm.jsonl",
@@ -202,8 +202,8 @@ def test_a_phase_dropped_by_min_samples_is_reported_not_silent(tmp_path):
     import os
     from pathlib import Path
 
-    from dryrun._logging import dryrun_logger
-    from dryrun.cli.profile import cmd_kernels_validate
+    from srl._logging import srl_logger
+    from srl.cli.profile import cmd_kernels_validate
 
     # `cmd_kernels_validate` resolves the config's checkpoint before it reaches the
     # coverage warning under test, and the example config reads that checkpoint from
@@ -227,7 +227,7 @@ def test_a_phase_dropped_by_min_samples_is_reported_not_silent(tmp_path):
     ]
     baseline = _write_baseline(tmp_path / "vllm.jsonl", records)
 
-    # `dryrun_logger` sets propagate = False, so caplog cannot see it; attach a handler.
+    # `srl_logger` sets propagate = False, so caplog cannot see it; attach a handler.
     captured: list[str] = []
 
     class _Collect(logging.Handler):
@@ -235,7 +235,7 @@ def test_a_phase_dropped_by_min_samples_is_reported_not_silent(tmp_path):
             captured.append(record.getMessage())
 
     handler = _Collect(level=logging.WARNING)
-    dryrun_logger.addHandler(handler)
+    srl_logger.addHandler(handler)
     # Only the coverage warning is under test; let the later model construction fail.
     args = argparse.Namespace(
         # A real config: cmd_kernels_validate loads it before reaching the coverage warning,
@@ -252,7 +252,7 @@ def test_a_phase_dropped_by_min_samples_is_reported_not_silent(tmp_path):
         with contextlib.suppress(Exception):
             cmd_kernels_validate(args)
     finally:
-        dryrun_logger.removeHandler(handler)
+        srl_logger.removeHandler(handler)
 
     assert any("prefill" in message and "min-samples" in message for message in captured), captured
     assert not any("decode" in message for message in captured)

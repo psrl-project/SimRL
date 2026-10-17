@@ -8,17 +8,17 @@
 
 Rollback gets a reusable mechanism rather than a one-off. `advance_one_event` is speculative, so every mutation must reverse. A small `undo` package provides `Undoable` (the restore protocol), `UndoLog` (an ordered collection of captured old values), and `NullRecorder` (the zero-cost no-op for committed paths). Pool state, request state, and instance state all register through the same interface, so a future subsystem needing rollback implements one protocol instead of extending a snapshot dataclass.
 
-**Tech Stack:** Python 3.11+, a hand-written doubly linked free list (ported from vLLM; its `prev`/`next` pointers are what makes a mid-list removal reversible), pytest. No new third-party dependency. Validation uses the existing `dryrun/workload/inference.py` vLLM harness plus a `/metrics` reader.
+**Tech Stack:** Python 3.11+, a hand-written doubly linked free list (ported from vLLM; its `prev`/`next` pointers are what makes a mid-list removal reversible), pytest. No new third-party dependency. Validation uses the existing `srl/workload/inference.py` vLLM harness plus a `/metrics` reader.
 
 ## Global Constraints
 
 - Read `.claude/coding-style.md` and `.claude/codebase-map.md` before writing code; apply both.
-- Activate the environment first: `source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh`.
+- Activate the environment first: `source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh`.
 - No backward compatibility. Remove obsolete paths rather than adding fallbacks, shims, or migrations.
 - `block_size` default is 16. Only **full** blocks receive a hash; a partially filled block is never cacheable.
 - Prompt-interior blocks key on `source_group_id`, never `group_id`. `group_id` is monotonic and so changes on workload wraparound, which would miss reuse the real engine achieves.
 - Fit no coefficients anywhere in this work. Every expected number is arithmetic over `prompt_len`, `block_size`, and the length distribution.
-- `_kv_exhaustion_steps()` (`dryrun/component/rollout/engine/instance.py:234-278`) keeps its closed form. Do not replace it with a search.
+- `_kv_exhaustion_steps()` (`srl/component/rollout/engine/instance.py:234-278`) keeps its closed form. Do not replace it with a search.
 - **Never snapshot the whole pool.** `copy.deepcopy` of a 31279-block pool measures 179 ms, which over 4949 steps across two instances is 1771 s against a 3349 s run. Capture cost must be proportional to the blocks an event touched (median 2), never to capacity. This is the rule `snapshot.py:78-83` already states.
 - Run `pytest tests/ -q` after every task. A task that reddens an existing test is not done. Do not create git commits; the user commits separately.
 
@@ -28,25 +28,25 @@ Rollback gets a reusable mechanism rather than a one-off. `advance_one_event` is
 
 | Path | Responsibility |
 |---|---|
-| `dryrun/component/rollout/engine/undo/__init__.py` | Package exports |
-| `dryrun/component/rollout/engine/undo/protocol.py` | `Undoable` protocol, `NullRecorder` |
-| `dryrun/component/rollout/engine/undo/log.py` | `UndoLog`: ordered old values, rollback in reverse |
-| `dryrun/component/rollout/engine/undo/entries.py` | `AttrSnapshot`, `TruncateList`, `MappingKeysAdded` |
-| `dryrun/component/rollout/engine/kv/__init__.py` | Package exports |
-| `dryrun/component/rollout/engine/kv/block.py` | `KvBlock`: id, refcount, hash, free-list links |
-| `dryrun/component/rollout/engine/kv/free_list.py` | `FreeBlockList`: doubly linked LRU queue |
-| `dryrun/component/rollout/engine/kv/lineage.py` | Derive a request's block hashes from provenance |
-| `dryrun/component/rollout/engine/kv/pool.py` | `BlockPool`: allocation, hash map, eviction |
-| `dryrun/component/rollout/engine/kv/manager.py` | `KvCacheManager`: the methods `NativeInstance` calls |
-| `dryrun/component/rollout/engine/instance.py` | Occupancy routes to the pool; hit pre-sets `prefilled` |
-| `dryrun/component/rollout/engine/snapshot.py` | Rebuilt on `UndoLog` |
-| `dryrun/component/rollout/engine/state.py` | `StepStat` gains hit/computed token counts |
-| `dryrun/component/rollout/engine/request.py` | `Request` gains `prefix_hit_tokens` |
-| `dryrun/config/schema.py` | `enable_prefix_caching` knob |
-| `dryrun/cli/main.py` | Thread the knob into `SimConfig` |
-| `dryrun/simulator/config.py` | `SimConfig.enable_prefix_caching` |
-| `dryrun/telemetry/writer.py` | Emit the new `StepStat` fields |
-| `dryrun/workload/prefix_probe.py` | Read vLLM's prefix-cache counters from `/metrics` |
+| `srl/component/rollout/engine/undo/__init__.py` | Package exports |
+| `srl/component/rollout/engine/undo/protocol.py` | `Undoable` protocol, `NullRecorder` |
+| `srl/component/rollout/engine/undo/log.py` | `UndoLog`: ordered old values, rollback in reverse |
+| `srl/component/rollout/engine/undo/entries.py` | `AttrSnapshot`, `TruncateList`, `MappingKeysAdded` |
+| `srl/component/rollout/engine/kv/__init__.py` | Package exports |
+| `srl/component/rollout/engine/kv/block.py` | `KvBlock`: id, refcount, hash, free-list links |
+| `srl/component/rollout/engine/kv/free_list.py` | `FreeBlockList`: doubly linked LRU queue |
+| `srl/component/rollout/engine/kv/lineage.py` | Derive a request's block hashes from provenance |
+| `srl/component/rollout/engine/kv/pool.py` | `BlockPool`: allocation, hash map, eviction |
+| `srl/component/rollout/engine/kv/manager.py` | `KvCacheManager`: the methods `NativeInstance` calls |
+| `srl/component/rollout/engine/instance.py` | Occupancy routes to the pool; hit pre-sets `prefilled` |
+| `srl/component/rollout/engine/snapshot.py` | Rebuilt on `UndoLog` |
+| `srl/component/rollout/engine/state.py` | `StepStat` gains hit/computed token counts |
+| `srl/component/rollout/engine/request.py` | `Request` gains `prefix_hit_tokens` |
+| `srl/config/schema.py` | `enable_prefix_caching` knob |
+| `srl/cli/main.py` | Thread the knob into `SimConfig` |
+| `srl/simulator/config.py` | `SimConfig.enable_prefix_caching` |
+| `srl/telemetry/writer.py` | Emit the new `StepStat` fields |
+| `srl/workload/prefix_probe.py` | Read vLLM's prefix-cache counters from `/metrics` |
 | `tests/test_undo.py` | Task 1 |
 | `tests/test_kv_pool.py` | Tasks 2-5 |
 | `tests/test_kv_instance.py` | Tasks 6-8 |
@@ -66,10 +66,10 @@ A reusable rollback mechanism, built before anything needs it, so the pool and t
 The design rule comes from the existing snapshot's own comment (`snapshot.py:78-83`): capture cost is proportional to the live batch, never to the accumulated run. `UndoLog` enforces that structurally — you register the specific things you touched, so there is no API through which to capture a whole subsystem.
 
 **Files:**
-- Create: `dryrun/component/rollout/engine/undo/__init__.py`
-- Create: `dryrun/component/rollout/engine/undo/protocol.py`
-- Create: `dryrun/component/rollout/engine/undo/log.py`
-- Create: `dryrun/component/rollout/engine/undo/entries.py`
+- Create: `srl/component/rollout/engine/undo/__init__.py`
+- Create: `srl/component/rollout/engine/undo/protocol.py`
+- Create: `srl/component/rollout/engine/undo/log.py`
+- Create: `srl/component/rollout/engine/undo/entries.py`
 - Test: `tests/test_undo.py`
 
 **Interfaces:**
@@ -101,7 +101,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from dryrun.component.rollout.engine.undo import (
+from srl.component.rollout.engine.undo import (
     NULL_RECORDER,
     AttrSnapshot,
     MappingKeysAdded,
@@ -307,16 +307,16 @@ class TestNullRecorder:
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
-cd /apdcephfs_zwfy/share_303760348/lhy/DryRun-RL
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
+cd /apdcephfs_zwfy/share_303760348/lhy/SimRL
 pytest tests/test_undo.py -q
 ```
 
-Expected: collection error, `ModuleNotFoundError: No module named 'dryrun.component.rollout.engine.undo'`.
+Expected: collection error, `ModuleNotFoundError: No module named 'srl.component.rollout.engine.undo'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `dryrun/component/rollout/engine/undo/protocol.py`:
+Create `srl/component/rollout/engine/undo/protocol.py`:
 
 ```python
 """What it means for a mutation to be reversible.
@@ -384,7 +384,7 @@ NULL_RECORDER = NullRecorder()
 """Shared no-op recorder. Stateless, so one instance serves every caller."""
 ```
 
-Create `dryrun/component/rollout/engine/undo/entries.py`:
+Create `srl/component/rollout/engine/undo/entries.py`:
 
 ```python
 """The three shapes of captured old value this engine actually needs.
@@ -481,7 +481,7 @@ class MappingKeysAdded:
             self.target.pop(key, None)
 ```
 
-Create `dryrun/component/rollout/engine/undo/log.py`:
+Create `srl/component/rollout/engine/undo/log.py`:
 
 ```python
 """An ordered collection of captured old values for one speculative event."""
@@ -555,7 +555,7 @@ class UndoLog:
         self._keys.clear()
 ```
 
-Create `dryrun/component/rollout/engine/undo/__init__.py`:
+Create `srl/component/rollout/engine/undo/__init__.py`:
 
 ```python
 """Reusable rollback for speculative event advancement.
@@ -602,9 +602,9 @@ Expected: `tests/test_undo.py` 20 passed, whole suite green (nothing else import
 A block is a slot in the pool, carrying a refcount, optionally a hash, and its position in the free list. The list and the block are co-designed: the `prev`/`next` pointers live on the block precisely so a mid-list removal can be reversed by re-linking, which is why they are one task.
 
 **Files:**
-- Create: `dryrun/component/rollout/engine/kv/__init__.py`
-- Create: `dryrun/component/rollout/engine/kv/block.py`
-- Create: `dryrun/component/rollout/engine/kv/free_list.py`
+- Create: `srl/component/rollout/engine/kv/__init__.py`
+- Create: `srl/component/rollout/engine/kv/block.py`
+- Create: `srl/component/rollout/engine/kv/free_list.py`
 - Test: `tests/test_kv_pool.py`
 
 **Interfaces:**
@@ -624,8 +624,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.component.rollout.engine.kv import FreeBlockList, KvBlock
-from dryrun.component.rollout.engine.undo import NULL_RECORDER, UndoLog
+from srl.component.rollout.engine.kv import FreeBlockList, KvBlock
+from srl.component.rollout.engine.undo import NULL_RECORDER, UndoLog
 
 
 class TestKvBlock:
@@ -758,16 +758,16 @@ class TestFreeListUndo:
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
-cd /apdcephfs_zwfy/share_303760348/lhy/DryRun-RL
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
+cd /apdcephfs_zwfy/share_303760348/lhy/SimRL
 pytest tests/test_kv_pool.py -q
 ```
 
-Expected: collection error, `ModuleNotFoundError: No module named 'dryrun.component.rollout.engine.kv'`.
+Expected: collection error, `ModuleNotFoundError: No module named 'srl.component.rollout.engine.kv'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `dryrun/component/rollout/engine/kv/block.py`:
+Create `srl/component/rollout/engine/kv/block.py`:
 
 ```python
 """One slot in the KV block pool.
@@ -840,7 +840,7 @@ class KvBlock:
         self._block_hash = None
 ```
 
-Create `dryrun/component/rollout/engine/kv/free_list.py`:
+Create `srl/component/rollout/engine/kv/free_list.py`:
 
 ```python
 """The LRU queue of unheld blocks, as a reversible doubly linked list.
@@ -981,13 +981,13 @@ class FreeBlockList:
         )
 ```
 
-Create `dryrun/component/rollout/engine/kv/__init__.py`:
+Create `srl/component/rollout/engine/kv/__init__.py`:
 
 ```python
 """KV block pool: occupancy, prefix reuse, and eviction.
 
 This is a state machine, not a cost model. It fits no coefficient, reads no
-artifact, and has no domain gate. `dryrun/cost/rollout/kv_cache.py` answers
+artifact, and has no domain gate. `srl/cost/rollout/kv_cache.py` answers
 *how many blocks exist*; this package answers *who holds them and what can
 hit*. The only interface between the two is the `kv_blocks` integer.
 
@@ -1017,12 +1017,12 @@ Expected: 15 passed.
 This is the design's pivot. vLLM hashes a block as `hash(parent_hash, block_tokens)`, so a block hash means *every token from position 0 to this block's end*. We hold no tokens, but we hold the provenance that produced them, which answers the same question: two contexts agree on a prefix exactly when they agree on its provenance.
 
 **Files:**
-- Create: `dryrun/component/rollout/engine/kv/lineage.py`
-- Modify: `dryrun/component/rollout/engine/kv/__init__.py`
+- Create: `srl/component/rollout/engine/kv/lineage.py`
+- Modify: `srl/component/rollout/engine/kv/__init__.py`
 - Test: `tests/test_kv_pool.py`
 
 **Interfaces:**
-- Consumes: `Request` from `dryrun.component.rollout.engine.request`, using fields `prompt_len: int`, `generated: int`, `rid: int`, `source_group_id: int`.
+- Consumes: `Request` from `srl.component.rollout.engine.request`, using fields `prompt_len: int`, `generated: int`, `rid: int`, `source_group_id: int`.
 - Produces: `block_hashes(req: Request, block_size: int) -> list[Hashable]`, one entry per full block of `req.prompt_len + req.generated`, in order. Prompt-interior entries are `("p", source_group_id, j)`; all others are `("r", rid, j)`.
 
 - [ ] **Step 1: Write the failing test**
@@ -1030,8 +1030,8 @@ This is the design's pivot. vLLM hashes a block as `hash(parent_hash, block_toke
 Append to `tests/test_kv_pool.py`:
 
 ```python
-from dryrun.component.rollout.engine import Request
-from dryrun.component.rollout.engine.kv import block_hashes
+from srl.component.rollout.engine import Request
+from srl.component.rollout.engine.kv import block_hashes
 
 
 def _req(rid: int, prompt_len: int, source_group_id: int, generated: int = 0) -> Request:
@@ -1121,7 +1121,7 @@ Expected: FAIL, `ImportError: cannot import name 'block_hashes'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `dryrun/component/rollout/engine/kv/lineage.py`:
+Create `srl/component/rollout/engine/kv/lineage.py`:
 
 ```python
 """Block hashes derived from workload provenance.
@@ -1198,13 +1198,13 @@ def block_hashes(req: "Request", block_size: int) -> list[Hashable]:
     ]
 ```
 
-Replace `dryrun/component/rollout/engine/kv/__init__.py`:
+Replace `srl/component/rollout/engine/kv/__init__.py`:
 
 ```python
 """KV block pool: occupancy, prefix reuse, and eviction.
 
 This is a state machine, not a cost model. It fits no coefficient, reads no
-artifact, and has no domain gate. `dryrun/cost/rollout/kv_cache.py` answers
+artifact, and has no domain gate. `srl/cost/rollout/kv_cache.py` answers
 *how many blocks exist*; this package answers *who holds them and what can
 hit*. The only interface between the two is the `kv_blocks` integer.
 """
@@ -1230,8 +1230,8 @@ Expected: 24 passed.
 The pool owns allocation, the LRU free queue, the hash map, and eviction. Its central invariant: **a block may be in the free queue and in the hash map at the same time.** That is the "nobody holds it, but it is still addressable" state, and every cross-sync and cross-round hit depends on it.
 
 **Files:**
-- Create: `dryrun/component/rollout/engine/kv/pool.py`
-- Modify: `dryrun/component/rollout/engine/kv/__init__.py`
+- Create: `srl/component/rollout/engine/kv/pool.py`
+- Modify: `srl/component/rollout/engine/kv/__init__.py`
 - Test: `tests/test_kv_pool.py`
 
 **Interfaces:**
@@ -1243,7 +1243,7 @@ The pool owns allocation, the LRU free queue, the hash map, and eviction. Its ce
 Append to `tests/test_kv_pool.py`:
 
 ```python
-from dryrun.component.rollout.engine.kv import BlockPool
+from srl.component.rollout.engine.kv import BlockPool
 
 
 class TestBlockPoolAllocation:
@@ -1478,7 +1478,7 @@ Expected: FAIL, `ImportError: cannot import name 'BlockPool'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `dryrun/component/rollout/engine/kv/pool.py`:
+Create `srl/component/rollout/engine/kv/pool.py`:
 
 ```python
 """The KV block pool: allocation, LRU reuse, and eviction.
@@ -1515,7 +1515,7 @@ class BlockPool:
     """A fixed set of KV blocks, with prefix-cache bookkeeping.
 
     Args:
-        num_blocks: Pool capacity, from `dryrun/cost/rollout/kv_cache.py`.
+        num_blocks: Pool capacity, from `srl/cost/rollout/kv_cache.py`.
         enable_caching: When False, blocks are still allocated and freed but no
             hash is ever recorded, so nothing can hit. This is a data state,
             not a second code path.
@@ -1715,13 +1715,13 @@ class _HashMapRestore:
         self._pool._hash_to_block.update(self._entries)
 ```
 
-Replace `dryrun/component/rollout/engine/kv/__init__.py`:
+Replace `srl/component/rollout/engine/kv/__init__.py`:
 
 ```python
 """KV block pool: occupancy, prefix reuse, and eviction.
 
 This is a state machine, not a cost model. It fits no coefficient, reads no
-artifact, and has no domain gate. `dryrun/cost/rollout/kv_cache.py` answers
+artifact, and has no domain gate. `srl/cost/rollout/kv_cache.py` answers
 *how many blocks exist*; this package answers *who holds them and what can
 hit*. The only interface between the two is the `kv_blocks` integer.
 
@@ -1753,8 +1753,8 @@ Expected: 44 passed.
 The four methods `NativeInstance` calls. This is where the longest-common-prefix hit lookup lives, including vLLM's full-hit edge case.
 
 **Files:**
-- Create: `dryrun/component/rollout/engine/kv/manager.py`
-- Modify: `dryrun/component/rollout/engine/kv/__init__.py`
+- Create: `srl/component/rollout/engine/kv/manager.py`
+- Modify: `srl/component/rollout/engine/kv/__init__.py`
 - Test: `tests/test_kv_pool.py`
 
 **Interfaces:**
@@ -1766,7 +1766,7 @@ The four methods `NativeInstance` calls. This is where the longest-common-prefix
 Append to `tests/test_kv_pool.py`:
 
 ```python
-from dryrun.component.rollout.engine.kv import KvCacheManager
+from srl.component.rollout.engine.kv import KvCacheManager
 
 
 class TestComputedBlocks:
@@ -1900,7 +1900,7 @@ Expected: FAIL, `ImportError: cannot import name 'KvCacheManager'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `dryrun/component/rollout/engine/kv/manager.py`:
+Create `srl/component/rollout/engine/kv/manager.py`:
 
 ```python
 """Per-instance KV cache manager: the engine's view of the block pool.
@@ -2103,13 +2103,13 @@ class KvCacheManager:
         self._n_cached.clear()
 ```
 
-Replace `dryrun/component/rollout/engine/kv/__init__.py`:
+Replace `srl/component/rollout/engine/kv/__init__.py`:
 
 ```python
 """KV block pool: occupancy, prefix reuse, and eviction.
 
 This is a state machine, not a cost model. It fits no coefficient, reads no
-artifact, and has no domain gate. `dryrun/cost/rollout/kv_cache.py` answers
+artifact, and has no domain gate. `srl/cost/rollout/kv_cache.py` answers
 *how many blocks exist*; this package answers *who holds them and what can
 hit*. The only interface between the two is the `kv_blocks` integer.
 """
@@ -2137,7 +2137,7 @@ Expected: 55 passed.
 Replace the derived occupancy sum with pool queries. No hit logic yet, so this must be behaviour-preserving: the existing suite is the test.
 
 **Files:**
-- Modify: `dryrun/component/rollout/engine/instance.py:20-74`
+- Modify: `srl/component/rollout/engine/instance.py:20-74`
 - Test: `tests/test_kv_instance.py`
 
 **Interfaces:**
@@ -2155,8 +2155,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.component.rollout.engine import NativeInstance, ReqStatus, Request
-from dryrun.cost.rollout import PSRLFitted
+from srl.component.rollout.engine import NativeInstance, ReqStatus, Request
+from srl.cost.rollout import PSRLFitted
 
 
 def _cost() -> PSRLFitted:
@@ -2219,7 +2219,7 @@ Expected: FAIL. `NativeInstance.__init__` takes `cost` positionally but not as a
 
 - [ ] **Step 3: Write minimal implementation**
 
-In `dryrun/component/rollout/engine/instance.py`, add the import at the top alongside the existing ones:
+In `srl/component/rollout/engine/instance.py`, add the import at the top alongside the existing ones:
 
 ```python
 from .kv import KvCacheManager
@@ -2369,9 +2369,9 @@ Expected: `tests/test_kv_instance.py` 3 passed, and the whole suite green. If `t
 The pool already records its own old values (Task 4), so this task wires the recorder in and converts the existing per-request and per-instance captures onto the same mechanism. After it, `InstanceSnapshot` is a thin holder of one `UndoLog` rather than a dataclass that has to know every subsystem's fields.
 
 **Files:**
-- Modify: `dryrun/component/rollout/engine/snapshot.py`
-- Modify: `dryrun/component/rollout/engine/instance.py`
-- Modify: `dryrun/component/rollout/engine/kv/manager.py`
+- Modify: `srl/component/rollout/engine/snapshot.py`
+- Modify: `srl/component/rollout/engine/instance.py`
+- Modify: `srl/component/rollout/engine/kv/manager.py`
 - Test: `tests/test_kv_instance.py`
 
 **Interfaces:**
@@ -2490,7 +2490,7 @@ Expected: FAIL on `test_undoing_an_event_restores_the_whole_instance`, because `
 
 - [ ] **Step 3: Write minimal implementation**
 
-First give `KvCacheManager` a recorder parameter on every mutator. In `dryrun/component/rollout/engine/kv/manager.py`, add to the imports:
+First give `KvCacheManager` a recorder parameter on every mutator. In `srl/component/rollout/engine/kv/manager.py`, add to the imports:
 
 ```python
 from ..undo import NULL_RECORDER, AttrSnapshot, Recorder
@@ -2604,7 +2604,7 @@ class _CachedCounts:
         self._manager._n_cached.update(self._counts)
 ```
 
-Now rewrite `dryrun/component/rollout/engine/snapshot.py` entirely:
+Now rewrite `srl/component/rollout/engine/snapshot.py` entirely:
 
 ```python
 """Rollback state for speculative event advancement.
@@ -2698,7 +2698,7 @@ class InstanceSnapshot:
 
 Note that `capture` records `waiting` and `running` as attributes, so `restore` reinstates the *list objects* that were current at capture time. `NativeInstance` must therefore replace those lists rather than mutate them in place when an event reorders the queues; it already does (`self.waiting = aborted[:]`, `self.running = []`), with two exceptions to fix below.
 
-In `dryrun/component/rollout/engine/instance.py`, add the import:
+In `srl/component/rollout/engine/instance.py`, add the import:
 
 ```python
 from .undo import NULL_RECORDER
@@ -2790,9 +2790,9 @@ Expected: `tests/test_kv_instance.py` 6 passed, whole suite green. A failure in 
 The payload. A hit pre-sets `prefilled`, so the saved tokens leave `t2` and `n_tokens` by themselves and the cost model needs no change.
 
 **Files:**
-- Modify: `dryrun/component/rollout/engine/instance.py`
-- Modify: `dryrun/component/rollout/engine/state.py`
-- Modify: `dryrun/component/rollout/engine/request.py`
+- Modify: `srl/component/rollout/engine/instance.py`
+- Modify: `srl/component/rollout/engine/state.py`
+- Modify: `srl/component/rollout/engine/request.py`
 - Test: `tests/test_kv_instance.py`
 
 **Interfaces:**
@@ -2913,7 +2913,7 @@ Expected: FAIL, `AttributeError: 'Request' object has no attribute 'prefix_hit_t
 
 - [ ] **Step 3: Write minimal implementation**
 
-In `dryrun/component/rollout/engine/request.py`, add after `reprefill_tokens: int = 0`:
+In `srl/component/rollout/engine/request.py`, add after `reprefill_tokens: int = 0`:
 
 ```python
     prefix_hit_tokens: int = 0
@@ -2924,7 +2924,7 @@ In `dryrun/component/rollout/engine/request.py`, add after `reprefill_tokens: in
     """
 ```
 
-In `dryrun/component/rollout/engine/state.py`, add to `StepStat` after `n_prefill: int`:
+In `srl/component/rollout/engine/state.py`, add to `StepStat` after `n_prefill: int`:
 
 ```python
     n_prefill_hit: int = 0
@@ -2938,10 +2938,10 @@ and extend its docstring:
     prefix cache absorbed and `n_prefill_computed` is what was really computed,
     named to match the real engine's own columns (`prefill_tokens` and
     `computed (cache miss)` in `outputs/simulate/SMG_LOOPBACK_FIX.md`) so
-    `dryrun-compare` puts like against like.
+    `srl-compare` puts like against like.
 ```
 
-In `dryrun/component/rollout/engine/snapshot.py`, add `prefix_hit_tokens` to `ReqSnapshot`: add the field
+In `srl/component/rollout/engine/snapshot.py`, add `prefix_hit_tokens` to `ReqSnapshot`: add the field
 
 ```python
     prefix_hit_tokens: int
@@ -2959,7 +2959,7 @@ and to `restore`
         req.prefix_hit_tokens = self.prefix_hit_tokens
 ```
 
-In `dryrun/component/rollout/engine/instance.py`, add the hit application method after `free_blocks`:
+In `srl/component/rollout/engine/instance.py`, add the hit application method after `free_blocks`:
 
 ```python
     def _apply_prefix_hit(self, req: Request) -> int:
@@ -3045,7 +3045,7 @@ with
 
 Note that this turns the fourth positional argument into a keyword, so check the remaining arguments in that call still line up: `steps=1`, `dt=dt`, `phase="prefill"`, `t=self.t_local + dt` are already keywords.
 
-Apply the same hit in `_step_time_estimate` so the time estimate matches what the step will do. This path predicts a step without performing it, so it must **not** move the counters that `vllm:prefix_cache_queries` is compared against. Add a non-counting lookup to `KvCacheManager` in `dryrun/component/rollout/engine/kv/manager.py`:
+Apply the same hit in `_step_time_estimate` so the time estimate matches what the step will do. This path predicts a step without performing it, so it must **not** move the counters that `vllm:prefix_cache_queries` is compared against. Add a non-counting lookup to `KvCacheManager` in `srl/component/rollout/engine/kv/manager.py`:
 
 ```python
     def peek_hit_tokens(self, req: "Request") -> int:
@@ -3117,12 +3117,12 @@ Expected: `tests/test_kv_instance.py` 13 passed, whole suite green. If `test_e2e
 ### Task 9: Config knob and telemetry
 
 **Files:**
-- Modify: `dryrun/config/schema.py:236-247`
-- Modify: `dryrun/config/defaults/simulate.yaml`
-- Modify: `dryrun/simulator/config.py`
-- Modify: `dryrun/simulator/simulator.py:68-84`
-- Modify: `dryrun/cli/main.py:388-422`
-- Modify: `dryrun/telemetry/writer.py:105-120`
+- Modify: `srl/config/schema.py:236-247`
+- Modify: `srl/config/defaults/simulate.yaml`
+- Modify: `srl/simulator/config.py`
+- Modify: `srl/simulator/simulator.py:68-84`
+- Modify: `srl/cli/main.py:388-422`
+- Modify: `srl/telemetry/writer.py:105-120`
 - Test: `tests/test_kv_config.py`
 
 **Interfaces:**
@@ -3138,9 +3138,9 @@ Create `tests/test_kv_config.py`:
 
 from __future__ import annotations
 
-from dryrun.config.schema import RolloutConfig
-from dryrun.simulator.config import SimConfig
-from dryrun.workload.grouped import GroupedWorkload
+from srl.config.schema import RolloutConfig
+from srl.simulator.config import SimConfig
+from srl.workload.grouped import GroupedWorkload
 
 
 def _workload() -> GroupedWorkload:
@@ -3155,8 +3155,8 @@ class TestPrefixCachingKnob:
         assert SimConfig(workload=_workload()).enable_prefix_caching is True
 
     def test_the_knob_reaches_every_instance(self):
-        from dryrun.cost.rollout import PSRLFitted
-        from dryrun.simulator.simulator import Simulator
+        from srl.cost.rollout import PSRLFitted
+        from srl.simulator.simulator import Simulator
 
         cfg = SimConfig(workload=_workload(), n_instances=2, enable_prefix_caching=False)
         sim = Simulator(cfg, rollout_cost=PSRLFitted())
@@ -3166,7 +3166,7 @@ class TestPrefixCachingKnob:
 
 class TestTelemetryColumns:
     def test_step_stats_carry_hit_and_computed_tokens(self):
-        from dryrun.component.rollout.engine import StepStat
+        from srl.component.rollout.engine import StepStat
 
         stat = StepStat(
             n_tokens=10,
@@ -3190,7 +3190,7 @@ Expected: FAIL, `AttributeError: 'RolloutConfig' object has no attribute 'enable
 
 - [ ] **Step 3: Write minimal implementation**
 
-In `dryrun/config/schema.py`, add to `RolloutConfig` after `block_size: int = 16`:
+In `srl/config/schema.py`, add to `RolloutConfig` after `block_size: int = 16`:
 
 ```python
     enable_prefix_caching: bool = True
@@ -3203,31 +3203,31 @@ In `dryrun/config/schema.py`, add to `RolloutConfig` after `block_size: int = 16
     """
 ```
 
-In `dryrun/config/defaults/simulate.yaml`, under the `rollout:` block alongside `block_size`, add:
+In `srl/config/defaults/simulate.yaml`, under the `rollout:` block alongside `block_size`, add:
 
 ```yaml
   enable_prefix_caching: true
 ```
 
-In `dryrun/simulator/config.py`, add to `SimConfig` after `block_size: int = 16`:
+In `srl/simulator/config.py`, add to `SimConfig` after `block_size: int = 16`:
 
 ```python
     enable_prefix_caching: bool = True
 ```
 
-In `dryrun/simulator/simulator.py`, add to the `NativeInstance(...)` construction after `reject_if_running_full=cfg.reject_if_running_full`:
+In `srl/simulator/simulator.py`, add to the `NativeInstance(...)` construction after `reject_if_running_full=cfg.reject_if_running_full`:
 
 ```python
                     enable_prefix_caching=cfg.enable_prefix_caching,
 ```
 
-In `dryrun/cli/main.py`, add to the `SimConfig(...)` call after `block_size=rollout.block_size`:
+In `srl/cli/main.py`, add to the `SimConfig(...)` call after `block_size=rollout.block_size`:
 
 ```python
         enable_prefix_caching=rollout.get("enable_prefix_caching", True),
 ```
 
-In `dryrun/telemetry/writer.py`, add to the dict built around line 110, after `n_prefill=stat.n_prefill`:
+In `srl/telemetry/writer.py`, add to the dict built around line 110, after `n_prefill=stat.n_prefill`:
 
 ```python
                 n_prefill_hit=stat.n_prefill_hit,
@@ -3247,7 +3247,7 @@ Expected: `tests/test_kv_config.py` 3 passed, whole suite green. `tests/test_sim
 ### Task 10: `/metrics` reader for vLLM's prefix-cache counters
 
 **Files:**
-- Create: `dryrun/workload/prefix_probe.py`
+- Create: `srl/workload/prefix_probe.py`
 - Test: `tests/test_prefix_probe.py`
 
 **Interfaces:**
@@ -3265,7 +3265,7 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.workload.prefix_probe import PrefixCacheCounters, parse_prefix_cache_counters
+from srl.workload.prefix_probe import PrefixCacheCounters, parse_prefix_cache_counters
 
 _SAMPLE = """\
 # HELP vllm:prefix_cache_queries GPU prefix cache queries, in terms of number of queried blocks.
@@ -3342,11 +3342,11 @@ class TestParsing:
 pytest tests/test_prefix_probe.py -q
 ```
 
-Expected: collection error, `ModuleNotFoundError: No module named 'dryrun.workload.prefix_probe'`.
+Expected: collection error, `ModuleNotFoundError: No module named 'srl.workload.prefix_probe'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `dryrun/workload/prefix_probe.py`:
+Create `srl/workload/prefix_probe.py`:
 
 ```python
 """Read vLLM's prefix-cache counters, for validating the simulated block pool.
@@ -3479,7 +3479,7 @@ Requires a GPU. Every expected value is registered **before** measuring; nothing
 - Test: manual, with results recorded in Task 12
 
 **Interfaces:**
-- Consumes: `read_prefix_cache_counters` (Task 10), `VllmServer` from `dryrun/workload/inference.py`.
+- Consumes: `read_prefix_cache_counters` (Task 10), `VllmServer` from `srl/workload/inference.py`.
 - Produces: a measured-versus-simulated table consumed by Task 12.
 
 - [ ] **Step 1: Write the fixture**
@@ -3551,7 +3551,7 @@ Create `examples/profile/vllm/prefix_cache_probe.sh`:
 # are wrong and the logic must change, not that a coefficient needs tuning.
 set -euo pipefail
 
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
 cd "$(git rev-parse --show-toplevel)"
 
 MODEL="${MODEL:?set MODEL to a Qwen3-8B checkpoint directory}"
@@ -3559,7 +3559,7 @@ PORT="${PORT:-8000}"
 OUT="${OUT:-outputs/profile/prefix_cache_probe}"
 mkdir -p "$OUT"
 
-python -m dryrun.workload.prefix_probe_run \
+python -m srl.workload.prefix_probe_run \
   --config examples/profile/vllm/prefix_cache_probe.yaml \
   --model "$MODEL" \
   --port "$PORT" \
@@ -3609,10 +3609,10 @@ Expected: all pass. These encode the same expected hit counts without needing a 
 - [ ] **Step 1: Re-run the aligned baseline and record the three gates**
 
 ```bash
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
-cd /apdcephfs_zwfy/share_303760348/lhy/DryRun-RL
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
+cd /apdcephfs_zwfy/share_303760348/lhy/SimRL
 bash examples/simulate/psrl_baseline_aligned.sh
-dryrun-compare outputs/simulate/psrl_baseline_aligned outputs/visualize/qwen3_8b_megatron_baseline
+srl-compare outputs/simulate/psrl_baseline_aligned outputs/visualize/qwen3_8b_megatron_baseline
 ```
 
 Record, from the comparison output:

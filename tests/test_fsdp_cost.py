@@ -8,16 +8,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from dryrun.cost.artifact import CostArtifact
-from dryrun.cost.training import TRAINING_MODEL_REGISTRY
-from dryrun.cost.training.base import (
+from srl.cost.artifact import CostArtifact
+from srl.cost.training import TRAINING_MODEL_REGISTRY
+from srl.cost.training.base import (
     TrainingOutOfDomainError,
     TrainingParallelism,
     TrainingWorkload,
 )
-from dryrun.cost.training.fsdp import FsdpTrainingCost
-from dryrun.cost.training.fsdp_inventory import fsdp_inventory
-from dryrun.profiler.schema import (
+from srl.cost.training.fsdp import FsdpTrainingCost
+from srl.cost.training.fsdp_inventory import fsdp_inventory
+from srl.profiler.schema import (
     HardwareDescriptor,
     ModelDescriptor,
     Parallelism,
@@ -800,7 +800,7 @@ def test_satisfies_the_contract_the_simulator_calls():
     """
     import math
 
-    from dryrun.cost.training.base import TrainingCostEstimate
+    from srl.cost.training.base import TrainingCostEstimate
 
     cost = _cost()
     workload = TrainingWorkload(

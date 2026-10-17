@@ -14,18 +14,18 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.database import (
+from srl.cost.kernel.database import (
     CommQuery,
     ElementwiseQuery,
     GemmQuery,
     OptimizerQuery,
     TrainingAttentionQuery,
 )
-from dryrun.cost.kernel.interp import KernelCoverageError
-from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
-from dryrun.cost.training.composed import ComposedTraining
-from dryrun.cost.training.training_ops import TrainingOps
-from dryrun.profiler.schema import ModelDescriptor, SequenceStats
+from srl.cost.kernel.interp import KernelCoverageError
+from srl.cost.training.base import TrainingParallelism, TrainingWorkload
+from srl.cost.training.composed import ComposedTraining
+from srl.cost.training.training_ops import TrainingOps
+from srl.profiler.schema import ModelDescriptor, SequenceStats
 
 _MODEL = ModelDescriptor(
     name="qwen3-8b-test",

@@ -9,11 +9,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from dryrun.component.rollout.engine import InstanceView, Request
-from dryrun.component.rollout.router import build_strategy
-from dryrun.component.rollout.router.estimator import LengthEstimator
-from dryrun.simulator.dynamic_parallel import PlannerSolver, RichRequestSnapshot, TierPlanner
-from dryrun.simulator.dynamic_parallel.planner import StepCurve
+from srl.component.rollout.engine import InstanceView, Request
+from srl.component.rollout.router import build_strategy
+from srl.component.rollout.router.estimator import LengthEstimator
+from srl.simulator.dynamic_parallel import PlannerSolver, RichRequestSnapshot, TierPlanner
+from srl.simulator.dynamic_parallel.planner import StepCurve
 
 KV = {1: 500_000, 2: 1_100_000, 4: 2_300_000}
 

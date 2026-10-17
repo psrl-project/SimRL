@@ -33,12 +33,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from statistics import median
 
-from dryrun.cli.profile import _kernel_config
-from dryrun.cost.kernel.database import KernelDatabase
-from dryrun.cost.kernel.model_ops import ModelOps
-from dryrun.cost.kernel.validate import load_baseline
-from dryrun.cost.rollout.base import RolloutWorkload
-from dryrun.cost.rollout.composed import ComposedRollout
+from srl.cli.profile import _kernel_config
+from srl.cost.kernel.database import KernelDatabase
+from srl.cost.kernel.model_ops import ModelOps
+from srl.cost.kernel.validate import load_baseline
+from srl.cost.rollout.base import RolloutWorkload
+from srl.cost.rollout.composed import ComposedRollout
 
 
 @dataclass(frozen=True)

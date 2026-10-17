@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 import torch
 
-from dryrun.cost.kernel.ops.gemm import GEMM_OP
-from dryrun.cost.kernel.table import KernelTable
-from dryrun.profiler.hf import model_descriptor_from_yaml
-from dryrun.profiler.kernel.config import KernelProfileConfig
-from dryrun.profiler.kernel.grid.gemm import (
+from srl.cost.kernel.ops.gemm import GEMM_OP
+from srl.cost.kernel.table import KernelTable
+from srl.profiler.hf import model_descriptor_from_yaml
+from srl.profiler.kernel.config import KernelProfileConfig
+from srl.profiler.kernel.grid.gemm import (
     gemm_all_shapes,
     gemm_dgrad_shapes,
     gemm_sweep_shapes,
@@ -20,10 +20,10 @@ from dryrun.profiler.kernel.grid.gemm import (
     logits_sweep_shapes,
     transformer_gemm_shapes,
 )
-from dryrun.profiler.kernel.measurements import PerfTableWriter
-from dryrun.profiler.kernel.runner.gemm import GemmRunner
-from dryrun.profiler.kernel.sweep import GemmSweep
-from dryrun.profiler.schema import ProfileValidationError
+from srl.profiler.kernel.measurements import PerfTableWriter
+from srl.profiler.kernel.runner.gemm import GemmRunner
+from srl.profiler.kernel.sweep import GemmSweep
+from srl.profiler.schema import ProfileValidationError
 
 _FIXTURE_MODEL = Path("tests/fixtures/hf/qwen3_8b").resolve()
 _CUDA = torch.cuda.is_available()

@@ -34,7 +34,7 @@ def main() -> None:
     import sys
 
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-    from dryrun.profiler.kernel.collective import _dispatched_backend
+    from srl.profiler.kernel.collective import _dispatched_backend
 
     if rank == 0:
         print(f"world_size={world_size}", flush=True)

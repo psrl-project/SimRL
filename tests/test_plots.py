@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.policy.psrl import PSRLPolicy
-from dryrun.simulator import SimConfig, Simulator
-from dryrun.telemetry.store import JsonlStore
-from dryrun.visualizer.plots import SimPlotter
-from dryrun.workload.distributions import uniform
-from dryrun.workload.grouped import GroupedWorkload
+from srl.cost.rollout import UnifiedRoofline
+from srl.policy.psrl import PSRLPolicy
+from srl.simulator import SimConfig, Simulator
+from srl.telemetry.store import JsonlStore
+from srl.visualizer.plots import SimPlotter
+from srl.workload.distributions import uniform
+from srl.workload.grouped import GroupedWorkload
 
 
 def _simulate_into_store(tmp_path, n_instances=2):
@@ -49,7 +49,7 @@ class TestPlotAllFromRealRun:
         assert plotter._instance_ids() == [0, 1, 2]
 
     def test_reopening_store_readonly_still_plots(self, tmp_path):
-        """A `dryrun-plot`-style re-render against a fresh JsonlStore over the same logs dir."""
+        """A `srl-plot`-style re-render against a fresh JsonlStore over the same logs dir."""
         _simulate_into_store(tmp_path)
         reopened = JsonlStore(tmp_path / "logs")
         plotter = SimPlotter(reopened, tmp_path / "plots2")

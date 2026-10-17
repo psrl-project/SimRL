@@ -46,10 +46,10 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # child python resolves scipy from the base anaconda install while numpy comes from the
 # env, and the mismatch surfaces as `module 'numpy' has no attribute 'long'` from deep
 # inside scipy.sparse -- an import error that looks nothing like an environment problem.
-DRYRUN_ENV="${DRYRUN_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh}"
-if [[ -f "${DRYRUN_ENV}" ]]; then
+SIMRL_ENV="${SIMRL_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh}"
+if [[ -f "${SIMRL_ENV}" ]]; then
     # shellcheck disable=SC1090
-    source "${DRYRUN_ENV}"
+    source "${SIMRL_ENV}"
 fi
 
 MODEL_PATH="${MODEL_PATH:-/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}"
@@ -159,7 +159,7 @@ run_config "search" "dynamic_parallel.strategy=search" "${N_GPUS}" 1
 echo ""
 echo "================ SCG(S) comparison ================"
 # Computed from the request telemetry stream, which already carries `staleness_true` on
-# every consume event (dryrun/telemetry/writer.py). SimResult is not persisted, so the
+# every consume event (srl/telemetry/writer.py). SimResult is not persisted, so the
 # JSONL is the only way to compare finished runs.
 python - "${OUTPUT_BASE}" <<'PYPLOT'
 import json

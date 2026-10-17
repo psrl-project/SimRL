@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Conda env: `source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh` before running anything.
+- Conda env: `source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh` before running anything.
 - Model: `/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B`. Dataset: `/apdcephfs_zwfy/share_303760348/lhy/data/dapo/dapo-math-17k.parquet`.
 - Hosts: `29.162.247.148` (local), `28.49.16.220` (remote, passwordless SSH). 8 H20 each.
 - **No backward compatibility.** Remove obsolete paths rather than adding fallbacks (AGENTS.md).
@@ -24,12 +24,12 @@
 ### Task 1: Joint group trace I/O
 
 **Files:**
-- Modify: `dryrun/workload/trace.py`
+- Modify: `srl/workload/trace.py`
 - Test: `tests/test_workload_trace_groups.py`
 
 **Interfaces:**
 - Produces:
-  - `RequestGroup(group_id: int, prompt_len: int, output_lens: tuple[int, ...])`: frozen dataclass in `dryrun/workload/trace.py`
+  - `RequestGroup(group_id: int, prompt_len: int, output_lens: tuple[int, ...])`: frozen dataclass in `srl/workload/trace.py`
   - `write_group_trace(groups: list[RequestGroup], output_path: str | Path, metadata: dict[str, Any], n_bins: int = 20) -> Path`
   - `read_group_trace(path: str | Path, n_groups: int = 0) -> list[RequestGroup]`
   - `compute_group_stats(groups: list[RequestGroup], max_output_tokens: int, n_bins: int = 20) -> dict[str, Any]`
@@ -47,7 +47,7 @@ import json
 
 import pytest
 
-from dryrun.workload.trace import (
+from srl.workload.trace import (
     RequestGroup,
     compute_group_stats,
     read_group_trace,
@@ -113,8 +113,8 @@ class TestComputeGroupStats:
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
-cd /apdcephfs_zwfy/share_303760348/lhy/DryRun-RL
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
+cd /apdcephfs_zwfy/share_303760348/lhy/SimRL
 pytest tests/test_workload_trace_groups.py -q
 ```
 
@@ -122,7 +122,7 @@ Expected: FAIL: `ImportError: cannot import name 'RequestGroup'`.
 
 - [ ] **Step 3: Implement**
 
-Append to `dryrun/workload/trace.py` (keep the existing single-dimension functions; they serve the synthetic/marginal path):
+Append to `srl/workload/trace.py` (keep the existing single-dimension functions; they serve the synthetic/marginal path):
 
 ```python
 @dataclass(frozen=True)
@@ -263,7 +263,7 @@ Add `from dataclasses import dataclass` to the imports at the top of the file.
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
-pytest tests/test_workload_trace_groups.py -q && ruff check dryrun/workload/trace.py
+pytest tests/test_workload_trace_groups.py -q && ruff check srl/workload/trace.py
 ```
 
 Expected: 8 passed, ruff clean.
@@ -271,7 +271,7 @@ Expected: 8 passed, ruff clean.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add dryrun/workload/trace.py tests/test_workload_trace_groups.py
+git add srl/workload/trace.py tests/test_workload_trace_groups.py
 git commit -m "feat: add joint group trace artifact I/O"
 ```
 
@@ -280,12 +280,12 @@ git commit -m "feat: add joint group trace artifact I/O"
 ### Task 2: GroupedWorkload as the simulator's workload source
 
 **Files:**
-- Create: `dryrun/workload/grouped.py`
-- Modify: `dryrun/workload/__init__.py`
-- Modify: `dryrun/component/rollout/engine/request.py` (add `group_id`)
-- Modify: `dryrun/simulator/config.py` (replace `prompt_lengths` with `workload`)
-- Modify: `dryrun/simulator/simulator.py:39-70, 120-127`
-- Modify: `dryrun/cli/main.py:266, 291`
+- Create: `srl/workload/grouped.py`
+- Modify: `srl/workload/__init__.py`
+- Modify: `srl/component/rollout/engine/request.py` (add `group_id`)
+- Modify: `srl/simulator/config.py` (replace `prompt_lengths` with `workload`)
+- Modify: `srl/simulator/simulator.py:39-70, 120-127`
+- Modify: `srl/cli/main.py:266, 291`
 - Modify: `tests/test_e2e.py:201-210, 375-385`
 - Test: `tests/test_workload_grouped.py`
 
@@ -310,8 +310,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.workload.grouped import GroupedWorkload
-from dryrun.workload.trace import RequestGroup, write_group_trace
+from srl.workload.grouped import GroupedWorkload
+from srl.workload.trace import RequestGroup, write_group_trace
 
 
 def _groups() -> list[RequestGroup]:
@@ -386,9 +386,9 @@ class TestFromTrace:
 pytest tests/test_workload_grouped.py -q
 ```
 
-Expected: FAIL: `ModuleNotFoundError: No module named 'dryrun.workload.grouped'`.
+Expected: FAIL: `ModuleNotFoundError: No module named 'srl.workload.grouped'`.
 
-- [ ] **Step 3: Create `dryrun/workload/grouped.py`**
+- [ ] **Step 3: Create `srl/workload/grouped.py`**
 
 ```python
 """The simulator's workload source: groups of requests sharing one prompt.
@@ -496,7 +496,7 @@ class GroupedWorkload:
 
 - [ ] **Step 4: Export it**
 
-In `dryrun/workload/__init__.py`, add the import and `__all__` entry:
+In `srl/workload/__init__.py`, add the import and `__all__` entry:
 
 ```python
 from .grouped import GroupedWorkload
@@ -506,7 +506,7 @@ Add `"GroupedWorkload",` to `__all__` (keep the list alphabetical).
 
 - [ ] **Step 5: Add `group_id` to `Request`**
 
-In `dryrun/component/rollout/engine/request.py`, add the field directly after `v_traj: int`:
+In `srl/component/rollout/engine/request.py`, add the field directly after `v_traj: int`:
 
 ```python
     group_id: int = 0
@@ -514,7 +514,7 @@ In `dryrun/component/rollout/engine/request.py`, add the field directly after `v
 
 - [ ] **Step 6: Replace `prompt_lengths` in `SimConfig`**
 
-In `dryrun/simulator/config.py`, add the import and swap the field. Delete the `prompt_lengths` line entirely: no alias.
+In `srl/simulator/config.py`, add the import and swap the field. Delete the `prompt_lengths` line entirely: no alias.
 
 ```python
 from ..workload.grouped import GroupedWorkload
@@ -530,7 +530,7 @@ Replace `prompt_lengths: list[int] = field(default_factory=lambda: [512])` with:
 
 - [ ] **Step 7: Point the simulator at `cfg.workload`**
 
-In `dryrun/simulator/simulator.py`, delete the `lengths: list[int],` parameter from `__init__`, and replace these three assignments:
+In `srl/simulator/simulator.py`, delete the `lengths: list[int],` parameter from `__init__`, and replace these three assignments:
 
 ```python
         self.lengths = list(lengths)
@@ -589,7 +589,7 @@ In `_admit`, replace the `Request(...)` construction with:
 
 - [ ] **Step 8: Update the CLI**
 
-In `dryrun/cli/main.py`, `build_workload` now returns a `GroupedWorkload`. Change its body and the call site. Replace the function (line ~168):
+In `srl/cli/main.py`, `build_workload` now returns a `GroupedWorkload`. Change its body and the call site. Replace the function (line ~168):
 
 ```python
 def build_workload(cfg: DictConfig) -> GroupedWorkload:
@@ -637,7 +637,7 @@ def _run_sim(policy, lengths, cfg):
     )
 ```
 
-Add `from dryrun.workload.grouped import GroupedWorkload` to the test imports.
+Add `from srl.workload.grouped import GroupedWorkload` to the test imports.
 
 At line ~201, replace the `prompt_lengths=prompt_lengths,` argument with:
 
@@ -678,14 +678,14 @@ longer unpacks. Replace it with:
 pytest tests/test_workload_grouped.py tests/test_e2e.py tests/test_config.py -q
 ```
 
-Expected: all pass. Fix any other `SimConfig(prompt_lengths=...)` or `Simulator(lengths=...)` call site the failures reveal: `grep -rn "prompt_lengths\|lengths=" tests/ dryrun/` should return no stale uses.
+Expected: all pass. Fix any other `SimConfig(prompt_lengths=...)` or `Simulator(lengths=...)` call site the failures reveal: `grep -rn "prompt_lengths\|lengths=" tests/ srl/` should return no stale uses.
 
 - [ ] **Step 11: Commit**
 
 ```bash
-git add dryrun/workload/grouped.py dryrun/workload/__init__.py \
-        dryrun/component/rollout/engine/request.py dryrun/simulator/config.py \
-        dryrun/simulator/simulator.py dryrun/cli/main.py \
+git add srl/workload/grouped.py srl/workload/__init__.py \
+        srl/component/rollout/engine/request.py srl/simulator/config.py \
+        srl/simulator/simulator.py srl/cli/main.py \
         tests/test_workload_grouped.py tests/test_e2e.py
 git commit -m "feat: make a grouped workload the simulator's request source"
 ```
@@ -695,15 +695,15 @@ git commit -m "feat: make a grouped workload the simulator's request source"
 ### Task 3: Per-response length collection with n
 
 **Files:**
-- Modify: `dryrun/workload/inference.py`
+- Modify: `srl/workload/inference.py`
 - Test: `tests/test_workload_group_collection.py`
 
 **Interfaces:**
 - Consumes: `RequestGroup`, `write_group_trace` (Task 1).
 - Produces:
-  - `load_unique_prompt_messages(dataset_path, sample_size, seed, index_key="index") -> list[list[dict[str, Any]]]` in `dryrun/workload/fitting.py`
-  - `parse_group_response(payload: dict[str, Any], group_id: int) -> RequestGroup` in `dryrun/workload/inference.py`
-  - `build_completion_payload(model, prompt, max_tokens, n, temperature, top_p) -> dict[str, Any]` in `dryrun/workload/inference.py`
+  - `load_unique_prompt_messages(dataset_path, sample_size, seed, index_key="index") -> list[list[dict[str, Any]]]` in `srl/workload/fitting.py`
+  - `parse_group_response(payload: dict[str, Any], group_id: int) -> RequestGroup` in `srl/workload/inference.py`
+  - `build_completion_payload(model, prompt, max_tokens, n, temperature, top_p) -> dict[str, Any]` in `srl/workload/inference.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -716,8 +716,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.workload.inference import build_completion_payload, parse_group_response
-from dryrun.workload.trace import RequestGroup
+from srl.workload.inference import build_completion_payload, parse_group_response
+from srl.workload.trace import RequestGroup
 
 
 def _payload(lengths: list[int], prompt_len: int = 5) -> dict:
@@ -781,7 +781,7 @@ Expected: FAIL: `ImportError: cannot import name 'build_completion_payload'`.
 
 - [ ] **Step 3: Add the deduplicating loader**
 
-In `dryrun/workload/fitting.py`, add alongside `load_prompt_messages`:
+In `srl/workload/fitting.py`, add alongside `load_prompt_messages`:
 
 ```python
 def load_unique_prompt_messages(
@@ -820,7 +820,7 @@ def load_unique_prompt_messages(
         if key not in unique:
             unique[key] = messages
     messages_list = [unique[key] for key in sorted(unique)]
-    dryrun_logger.info(
+    srl_logger.info(
         f"Found {len(messages_list)} distinct prompts among {len(prompts)} rows."
     )
 
@@ -833,7 +833,7 @@ def load_unique_prompt_messages(
 
 - [ ] **Step 4: Add the payload builder and parser**
 
-In `dryrun/workload/inference.py`, add:
+In `srl/workload/inference.py`, add:
 
 ```python
 def build_completion_payload(
@@ -899,7 +899,7 @@ Add `from .trace import RequestGroup, write_group_trace` to the imports (the mod
 - [ ] **Step 5: Run the tests to verify they pass**
 
 ```bash
-pytest tests/test_workload_group_collection.py -q && ruff check dryrun/workload/
+pytest tests/test_workload_group_collection.py -q && ruff check srl/workload/
 ```
 
 Expected: 6 passed, ruff clean.
@@ -907,7 +907,7 @@ Expected: 6 passed, ruff clean.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add dryrun/workload/inference.py dryrun/workload/fitting.py \
+git add srl/workload/inference.py srl/workload/fitting.py \
         tests/test_workload_group_collection.py
 git commit -m "feat: parse per-response group lengths from completions responses"
 ```
@@ -917,7 +917,7 @@ git commit -m "feat: parse per-response group lengths from completions responses
 ### Task 4: Deterministic worker sharding and merge
 
 **Files:**
-- Create: `dryrun/workload/sharding.py`
+- Create: `srl/workload/sharding.py`
 - Test: `tests/test_workload_sharding.py`
 
 **Interfaces:**
@@ -941,7 +941,7 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.workload.sharding import (
+from srl.workload.sharding import (
     Worker,
     build_workers,
     merge_shards,
@@ -949,7 +949,7 @@ from dryrun.workload.sharding import (
     shard_indices,
     shard_path,
 )
-from dryrun.workload.trace import RequestGroup, read_group_trace, write_group_trace
+from srl.workload.trace import RequestGroup, read_group_trace, write_group_trace
 
 
 class TestParseHostsFile:
@@ -1023,9 +1023,9 @@ class TestMergeShards:
 pytest tests/test_workload_sharding.py -q
 ```
 
-Expected: FAIL: `ModuleNotFoundError: No module named 'dryrun.workload.sharding'`.
+Expected: FAIL: `ModuleNotFoundError: No module named 'srl.workload.sharding'`.
 
-- [ ] **Step 3: Create `dryrun/workload/sharding.py`**
+- [ ] **Step 3: Create `srl/workload/sharding.py`**
 
 ```python
 """Sharding for distributed workload collection.
@@ -1042,7 +1042,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .._logging import dryrun_logger
+from .._logging import srl_logger
 from .trace import RequestGroup, read_group_trace, write_group_trace
 
 
@@ -1145,14 +1145,14 @@ def merge_shards(
             )
         groups.extend(read_group_trace(path))
     groups.sort(key=lambda group: group.group_id)
-    dryrun_logger.info(f"Merged {len(groups)} groups from {n_workers} shards.")
+    srl_logger.info(f"Merged {len(groups)} groups from {n_workers} shards.")
     return write_group_trace(groups, output_path, metadata=metadata)
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
-pytest tests/test_workload_sharding.py -q && ruff check dryrun/workload/sharding.py
+pytest tests/test_workload_sharding.py -q && ruff check srl/workload/sharding.py
 ```
 
 Expected: 11 passed, ruff clean.
@@ -1160,7 +1160,7 @@ Expected: 11 passed, ruff clean.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add dryrun/workload/sharding.py tests/test_workload_sharding.py
+git add srl/workload/sharding.py tests/test_workload_sharding.py
 git commit -m "feat: add deterministic worker sharding and shard merging"
 ```
 
@@ -1169,15 +1169,15 @@ git commit -m "feat: add deterministic worker sharding and shard merging"
 ### Task 5: Group collection driver and CLI
 
 **Files:**
-- Modify: `dryrun/workload/inference.py` (add `collect_group_trace`)
-- Modify: `dryrun/cli/workload.py` (add `collect-groups` and `merge-shards`)
+- Modify: `srl/workload/inference.py` (add `collect_group_trace`)
+- Modify: `srl/cli/workload.py` (add `collect-groups` and `merge-shards`)
 - Test: `tests/test_workload_group_driver.py`
 
 **Interfaces:**
 - Consumes: Tasks 1, 3, 4.
 - Produces:
   - `collect_group_trace(dataset_path, tokenizer_path, model_path, output_path, worker_index, n_workers, sample_size, n, max_tokens, temperature, top_p, tp, concurrency, port, seed, server_ready_timeout, extra_serve_args=None, gpu=None) -> Path`
-  - CLI: `dryrun-workload collect-groups`, `dryrun-workload merge-shards`
+  - CLI: `srl-workload collect-groups`, `srl-workload merge-shards`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1188,7 +1188,7 @@ Create `tests/test_workload_group_driver.py`:
 
 from __future__ import annotations
 
-from dryrun.cli.workload import build_parser
+from srl.cli.workload import build_parser
 
 
 class TestCollectGroupsCLI:
@@ -1256,7 +1256,7 @@ Expected: FAIL: `argument command: invalid choice: 'collect-groups'`.
 
 - [ ] **Step 3: Add the driver**
 
-In `dryrun/workload/inference.py`, add. Note `_VLLMServer` gains a `gpu` argument so a worker can pin `CUDA_VISIBLE_DEVICES`; add `gpu: int | None = None` to its `__init__`, store it, and in `__enter__` pass an environment to `subprocess.Popen`:
+In `srl/workload/inference.py`, add. Note `_VLLMServer` gains a `gpu` argument so a worker can pin `CUDA_VISIBLE_DEVICES`; add `gpu: int | None = None` to its `__init__`, store it, and in `__enter__` pass an environment to `subprocess.Popen`:
 
 ```python
         env = None
@@ -1378,7 +1378,7 @@ def collect_group_trace(
     output = Path(output_path)
     server_log = Path(log_path) if log_path is not None else output.with_suffix(".server.log")
 
-    dryrun_logger.info(f"Loading tokenizer from {tokenizer_path!r}...")
+    srl_logger.info(f"Loading tokenizer from {tokenizer_path!r}...")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
     messages_list = load_unique_prompt_messages(dataset_path, sample_size, seed)
@@ -1391,7 +1391,7 @@ def collect_group_trace(
     indexed_prompts = [
         (index, render_prompt(tokenizer, messages_list[index])) for index in indices
     ]
-    dryrun_logger.info(
+    srl_logger.info(
         f"Worker {worker_index}/{n_workers} collecting {len(indexed_prompts)} groups "
         f"of n={n} on GPU {gpu!r}."
     )
@@ -1436,13 +1436,13 @@ def collect_group_trace(
             "n_workers": n_workers,
         },
     )
-    dryrun_logger.info(f"Worker {worker_index} wrote {len(groups)} groups to {written}.")
+    srl_logger.info(f"Worker {worker_index} wrote {len(groups)} groups to {written}.")
     return written
 ```
 
 - [ ] **Step 4: Add the CLI subcommands**
 
-In `dryrun/cli/workload.py`, add two handlers and register them in `build_parser`:
+In `srl/cli/workload.py`, add two handlers and register them in `build_parser`:
 
 ```python
 def cmd_collect_groups(args: argparse.Namespace) -> None:
@@ -1470,7 +1470,7 @@ def cmd_collect_groups(args: argparse.Namespace) -> None:
         extra_serve_args=extra_serve_args,
         gpu=args.gpu,
     )
-    dryrun_logger.info(f"Group trace shard written to {path}.")
+    srl_logger.info(f"Group trace shard written to {path}.")
 
 
 def cmd_merge_shards(args: argparse.Namespace) -> None:
@@ -1483,7 +1483,7 @@ def cmd_merge_shards(args: argparse.Namespace) -> None:
         output_path=args.output,
         metadata={"kind": "joint_group_trace", "max_output_tokens": args.max_output_tokens},
     )
-    dryrun_logger.info(f"Merged group trace written to {path}.")
+    srl_logger.info(f"Merged group trace written to {path}.")
 ```
 
 In `build_parser`, after the `fit_output` block:
@@ -1529,7 +1529,7 @@ In `build_parser`, after the `fit_output` block:
 - [ ] **Step 5: Run the test to verify it passes**
 
 ```bash
-pytest tests/test_workload_group_driver.py -q && ruff check dryrun/cli/workload.py dryrun/workload/inference.py
+pytest tests/test_workload_group_driver.py -q && ruff check srl/cli/workload.py srl/workload/inference.py
 ```
 
 Expected: 3 passed, ruff clean.
@@ -1537,7 +1537,7 @@ Expected: 3 passed, ruff clean.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add dryrun/workload/inference.py dryrun/cli/workload.py tests/test_workload_group_driver.py
+git add srl/workload/inference.py srl/cli/workload.py tests/test_workload_group_driver.py
 git commit -m "feat: add group trace collection driver and CLI"
 ```
 
@@ -1546,10 +1546,10 @@ git commit -m "feat: add group trace collection driver and CLI"
 ### Task 6: `workload.source` config switch
 
 **Files:**
-- Modify: `dryrun/config/schema.py:54-86`
-- Create: `dryrun/config/defaults/workload/dapo_trace.yaml`
-- Modify: `dryrun/config/defaults/workload/{normal,uniform,bimodal,lognormal,powerlaw,from_trace}.yaml`
-- Modify: `dryrun/cli/main.py` (`build_workload`)
+- Modify: `srl/config/schema.py:54-86`
+- Create: `srl/config/defaults/workload/dapo_trace.yaml`
+- Modify: `srl/config/defaults/workload/{normal,uniform,bimodal,lognormal,powerlaw,from_trace}.yaml`
+- Modify: `srl/cli/main.py` (`build_workload`)
 - Test: `tests/test_config.py`
 
 **Interfaces:**
@@ -1580,7 +1580,7 @@ class TestWorkloadSource:
         assert build_workload(cfg).group_size == 1
 
     def test_trace_source_reads_groups(self, tmp_path):
-        from dryrun.workload.trace import RequestGroup, write_group_trace
+        from srl.workload.trace import RequestGroup, write_group_trace
 
         path = write_group_trace(
             [RequestGroup(0, 100, (7, 8)), RequestGroup(1, 200, (9, 10))],
@@ -1615,16 +1615,16 @@ class TestWorkloadConfigGroups:
     def test_dapo_trace_group_selects_the_trace_source(self):
         from hydra import compose, initialize_config_dir
 
-        from dryrun.config import register_configs
+        from srl.config import register_configs
 
         register_configs()
-        config_dir = str(Path(dryrun.config.__file__).parent / "defaults")
+        config_dir = str(Path(srl.config.__file__).parent / "defaults")
         with initialize_config_dir(config_dir=config_dir, version_base=None):
             cfg = compose(config_name="simulate", overrides=["workload=dapo_trace"])
         assert cfg.workload.source == "trace"
 ```
 
-with `from pathlib import Path` and `import dryrun.config` added to the imports.
+with `from pathlib import Path` and `import srl.config` added to the imports.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1636,12 +1636,12 @@ Expected: FAIL: `dapo_trace` config group not found.
 
 - [ ] **Step 3: Extend the schema**
 
-In `dryrun/config/schema.py`, add before `WorkloadConfig`:
+In `srl/config/schema.py`, add before `WorkloadConfig`:
 
 ```python
 @dataclass
 class JointTraceConfig:
-    """Joint group trace source (see `dryrun-workload collect-groups`)."""
+    """Joint group trace source (see `srl-workload collect-groups`)."""
 
     path: str = ""
     n_groups: int = 0
@@ -1662,11 +1662,11 @@ class WorkloadConfig:
     trace: JointTraceConfig = field(default_factory=JointTraceConfig)
 ```
 
-Export `JointTraceConfig` from `dryrun/config/__init__.py` alongside `WorkloadConfig` (import it and add to `__all__`).
+Export `JointTraceConfig` from `srl/config/__init__.py` alongside `WorkloadConfig` (import it and add to `__all__`).
 
 - [ ] **Step 4: Create the trace config group**
 
-Create `dryrun/config/defaults/workload/dapo_trace.yaml`:
+Create `srl/config/defaults/workload/dapo_trace.yaml`:
 
 ```yaml
 # Joint (prompt, n responses) workload read from a collected group trace.
@@ -1685,7 +1685,7 @@ Add `source: distributions` as the first line of the body of each existing workl
 
 - [ ] **Step 5: Dispatch in `build_workload`**
 
-In `dryrun/cli/main.py`, replace the `build_workload` written in Task 2 with:
+In `srl/cli/main.py`, replace the `build_workload` written in Task 2 with:
 
 ```python
 def build_workload(cfg: DictConfig) -> GroupedWorkload:
@@ -1708,7 +1708,7 @@ def build_workload(cfg: DictConfig) -> GroupedWorkload:
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-pytest tests/test_config.py -q && ruff check dryrun/config/ dryrun/cli/main.py
+pytest tests/test_config.py -q && ruff check srl/config/ srl/cli/main.py
 ```
 
 Expected: all pass, ruff clean.
@@ -1716,7 +1716,7 @@ Expected: all pass, ruff clean.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add dryrun/config/ dryrun/cli/main.py tests/test_config.py
+git add srl/config/ srl/cli/main.py tests/test_config.py
 git commit -m "feat: select the workload source explicitly in config"
 ```
 
@@ -1756,7 +1756,7 @@ HOSTS_FILE="${HOSTS_FILE:-${SCRIPT_DIR}/hosts.txt}"
 DATASET="${DATASET:-/apdcephfs_zwfy/share_303760348/lhy/data/dapo/dapo-math-17k.parquet}"
 MODEL="${MODEL:-/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}"
 TOKENIZER="${TOKENIZER:-${MODEL}}"
-ENV_SCRIPT="${ENV_SCRIPT:-/apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh}"
+ENV_SCRIPT="${ENV_SCRIPT:-/apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh}"
 
 OUT_DIR="${OUT_DIR:-${ROOT_DIR}/outputs/workload/qwen3_8b_dapo_tp1}"
 SHARD_DIR="${SHARD_DIR:-${OUT_DIR}/shards}"
@@ -1777,7 +1777,7 @@ mkdir -p "${SHARD_DIR}"
 
 mapfile -t WORKERS < <(
     cd "${ROOT_DIR}" && python -c "
-from dryrun.workload.sharding import build_workers, parse_hosts_file
+from srl.workload.sharding import build_workers, parse_hosts_file
 for w in build_workers(parse_hosts_file('${HOSTS_FILE}'), base_port=${BASE_PORT}):
     print(w.index, w.host, w.gpu, w.port)
 "
@@ -1794,7 +1794,7 @@ for entry in "${WORKERS[@]}"; do
         echo "worker-${INDEX} on ${HOST} gpu ${GPU}: shard exists, skipping."
         continue
     fi
-    CMD="source ${ENV_SCRIPT} >/dev/null 2>&1; cd ${ROOT_DIR} && dryrun-workload collect-groups"
+    CMD="source ${ENV_SCRIPT} >/dev/null 2>&1; cd ${ROOT_DIR} && srl-workload collect-groups"
     CMD+=" --dataset ${DATASET} --tokenizer ${TOKENIZER} --model ${MODEL}"
     CMD+=" --output ${SHARD} --worker-index ${INDEX} --n-workers ${N_WORKERS}"
     CMD+=" --sample-size ${SAMPLE_SIZE} --n ${GROUP_N} --max-tokens ${MAX_TOKENS}"
@@ -1824,7 +1824,7 @@ if (( FAILED > 0 )); then
 fi
 
 cd "${ROOT_DIR}"
-dryrun-workload merge-shards \
+srl-workload merge-shards \
     --shard-dir "${SHARD_DIR}" \
     --n-workers "${N_WORKERS}" \
     --output "${TRACE}" \
@@ -1863,7 +1863,7 @@ if [[ "${WORKLOAD}" == "normal" ]]; then
 fi
 ```
 
-and delete the earlier standalone `if [[ ! -f "${DIST_FILE}" ]]` check. Because `DIST_OVERRIDES` can now be empty, change its expansion on the `python -m dryrun.cli.main` line to `"${DIST_OVERRIDES[@]+"${DIST_OVERRIDES[@]}"}"` so `set -u` does not abort on an empty array.
+and delete the earlier standalone `if [[ ! -f "${DIST_FILE}" ]]` check. Because `DIST_OVERRIDES` can now be empty, change its expansion on the `python -m srl.cli.main` line to `"${DIST_OVERRIDES[@]+"${DIST_OVERRIDES[@]}"}"` so `set -u` does not abort on an empty array.
 
 - [ ] **Step 4: Create `examples/simulate/dapo_qwen3_8b.sh`**
 
@@ -1905,7 +1905,7 @@ For `EXTRA_OVERRIDES` to reach Hydra, add to `simulate_with_fitted_cost.sh` near
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"
 ```
 
-and append `${EXTRA_OVERRIDES:+${EXTRA_OVERRIDES}} \` as the last argument of the `python -m dryrun.cli.main` invocation.
+and append `${EXTRA_OVERRIDES:+${EXTRA_OVERRIDES}} \` as the last argument of the `python -m srl.cli.main` invocation.
 
 `chmod +x` the new script.
 
@@ -1939,10 +1939,10 @@ bash -n examples/simulate/simulate_with_fitted_cost.sh
 Expected: no output. Then dry-run the config resolution with a tiny synthetic trace:
 
 ```bash
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
-cd /apdcephfs_zwfy/share_303760348/lhy/DryRun-RL
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
+cd /apdcephfs_zwfy/share_303760348/lhy/SimRL
 python - <<'EOF'
-from dryrun.workload.trace import RequestGroup, write_group_trace
+from srl.workload.trace import RequestGroup, write_group_trace
 write_group_trace(
     [RequestGroup(i, 150 + i, tuple(2000 + 100 * j for j in range(8))) for i in range(64)],
     "/tmp/smoke_joint.jsonl", metadata={"max_output_tokens": 10240},
@@ -1970,8 +1970,8 @@ git add examples/ && git commit -m "feat: add the DAPO Qwen3-8B tp=1 workload an
 - [ ] **Step 1: Run the full collection**
 
 ```bash
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
-cd /apdcephfs_zwfy/share_303760348/lhy/DryRun-RL
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
+cd /apdcephfs_zwfy/share_303760348/lhy/SimRL
 bash examples/workload/dapo_qwen3_8b/collect_joint_trace.sh
 ```
 
@@ -2009,7 +2009,7 @@ Add a short "Observed results" section to the case README with the collected tra
 - [ ] **Step 5: Full suite and lint**
 
 ```bash
-pytest -q && ruff check dryrun/ tests/
+pytest -q && ruff check srl/ tests/
 ```
 
 Expected: all pass, ruff clean.

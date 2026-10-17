@@ -181,15 +181,15 @@ _FLOORS = {
 
 
 def _holdout_results():
-    from dryrun.cost.kernel.holdout import holdout_report
+    from srl.cost.kernel.holdout import holdout_report
 
     return {(r.op_name, r.backend): r for r in holdout_report(_TABLES, gpu="h20", fraction=1.0)}
 
 
 def _composed_model(tensor_parallel: int = 2):
-    from dryrun.cost.kernel.database import KernelDatabase
-    from dryrun.cost.kernel.model_ops import ModelOps
-    from dryrun.cost.rollout.composed import ComposedRollout
+    from srl.cost.kernel.database import KernelDatabase
+    from srl.cost.kernel.model_ops import ModelOps
+    from srl.cost.rollout.composed import ComposedRollout
 
     database = KernelDatabase.from_root(_TABLES, gpu="h20", utility_surface="pchip")
     ops = ModelOps.from_checkpoint(_CHECKPOINT, tensor_parallel=tensor_parallel)
@@ -244,9 +244,9 @@ def test_a_superseded_per_degree_tree_is_refused_rather_than_read(world_size):
     measurement written before the column existed, and guessing would price a NIC hop at
     NVLink speed. The remedy, naming the sweep to run, is in the error message.
     """
-    from dryrun.cost.kernel.interp import KernelCoverageError
-    from dryrun.cost.kernel.ops.base import op_for
-    from dryrun.cost.kernel.table import KernelTable
+    from srl.cost.kernel.interp import KernelCoverageError
+    from srl.cost.kernel.ops.base import op_for
+    from srl.cost.kernel.table import KernelTable
 
     tree = _REPO / "outputs" / "profile" / "qwen3_8b" / f"kernel_tp{world_size}" / "kernel"
     path = next((tree / "h20" / "collective").glob("*/*/all_reduce_perf.parquet"), None)
@@ -258,7 +258,7 @@ def test_a_superseded_per_degree_tree_is_refused_rather_than_read(world_size):
 
 def test_composed_accuracy_at_tp2_is_unchanged_on_the_whole_grid():
     """The load-bearing check: slice column, SOL at nodes=1, and the table together."""
-    from dryrun.cost.kernel.validate import load_baseline, score_model
+    from srl.cost.kernel.validate import load_baseline, score_model
 
     buckets = load_baseline(_BASELINE, min_samples=1)
     results = {r.phase: r for r in score_model(_composed_model(), buckets)}
@@ -272,7 +272,7 @@ def test_composed_accuracy_at_tp2_is_unchanged_on_the_whole_grid():
 
 def test_composed_decode_accuracy_excluding_small_batches_is_unchanged():
     """Scored separately because a pooled metric hides the small-batch model error."""
-    from dryrun.cost.kernel.validate import load_baseline, score_model
+    from srl.cost.kernel.validate import load_baseline, score_model
 
     buckets = load_baseline(_BASELINE, min_samples=1)
     selected = tuple(
@@ -295,7 +295,7 @@ def test_fitted_floors_are_within_resweep_noise(family, backend):
     A floor that moves more than one step means the measurement changed, not that it is
     noisy.
     """
-    from dryrun.cost.kernel.floor import load_floors
+    from srl.cost.kernel.floor import load_floors
 
     backend_dir = _TABLES / "h20" / family / backend
     if not backend_dir.is_dir():

@@ -7,23 +7,23 @@ from types import SimpleNamespace
 
 import pytest
 
-from dryrun.cli import regress as regress_cli
-from dryrun.cli.profile import build_parser as build_profile_parser
-from dryrun.cli.profile import cmd_kernels_validate
-from dryrun.cli.regress import build_parser as build_regress_parser
-from dryrun.profiler.adapters.megatron import (
+from srl.cli import regress as regress_cli
+from srl.cli.profile import build_parser as build_profile_parser
+from srl.cli.profile import cmd_kernels_validate
+from srl.cli.regress import build_parser as build_regress_parser
+from srl.profiler.adapters.megatron import (
     MegatronBridgeConfig,
     prepare_bridge_candidate,
 )
-from dryrun.profiler.adapters.megatron.prepare import LAUNCH_MODULE
-from dryrun.profiler.adapters.vllm import (
+from srl.profiler.adapters.megatron.prepare import LAUNCH_MODULE
+from srl.profiler.adapters.vllm import (
     VLLMSweepConfig,
     format_vllm_job_command,
     prepare_vllm_jobs,
     prepare_vllm_sweep,
 )
-from dryrun.profiler.schema import HardwareDescriptor, ModelDescriptor, Parallelism
-from dryrun.profiler.search_space import TrainingCandidate
+from srl.profiler.schema import HardwareDescriptor, ModelDescriptor, Parallelism
+from srl.profiler.search_space import TrainingCandidate
 
 
 def test_profile_cli_exposes_generate_run_collect():
@@ -265,9 +265,9 @@ def test_vllm_run_cli_accepts_auto_or_bounded_parallelism():
     assert bounded.max_parallel == 4
 
 
-def test_megatron_generated_command_targets_the_dryrun_launcher(tmp_path: Path):
+def test_megatron_generated_command_targets_the_srl_launcher(tmp_path: Path):
     """
-    The launcher is a DryRun module, not the vendored performance CLI.
+    The launcher is a SimRL module, not the vendored performance CLI.
 
     That CLI accepted only its own known arguments and discarded the rest, so the
     profiling and recompute overrides handed to it never took effect. It also
@@ -324,7 +324,7 @@ def test_kernels_cli_no_longer_exposes_synthesize():
 
 
 def test_kernels_module_no_longer_exports_the_synthesis_path():
-    import dryrun.profiler.kernel as kernels
+    import srl.profiler.kernel as kernels
 
     for name in (
         "ComposedCostTerms",
@@ -358,7 +358,7 @@ def test_kernels_run_rejects_an_unmeasured_family():
 
 
 def test_kernels_run_accepts_every_registered_family():
-    from dryrun.cost.kernel.ops.base import families
+    from srl.cost.kernel.ops.base import families
 
     parser = build_profile_parser()
     for family in families():
@@ -420,8 +420,8 @@ def test_holdout_zero_scorable_points_is_a_coverage_failure(
     """A 2-row GEMM table produces 0 scorable points; holdout must exit non-zero and log the coverage problem."""
     import logging
 
-    from dryrun.cost.kernel.hardware import load_gpu_spec
-    from dryrun.cost.kernel.sol import gemm_sol
+    from srl.cost.kernel.hardware import load_gpu_spec
+    from srl.cost.kernel.sol import gemm_sol
 
     spec = load_gpu_spec("h20")
     target_utility = 0.6
@@ -438,12 +438,12 @@ def test_holdout_zero_scorable_points_is_a_coverage_failure(
     table_root = tmp_path / "tables"
     _write_gemm_parquet(table_root, sparse_rows)
 
-    import dryrun.cli.profile as profile_mod
+    import srl.cli.profile as profile_mod
 
     monkeypatch.setattr(profile_mod, "_kernel_config", lambda _path: _make_stub_config(table_root))
 
     args = _holdout_args(table_root)
-    with caplog.at_level(logging.WARNING, logger="dryrun"):
+    with caplog.at_level(logging.WARNING, logger="srl"):
         with pytest.raises(SystemExit) as exc_info:
             profile_mod.cmd_kernels_holdout(args)
 
@@ -481,8 +481,8 @@ def test_holdout_accuracy_failure_names_mre_clause_not_coverage_clause(
     monkeypatch,
 ) -> None:
     """A scorable table that fails a gate=0.0 must name MRE, not a coverage problem."""
-    from dryrun.cost.kernel.hardware import load_gpu_spec
-    from dryrun.cost.kernel.sol import gemm_sol
+    from srl.cost.kernel.hardware import load_gpu_spec
+    from srl.cost.kernel.sol import gemm_sol
 
     spec = load_gpu_spec("h20")
     target_utility = 0.6
@@ -502,7 +502,7 @@ def test_holdout_accuracy_failure_names_mre_clause_not_coverage_clause(
     table_root = tmp_path / "tables"
     _write_gemm_parquet(table_root, rows)
 
-    import dryrun.cli.profile as profile_mod
+    import srl.cli.profile as profile_mod
 
     monkeypatch.setattr(profile_mod, "_kernel_config", lambda _path: _make_stub_config(table_root))
 
@@ -530,8 +530,8 @@ def test_holdout_healthy_table_passes_and_writes_report(tmp_path: Path, monkeypa
     """A healthy GEMM table with exact-uniform utility passes the gate and writes a JSON report."""
     import json
 
-    from dryrun.cost.kernel.hardware import load_gpu_spec
-    from dryrun.cost.kernel.sol import gemm_sol
+    from srl.cost.kernel.hardware import load_gpu_spec
+    from srl.cost.kernel.sol import gemm_sol
 
     spec = load_gpu_spec("h20")
     target_utility = 0.6
@@ -551,7 +551,7 @@ def test_holdout_healthy_table_passes_and_writes_report(tmp_path: Path, monkeypa
     table_root = tmp_path / "tables"
     _write_gemm_parquet(table_root, rows)
 
-    import dryrun.cli.profile as profile_mod
+    import srl.cli.profile as profile_mod
 
     monkeypatch.setattr(profile_mod, "_kernel_config", lambda _path: _make_stub_config(table_root))
 
@@ -580,7 +580,7 @@ def test_holdout_empty_root_is_an_actionable_failure(tmp_path: Path, monkeypatch
     table_root = tmp_path / "empty_tables"
     table_root.mkdir()
 
-    import dryrun.cli.profile as profile_mod
+    import srl.cli.profile as profile_mod
 
     monkeypatch.setattr(profile_mod, "_kernel_config", lambda _path: _make_stub_config(table_root))
 
@@ -589,7 +589,7 @@ def test_holdout_empty_root_is_an_actionable_failure(tmp_path: Path, monkeypatch
         profile_mod.cmd_kernels_holdout(args)
 
     message = str(exc_info.value)
-    assert "dryrun-profile kernels run" in message, (
+    assert "srl-profile kernels run" in message, (
         f"Exit message must tell the user to run kernels first, got: {message!r}."
     )
 
@@ -605,7 +605,7 @@ def test_fit_floor_empty_root_names_every_floor_taking_family_not_just_attention
     table_root = tmp_path / "empty_tables"
     table_root.mkdir()
 
-    import dryrun.cli.profile as profile_mod
+    import srl.cli.profile as profile_mod
 
     monkeypatch.setattr(profile_mod, "_kernel_config", lambda _path: _make_stub_config(table_root))
 
@@ -619,7 +619,7 @@ def test_fit_floor_empty_root_names_every_floor_taking_family_not_just_attention
         f"Exit message still names one family, but elementwise and collective take floors "
         f"too: {message!r}."
     )
-    assert "dryrun-profile kernels run" in message
+    assert "srl-profile kernels run" in message
 
 
 def test_kernels_validate_is_registered():
@@ -643,7 +643,7 @@ def test_a_sampled_holdout_fraction_warns_that_it_understates(tmp_path, monkeypa
     """Scoring a subset must not be silent: the MRE it reports is not the surface's error."""
     import logging
 
-    import dryrun.cli.profile as profile_mod
+    import srl.cli.profile as profile_mod
 
     rows = [
         {
@@ -667,21 +667,21 @@ def test_a_sampled_holdout_fraction_warns_that_it_understates(tmp_path, monkeypa
     args = _holdout_args(table_root)
     args.fraction = 0.2
     args.gate = 100.0
-    with caplog.at_level(logging.WARNING, logger="dryrun"):
+    with caplog.at_level(logging.WARNING, logger="srl"):
         profile_mod.cmd_kernels_holdout(args)
     warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
     assert any("understates" in message for message in warnings), warnings
 
     caplog.clear()
     args.fraction = 1.0
-    with caplog.at_level(logging.WARNING, logger="dryrun"):
+    with caplog.at_level(logging.WARNING, logger="srl"):
         profile_mod.cmd_kernels_holdout(args)
     assert not [r for r in caplog.records if "understates" in r.message]
 
 
 def test_kernels_verify_shapes_is_registered():
     """--config is optional here so the gate runs on a model with no profiling config yet."""
-    from dryrun.cli.profile import cmd_kernels_verify_shapes
+    from srl.cli.profile import cmd_kernels_verify_shapes
 
     parser = build_profile_parser()
     args = parser.parse_args(["kernels", "verify-shapes", "--model-path", "/models/x"])

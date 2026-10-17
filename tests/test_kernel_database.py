@@ -8,14 +8,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from dryrun.cost.kernel.database import (
+from srl.cost.kernel.database import (
     AttentionQuery,
     GemmQuery,
     KernelDatabase,
 )
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.interp import KernelCoverageError
-from dryrun.cost.kernel.sol import gemm_sol
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.interp import KernelCoverageError
+from srl.cost.kernel.sol import gemm_sol
 
 _VERSION = "0.26.1.dev0"
 
@@ -145,7 +145,7 @@ def test_a_different_target_gpu_rescales_through_sol(gemm_root, tmp_path):
         "    bfloat16: 74.0e12\n",
         encoding="utf-8",
     )
-    from dryrun.cost.kernel.hardware import load_gpu_spec as load_spec
+    from srl.cost.kernel.hardware import load_gpu_spec as load_spec
 
     fast = KernelDatabase.from_root(gemm_root, gpu="h20")
     slow = KernelDatabase.from_root(gemm_root, gpu="h20", gpu_spec=load_spec("h20", path=spec_path))
@@ -199,7 +199,7 @@ def test_unknown_phase_is_rejected():
 
 def test_a_comm_query_without_a_measured_table_names_the_sweep_to_run(gemm_root):
     """query_comm now prices through the table machinery, so a missing table is the failure."""
-    from dryrun.cost.kernel.database import CommQuery
+    from srl.cost.kernel.database import CommQuery
 
     database = KernelDatabase.from_root(gemm_root, gpu="h20")
     with pytest.raises(KernelCoverageError, match="--family collective"):

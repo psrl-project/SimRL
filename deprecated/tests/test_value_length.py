@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.value import EmpiricalLength, OracleLength, TrajView
+from srl.value import EmpiricalLength, OracleLength, TrajView
 
 
 def traj(generated: int = 0, target_len: int = 1000, prompt_key: int = 0) -> TrajView:

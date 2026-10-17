@@ -33,7 +33,7 @@ Every adapter that writes a `ProfileRecord` enforces two invariants at write tim
 - For training records: `global_batch_size == micro_batch_size * dp * num_microbatches`. A training
   run that does not satisfy this is not a well-formed training step.
 
-These are checked in `dryrun/profiler/schema.py` before the record is serialised.
+These are checked in `srl/profiler/schema.py` before the record is serialised.
 
 ### Raw artifacts are preserved untouched
 
@@ -62,7 +62,7 @@ memory fit rather than contributing a misleading bound. This is acknowledged in
 This means that an `oom` candidate is re-run on resume, not skipped. The intent is that a sweep
 expanded with more memory headroom (a smaller TP degree, a smaller batch) should naturally revisit
 former OOM points without requiring a manual workaround. The implementation is in
-`dryrun/profiler/adapters/training/run.py`.
+`srl/profiler/adapters/training/run.py`.
 
 ---
 
@@ -74,18 +74,18 @@ and the regression path should never pay that cost.
 
 The rule: `launch.py` and `measure.py` import torch and the training framework, and they are
 deliberately absent from the adapter package's `__init__` namespace. Only the `torchrun` child
-process imports them. The `dryrun/profiler/adapters/megatron/__init__.py` docstring states this
+process imports them. The `srl/profiler/adapters/megatron/__init__.py` docstring states this
 explicitly:
 
 > `launch` and `measure` import torch and megatron, so they are deliberately absent from this
 > namespace. Only the torchrun child imports them.
 
-`dryrun/profiler/adapters/__init__.py` re-exports only collection, preparation, and execution
+`srl/profiler/adapters/__init__.py` re-exports only collection, preparation, and execution
 entry points from each backend. None of the heavy training imports surface at the package level.
 
 ### The shared `training/` module
 
-`dryrun/profiler/adapters/training/` holds the backend-agnostic pieces that Megatron and FSDP both
+`srl/profiler/adapters/training/` holds the backend-agnostic pieces that Megatron and FSDP both
 use: subprocess execution (`run.py`) and sidecar file access (`sidecar.py`). The backends differ in
 how they build a model and a launch command, but they agree on how a candidate is run, how its
 result is classified, and how step-time and memory measurements are extracted. Only that shared
@@ -100,12 +100,12 @@ would be a parameter bag neither backend actually fills.
 A cost model reads `ProfileRecord` JSONL, fits a predictive formula, and exposes a prediction
 interface. The two registries are:
 
-- **`ROLLOUT_MODEL_REGISTRY`** in `dryrun/cost/rollout/__init__.py`: maps `"roofline"`,
+- **`ROLLOUT_MODEL_REGISTRY`** in `srl/cost/rollout/__init__.py`: maps `"roofline"`,
   `"psrl"`, `"distserve"`, `"composed"` to their classes.
-- **`TRAINING_MODEL_REGISTRY`** in `dryrun/cost/training/__init__.py`: maps `"hydraulis"`,
+- **`TRAINING_MODEL_REGISTRY`** in `srl/cost/training/__init__.py`: maps `"hydraulis"`,
   `"fsdp"` to their classes.
 
-Each model class owns its fitting formula entirely. `dryrun-regress` dispatches to the right class
+Each model class owns its fitting formula entirely. `srl-regress` dispatches to the right class
 based on `--model`, and the fitter inside the class decides which features to build, how to regularise,
 and what to store in the artifact.
 
@@ -117,7 +117,7 @@ integrator. The simulator's composed rollout advance path uses these coefficient
 long `k` decode steps take without iterating over each one individually. If `decode_coeffs` is
 absent or returns wrong values, the closed-form advance path produces incorrect timing and the
 simulator silently produces wrong schedules. This is a non-obvious hard requirement: the
-`RolloutCostModel` abstract base class in `dryrun/cost/rollout/base.py` declares it `@abstractmethod`
+`RolloutCostModel` abstract base class in `srl/cost/rollout/base.py` declares it `@abstractmethod`
 precisely to prevent omitting it.
 
 ### The `CostArtifact` and `ArtifactEntry` contract
@@ -160,7 +160,7 @@ model would average over both measurement qualities and obscure the underdetermi
 ### The latency form has one implementation, and the fit loops deliberately do not
 
 Both backends carry the same four-term latency row, so the arithmetic lives once in
-`dryrun/cost/training/latency.py`:
+`srl/cost/training/latency.py`:
 
 | helper | responsibility |
 |---|---|

@@ -2,23 +2,23 @@
 
 import pytest
 
-from dryrun.component.rollout.engine import Request
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.cost.training import (
+from srl.component.rollout.engine import Request
+from srl.cost.rollout import UnifiedRoofline
+from srl.cost.training import (
     FixedTrainingLatency,
     FixedTrainingMemory,
     TrainingCostModel,
 )
-from dryrun.policy.areal import ArealPolicy
-from dryrun.policy.base import CompleteAction, SimState
-from dryrun.policy.psrl import PSRLPolicy
-from dryrun.policy.roll import RollPolicy
-from dryrun.policy.slime import SlimePolicy
-from dryrun.policy.verl import VerlPolicy
-from dryrun.simulator import SimConfig, Simulator, clip_length, clip_total_length
-from dryrun.telemetry.store import JsonlStore
-from dryrun.workload.distributions import bimodal, uniform
-from dryrun.workload.grouped import GroupedWorkload
+from srl.policy.areal import ArealPolicy
+from srl.policy.base import CompleteAction, SimState
+from srl.policy.psrl import PSRLPolicy
+from srl.policy.roll import RollPolicy
+from srl.policy.slime import SlimePolicy
+from srl.policy.verl import VerlPolicy
+from srl.simulator import SimConfig, Simulator, clip_length, clip_total_length
+from srl.telemetry.store import JsonlStore
+from srl.workload.distributions import bimodal, uniform
+from srl.workload.grouped import GroupedWorkload
 
 
 def _run_sim(policy, lengths, cfg):
@@ -497,7 +497,7 @@ class TestLengthCaps:
 
 class TestGrouping:
     def _grouped_cfg(self, **overrides):
-        from dryrun.workload.trace import RequestGroup
+        from srl.workload.trace import RequestGroup
 
         groups = [
             RequestGroup(group_id=i, prompt_len=128, output_lens=(50, 60, 70, 80))
@@ -568,7 +568,7 @@ class TestGrouping:
         )
 
     def test_config_rejects_group_size_disagreeing_with_workload(self):
-        from dryrun.workload.trace import RequestGroup
+        from srl.workload.trace import RequestGroup
 
         workload = GroupedWorkload.from_groups(
             [RequestGroup(group_id=0, prompt_len=8, output_lens=(10, 20))]

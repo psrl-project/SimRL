@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Simulate the PSRL run that DryRun-RL is aligned against.
+# Simulate the PSRL run that SimRL is aligned against.
 #
 # Every number below is transcribed from the run being matched:
 #   psrl/examples/dapo_trainer/qwen3_8b_megatron_simulate.sh
@@ -16,7 +16,7 @@
 # eviction and re-prefill go unexercised and a simulator could get all three
 # wrong while still appearing to match.
 #
-# Current agreement (dryrun-compare against the run's own logs): train/step
+# Current agreement (srl-compare against the run's own logs): train/step
 # +1.9%, peak KV utilisation +0.0%, mean KV utilisation -2.5%, mean running
 # requests +2.7%, span +5.0%.
 set -euo pipefail
@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # ROLLOUT_MODEL=composed below, and ComposedRollout has no C++ translation, so
 # the default `auto` backend fails in `_make_cpp_cost` before the first step.
-export DRYRUN_BACKEND="${DRYRUN_BACKEND:-native}"
+export SIMRL_BACKEND="${SIMRL_BACKEND:-native}"
 
 PSRL_LOG_DIR="${PSRL_LOG_DIR:-/apdcephfs_zwfy10_303541817/share_303541817/lhy/psrl/examples/dapo_trainer/megatron_psrl_log/qwen3_8b_megatron_simulate}"
 MODEL_PATH="${MODEL_PATH:-/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}"
@@ -50,7 +50,7 @@ if [[ ! -f "${TRACE}" ]]; then
     echo "Extracting the workload trace from ${PSRL_LOG_DIR}..."
     python - "${PSRL_LOG_DIR}" "${TRACE}" "${GROUP_SIZE}" <<'PYTRACE'
 import sys
-from dryrun.telemetry.psrl_log import extract_workload_trace
+from srl.telemetry.psrl_log import extract_workload_trace
 
 extract_workload_trace(
     sys.argv[1], sys.argv[2], group_size=int(sys.argv[3]), max_output_tokens=10240

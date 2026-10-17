@@ -1,5 +1,5 @@
 # =========================================================================
-# Project-specific (DryRun-RL)
+# Project-specific (SimRL)
 # =========================================================================
 examples/visualization/.*/
 unit_tests/nixl/plot/
@@ -57,8 +57,8 @@ tensorflow/my_graph/*
 # The GPU specs YAML is a small static config file (not a dataset) that must ship
 # with the package. Git negation cannot re-include a file inside an ignored directory,
 # so we un-ignore the directory first, then re-include only the one file.
-!dryrun/cost/kernel/data/
-!dryrun/cost/kernel/data/gpu_specs.yaml
+!srl/cost/kernel/data/
+!srl/cost/kernel/data/gpu_specs.yaml
 
 
 # =========================================================================
@@ -69,7 +69,7 @@ __pycache__/
 *$py.class
 *.so
 # Allow the committed pybind11 extension module
-!dryrun/_engine_cpp*.so
+!srl/_engine_cpp*.so
 
 
 # =========================================================================

@@ -22,9 +22,9 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
-from dryrun.cli.main import build_rollout_cost
-from dryrun.component.rollout.engine import NativeInstance, Request
-from dryrun.component.rollout.engine.eviction import build_eviction
+from srl.cli.main import build_rollout_cost
+from srl.component.rollout.engine import NativeInstance, Request
+from srl.component.rollout.engine.eviction import build_eviction
 
 MODEL_PATH = "/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B"
 KERNEL_ROOT = "outputs/profile/qwen3_8b/kernel_tp1/kernel"

@@ -17,15 +17,15 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-DRYRUN_ENV="${DRYRUN_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh}"
-if [[ -f "${DRYRUN_ENV}" ]]; then
+SIMRL_ENV="${SIMRL_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh}"
+if [[ -f "${SIMRL_ENV}" ]]; then
     # shellcheck disable=SC1090
-    source "${DRYRUN_ENV}"
+    source "${SIMRL_ENV}"
 fi
 
 # Pin the backend rather than `auto`, whose silent fallback could mix engines
 # across points of one sweep.
-export DRYRUN_BACKEND="${DRYRUN_BACKEND:-cpp}"
+export SIMRL_BACKEND="${SIMRL_BACKEND:-cpp}"
 
 # A KV probe needs a free GPU. A busy one fails as an opaque engine startup error.
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4}"
@@ -61,7 +61,7 @@ for ((cap = CAP_START; cap <= CAP_END; cap += CAP_STEP)); do
     CAPS+=("${cap}")
 done
 
-so="${ROOT_DIR}/dryrun/_engine_cpp.cpython-312-x86_64-linux-gnu.so"
+so="${ROOT_DIR}/srl/_engine_cpp.cpython-312-x86_64-linux-gnu.so"
 so_md5_before="$(md5sum "${so}" | cut -d' ' -f1)"
 
 echo "Sweeping ${#CAPS[@]} caps x $(echo "${POLICIES}" | wc -w) policies: ${CAPS[*]} (+ baseline ${BASELINE_CAP})"
@@ -109,7 +109,7 @@ for entry in "${pids[@]}"; do
 done
 
 # A concurrent rebuild of the engine `.so` can crash running sims or mix builds across points.
-if [[ "${DRYRUN_BACKEND}" == "cpp" && "$(md5sum "${so}" | cut -d' ' -f1)" != "${so_md5_before}" ]]; then
+if [[ "${SIMRL_BACKEND}" == "cpp" && "$(md5sum "${so}" | cut -d' ' -f1)" != "${so_md5_before}" ]]; then
     echo "  ${so} changed during the sweep; points may come from different builds." >&2
     failed=1
 fi

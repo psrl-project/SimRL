@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cli.workload import build_parser, cmd_check_shard, cmd_verify_collection
-from dryrun.workload.inference import _partition_group_results
-from dryrun.workload.sharding import shard_path
-from dryrun.workload.trace import RequestGroup, write_group_trace
+from srl.cli.workload import build_parser, cmd_check_shard, cmd_verify_collection
+from srl.workload.inference import _partition_group_results
+from srl.workload.sharding import shard_path
+from srl.workload.trace import RequestGroup, write_group_trace
 
 
 class TestCollectGroupsCLI:
@@ -152,7 +152,7 @@ class TestCollectGroupTraceValidation:
     """Validation guards must fire before loading any dataset or tokenizer."""
 
     def test_rejects_n_workers_zero(self):
-        from dryrun.workload.inference import collect_group_trace
+        from srl.workload.inference import collect_group_trace
 
         with pytest.raises(ValueError, match="n_workers must be at least 1"):
             collect_group_trace(
@@ -165,7 +165,7 @@ class TestCollectGroupTraceValidation:
             )
 
     def test_rejects_negative_worker_index(self):
-        from dryrun.workload.inference import collect_group_trace
+        from srl.workload.inference import collect_group_trace
 
         with pytest.raises(ValueError, match="worker_index must be in"):
             collect_group_trace(
@@ -178,7 +178,7 @@ class TestCollectGroupTraceValidation:
             )
 
     def test_rejects_worker_index_out_of_range(self):
-        from dryrun.workload.inference import collect_group_trace
+        from srl.workload.inference import collect_group_trace
 
         with pytest.raises(ValueError, match="worker_index must be in"):
             collect_group_trace(

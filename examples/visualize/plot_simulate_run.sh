@@ -2,7 +2,7 @@
 # Render the instance-load plot from a finished simulation's logs, drawn exactly
 # the way `plot_psrl_run.sh` draws a real PSRL run, so the two can be compared.
 #
-# This does not re-simulate. Point it at the output_dir of a prior `dryrun` run
+# This does not re-simulate. Point it at the output_dir of a prior `srl` run
 # that was made with log_telemetry enabled.
 set -euo pipefail
 
@@ -22,7 +22,7 @@ if [[ ! -d "${SIM_RUN_DIR}/logs" ]]; then
     exit 1
 fi
 
-python -m dryrun.cli.plot "${SIM_RUN_DIR}" \
+python -m srl.cli.plot "${SIM_RUN_DIR}" \
     --only instance_load \
     --time-label "${TIME_LABEL}"
 

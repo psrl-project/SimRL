@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.adapters.fsdp import (
+from srl.profiler.adapters.fsdp import (
     FsdpProfileConfig,
     build_launch_command,
     build_launch_spec,
@@ -15,8 +15,8 @@ from dryrun.profiler.adapters.fsdp import (
     read_candidate_manifest,
     write_candidate_manifest,
 )
-from dryrun.profiler.fsdp_search_space import FsdpCandidate
-from dryrun.profiler.schema import HardwareDescriptor, ModelDescriptor, ProfileValidationError
+from srl.profiler.fsdp_search_space import FsdpCandidate
+from srl.profiler.schema import HardwareDescriptor, ModelDescriptor, ProfileValidationError
 
 
 def _model() -> ModelDescriptor:
@@ -180,7 +180,7 @@ def test_launch_command_requests_one_process_per_rank(tmp_path: Path):
     assert command[0] == "torchrun"
     assert "--nproc-per-node" in command
     assert command[command.index("--nproc-per-node") + 1] == "8"
-    assert "dryrun.profiler.adapters.fsdp.launch" in command
+    assert "srl.profiler.adapters.fsdp.launch" in command
 
 
 def test_launch_command_supports_multiple_nodes(tmp_path: Path):

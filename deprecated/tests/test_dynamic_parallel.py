@@ -12,10 +12,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from dryrun.component.rollout.engine import Request
-from dryrun.component.rollout.engine.state import InstanceView
-from dryrun.component.rollout.router.strategy import build_strategy
-from dryrun.simulator.dynamic_parallel import (
+from srl.component.rollout.engine import Request
+from srl.component.rollout.engine.state import InstanceView
+from srl.component.rollout.router.strategy import build_strategy
+from srl.simulator.dynamic_parallel import (
     ParallelismSolver,
     RequestSnapshot,
 )

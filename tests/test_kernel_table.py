@@ -11,11 +11,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from dryrun.cost.kernel.interp import KernelCoverageError
-from dryrun.cost.kernel.ops.attention import CONTEXT_ATTENTION_OP, GENERATION_ATTENTION_OP
-from dryrun.cost.kernel.ops.base import OP_REGISTRY
-from dryrun.cost.kernel.ops.gemm import GEMM_OP
-from dryrun.cost.kernel.table import KernelTable, required_columns
+from srl.cost.kernel.interp import KernelCoverageError
+from srl.cost.kernel.ops.attention import CONTEXT_ATTENTION_OP, GENERATION_ATTENTION_OP
+from srl.cost.kernel.ops.base import OP_REGISTRY
+from srl.cost.kernel.ops.gemm import GEMM_OP
+from srl.cost.kernel.table import KernelTable, required_columns
 
 
 def _write_gemm(path: Path, rows: list[dict]) -> Path:

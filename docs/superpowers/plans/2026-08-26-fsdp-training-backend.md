@@ -13,7 +13,7 @@
 - Spec: `docs/superpowers/specs/2026-08-26-fsdp-training-backend-design.md`. Read it before starting.
 - Coding style: `.claude/coding-style.md`. §1 is critical: **identifier strings never get a trailing period or case change**; human-readable messages are capitalized and end in `.`. Line length 119 (`[tool.ruff] line-length = 119`).
 - Project contract: `AGENTS.md`. **No backward compatibility layers.** Remove obsolete paths rather than adding fallbacks or migrations.
-- Activate the environment before running anything: `source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh`.
+- Activate the environment before running anything: `source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh`.
 - Test baseline before any change: **602 passed**. It must never regress. Run `python -m pytest tests/ -q` to confirm.
 - Comments explain **why**, never what. Every non-obvious constant or guard needs its rationale, matching the density of the surrounding Megatron adapter code.
 - Do not use `Date.now()`-style nondeterminism in fixtures; `candidate_id` values must be stable across runs.
@@ -27,21 +27,21 @@
 
 | path | responsibility |
 |---|---|
-| `dryrun/profiler/adapters/training/__init__.py` | public exports of the shared training-adapter layer |
-| `dryrun/profiler/adapters/training/run.py` | subprocess orchestration, OOM markers, status classification |
-| `dryrun/profiler/adapters/training/sidecar.py` | sidecar reading, warmup slicing, peak aggregation, candidate-dir iteration |
-| `dryrun/profiler/fsdp_search_space.py` | `FsdpCandidate`, `enumerate_fsdp_candidates` |
-| `dryrun/profiler/adapters/fsdp/__init__.py` | public exports; deliberately excludes torch-importing modules |
-| `dryrun/profiler/adapters/fsdp/config.py` | `FsdpProfileConfig` and YAML deserialization |
-| `dryrun/profiler/adapters/fsdp/prepare.py` | launch spec, manifest, torchrun command |
-| `dryrun/profiler/adapters/fsdp/launch.py` | torchrun child: mesh, `fully_shard`, train loop |
-| `dryrun/profiler/adapters/fsdp/measure.py` | step times, per-rank peaks, comm/compute split, OOM sidecar |
-| `dryrun/profiler/adapters/fsdp/execute.py` | thin delegation to the shared runner |
-| `dryrun/profiler/adapters/fsdp/collect.py` | raw directories to `ProfileRecord` |
-| `dryrun/cost/training/microbatch.py` | `BatchingMode`, `MicrobatchPlanner` |
-| `dryrun/cost/training/fsdp_inventory.py` | FSDP static memory layout (`16p/ws`) |
-| `dryrun/cost/training/fsdp.py` | `FsdpLatencyModel`, `FsdpMemoryModel`, `FsdpTrainingCost` |
-| `dryrun/config/defaults/training_cost/fsdp.yaml` | Hydra defaults for the FSDP cost model |
+| `srl/profiler/adapters/training/__init__.py` | public exports of the shared training-adapter layer |
+| `srl/profiler/adapters/training/run.py` | subprocess orchestration, OOM markers, status classification |
+| `srl/profiler/adapters/training/sidecar.py` | sidecar reading, warmup slicing, peak aggregation, candidate-dir iteration |
+| `srl/profiler/fsdp_search_space.py` | `FsdpCandidate`, `enumerate_fsdp_candidates` |
+| `srl/profiler/adapters/fsdp/__init__.py` | public exports; deliberately excludes torch-importing modules |
+| `srl/profiler/adapters/fsdp/config.py` | `FsdpProfileConfig` and YAML deserialization |
+| `srl/profiler/adapters/fsdp/prepare.py` | launch spec, manifest, torchrun command |
+| `srl/profiler/adapters/fsdp/launch.py` | torchrun child: mesh, `fully_shard`, train loop |
+| `srl/profiler/adapters/fsdp/measure.py` | step times, per-rank peaks, comm/compute split, OOM sidecar |
+| `srl/profiler/adapters/fsdp/execute.py` | thin delegation to the shared runner |
+| `srl/profiler/adapters/fsdp/collect.py` | raw directories to `ProfileRecord` |
+| `srl/cost/training/microbatch.py` | `BatchingMode`, `MicrobatchPlanner` |
+| `srl/cost/training/fsdp_inventory.py` | FSDP static memory layout (`16p/ws`) |
+| `srl/cost/training/fsdp.py` | `FsdpLatencyModel`, `FsdpMemoryModel`, `FsdpTrainingCost` |
+| `srl/config/defaults/training_cost/fsdp.yaml` | Hydra defaults for the FSDP cost model |
 | `examples/profile/fsdp/qwen3_8b.yaml` | full sweep config |
 | `examples/profile/fsdp/qwen3_8b_smoke.yaml` | two-layer smoke config |
 | `examples/profile/fsdp/profile_qwen3_8b.sh` | generate/run/collect driver |
@@ -50,16 +50,16 @@
 
 | path | change |
 |---|---|
-| `dryrun/profiler/schema.py:374` | accept `schedule == "fsdp"` in `TrainingPayload` |
-| `dryrun/cost/training/base.py:66` | accept `schedule == "fsdp"` in `TrainingWorkload` |
-| `dryrun/profiler/adapters/megatron/execute.py` | delegate to `training/run.py` |
-| `dryrun/profiler/adapters/megatron/collect.py` | delegate to `training/sidecar.py` |
-| `dryrun/profiler/adapters/__init__.py` | export the FSDP adapter |
-| `dryrun/cost/training/__init__.py` | export FSDP models; register `"fsdp"` |
-| `dryrun/cli/profile.py` | `fsdp` backend subcommands |
-| `dryrun/cli/regress.py:93-94` | add `"fsdp"` to both model choices |
-| `dryrun/config/schema.py` | `batching_mode`, `max_tokens_per_rank` on `TrainingCostConfig` |
-| `dryrun/cli/main.py` | wire the new config fields into `build_training_cost` |
+| `srl/profiler/schema.py:374` | accept `schedule == "fsdp"` in `TrainingPayload` |
+| `srl/cost/training/base.py:66` | accept `schedule == "fsdp"` in `TrainingWorkload` |
+| `srl/profiler/adapters/megatron/execute.py` | delegate to `training/run.py` |
+| `srl/profiler/adapters/megatron/collect.py` | delegate to `training/sidecar.py` |
+| `srl/profiler/adapters/__init__.py` | export the FSDP adapter |
+| `srl/cost/training/__init__.py` | export FSDP models; register `"fsdp"` |
+| `srl/cli/profile.py` | `fsdp` backend subcommands |
+| `srl/cli/regress.py:93-94` | add `"fsdp"` to both model choices |
+| `srl/config/schema.py` | `batching_mode`, `max_tokens_per_rank` on `TrainingCostConfig` |
+| `srl/cli/main.py` | wire the new config fields into `build_training_cost` |
 | `.claude/codebase-map.md` | record the new packages |
 
 **Tests created:** `tests/test_training_shared.py`, `tests/test_fsdp_search_space.py`, `tests/test_fsdp_launch.py`, `tests/test_fsdp_collect.py`, `tests/test_microbatch_planner.py`, `tests/test_fsdp_inventory.py`, `tests/test_fsdp_cost.py`, plus fixtures under `tests/fixtures/fsdp/`.
@@ -71,11 +71,11 @@
 Megatron's `execute.py` and `collect.py` contain roughly 135 lines that are genuinely backend-agnostic. Extract them first so the FSDP adapter consumes them rather than duplicating them. Megatron's behaviour must not change: its tests are the regression gate.
 
 **Files:**
-- Create: `dryrun/profiler/adapters/training/__init__.py`
-- Create: `dryrun/profiler/adapters/training/run.py`
-- Create: `dryrun/profiler/adapters/training/sidecar.py`
-- Modify: `dryrun/profiler/adapters/megatron/execute.py` (replace body with delegation)
-- Modify: `dryrun/profiler/adapters/megatron/collect.py:25-33` and `:78-101` (replace helpers with imports)
+- Create: `srl/profiler/adapters/training/__init__.py`
+- Create: `srl/profiler/adapters/training/run.py`
+- Create: `srl/profiler/adapters/training/sidecar.py`
+- Modify: `srl/profiler/adapters/megatron/execute.py` (replace body with delegation)
+- Modify: `srl/profiler/adapters/megatron/collect.py:25-33` and `:78-101` (replace helpers with imports)
 - Test: `tests/test_training_shared.py`
 
 **Interfaces:**
@@ -104,7 +104,7 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.adapters.training import (
+from srl.profiler.adapters.training import (
     OOM_EXIT_CODE,
     iter_candidate_dirs,
     load_sidecar_metrics,
@@ -114,7 +114,7 @@ from dryrun.profiler.adapters.training import (
     run_candidate,
     slice_warmup,
 )
-from dryrun.profiler.schema import RankMemory
+from srl.profiler.schema import RankMemory
 
 
 def test_oom_exit_code_is_forty_two():
@@ -206,9 +206,9 @@ def test_load_sidecar_metrics_returns_none_when_absent(tmp_path: Path):
 
 
 def test_load_sidecar_metrics_rejects_a_non_object_document(tmp_path: Path):
-    from dryrun.profiler.schema import ProfileValidationError
+    from srl.profiler.schema import ProfileValidationError
 
-    (tmp_path / "dryrun_metrics.json").write_text("[1, 2]", encoding="utf-8")
+    (tmp_path / "srl_metrics.json").write_text("[1, 2]", encoding="utf-8")
     with pytest.raises(ProfileValidationError):
         load_sidecar_metrics(tmp_path)
 
@@ -251,15 +251,15 @@ def test_iter_candidate_dirs_raises_on_missing_when_not_allowed(tmp_path: Path):
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
 python -m pytest tests/test_training_shared.py -q
 ```
 
-Expected: collection error, `ModuleNotFoundError: No module named 'dryrun.profiler.adapters.training'`.
+Expected: collection error, `ModuleNotFoundError: No module named 'srl.profiler.adapters.training'`.
 
 - [ ] **Step 3: Create `run.py`**
 
-Create `dryrun/profiler/adapters/training/run.py`:
+Create `srl/profiler/adapters/training/run.py`:
 
 ```python
 """Subprocess orchestration shared by every training backend.
@@ -371,12 +371,12 @@ def run_candidate(
 
 - [ ] **Step 4: Create `sidecar.py`**
 
-Create `dryrun/profiler/adapters/training/sidecar.py`:
+Create `srl/profiler/adapters/training/sidecar.py`:
 
 ```python
 """Sidecar reading and measurement normalization shared by training backends.
 
-A launcher writes one `dryrun_metrics.json` per candidate and the collector turns it
+A launcher writes one `srl_metrics.json` per candidate and the collector turns it
 into a payload. The warmup policy lives here, not in the launcher, so the launcher
 stays a pure measurer and the retained window can change without re-profiling.
 """
@@ -389,7 +389,7 @@ from typing import Any
 
 from ...schema import ProfileValidationError, RankMemory
 
-SIDECAR_NAME = "dryrun_metrics.json"
+SIDECAR_NAME = "srl_metrics.json"
 MANIFEST_NAME = "manifest.json"
 
 
@@ -456,7 +456,7 @@ def iter_candidate_dirs(
 
 - [ ] **Step 5: Create the package `__init__.py`**
 
-Create `dryrun/profiler/adapters/training/__init__.py`:
+Create `srl/profiler/adapters/training/__init__.py`:
 
 ```python
 """Backend-agnostic pieces of the training profiling adapters.
@@ -503,7 +503,7 @@ Expected: PASS, 18 tests.
 
 - [ ] **Step 7: Migrate Megatron's `execute.py` onto the shared runner**
 
-Replace the whole body of `dryrun/profiler/adapters/megatron/execute.py` with:
+Replace the whole body of `srl/profiler/adapters/megatron/execute.py` with:
 
 ```python
 """Run one Megatron training candidate under torchrun."""
@@ -543,7 +543,7 @@ def run_bridge_candidate(
 
 - [ ] **Step 8: Migrate Megatron's `collect.py` onto the shared sidecar helpers**
 
-In `dryrun/profiler/adapters/megatron/collect.py`:
+In `srl/profiler/adapters/megatron/collect.py`:
 
 1. Delete `_load_sidecar_metrics` (lines 25-33) and `_status` (lines 78-101).
 2. Replace the `from .execute import oom_marker_paths` import with:
@@ -602,7 +602,7 @@ check with ruff).
 
 ```bash
 python -m pytest tests/test_profile_adapters.py tests/test_megatron_launch.py tests/test_profiling_cli.py -q
-python -m ruff check dryrun/profiler/adapters/
+python -m ruff check srl/profiler/adapters/
 ```
 
 Expected: all pass; ruff reports no unused imports.
@@ -618,8 +618,8 @@ Expected: `620 passed` (602 baseline + 18 new).
 - [ ] **Step 11: Commit**
 
 ```bash
-git add dryrun/profiler/adapters/training/ dryrun/profiler/adapters/megatron/execute.py \
-        dryrun/profiler/adapters/megatron/collect.py tests/test_training_shared.py
+git add srl/profiler/adapters/training/ srl/profiler/adapters/megatron/execute.py \
+        srl/profiler/adapters/megatron/collect.py tests/test_training_shared.py
 git commit -m "refactor: extract the backend-agnostic training adapter layer
 
 Megatron's execute and collect stages carried roughly 135 lines that say
@@ -644,15 +644,15 @@ floor, so it is exactly the kind of invariant that must not be duplicated."
 The schedule identifier `"1f1b"` is hard-rejected in four places. Two must accept `"fsdp"`, one is untouched, and one must stay restrictive so the two backends' records never land in one fit.
 
 **Files:**
-- Modify: `dryrun/profiler/schema.py:374`
-- Modify: `dryrun/cost/training/base.py:66`
-- Create: `dryrun/profiler/fsdp_search_space.py`
+- Modify: `srl/profiler/schema.py:374`
+- Modify: `srl/cost/training/base.py:66`
+- Create: `srl/profiler/fsdp_search_space.py`
 - Test: `tests/test_fsdp_search_space.py`
 
 **Interfaces:**
-- Consumes: `Parallelism`, `ProfileValidationError` from `dryrun/profiler/schema.py`.
+- Consumes: `Parallelism`, `ProfileValidationError` from `srl/profiler/schema.py`.
 - Produces:
-  - `TRAINING_SCHEDULES: frozenset[str]` in `dryrun/profiler/schema.py`, value `frozenset({"1f1b", "fsdp"})`
+  - `TRAINING_SCHEDULES: frozenset[str]` in `srl/profiler/schema.py`, value `frozenset({"1f1b", "fsdp"})`
   - `FsdpCandidate` frozen dataclass with fields `shard_size: int`, `replicate_size: int`, `n_seqs_per_rank: int`, `sequence_length: int`, `gradient_checkpointing: bool`, `optimizer_offload: bool`, `reshard_after_forward: bool`, `sequence_parallel: int = 1`, `repeat: int = 0`; properties `world_size: int`, `candidate_id: str`, `num_microbatches: int`, `micro_batch_size: int`, `global_batch_size: int`, `sequence_shape: tuple[int, ...]`, `parallelism: Parallelism`; methods `to_dict(*, include_id: bool = True) -> dict[str, Any]`, `from_dict(value) -> FsdpCandidate`
   - `enumerate_fsdp_candidates(*, world_size: int, shard_sizes: list[int], n_seqs_per_rank: list[int], sequence_lengths: list[int], gradient_checkpointing: list[bool], optimizer_offload: list[bool], reshard_after_forward: list[bool], sequence_parallel_sizes: list[int] | None = None, repeats: int = 1) -> list[FsdpCandidate]`
 
@@ -667,8 +667,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.profiler.fsdp_search_space import FsdpCandidate, enumerate_fsdp_candidates
-from dryrun.profiler.schema import ProfileValidationError
+from srl.profiler.fsdp_search_space import FsdpCandidate, enumerate_fsdp_candidates
+from srl.profiler.schema import ProfileValidationError
 
 
 def _candidate(**overrides) -> FsdpCandidate:
@@ -817,11 +817,11 @@ def test_enumerate_rejects_non_positive_repeats():
 python -m pytest tests/test_fsdp_search_space.py -q
 ```
 
-Expected: `ModuleNotFoundError: No module named 'dryrun.profiler.fsdp_search_space'`.
+Expected: `ModuleNotFoundError: No module named 'srl.profiler.fsdp_search_space'`.
 
 - [ ] **Step 3: Widen the schedule check in `schema.py`**
 
-In `dryrun/profiler/schema.py`, add above `TrainingPayload` (near the other module
+In `srl/profiler/schema.py`, add above `TrainingPayload` (near the other module
 constants):
 
 ```python
@@ -843,10 +843,10 @@ Replace lines 374-375:
 
 - [ ] **Step 4: Widen the schedule check in `base.py`**
 
-In `dryrun/cost/training/base.py`, extend the existing schema import:
+In `srl/cost/training/base.py`, extend the existing schema import:
 
 ```python
-from dryrun.profiler.schema import TRAINING_SCHEDULES, Parallelism, SequenceStats
+from srl.profiler.schema import TRAINING_SCHEDULES, Parallelism, SequenceStats
 ```
 
 Replace lines 66-67:
@@ -859,13 +859,13 @@ Replace lines 66-67:
             )
 ```
 
-Leave `dryrun/profiler/search_space.py:44` alone: `TrainingCandidate` is Megatron's
-own type and FSDP uses `FsdpCandidate`. Leave `dryrun/cost/training/hydraulis.py:78`
+Leave `srl/profiler/search_space.py:44` alone: `TrainingCandidate` is Megatron's
+own type and FSDP uses `FsdpCandidate`. Leave `srl/cost/training/hydraulis.py:78`
 alone as well: that filter is what keeps FSDP records out of the Megatron fit.
 
 - [ ] **Step 5: Create `fsdp_search_space.py`**
 
-Create `dryrun/profiler/fsdp_search_space.py`:
+Create `srl/profiler/fsdp_search_space.py`:
 
 ```python
 """Candidate generation for FSDP2 and HSDP profiling sweeps.
@@ -1048,8 +1048,8 @@ Expected: `633 passed` (620 + 13).
 - [ ] **Step 8: Commit**
 
 ```bash
-git add dryrun/profiler/schema.py dryrun/cost/training/base.py \
-        dryrun/profiler/fsdp_search_space.py tests/test_fsdp_search_space.py
+git add srl/profiler/schema.py srl/cost/training/base.py \
+        srl/profiler/fsdp_search_space.py tests/test_fsdp_search_space.py
 git commit -m "feat: admit an FSDP schedule and enumerate FSDP candidates
 
 The schedule identifier was checked against the literal 1f1b in four places.
@@ -1075,14 +1075,14 @@ because splitting a rank's work belongs to the simulate-side planner."
 The three stages that run on the CLI import path and must never import torch.
 
 **Files:**
-- Create: `dryrun/profiler/adapters/fsdp/__init__.py`
-- Create: `dryrun/profiler/adapters/fsdp/config.py`
-- Create: `dryrun/profiler/adapters/fsdp/prepare.py`
-- Create: `dryrun/profiler/adapters/fsdp/execute.py`
+- Create: `srl/profiler/adapters/fsdp/__init__.py`
+- Create: `srl/profiler/adapters/fsdp/config.py`
+- Create: `srl/profiler/adapters/fsdp/prepare.py`
+- Create: `srl/profiler/adapters/fsdp/execute.py`
 - Test: `tests/test_fsdp_prepare.py`
 
 **Interfaces:**
-- Consumes: `FsdpCandidate` (Task 2); `run_candidate`, `OOM_EXIT_CODE`, `oom_marker_paths` (Task 1); `model_descriptor_from_yaml` from `dryrun/profiler/hf.py`; `HardwareDescriptor` from `dryrun/profiler/schema.py`.
+- Consumes: `FsdpCandidate` (Task 2); `run_candidate`, `OOM_EXIT_CODE`, `oom_marker_paths` (Task 1); `model_descriptor_from_yaml` from `srl/profiler/hf.py`; `HardwareDescriptor` from `srl/profiler/schema.py`.
 - Produces:
   - `FsdpProfileConfig` frozen dataclass: `output_dir: Path`, `model: ModelDescriptor`, `hardware: HardwareDescriptor`, `experiment_name: str = ""`, `compute_dtype: str = "bf16"`, `optimizer: str = "adam"`, `parameter_dtype: str = "bf16"`, `gradient_dtype: str = "fp32"`, `optimizer_state_dtype: str = "fp32"`, `max_steps: int = 12`, `warmup_steps: int = 4`, `num_layers_override: int | None = None`, `attn_implementation: str = "flash_attention_2"`, `environment: dict[str, str]`, `backend_version: str`, `allow_incomplete: bool = False`; classmethod `from_dict(value, *, base_dir=None)`; property `raw_root: Path`
   - `LAUNCH_MODULE: str`, `LAUNCH_SPEC_VERSION: int`
@@ -1107,7 +1107,7 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.adapters.fsdp import (
+from srl.profiler.adapters.fsdp import (
     FsdpProfileConfig,
     build_launch_command,
     build_launch_spec,
@@ -1115,8 +1115,8 @@ from dryrun.profiler.adapters.fsdp import (
     read_candidate_manifest,
     write_candidate_manifest,
 )
-from dryrun.profiler.fsdp_search_space import FsdpCandidate
-from dryrun.profiler.schema import HardwareDescriptor, ModelDescriptor, ProfileValidationError
+from srl.profiler.fsdp_search_space import FsdpCandidate
+from srl.profiler.schema import HardwareDescriptor, ModelDescriptor, ProfileValidationError
 
 
 def _model() -> ModelDescriptor:
@@ -1270,7 +1270,7 @@ def test_launch_command_requests_one_process_per_rank(tmp_path: Path):
     assert command[0] == "torchrun"
     assert "--nproc-per-node" in command
     assert command[command.index("--nproc-per-node") + 1] == "8"
-    assert "dryrun.profiler.adapters.fsdp.launch" in command
+    assert "srl.profiler.adapters.fsdp.launch" in command
 
 
 def test_launch_command_supports_multiple_nodes(tmp_path: Path):
@@ -1323,14 +1323,14 @@ def test_manifest_rejects_an_unknown_schema(tmp_path: Path):
 python -m pytest tests/test_fsdp_prepare.py -q
 ```
 
-Expected: `ModuleNotFoundError: No module named 'dryrun.profiler.adapters.fsdp'`.
+Expected: `ModuleNotFoundError: No module named 'srl.profiler.adapters.fsdp'`.
 
 - [ ] **Step 3: Create `config.py`**
 
-Create `dryrun/profiler/adapters/fsdp/config.py`:
+Create `srl/profiler/adapters/fsdp/config.py`:
 
 ```python
-"""Configuration for DryRun-owned FSDP2 training profiling.
+"""Configuration for SimRL-owned FSDP2 training profiling.
 
 There is no recipe inference here. Megatron needs it because its library recipes
 carry tuned defaults keyed by model family and size; an FSDP run is fully described
@@ -1445,12 +1445,12 @@ class FsdpProfileConfig:
 ```
 
 Note: importing `torch` at module scope is acceptable here because `torch` is already
-a hard dependency imported by `dryrun.cost.training.latency`; it is `megatron` and the
+a hard dependency imported by `srl.cost.training.latency`; it is `megatron` and the
 FSDP *training* APIs that must stay out of the CLI path.
 
 - [ ] **Step 4: Create `prepare.py`**
 
-Create `dryrun/profiler/adapters/fsdp/prepare.py`:
+Create `srl/profiler/adapters/fsdp/prepare.py`:
 
 ```python
 """Candidate manifests, launch specs, and torchrun commands for FSDP profiling."""
@@ -1468,7 +1468,7 @@ from .config import FsdpProfileConfig
 
 # The torchrun child entry point. Referenced by module path rather than imported so
 # that nothing on the CLI import path pulls in the FSDP training APIs.
-LAUNCH_MODULE = "dryrun.profiler.adapters.fsdp.launch"
+LAUNCH_MODULE = "srl.profiler.adapters.fsdp.launch"
 
 LAUNCH_SPEC_VERSION = 1
 
@@ -1486,7 +1486,7 @@ def write_candidate_manifest(path: str | Path, candidates: list[FsdpCandidate]) 
 
 
 def read_candidate_manifest(path: str | Path) -> list[FsdpCandidate]:
-    """Read candidates generated by DryRun-RL."""
+    """Read candidates generated by SimRL."""
     with Path(path).open(encoding="utf-8") as handle:
         value = json.load(handle)
     if value.get("schema_version") != 1:
@@ -1609,7 +1609,7 @@ def prepare_fsdp_candidate(
 
 - [ ] **Step 5: Create `execute.py`**
 
-Create `dryrun/profiler/adapters/fsdp/execute.py`:
+Create `srl/profiler/adapters/fsdp/execute.py`:
 
 ```python
 """Run one FSDP training candidate under torchrun."""
@@ -1646,10 +1646,10 @@ def run_fsdp_candidate(
 
 - [ ] **Step 6: Create the package `__init__.py`**
 
-Create `dryrun/profiler/adapters/fsdp/__init__.py`:
+Create `srl/profiler/adapters/fsdp/__init__.py`:
 
 ```python
-"""DryRun-owned FSDP2 and HSDP training profiling.
+"""SimRL-owned FSDP2 and HSDP training profiling.
 
 `launch` and `measure` construct a model and take collectives, so they are absent
 from this namespace: only the torchrun child imports them. Everything exported here
@@ -1712,10 +1712,10 @@ Expected: PASS, 13 tests.
 ```bash
 python -c "
 import sys
-import dryrun.profiler.adapters.fsdp as m
+import srl.profiler.adapters.fsdp as m
 print('imported', m.__name__)
-assert 'dryrun.profiler.adapters.fsdp.launch' not in sys.modules, 'launch leaked onto the import path'
-assert 'dryrun.profiler.adapters.fsdp.measure' not in sys.modules, 'measure leaked onto the import path'
+assert 'srl.profiler.adapters.fsdp.launch' not in sys.modules, 'launch leaked onto the import path'
+assert 'srl.profiler.adapters.fsdp.measure' not in sys.modules, 'measure leaked onto the import path'
 print('launch and measure stayed out of the namespace')
 "
 python -m pytest tests/ -q
@@ -1726,7 +1726,7 @@ Expected: both assertions hold; `646 passed` (633 + 13).
 - [ ] **Step 9: Commit**
 
 ```bash
-git add dryrun/profiler/adapters/fsdp/ tests/test_fsdp_prepare.py
+git add srl/profiler/adapters/fsdp/ tests/test_fsdp_prepare.py
 git commit -m "feat: add the FSDP profiling config, launch spec, and manifest
 
 An FSDP candidate is fully described by a checkpoint and a mesh of two
@@ -1752,12 +1752,12 @@ The one place this project writes real distributed training code. It is gated by
 two-layer smoke run before any full sweep.
 
 **Files:**
-- Create: `dryrun/profiler/adapters/fsdp/launch.py`
-- Create: `dryrun/profiler/adapters/fsdp/measure.py`
+- Create: `srl/profiler/adapters/fsdp/launch.py`
+- Create: `srl/profiler/adapters/fsdp/measure.py`
 - Test: `tests/test_fsdp_launch.py`
 
 **Interfaces:**
-- Consumes: `OOM_EXIT_CODE` from `dryrun/profiler/adapters/fsdp/execute.py`; the launch spec dict from Task 3.
+- Consumes: `OOM_EXIT_CODE` from `srl/profiler/adapters/fsdp/execute.py`; the launch spec dict from Task 3.
 - Produces:
   - `build_mesh(spec: dict[str, Any]) -> DeviceMesh`
   - `build_model(spec: dict[str, Any]) -> torch.nn.Module`
@@ -1788,8 +1788,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from dryrun.profiler.adapters.fsdp.launch import build_model, read_spec, synthetic_batch
-from dryrun.profiler.adapters.fsdp.measure import FsdpMeasurement, write_oom_sidecar
+from srl.profiler.adapters.fsdp.launch import build_model, read_spec, synthetic_batch
+from srl.profiler.adapters.fsdp.measure import FsdpMeasurement, write_oom_sidecar
 
 
 def _spec(tmp_path: Path, **overrides) -> dict:
@@ -1964,11 +1964,11 @@ def test_oom_sidecar_is_written_per_rank(tmp_path: Path):
 python -m pytest tests/test_fsdp_launch.py -q
 ```
 
-Expected: `ModuleNotFoundError: No module named 'dryrun.profiler.adapters.fsdp.launch'`.
+Expected: `ModuleNotFoundError: No module named 'srl.profiler.adapters.fsdp.launch'`.
 
 - [ ] **Step 3: Create `measure.py`**
 
-Create `dryrun/profiler/adapters/fsdp/measure.py`:
+Create `srl/profiler/adapters/fsdp/measure.py`:
 
 ```python
 """Measure step latency and per-rank memory peaks inside the FSDP training loop.
@@ -1988,7 +1988,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-SIDECAR_NAME = "dryrun_metrics.json"
+SIDECAR_NAME = "srl_metrics.json"
 
 
 def _rank() -> int:
@@ -2184,12 +2184,12 @@ def write_oom_sidecar(
             payload["device_reserved_bytes"] = int(torch.cuda.max_memory_reserved())
         _write_json_atomic(run_dir / f"oom_rank{rank}.json", payload)
     except Exception as marker_error:  # noqa: BLE001 - must never mask the OOM
-        print(f"[dryrun] rank {rank} failed to write its OOM marker: {marker_error!r}")
+        print(f"[srl] rank {rank} failed to write its OOM marker: {marker_error!r}")
 ```
 
 - [ ] **Step 4: Create `launch.py`**
 
-Create `dryrun/profiler/adapters/fsdp/launch.py`:
+Create `srl/profiler/adapters/fsdp/launch.py`:
 
 ```python
 """Torchrun entry point that profiles one FSDP2 training candidate.
@@ -2375,7 +2375,7 @@ def _measure_collectives(model, batch, optimizer, measurement) -> None:
 def main() -> None:
     """Profile one candidate and write its measurements next to the spec."""
     parser = argparse.ArgumentParser(
-        prog="dryrun-fsdp-launch",
+        prog="srl-fsdp-launch",
         description="Profile one FSDP2 training candidate under torchrun.",
     )
     parser.add_argument("--spec", required=True, help="Path to launch_spec.json.")
@@ -2493,7 +2493,7 @@ search_space:
 - [ ] **Step 7: Commit the launcher**
 
 ```bash
-git add dryrun/profiler/adapters/fsdp/launch.py dryrun/profiler/adapters/fsdp/measure.py \
+git add srl/profiler/adapters/fsdp/launch.py srl/profiler/adapters/fsdp/measure.py \
         tests/test_fsdp_launch.py examples/profile/fsdp/qwen3_8b_smoke.yaml
 git commit -m "feat: add the FSDP torchrun launcher and its measurement
 
@@ -2524,8 +2524,8 @@ cd examples/profile/fsdp
 python - <<'PY'
 from pathlib import Path
 import yaml
-from dryrun.profiler.adapters.fsdp import FsdpProfileConfig, prepare_fsdp_candidate, run_fsdp_candidate
-from dryrun.profiler.fsdp_search_space import enumerate_fsdp_candidates
+from srl.profiler.adapters.fsdp import FsdpProfileConfig, prepare_fsdp_candidate, run_fsdp_candidate
+from srl.profiler.fsdp_search_space import enumerate_fsdp_candidates
 
 raw = yaml.safe_load(Path("qwen3_8b_smoke.yaml").read_text())
 config = FsdpProfileConfig.from_dict(raw, base_dir=Path.cwd())
@@ -2545,7 +2545,7 @@ print("first candidate finished")
 PY
 ```
 
-Expected: exit 0, and the run directory contains `dryrun_metrics.json` with 12
+Expected: exit 0, and the run directory contains `srl_metrics.json` with 12
 `step_times_s` entries, 8 `rank_memory` entries, an `observed_mesh` matching the
 candidate, and a `parameter_count`.
 
@@ -2555,7 +2555,7 @@ Verify the measurement is usable before trusting it:
 python - <<'PY'
 import json, statistics
 from pathlib import Path
-metrics = json.loads(next(Path("../../../outputs/profile/qwen3_8b_smoke/fsdp/raw/fsdp").glob("*/dryrun_metrics.json")).read_text())
+metrics = json.loads(next(Path("../../../outputs/profile/qwen3_8b_smoke/fsdp/raw/fsdp").glob("*/srl_metrics.json")).read_text())
 retained = metrics["step_times_s"][4:]
 median = statistics.median(retained)
 spread = statistics.median([abs(v - median) for v in retained]) / median
@@ -2578,10 +2578,10 @@ commit the observed numbers as a fixture for Task 5:
 
 ```bash
 mkdir -p ../../../tests/fixtures/fsdp
-cp $(ls -d ../../../outputs/profile/qwen3_8b_smoke/fsdp/raw/fsdp/*/ | head -1)dryrun_metrics.json \
-   ../../../tests/fixtures/fsdp/dryrun_metrics.json
+cp $(ls -d ../../../outputs/profile/qwen3_8b_smoke/fsdp/raw/fsdp/*/ | head -1)srl_metrics.json \
+   ../../../tests/fixtures/fsdp/srl_metrics.json
 cd ../../..
-git add tests/fixtures/fsdp/dryrun_metrics.json
+git add tests/fixtures/fsdp/srl_metrics.json
 git commit -m "test: capture a measured FSDP sidecar as a collect fixture
 
 Taken from the two-layer smoke run on 8x H20 rather than hand-written, so the
@@ -2596,7 +2596,7 @@ Turn raw candidate directories into validated `ProfileRecord` objects, and make 
 wrong mesh a hard error rather than a plausible number.
 
 **Files:**
-- Modify: `dryrun/profiler/adapters/fsdp/collect.py` (replace the Task 3 placeholder)
+- Modify: `srl/profiler/adapters/fsdp/collect.py` (replace the Task 3 placeholder)
 - Test: `tests/test_fsdp_collect.py`
 
 **Interfaces:**
@@ -2619,14 +2619,14 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.adapters.fsdp import (
+from srl.profiler.adapters.fsdp import (
     FsdpProfileConfig,
     collect_fsdp_record,
     collect_fsdp_records,
     prepare_fsdp_candidate,
 )
-from dryrun.profiler.fsdp_search_space import FsdpCandidate
-from dryrun.profiler.schema import (
+from srl.profiler.fsdp_search_space import FsdpCandidate
+from srl.profiler.schema import (
     HardwareDescriptor,
     ModelDescriptor,
     ProfileValidationError,
@@ -2698,7 +2698,7 @@ def _stage(config, candidate, *, status="success", sidecar=None) -> Path:
         json.dumps({"status": status, "duration_s": 30.0}), encoding="utf-8"
     )
     if sidecar is not None:
-        (run_dir / "dryrun_metrics.json").write_text(json.dumps(sidecar), encoding="utf-8")
+        (run_dir / "srl_metrics.json").write_text(json.dumps(sidecar), encoding="utf-8")
     return run_dir
 
 
@@ -2823,7 +2823,7 @@ def test_collect_records_raises_on_a_missing_candidate(tmp_path: Path):
 
 def test_collect_matches_the_measured_smoke_sidecar():
     """The collector must accept the document the launcher actually writes."""
-    fixture = Path("tests/fixtures/fsdp/dryrun_metrics.json")
+    fixture = Path("tests/fixtures/fsdp/srl_metrics.json")
     metrics = json.loads(fixture.read_text())
     for key in ("step_times_s", "rank_memory", "microbatch_sequence_lengths", "observed_mesh"):
         assert key in metrics, key
@@ -2840,7 +2840,7 @@ Expected: FAIL with `NotImplementedError: Implemented in Task 5.`
 
 - [ ] **Step 3: Replace `collect.py`**
 
-Replace `dryrun/profiler/adapters/fsdp/collect.py` entirely:
+Replace `srl/profiler/adapters/fsdp/collect.py` entirely:
 
 ```python
 """Normalize raw FSDP candidate output into versioned profile records."""
@@ -2948,7 +2948,7 @@ def collect_fsdp_record(
     if status == "success" and not step_times and not config.allow_incomplete:
         raise ProfileValidationError(
             f"No measured step time was found for successful candidate "
-            f"{candidate.candidate_id!r}. The launcher must write dryrun_metrics.json."
+            f"{candidate.candidate_id!r}. The launcher must write srl_metrics.json."
         )
 
     rank_memory = tuple(
@@ -2957,7 +2957,7 @@ def collect_fsdp_record(
     if status == "success" and not rank_memory and not config.allow_incomplete:
         raise ProfileValidationError(
             f"No rank memory peak was found for successful candidate "
-            f"{candidate.candidate_id!r}. The launcher must write dryrun_metrics.json."
+            f"{candidate.candidate_id!r}. The launcher must write srl_metrics.json."
         )
     peak_allocated, peak_reserved = rank_memory_peaks(rank_memory)
 
@@ -3019,7 +3019,7 @@ def collect_fsdp_record(
         # The mesh is configuration rather than data partitioning, so it travels as tags
         # and reaches the artifact through the cell selector.
         tags={
-            "source": "dryrun-fsdp2-launcher",
+            "source": "srl-fsdp2-launcher",
             "shard_size": str(candidate.shard_size),
             "replicate_size": str(candidate.replicate_size),
             "optimizer_offload": str(candidate.optimizer_offload),
@@ -3058,7 +3058,7 @@ Expected: 14 new tests pass; `674 passed` (660 + 14).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add dryrun/profiler/adapters/fsdp/collect.py tests/test_fsdp_collect.py
+git add srl/profiler/adapters/fsdp/collect.py tests/test_fsdp_collect.py
 git commit -m "feat: collect FSDP candidate output into profile records
 
 The record reports dp equal to the world size, because HSDP replicates
@@ -3085,13 +3085,13 @@ The simulate side. This is where packing lives, and where the measured `16p/ws`
 layout becomes an analytic term.
 
 **Files:**
-- Create: `dryrun/cost/training/microbatch.py`
-- Create: `dryrun/cost/training/fsdp_inventory.py`
+- Create: `srl/cost/training/microbatch.py`
+- Create: `srl/cost/training/fsdp_inventory.py`
 - Test: `tests/test_microbatch_planner.py`
 - Test: `tests/test_fsdp_inventory.py`
 
 **Interfaces:**
-- Consumes: `SequenceStats` from `dryrun/profiler/schema.py`; `TrainingParallelism`, `dtype_bytes` from `dryrun/cost/training/`.
+- Consumes: `SequenceStats` from `srl/profiler/schema.py`; `TrainingParallelism`, `dtype_bytes` from `srl/cost/training/`.
 - Produces:
   - `BatchingMode` enum with members `PAD_TO_MAX = "pad_to_max"`, `TOKEN_BUDGET = "token_budget"`, `PACKED_NO_PAD = "packed_no_pad"`
   - `MicrobatchPlanner(mode: BatchingMode, *, max_tokens_per_rank: int | None = None)` with `plan(sequence_lengths: tuple[int, ...], dp: int) -> tuple[SequenceStats, ...]`
@@ -3110,7 +3110,7 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.training.microbatch import BatchingMode, MicrobatchPlanner, verl_workload
+from srl.cost.training.microbatch import BatchingMode, MicrobatchPlanner, verl_workload
 
 
 def test_verl_workload_matches_the_reference_proxy():
@@ -3223,11 +3223,11 @@ def test_plan_rejects_empty_lengths():
 python -m pytest tests/test_microbatch_planner.py -q
 ```
 
-Expected: `ModuleNotFoundError: No module named 'dryrun.cost.training.microbatch'`.
+Expected: `ModuleNotFoundError: No module named 'srl.cost.training.microbatch'`.
 
 - [ ] **Step 3: Create `microbatch.py`**
 
-Create `dryrun/cost/training/microbatch.py`:
+Create `srl/cost/training/microbatch.py`:
 
 ```python
 """Turn one global batch's real trajectory lengths into a microbatch plan.
@@ -3244,7 +3244,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from dryrun.profiler.schema import SequenceStats
+from srl.profiler.schema import SequenceStats
 
 # verl's balancing proxy: attention grows with the square of the length while the rest
 # of the layer grows linearly, and 24576 is the linear weight it uses. Reproduced
@@ -3373,7 +3373,7 @@ accumulated workload, not on group index.
 > field and a narrow-params-plus-master layout. That is Megatron's mixed-precision shape, not
 > FSDP2's. AdamW's moments inherit the module's dtype, so the launcher builds the module in
 > the master dtype and there is exactly one resident parameter copy. Task 6 shipped the
-> corrected version; read `dryrun/cost/training/fsdp_inventory.py` and
+> corrected version; read `srl/cost/training/fsdp_inventory.py` and
 > `tests/test_fsdp_inventory.py` for the delivered interface. Retained here only as the
 > historical record of what the plan originally asked for.
 
@@ -3387,7 +3387,7 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.training.fsdp_inventory import fsdp_inventory
+from srl.cost.training.fsdp_inventory import fsdp_inventory
 
 
 def test_everything_is_sharded_giving_sixteen_p_over_world_size():
@@ -3516,7 +3516,7 @@ def test_rejects_invalid_inputs():
 
 - [ ] **Step 6: Create `fsdp_inventory.py`**
 
-Create `dryrun/cost/training/fsdp_inventory.py`:
+Create `srl/cost/training/fsdp_inventory.py`:
 
 ```python
 """Static parameter, gradient, and optimizer state inventory for FSDP2.
@@ -3641,7 +3641,7 @@ Expected: 20 new tests pass; `694 passed` (674 + 20).
 - [ ] **Step 8: Commit**
 
 ```bash
-git add dryrun/cost/training/microbatch.py dryrun/cost/training/fsdp_inventory.py \
+git add srl/cost/training/microbatch.py srl/cost/training/fsdp_inventory.py \
         tests/test_microbatch_planner.py tests/test_fsdp_inventory.py
 git commit -m "feat: add the microbatch planner and the FSDP memory inventory
 
@@ -3665,12 +3665,12 @@ term would overstate FSDP memory twofold and a fitted residual would hide it."
 ### Task 7: The FSDP cost model
 
 **Files:**
-- Create: `dryrun/cost/training/fsdp.py`
-- Modify: `dryrun/cost/training/__init__.py`
+- Create: `srl/cost/training/fsdp.py`
+- Modify: `srl/cost/training/__init__.py`
 - Test: `tests/test_fsdp_cost.py`
 
 **Interfaces:**
-- Consumes: `latency_features`, `pipeline_slots`, `robust_step_time`, `step_time_dispersion` from `dryrun/cost/training/latency.py`; `fsdp_inventory` (Task 6); `MicrobatchPlanner`, `BatchingMode` (Task 6); `CostArtifact`, `ArtifactEntry`, `FitMetrics` from `dryrun/cost/artifact.py`; `profile_digest` from `dryrun/profiler/io.py`.
+- Consumes: `latency_features`, `pipeline_slots`, `robust_step_time`, `step_time_dispersion` from `srl/cost/training/latency.py`; `fsdp_inventory` (Task 6); `MicrobatchPlanner`, `BatchingMode` (Task 6); `CostArtifact`, `ArtifactEntry`, `FitMetrics` from `srl/cost/artifact.py`; `profile_digest` from `srl/profiler/io.py`.
 - Produces:
   - `FsdpLatencyModel(artifact, *, shard_size, replicate_size, recompute, optimizer_offload, reshard_after_forward, parameter_dtype, gradient_dtype, optimizer_state_dtype, planner, allow_extrapolation=False)` implementing `TrainingLatencyModel`
   - `FsdpMemoryModel(...)` with the same constructor shape, implementing `TrainingMemoryModel`
@@ -3690,16 +3690,16 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.cost.artifact import CostArtifact
-from dryrun.cost.training import TRAINING_MODEL_REGISTRY
-from dryrun.cost.training.base import (
+from srl.cost.artifact import CostArtifact
+from srl.cost.training import TRAINING_MODEL_REGISTRY
+from srl.cost.training.base import (
     TrainingOutOfDomainError,
     TrainingParallelism,
     TrainingWorkload,
 )
-from dryrun.cost.training.fsdp import FsdpTrainingCost
-from dryrun.cost.training.fsdp_inventory import fsdp_inventory
-from dryrun.profiler.schema import (
+from srl.cost.training.fsdp import FsdpTrainingCost
+from srl.cost.training.fsdp_inventory import fsdp_inventory
+from srl.profiler.schema import (
     HardwareDescriptor,
     ModelDescriptor,
     Parallelism,
@@ -3995,7 +3995,7 @@ def test_satisfies_the_contract_the_simulator_calls():
     """
     import math
 
-    from dryrun.cost.training.base import TrainingCostEstimate
+    from srl.cost.training.base import TrainingCostEstimate
 
     cost = _cost()
     workload = TrainingWorkload(
@@ -4020,12 +4020,12 @@ def test_satisfies_the_contract_the_simulator_calls():
 python -m pytest tests/test_fsdp_cost.py -q
 ```
 
-Expected: `ModuleNotFoundError: No module named 'dryrun.cost.training.fsdp'`.
+Expected: `ModuleNotFoundError: No module named 'srl.cost.training.fsdp'`.
 
 - [ ] **Step 3: Implement `fsdp.py`**
 
-Create `dryrun/cost/training/fsdp.py`. Model it closely on
-`dryrun/cost/training/hydraulis.py`, which is the working reference for cell grouping,
+Create `srl/cost/training/fsdp.py`. Model it closely on
+`srl/cost/training/hydraulis.py`, which is the working reference for cell grouping,
 `_scaled_nonnegative_fit`, OOM inequality handling, and `_check_feature`. The
 differences to implement:
 
@@ -4072,7 +4072,7 @@ differences to implement:
 
 - [ ] **Step 4: Register the model**
 
-In `dryrun/cost/training/__init__.py` add the imports, extend `__all__`, and register:
+In `srl/cost/training/__init__.py` add the imports, extend `__all__`, and register:
 
 ```python
 from .fsdp import FsdpLatencyModel, FsdpMemoryModel, FsdpTrainingCost
@@ -4097,7 +4097,7 @@ Expected: 14 new tests pass; `708 passed` (694 + 14).
 - [ ] **Step 6: Commit**
 
 ```bash
-git add dryrun/cost/training/fsdp.py dryrun/cost/training/__init__.py tests/test_fsdp_cost.py
+git add srl/cost/training/fsdp.py srl/cost/training/__init__.py tests/test_fsdp_cost.py
 git commit -m "feat: add the FSDP training cost model
 
 The latency form is the structured one from latency.py rather than a new
@@ -4122,12 +4122,12 @@ land in one cell."
 ### Task 8: CLI, configuration, and the example driver
 
 **Files:**
-- Modify: `dryrun/cli/profile.py`
-- Modify: `dryrun/cli/regress.py:93-94`
-- Modify: `dryrun/config/schema.py`
-- Modify: `dryrun/cli/main.py`
-- Modify: `dryrun/profiler/adapters/__init__.py`
-- Create: `dryrun/config/defaults/training_cost/fsdp.yaml`
+- Modify: `srl/cli/profile.py`
+- Modify: `srl/cli/regress.py:93-94`
+- Modify: `srl/config/schema.py`
+- Modify: `srl/cli/main.py`
+- Modify: `srl/profiler/adapters/__init__.py`
+- Create: `srl/config/defaults/training_cost/fsdp.yaml`
 - Create: `examples/profile/fsdp/qwen3_8b.yaml`
 - Create: `examples/profile/fsdp/profile_qwen3_8b.sh`
 - Modify: `.claude/codebase-map.md`
@@ -4135,7 +4135,7 @@ land in one cell."
 
 **Interfaces:**
 - Consumes: everything from Tasks 3-7.
-- Produces: `dryrun-profile fsdp {generate,run,collect}`; `dryrun-regress training --latency-model fsdp`; `training_cost.name=fsdp` resolvable by `build_training_cost`.
+- Produces: `srl-profile fsdp {generate,run,collect}`; `srl-regress training --latency-model fsdp`; `training_cost.name=fsdp` resolvable by `build_training_cost`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4152,7 +4152,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from dryrun.cli.profile import build_parser
+from srl.cli.profile import build_parser
 
 
 def test_parser_exposes_the_three_fsdp_workflows():
@@ -4175,7 +4175,7 @@ def test_fsdp_run_accepts_selection_and_resume():
 
 
 def test_regress_accepts_the_fsdp_models():
-    from dryrun.cli.regress import build_parser as regress_parser
+    from srl.cli.regress import build_parser as regress_parser
 
     args = regress_parser().parse_args(
         [
@@ -4195,7 +4195,7 @@ def test_regress_accepts_the_fsdp_models():
 
 
 def test_training_cost_config_carries_the_batching_mode():
-    from dryrun.config.schema import TrainingCostConfig
+    from srl.config.schema import TrainingCostConfig
 
     config = TrainingCostConfig()
     assert config.batching_mode == "pad_to_max"
@@ -4203,7 +4203,7 @@ def test_training_cost_config_carries_the_batching_mode():
 
 
 def test_fsdp_defaults_yaml_is_loadable_and_documented():
-    path = Path("dryrun/config/defaults/training_cost/fsdp.yaml")
+    path = Path("srl/config/defaults/training_cost/fsdp.yaml")
     value = yaml.safe_load(path.read_text())
     assert value["name"] == "fsdp"
     assert "batching_mode" in value
@@ -4229,7 +4229,7 @@ def test_example_sweep_retains_eight_steps():
 def test_build_training_cost_resolves_the_fsdp_name(tmp_path: Path, monkeypatch):
     from omegaconf import OmegaConf
 
-    from dryrun.cli.main import build_training_cost
+    from srl.cli.main import build_training_cost
 
     # A name with no artifact must fail loudly rather than silently falling back.
     cfg = OmegaConf.create({"name": "fsdp", "artifact_path": ""})
@@ -4248,22 +4248,22 @@ Expected: multiple failures: the `fsdp` subparser does not exist and
 
 - [ ] **Step 3: Add the CLI handlers**
 
-In `dryrun/cli/profile.py`, add the FSDP imports beside the Megatron ones:
+In `srl/cli/profile.py`, add the FSDP imports beside the Megatron ones:
 
 ```python
-from dryrun.profiler.adapters.fsdp import (
+from srl.profiler.adapters.fsdp import (
     FsdpProfileConfig,
     collect_fsdp_records,
     prepare_fsdp_candidate,
     run_fsdp_candidate,
 )
-from dryrun.profiler.adapters.fsdp import (
+from srl.profiler.adapters.fsdp import (
     read_candidate_manifest as read_fsdp_manifest,
 )
-from dryrun.profiler.adapters.fsdp import (
+from srl.profiler.adapters.fsdp import (
     write_candidate_manifest as write_fsdp_manifest,
 )
-from dryrun.profiler.fsdp_search_space import enumerate_fsdp_candidates
+from srl.profiler.fsdp_search_space import enumerate_fsdp_candidates
 ```
 
 Add a config loader mirroring `_bridge_config`, a candidate generator reading
@@ -4275,7 +4275,7 @@ functions and defaulting the collect output to
 Register the subparser immediately after the Megatron block, before `return parser`:
 
 ```python
-    fsdp = backends.add_parser("fsdp", help="Use the DryRun FSDP2 launcher.")
+    fsdp = backends.add_parser("fsdp", help="Use the SimRL FSDP2 launcher.")
     fsdp_workflows = fsdp.add_subparsers(dest="workflow", required=True)
     fsdp_generate = fsdp_workflows.add_parser("generate")
     _add_config_argument(fsdp_generate)
@@ -4298,11 +4298,11 @@ Register the subparser immediately after the Megatron block, before `return pars
 
 - [ ] **Step 4: Widen the regress choices and the config schema**
 
-In `dryrun/cli/regress.py` lines 93-94, change both `choices=["hydraulis"]` to
+In `srl/cli/regress.py` lines 93-94, change both `choices=["hydraulis"]` to
 `choices=["hydraulis", "fsdp"]`, and dispatch to `FsdpTrainingCost.fit` when the model
 is `fsdp`.
 
-In `dryrun/config/schema.py`, add to `TrainingCostConfig`:
+In `srl/config/schema.py`, add to `TrainingCostConfig`:
 
 ```python
     # How real trajectory lengths become microbatches. Profiling measures uniform
@@ -4313,20 +4313,20 @@ In `dryrun/config/schema.py`, add to `TrainingCostConfig`:
     max_tokens_per_rank: int | None = None
 ```
 
-In `dryrun/cli/main.py`, pass both through to `from_artifact` for registry models.
+In `srl/cli/main.py`, pass both through to `from_artifact` for registry models.
 
-In `dryrun/profiler/adapters/__init__.py`, export the FSDP names alongside the
+In `srl/profiler/adapters/__init__.py`, export the FSDP names alongside the
 existing Megatron and vLLM ones, keeping `__all__` sorted.
 
 - [ ] **Step 5: Create the defaults YAML**
 
-Create `dryrun/config/defaults/training_cost/fsdp.yaml`:
+Create `srl/config/defaults/training_cost/fsdp.yaml`:
 
 ```yaml
 # Fitted FSDP2/HSDP training cost. Requires a profile JSONL regression artifact.
 name: fsdp
 
-# Path to a CostArtifact produced by `dryrun-regress training --latency-model fsdp`.
+# Path to a CostArtifact produced by `srl-regress training --latency-model fsdp`.
 artifact_path: ""
 
 # Simulated mesh. Every rank consumes distinct data, so dp is the world size;
@@ -4433,7 +4433,7 @@ the config defaulting to `qwen3_8b.yaml`. Make it executable with `chmod +x`.
 ```bash
 python -m pytest tests/test_fsdp_cli.py -q
 python -m pytest tests/ -q
-python -m ruff check dryrun/ tests/
+python -m ruff check srl/ tests/
 ```
 
 Expected: 8 new tests pass; `716 passed` (708 + 8); ruff clean.
@@ -4447,7 +4447,7 @@ directory tree, and add the FSDP entries to the import-dependency order.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add dryrun/cli/ dryrun/config/ dryrun/profiler/adapters/__init__.py \
+git add srl/cli/ srl/config/ srl/profiler/adapters/__init__.py \
         examples/profile/fsdp/ tests/test_fsdp_cli.py .claude/codebase-map.md
 git commit -m "feat: expose the FSDP backend through the CLI and Hydra config
 
@@ -4468,13 +4468,13 @@ at rank two and the two overhead coefficients stop being identifiable."
 - [ ] **Step 10: Run the full sweep and report both memory targets**
 
 ```bash
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
 cd examples/profile/fsdp
 bash profile_qwen3_8b.sh generate
 bash profile_qwen3_8b.sh run --resume
 bash profile_qwen3_8b.sh collect
 cd ../../..
-dryrun-regress training --latency-model fsdp --memory-model fsdp \
+srl-regress training --latency-model fsdp --memory-model fsdp \
     --input outputs/profile/qwen3_8b/fsdp/profiles/fsdp.jsonl \
     --output outputs/cost/qwen3_8b/training_fsdp.json
 ```

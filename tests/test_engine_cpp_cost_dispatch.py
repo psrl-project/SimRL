@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.rollout import UnifiedRoofline
+from srl.cost.rollout import UnifiedRoofline
 
-pytest.importorskip("dryrun._engine_cpp")
+pytest.importorskip("srl._engine_cpp")
 
-from dryrun._engine_cpp import PyWrappedCostModel  # noqa: E402
+from srl._engine_cpp import PyWrappedCostModel  # noqa: E402
 
 
 class _SegmentAwareCost(UnifiedRoofline):

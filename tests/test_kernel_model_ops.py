@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.cost.kernel.model_ops import ModelOps
-from dryrun.profiler.schema import ProfileValidationError
+from srl.cost.kernel.model_ops import ModelOps
+from srl.profiler.schema import ProfileValidationError
 
 _CHECKPOINT = Path("/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B")
 

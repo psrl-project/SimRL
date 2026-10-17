@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import importlib.util
 import json
 import sys
@@ -51,6 +52,11 @@ WM06: dict[str, dict] = {
     "wm06_wg0": {"kv_watermark": 0.6, "window_groups": 0},
     "wm06_wg64": {"kv_watermark": 0.6, "window_groups": 64},
 }
+
+LAD: dict[str, dict] = {
+    "lad": {"lookahead_defer": True},
+    "lad_wm06": {"lookahead_defer": True, "kv_watermark": 0.6},
+}
 """The same knobs re-swept on top of the KV admission gate (wm=0.6).
 
 The original sweep above found `eps` acting as an admission throttle whose correct sign flipped
@@ -58,7 +64,30 @@ across regimes -- but that was measured with no gate. If the watermark has taken
 role, `eps` should now be a pure comparison tolerance (eps0 harmless or even free); if it still
 flips sign, the design genuinely needs both knobs. `wm06_wg0` checks whether the arrival-block
 bound still matters once the gate bounds concurrency."""
+
+DE: dict[str, dict] = {
+    "de": {"eviction_strategy": "latest_deadline"},
+    "de_wm06": {"eviction_strategy": "latest_deadline", "kv_watermark": 0.6},
+    "de_wm06_h4": {"eviction_strategy": "latest_deadline", "kv_watermark": 0.6, "horizon_buffers": 4},
+}
+"""Deadline-aware eviction: evict the resident with the latest (least urgent) deadline first.
+
+When KV pressure forces an eviction, `latest_deadline` picks the admitted group with the most
+slack rather than the most context, letting urgent groups generate uninterrupted. Tested alone
+and combined with the KV watermark admission gate (the current best admission config)."""
+
+FLOW: dict[str, dict] = {
+    "flow": {"flow_tiebreak": True},
+    "flow_wm06": {"flow_tiebreak": True, "kv_watermark": 0.6},
+    "flow_eps_big": {"flow_tiebreak": True, "eps_frac": 0.10},
+    "flow_h4": {"flow_tiebreak": True, "horizon_buffers": 4},
+}
+"""Break buffer-forecast ties by total in-flight flow time (sum of predicted finish times)."""
+
+KNOBS.update(FLOW)
 KNOBS.update(WM06)
+KNOBS.update(LAD)
+KNOBS.update(DE)
 
 
 def _load_probe():
@@ -79,9 +108,13 @@ def _worker(args_tuple):
     mdt = fa._load_dispersed_trace_module()
     cost_model = fa._composed_cost_model()
     point = next(p for p in probe.points(grid) if p.name == point_name)
+    knob_args = dict(KNOBS[knob])
+    eviction = knob_args.pop("eviction_strategy", None)
+    if eviction is not None:
+        point = dataclasses.replace(point, eviction_strategy=eviction)
     result = probe.run_arm(
         fa, point, cost_model, mdt,
-        arm=knob, strategy="inventory_deadline", strategy_args=KNOBS[knob], cap=0,
+        arm=knob, strategy="inventory_deadline", strategy_args=knob_args, cap=0,
     )
     print(f"{point_name} {knob} -> span {result.span:.0f}", flush=True)
     return {"point": point_name, "knob": knob, "result": asdict(result)}
@@ -103,7 +136,11 @@ def _run(args: argparse.Namespace) -> None:
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         rows = list(pool.map(_worker, jobs))
     path = out_dir / "results.json"
-    path.write_text(json.dumps(rows, indent=1))
+    kept = []
+    if path.exists():
+        fresh = {(row["point"], row["knob"]) for row in rows}
+        kept = [row for row in json.loads(path.read_text()) if (row["point"], row["knob"]) not in fresh]
+    path.write_text(json.dumps(kept + rows, indent=1))
     print(f"Wrote {path}")
 
 

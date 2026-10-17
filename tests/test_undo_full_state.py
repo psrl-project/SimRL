@@ -22,8 +22,8 @@ import random
 
 import pytest
 
-from dryrun.component.rollout.engine import NativeInstance, Request
-from dryrun.cost.rollout import UnifiedRoofline
+from srl.component.rollout.engine import NativeInstance, Request
+from srl.cost.rollout import UnifiedRoofline
 
 
 def full_state(inst: NativeInstance) -> dict:

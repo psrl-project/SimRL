@@ -25,12 +25,12 @@ Three of the four pipelines end in a regression:
 
 ```bash
 # rollout
-dryrun-regress rollout --model roofline \
+srl-regress rollout --model roofline \
     --input  outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl \
     --output outputs/cost/qwen3_8b/rollout_roofline.json
 
 # training
-dryrun-regress training --latency-model fsdp --memory-model fsdp \
+srl-regress training --latency-model fsdp --memory-model fsdp \
     --input  outputs/profile/qwen3_8b/fsdp/profiles/fsdp.jsonl \
     --output outputs/cost/qwen3_8b/training_fsdp.json
 ```

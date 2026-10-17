@@ -13,18 +13,18 @@ and {doc}`methodology` before committing to a full sweep.
 # Set MODEL_PATH to your Qwen3-8B (or other HuggingFace) checkpoint directory.
 export MODEL_PATH=/path/to/Qwen3-8B
 
-dryrun-profile fsdp generate --config examples/profile/fsdp/qwen3_8b.yaml
-dryrun-profile fsdp run      --config examples/profile/fsdp/qwen3_8b.yaml [--resume]
-dryrun-profile fsdp collect  --config examples/profile/fsdp/qwen3_8b.yaml [--output PATH]
+srl-profile fsdp generate --config examples/profile/fsdp/qwen3_8b.yaml
+srl-profile fsdp run      --config examples/profile/fsdp/qwen3_8b.yaml [--resume]
+srl-profile fsdp collect  --config examples/profile/fsdp/qwen3_8b.yaml [--output PATH]
 ```
 
 A smoke run uses the two-layer override config, which keeps candidates under a minute and
 verifies mesh construction and sidecar writing before investing the full sweep's time:
 
 ```bash
-dryrun-profile fsdp generate --config examples/profile/fsdp/qwen3_8b_smoke.yaml
-dryrun-profile fsdp run      --config examples/profile/fsdp/qwen3_8b_smoke.yaml
-dryrun-profile fsdp collect  --config examples/profile/fsdp/qwen3_8b_smoke.yaml
+srl-profile fsdp generate --config examples/profile/fsdp/qwen3_8b_smoke.yaml
+srl-profile fsdp run      --config examples/profile/fsdp/qwen3_8b_smoke.yaml
+srl-profile fsdp collect  --config examples/profile/fsdp/qwen3_8b_smoke.yaml
 ```
 
 Records from the smoke run carry a different `parameter_count` (two layers, not
@@ -42,10 +42,10 @@ about. Use `--index` or `--candidate-id` to re-run one specific candidate instea
 
 ```bash
 # By position in the generated list (0-indexed).
-dryrun-profile fsdp run --config examples/profile/fsdp/qwen3_8b.yaml --index 42
+srl-profile fsdp run --config examples/profile/fsdp/qwen3_8b.yaml --index 42
 
 # By the 16-character SHA-256 prefix written into candidates.json.
-dryrun-profile fsdp run --config examples/profile/fsdp/qwen3_8b.yaml --candidate-id a3f7c12d9e8b4501
+srl-profile fsdp run --config examples/profile/fsdp/qwen3_8b.yaml --candidate-id a3f7c12d9e8b4501
 ```
 
 Both flags run exactly one candidate, write its output, and exit. After collecting a
@@ -159,18 +159,18 @@ outputs/profile/qwen3_8b/fsdp/
 └── raw/fsdp/
     └── <candidate_id>/
         ├── manifest.json         ← spec echoed back by the launcher
-        ├── dryrun_metrics.json   ← timings, memory peaks, mesh (written by rank 0)
+        ├── srl_metrics.json   ← timings, memory peaks, mesh (written by rank 0)
         ├── status.json           ← "success" / "oom" / "failed"
         └── run.log               ← torchrun stdout/stderr
 ```
 
 There is no `ConfigContainer.yaml`. Instead each candidate's raw directory carries
-`dryrun_metrics.json`, which includes an `observed_mesh` field that `collect` cross-checks
+`srl_metrics.json`, which includes an `observed_mesh` field that `collect` cross-checks
 before accepting the record. A record whose `observed_mesh` disagrees with its candidate
 spec is rejected with a hard error rather than silently entering the fit attributed to the
 wrong topology.
 
-### The `dryrun_metrics.json` sidecar
+### The `srl_metrics.json` sidecar
 
 Rank zero writes this file after the timed loop completes:
 
@@ -200,7 +200,7 @@ For the full `ProfileRecord` schema see {doc}`../reference/schemas`.
 ## Fitting
 
 ```bash
-dryrun-regress training --latency-model fsdp --memory-model fsdp \
+srl-regress training --latency-model fsdp --memory-model fsdp \
     --input  outputs/profile/qwen3_8b/fsdp/profiles/fsdp.jsonl \
     --output outputs/cost/qwen3_8b/training_fsdp.json
 ```

@@ -3,24 +3,24 @@
 This op exists because substituting `context_attention` for a THD training query was wrong
 in both directions at once, and the tests record the shape of that error rather than just
 the fix. The measured numbers quoted in the docstrings come from
-`dryrun-profile kernels run --family attention_training` on H20 at tp=2.
+`srl-profile kernels run --family attention_training` on H20 at tp=2.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.database import TrainingAttentionQuery
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.interp import KernelCoverageError
-from dryrun.cost.kernel.ops.attention_training import (
+from srl.cost.kernel.database import TrainingAttentionQuery
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.interp import KernelCoverageError
+from srl.cost.kernel.ops.attention_training import (
     TRAINING_ATTENTION_BACKWARD_OP,
     TRAINING_ATTENTION_FORWARD_OP,
     TRAINING_MASK_TYPES,
 )
-from dryrun.cost.kernel.ops.base import op_for
-from dryrun.profiler.kernel.sweep import TrainingAttentionSweep
-from dryrun.profiler.schema import ProfileValidationError
+from srl.cost.kernel.ops.base import op_for
+from srl.profiler.kernel.sweep import TrainingAttentionSweep
+from srl.profiler.schema import ProfileValidationError
 
 _SLICE = (4, 128, "bfloat16", "padding_causal")
 
@@ -207,7 +207,7 @@ def test_a_table_measured_on_the_unfused_fallback_is_refused():
     fallback, which materializes the full attention matrix and is several times slower than
     the kernel a training step runs.
     """
-    from dryrun.profiler.kernel.runner.attention_training import _require_fused_backend
+    from srl.profiler.kernel.runner.attention_training import _require_fused_backend
 
     with pytest.raises(ProfileValidationError, match="post-release flash-attn wheel"):
         _require_fused_backend({"UnfusedDotProductAttention"})
@@ -215,14 +215,14 @@ def test_a_table_measured_on_the_unfused_fallback_is_refused():
 
 def test_a_table_spanning_two_backends_is_refused():
     """One table must describe one kernel."""
-    from dryrun.profiler.kernel.runner.attention_training import _require_fused_backend
+    from srl.profiler.kernel.runner.attention_training import _require_fused_backend
 
     with pytest.raises(ProfileValidationError, match="more than one backend"):
         _require_fused_backend({"FlashAttention", "FusedAttention"})
 
 
 def test_an_empty_sweep_is_refused_rather_than_writing_an_empty_table():
-    from dryrun.profiler.kernel.runner.attention_training import _require_fused_backend
+    from srl.profiler.kernel.runner.attention_training import _require_fused_backend
 
     with pytest.raises(ProfileValidationError, match="No attention call was made"):
         _require_fused_backend(set())
@@ -242,7 +242,7 @@ def test_the_dispatch_floor_is_fitted_at_the_top_of_the_candidate_grid():
     value cannot be mistaken for a measurement, and fails if someone widens the grid without
     revisiting it.
     """
-    from dryrun.cost.kernel.sol import FALLBACK_FLOORS_S
+    from srl.cost.kernel.sol import FALLBACK_FLOORS_S
 
     megatron = FALLBACK_FLOORS_S["megatron"]
     assert megatron["training_attention_forward"] == 80e-6
@@ -251,7 +251,7 @@ def test_the_dispatch_floor_is_fitted_at_the_top_of_the_candidate_grid():
 
 def test_a_fused_backend_passes():
     """FlashAttention is what TE selects for THD on sm90, measured rather than assumed."""
-    from dryrun.profiler.kernel.runner.attention_training import _require_fused_backend
+    from srl.profiler.kernel.runner.attention_training import _require_fused_backend
 
     _require_fused_backend({"FlashAttention"})
     _require_fused_backend({"FusedAttention"})
@@ -263,8 +263,8 @@ def test_training_ops_builds_queries_against_the_training_family():
     The mis-sharding this guards against is subtle: both queries carry `num_heads` and a
     token count, so a composition reading the wrong family produces a plausible number.
     """
-    from dryrun.cost.training.training_ops import TrainingOps
-    from dryrun.profiler.schema import ModelDescriptor
+    from srl.cost.training.training_ops import TrainingOps
+    from srl.profiler.schema import ModelDescriptor
 
     model = ModelDescriptor(
         name="test",

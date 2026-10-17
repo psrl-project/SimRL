@@ -5,7 +5,7 @@ from __future__ import annotations
 import pyarrow.parquet as pq
 import pytest
 
-from dryrun.profiler.kernel.measurements import PerfTableWriter
+from srl.profiler.kernel.measurements import PerfTableWriter
 
 
 @pytest.fixture
@@ -44,8 +44,8 @@ def test_a_gemm_table_is_written_with_provenance_and_payload(writer):
 
 def test_the_written_table_loads_back_through_its_op(writer):
     """A table the writer produced must satisfy the reader's contract by construction."""
-    from dryrun.cost.kernel.ops.base import op_for
-    from dryrun.cost.kernel.table import KernelTable
+    from srl.cost.kernel.ops.base import op_for
+    from srl.cost.kernel.table import KernelTable
 
     path = writer.write("gemm", [_gemm_row(1), _gemm_row(16)])
     table = KernelTable.load(path, op_for("gemm"))
@@ -74,7 +74,7 @@ def test_an_empty_row_list_is_rejected(writer):
 
 
 def test_an_unknown_op_is_rejected(writer):
-    from dryrun.cost.kernel.interp import KernelCoverageError
+    from srl.cost.kernel.interp import KernelCoverageError
 
     with pytest.raises(KernelCoverageError, match="wodget"):
         writer.write("wodget", [{"latency_s": 1.0}])

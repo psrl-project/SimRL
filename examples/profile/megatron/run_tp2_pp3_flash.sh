@@ -3,7 +3,7 @@
 # the PSRL baseline.
 #
 # The old megatron_tp2_pp3 tree was profiled 2026-09-28 before the
-# attention_backend fix in dryrun/profiler/adapters/megatron/launch.py. Every
+# attention_backend fix in srl/profiler/adapters/megatron/launch.py. Every
 # candidate there used cuDNN SDPA (the recipe default of None on H20), while
 # verl's Megatron engine explicitly passes AttnBackend.flash. That single
 # difference was the dominant source of the 1.84x gap between profiled step
@@ -22,7 +22,7 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${ROOT_DIR}"
 
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
 
 FLASH_OUT="${ROOT_DIR}/outputs/profile/qwen3_8b/megatron_tp2_pp3_flash"
 COST_OUT="${ROOT_DIR}/outputs/cost/qwen3_8b_tp2_pp3_flash"
@@ -44,7 +44,7 @@ for i in "${!CONFIGS[@]}"; do
     cfg="${CONFIGS[$i]}"
     cands="${CANDIDATE_FILES[$i]}"
     echo "Generating: ${cfg}"
-    dryrun-profile megatron generate \
+    srl-profile megatron generate \
         --config "${cfg}" \
         --candidates "${cands}"
 done
@@ -58,7 +58,7 @@ for i in "${!CONFIGS[@]}"; do
     echo ""
     echo "--- Running ${cfg} (${n} candidates) ---"
     # Omitting --index runs all candidates
-    dryrun-profile megatron run \
+    srl-profile megatron run \
         --config "${cfg}" \
         --candidates "${cands}"
 done
@@ -69,14 +69,14 @@ for i in "${!CONFIGS[@]}"; do
     cfg="${CONFIGS[$i]}"
     cands="${CANDIDATE_FILES[$i]}"
     echo "Collecting: ${cfg}"
-    dryrun-profile megatron collect \
+    srl-profile megatron collect \
         --config "${cfg}" \
         --candidates "${cands}"
 done
 
 echo ""
 echo "=== PHASE 4: fit cost model ==="
-dryrun-regress training \
+srl-regress training \
     --latency-model hydraulis \
     --memory-model hydraulis \
     --input "${FLASH_OUT}/profiles/megatron_bridge.jsonl" \

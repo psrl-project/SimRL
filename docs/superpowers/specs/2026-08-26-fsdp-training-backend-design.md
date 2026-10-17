@@ -5,7 +5,7 @@
 
 ## Motivation
 
-The training side of DryRun-RL only models Megatron. Megatron is powerful but has a
+The training side of SimRL only models Megatron. Megatron is powerful but has a
 large hyperparameter surface and many parallelism modes, which makes both profiling
 sweeps and cost-model cells expensive. FSDP2 (and its hybrid-shard form, HSDP) is the
 other backend real RL systems use: psrl drives it through verl with
@@ -97,7 +97,7 @@ Measured with a 1.611B-parameter model, world size 4, `MixedPrecisionPolicy`
 | master + Adam moments | `12p/DP`, sharded | `12p/ws`, sharded |
 | total | ~`59 GiB` for 8.19B at DP8 | `16p/ws` exactly (6.078 vs 6.000 GiB) |
 
-`dryrun/cost/training/inventory.py` documents that Megatron's fp32 gradient buffer is
+`srl/cost/training/inventory.py` documents that Megatron's fp32 gradient buffer is
 *not* DP-sharded, which is why a naive analytic model understates it roughly twofold.
 That is **Megatron-specific**: FSDP2 reduce-scatters per layer into already-sharded
 gradients, so no full-size buffer exists. Reusing `parameter_inventory` unchanged would
@@ -136,10 +136,10 @@ Three consequences:
 
    | site | role |
    |---|---|
-   | `dryrun/profiler/schema.py:374` | `TrainingPayload`, the collected record |
-   | `dryrun/cost/training/base.py:66` | `TrainingWorkload`, the simulate-side query |
-   | `dryrun/profiler/search_space.py:44` | `TrainingCandidate` (Megatron's own; FSDP gets `FsdpCandidate`) |
-   | `dryrun/cost/training/hydraulis.py:78` | Hydraulis's record filter, which must keep excluding non-1F1B so FSDP records are never fitted by the Megatron model |
+   | `srl/profiler/schema.py:374` | `TrainingPayload`, the collected record |
+   | `srl/cost/training/base.py:66` | `TrainingWorkload`, the simulate-side query |
+   | `srl/profiler/search_space.py:44` | `TrainingCandidate` (Megatron's own; FSDP gets `FsdpCandidate`) |
+   | `srl/cost/training/hydraulis.py:78` | Hydraulis's record filter, which must keep excluding non-1F1B so FSDP records are never fitted by the Megatron model |
 
    The first two accept `"fsdp"`. The third is unchanged, because FSDP uses a separate
    candidate type. The fourth stays restrictive by design: it is what keeps the two
@@ -156,7 +156,7 @@ Three consequences:
 
 ### 1. Shared training-adapter layer (new)
 
-`dryrun/profiler/adapters/training/`: genuinely backend-agnostic code, extracted from
+`srl/profiler/adapters/training/`: genuinely backend-agnostic code, extracted from
 the Megatron adapter and consumed by both. Sibling to `megatron/`, `vllm/`, `fsdp/`.
 
 **`run.py`** (~85 lines)
@@ -190,7 +190,7 @@ matches:
 
 ### 2. FSDP profiler adapter (new)
 
-`dryrun/profiler/adapters/fsdp/`, mirroring Megatron's stage boundaries.
+`srl/profiler/adapters/fsdp/`, mirroring Megatron's stage boundaries.
 
 **`config.py`**: `FsdpProfileConfig`, frozen, `from_dict` for YAML. Fields: `model`
 (via `model_descriptor_from_yaml`), `hardware`, `output_dir`, `compute_dtype`,
@@ -208,7 +208,7 @@ pinned to `1`; a value greater than 1 fails fast with an explicit not-implemente
 message.
 
 **`prepare.py`**: writes `launch_spec.json` (schema-versioned) and `manifest.json`,
-builds the `torchrun ... -m dryrun.profiler.adapters.fsdp.launch --spec ...` command.
+builds the `torchrun ... -m srl.profiler.adapters.fsdp.launch --spec ...` command.
 
 **`launch.py`**: the torchrun child; imports torch only at call time, never from the
 package namespace. Responsibilities:
@@ -236,12 +236,12 @@ candidate, so a silently-wrong mesh fails loudly instead of yielding plausible n
 
 ### 3. Cost model (new)
 
-**`dryrun/cost/training/fsdp_inventory.py`**: `fsdp_inventory(...)`, the FSDP static
+**`srl/cost/training/fsdp_inventory.py`**: `fsdp_inventory(...)`, the FSDP static
 layout (`16p/ws`, everything sharded), separate from `parameter_inventory` because the
 sharding rule genuinely differs. It accounts for `optimizer_offload` moving the fp32
 master and Adam moments off device.
 
-**`dryrun/cost/training/microbatch.py`**: `MicrobatchPlanner` and `MicrobatchPlan`.
+**`srl/cost/training/microbatch.py`**: `MicrobatchPlanner` and `MicrobatchPlan`.
 Three modes:
 - `pad_to_max`: every microbatch padded to its longest sequence; costed tokens are
   `n_seqs * max_L`.
@@ -252,9 +252,9 @@ Three modes:
 `packed_no_pad` requires flash-attn, which is now present; the planner asserts this at
 construction rather than silently mispricing.
 
-**`dryrun/cost/training/fsdp.py`**
+**`srl/cost/training/fsdp.py`**
 - `FsdpLatencyModel.predict(workload, parallelism) -> float`, reusing the physically
-  structured form in `dryrun/cost/training/latency.py` (added by the Megatron work in
+  structured form in `srl/cost/training/latency.py` (added by the Megatron work in
   `8523dd9`):
 
   ```
@@ -321,11 +321,11 @@ what would validate it.
 
 ### 4. CLI, config, examples
 
-- `dryrun-profile fsdp {generate,run,collect}`, matching the Megatron subcommands.
-- `dryrun-regress training --latency-model fsdp --memory-model fsdp`; both flags
-  currently hard-code `choices=["hydraulis"]` (`dryrun/cli/regress.py:93-94`) and gain
+- `srl-profile fsdp {generate,run,collect}`, matching the Megatron subcommands.
+- `srl-regress training --latency-model fsdp --memory-model fsdp`; both flags
+  currently hard-code `choices=["hydraulis"]` (`srl/cli/regress.py:93-94`) and gain
   `"fsdp"`.
-- `dryrun/config/defaults/training_cost/fsdp.yaml`, plus `batching_mode` and
+- `srl/config/defaults/training_cost/fsdp.yaml`, plus `batching_mode` and
   `max_tokens_per_rank` on `TrainingCostConfig`, and `build_training_cost` wiring.
 - `examples/profile/fsdp/qwen3_8b.yaml`, `qwen3_8b_smoke.yaml`
   (`num_layers_override: 2`), and `profile_qwen3_8b.sh`.

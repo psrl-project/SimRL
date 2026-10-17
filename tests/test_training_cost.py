@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.cost.artifact import CostArtifact
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.cost.training import (
+from srl.cost.artifact import CostArtifact
+from srl.cost.rollout import UnifiedRoofline
+from srl.cost.training import (
     AnalyticalTrainingCost,
     HydraulisTrainingCost,
     LinearTrainingCost,
@@ -17,10 +17,10 @@ from dryrun.cost.training import (
     TrainingWorkload,
     parameter_inventory,
 )
-from dryrun.cost.training.activation import ActivationGeometry, activation_bytes
-from dryrun.cost.training.inventory import heaviest_stage_parameters
-from dryrun.policy.psrl import PSRLPolicy
-from dryrun.profiler.schema import (
+from srl.cost.training.activation import ActivationGeometry, activation_bytes
+from srl.cost.training.inventory import heaviest_stage_parameters
+from srl.policy.psrl import PSRLPolicy
+from srl.profiler.schema import (
     BYTES_PER_MIB,
     HardwareDescriptor,
     ModelDescriptor,
@@ -32,10 +32,10 @@ from dryrun.profiler.schema import (
     SoftwareDescriptor,
     TrainingPayload,
 )
-from dryrun.simulator import SimConfig, Simulator
-from dryrun.telemetry.store import JsonlStore
-from dryrun.workload.distributions import uniform
-from dryrun.workload.grouped import GroupedWorkload
+from srl.simulator import SimConfig, Simulator
+from srl.telemetry.store import JsonlStore
+from srl.workload.distributions import uniform
+from srl.workload.grouped import GroupedWorkload
 
 PARAMETER_COUNT = 10_000_000
 # (per_step_overhead, token_cost, microbatch_overhead) for the physical latency form
@@ -416,7 +416,7 @@ class TestDynamicBatching:
     """Grouping microbatches by token budget rather than by sequence count."""
 
     def test_packs_to_the_budget_instead_of_a_fixed_count(self):
-        from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
+        from srl.cost.training.base import TrainingParallelism, TrainingWorkload
 
         # Four sequences, budget fits two of them per microbatch.
         workload = TrainingWorkload(
@@ -431,7 +431,7 @@ class TestDynamicBatching:
         assert [m.sum_tokens for m in microbatches] == [2000, 2000]
 
     def test_count_based_grouping_is_unchanged_when_no_budget_is_set(self):
-        from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
+        from srl.cost.training.base import TrainingParallelism, TrainingWorkload
 
         workload = TrainingWorkload(
             sequence_lengths=(1000, 1000, 1000, 1000),
@@ -443,7 +443,7 @@ class TestDynamicBatching:
         assert len(microbatches) == 4
 
     def test_ragged_batch_packs_greedily(self):
-        from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
+        from srl.cost.training.base import TrainingParallelism, TrainingWorkload
 
         # First-fit on the descending order 900, 600, 500, 400 under a 1000 budget:
         # 900 alone (600 would overflow), then 600 alone (500 would overflow), then
@@ -460,7 +460,7 @@ class TestDynamicBatching:
 
     def test_attention_does_not_cross_sequences_inside_a_pack(self):
         """A packed microbatch sums each sequence's square, not the square of the total."""
-        from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
+        from srl.cost.training.base import TrainingParallelism, TrainingWorkload
 
         workload = TrainingWorkload(
             sequence_lengths=(1000, 1000),
@@ -482,7 +482,7 @@ class TestDynamicBatching:
         wrong count: greedy first-fit gave 60 microbatches on the measured
         PSRL batch where the real trainer produced 44.
         """
-        from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
+        from srl.cost.training.base import TrainingParallelism, TrainingWorkload
 
         workload = TrainingWorkload(
             sequence_lengths=(5000,),
@@ -501,7 +501,7 @@ class TestDynamicBatching:
         Checked against the real run: instrumenting PSRL measured 44
         microbatches, and ceil(563200 / 12800) is 44.
         """
-        from dryrun.cost.training.base import TrainingParallelism, TrainingWorkload
+        from srl.cost.training.base import TrainingParallelism, TrainingWorkload
 
         one_rank = TrainingParallelism(tp=1, pp=1, dp=1, cp=1)
         # 64 sequences summing to 563_200 at a 12_800 budget -> 44 groups.

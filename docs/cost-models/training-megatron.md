@@ -41,7 +41,7 @@ where:
 - $c_{q}$ is a per-squared-token cost, capturing work quadratic in sequence length.
 - $c_{\text{mb}}$ is a per-microbatch overhead charged once per slot regardless of token count.
 
-In code (`dryrun/cost/training/latency.py`, shared with the FSDP model):
+In code (`srl/cost/training/latency.py`, shared with the FSDP model):
 
 ```python
 latency = coefficients["per_step_overhead"] + features.slots * (
@@ -143,7 +143,7 @@ rather than a footprint. See {doc}`../profiling/methodology` for the general les
 
 ### Parameter inventory
 
-`parameter_inventory` (in `dryrun/cost/training/inventory.py`) accounts for four distinct
+`parameter_inventory` (in `srl/cost/training/inventory.py`) accounts for four distinct
 resident pools, sized by the most-loaded pipeline stage:
 
 | pool | size per rank | conditions |
@@ -194,7 +194,7 @@ activation term as useful structure rather than as a calibrated activation predi
 ## Fitting
 
 ```bash
-dryrun-regress training \
+srl-regress training \
     --latency-model hydraulis \
     --memory-model hydraulis \
     --input  outputs/profile/qwen3_8b/megatron_bridge/profiles/megatron_bridge.jsonl \

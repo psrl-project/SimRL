@@ -7,7 +7,7 @@ import random
 import pytest
 
 try:
-    from dryrun._engine_cpp import (
+    from srl._engine_cpp import (
         CppInstance,
         CppRequest,
         UnifiedRooflineCostModel,
@@ -16,9 +16,9 @@ try:
 except ImportError:
     HAS_CPP = False
 
-from dryrun.component.rollout.engine.instance import NativeInstance
-from dryrun.component.rollout.engine.request import Request
-from dryrun.cost.rollout import UnifiedRoofline
+from srl.component.rollout.engine.instance import NativeInstance
+from srl.component.rollout.engine.request import Request
+from srl.cost.rollout import UnifiedRoofline
 
 pytestmark = pytest.mark.skipif(not HAS_CPP, reason="C++ engine not compiled")
 
@@ -253,8 +253,8 @@ def test_cpp_cost_model_matches_python():
 
 def test_cpp_advance_module_matches_python():
     """Verify that the C++ advance functions match the Python ones."""
-    from dryrun._engine_cpp import crossing_step, elapsed, steps_within, next_completion
-    from dryrun.cost.rollout import advance
+    from srl._engine_cpp import crossing_step, elapsed, next_completion, steps_within
+    from srl.cost.rollout import advance
 
     test_cases = [
         (0.005, 0.001, 0.0001),

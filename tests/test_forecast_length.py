@@ -7,8 +7,8 @@ import statistics
 
 import pytest
 
-from dryrun.component.rollout.engine import Request, TrajView, traj_view
-from dryrun.forecast import (
+from srl.component.rollout.engine import Request, TrajView, traj_view
+from srl.forecast import (
     LENGTH_PREDICTORS,
     NoisyOracleLength,
     OracleLength,

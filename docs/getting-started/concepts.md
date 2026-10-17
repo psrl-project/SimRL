@@ -10,7 +10,7 @@ words but carry a precise meaning that differs from ordinary usage.
 
 A `ProfileRecord` is one validated observation of a real system: a single profiling run
 on specific hardware, at a specific topology, producing specific timing and memory
-numbers. It is a frozen dataclass defined in `dryrun/profiler/schema.py`.
+numbers. It is a frozen dataclass defined in `srl/profiler/schema.py`.
 
 Every record carries five groups of metadata:
 
@@ -39,7 +39,7 @@ records. Adding a new backend means writing a new adapter and adding nothing els
 
 ## CostArtifact and ArtifactEntry: the fitted model envelope
 
-A `CostArtifact` is the JSON file produced by `dryrun-regress`. It stores everything a
+A `CostArtifact` is the JSON file produced by `srl-regress`. It stores everything a
 cost model needs to make predictions, without importing any benchmark process.
 
 The outer `CostArtifact` carries:
@@ -116,7 +116,7 @@ features are safe to extrapolate upward.
 
 ## Slice vs. axis: how kernel tables are indexed
 
-Every kernel op in `dryrun/cost/kernel/ops/` declares two column lists:
+Every kernel op in `srl/cost/kernel/ops/` declares two column lists:
 
 - **`slice_columns`**: columns used for exact lookup. Queries must match a profiled
   value in every slice column exactly, or the lookup raises a coverage error.
@@ -177,10 +177,10 @@ when the kernel is otherwise too small to dominate. GEMM does not need a floor:
 its holdout MRE is 3.91% without one, and it lives in the compute- or bandwidth-limited
 regime rather than the dispatch-limited one.
 
-Floors are fitted per-backend and per-op by `dryrun-profile kernels fit-floor`. The
+Floors are fitted per-backend and per-op by `srl-profile kernels fit-floor`. The
 fitted values for H20 (vllm backend) are: `context_attention` 32 µs,
 `generation_attention` 22 µs, `elementwise` 2 µs, `all_reduce` 2 µs. The code in
-`dryrun/cost/kernel/sol.py` documents the fallback values and their origin.
+`srl/cost/kernel/sol.py` documents the fallback values and their origin.
 
 ---
 
@@ -219,7 +219,7 @@ another, or one is constant), the matrix is *rank-deficient*: there are infinite
 coefficient sets that fit the data equally well, and the solver cannot choose between
 them.
 
-DryRun-RL's training fitters report `design_rank` in `FitMetrics` and raise rather than
+SimRL's training fitters report `design_rank` in `FitMetrics` and raise rather than
 returning degenerate coefficients when the matrix is rank-deficient. The most common
 cause is sweeping only one axis while the model needs two. For the FSDP latency model,
 the design row is `[1, nmb * tokens, nmb, nmb * sum_squared_tokens]`, which is four columns.
@@ -261,10 +261,10 @@ model quietly more conservative in a way no metric reports.
 ```{glossary}
 ProfileRecord
     One validated profiling observation. The JSONL boundary between an adapter and a
-    cost model. Defined in `dryrun/profiler/schema.py`.
+    cost model. Defined in `srl/profiler/schema.py`.
 
 CostArtifact
-    The JSON envelope produced by `dryrun-regress`. Contains one or more
+    The JSON envelope produced by `srl-regress`. Contains one or more
     `ArtifactEntry` objects, one per cell.
 
 ArtifactEntry

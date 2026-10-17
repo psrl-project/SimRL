@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.value import BatchState, TrainCycle, TrajView, Valuator, decode_rates
-from dryrun.value.length import LengthModel
+from srl.value import BatchState, TrainCycle, TrajView, Valuator, decode_rates
+from srl.value.length import LengthModel
 
 
 class ConstantValue:

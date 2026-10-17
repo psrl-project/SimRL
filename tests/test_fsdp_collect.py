@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.profiler.adapters.fsdp import (
+from srl.profiler.adapters.fsdp import (
     FsdpProfileConfig,
     collect_fsdp_record,
     collect_fsdp_records,
     prepare_fsdp_candidate,
 )
-from dryrun.profiler.fsdp_search_space import FsdpCandidate
-from dryrun.profiler.schema import (
+from srl.profiler.fsdp_search_space import FsdpCandidate
+from srl.profiler.schema import (
     HardwareDescriptor,
     ModelDescriptor,
     ProfileValidationError,
@@ -87,7 +87,7 @@ def _stage(config, candidate, *, status="success", sidecar=None) -> Path:
         json.dumps({"status": status, "duration_s": 30.0}), encoding="utf-8"
     )
     if sidecar is not None:
-        (run_dir / "dryrun_metrics.json").write_text(json.dumps(sidecar), encoding="utf-8")
+        (run_dir / "srl_metrics.json").write_text(json.dumps(sidecar), encoding="utf-8")
     return run_dir
 
 
@@ -242,7 +242,7 @@ def test_collect_round_trips_the_measured_smoke_sidecar(tmp_path: Path):
     ``collect_fsdp_record`` pins the round trip end-to-end, so any breakage in
     field parsing surfaces immediately rather than at fit time.
     """
-    fixture = Path("tests/fixtures/fsdp/dryrun_metrics.json")
+    fixture = Path("tests/fixtures/fsdp/srl_metrics.json")
     # The candidate parameters here must match the fixture's observed_mesh and
     # microbatch_sequence_lengths exactly, or the mesh cross-check will reject the record.
     candidate = _candidate(
@@ -259,7 +259,7 @@ def test_collect_round_trips_the_measured_smoke_sidecar(tmp_path: Path):
     (run_dir / "status.json").write_text(
         json.dumps({"status": "success", "duration_s": 60.0}), encoding="utf-8"
     )
-    (run_dir / "dryrun_metrics.json").write_text(fixture.read_text(), encoding="utf-8")
+    (run_dir / "srl_metrics.json").write_text(fixture.read_text(), encoding="utf-8")
 
     record = collect_fsdp_record(config, candidate)
 
@@ -302,7 +302,7 @@ def test_validate_observed_mesh_tolerates_absent_key_when_allow_incomplete(tmp_p
 def test_validate_observed_mesh_tolerates_absent_key_on_non_success_run(tmp_path: Path):
     """An OOM or failed run may have died before writing the sidecar; the record is still wanted."""
     config, candidate = _config(tmp_path), _candidate()
-    # Stage without a sidecar (launcher died before writing dryrun_metrics.json).
+    # Stage without a sidecar (launcher died before writing srl_metrics.json).
     _, run_dir = prepare_fsdp_candidate(config, candidate)
     (run_dir / "status.json").write_text(
         json.dumps({"status": "failed", "duration_s": 5.0}), encoding="utf-8"

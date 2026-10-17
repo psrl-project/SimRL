@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from dryrun.workload.sharding import (
+from srl.workload.sharding import (
     Worker,
     build_workers,
     inspect_shard,
@@ -18,7 +18,7 @@ from dryrun.workload.sharding import (
     shard_path,
     verify_collection,
 )
-from dryrun.workload.trace import RequestGroup, read_group_trace, write_group_trace
+from srl.workload.trace import RequestGroup, read_group_trace, write_group_trace
 
 
 class TestParseHostsFile:

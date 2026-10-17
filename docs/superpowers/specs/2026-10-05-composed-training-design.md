@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-05
 **Status:** implemented. B0-B5 delivered; B4's DP term remains unvalidated by design (§3 B8).
-**Repo:** `/apdcephfs_zwfy/share_303760348/lhy/DryRun-RL`
+**Repo:** `/apdcephfs_zwfy/share_303760348/lhy/SimRL`
 **Depends on:** `2026-10-04-collective-ops-design.md` (Spec A), implemented and gated.
 
 ## 0. Result, and where this design was wrong
@@ -108,7 +108,7 @@ Holdouts for the three new ops: `training_attention_forward` 5.66% (48 points),
 
 ## 1. Context
 
-`dryrun/cost/training/latency.py` predicts a training step from four fitted coefficients
+`srl/cost/training/latency.py` predicts a training step from four fitted coefficients
 over whole-step wall times. Its own docstring names the alternative: "feeding training GEMMs
 through the same kernel tables is the principled next step rather than another fitted
 polynomial term." The rollout side already does exactly that and reaches 2.96-3.64% MRE at
@@ -285,15 +285,15 @@ coefficients. It is constructed from a kernel table root plus a model checkpoint
 ## 4. Architecture
 
 ```
-dryrun/cost/kernel/ops/
+srl/cost/kernel/ops/
 ├── attention_backward.py   AttentionBackwardKernelOp   (new; family "attention")
 └── optimizer.py            OptimizerStepKernelOp       (new; family "optimizer")
 
-dryrun/profiler/kernels/
+srl/profiler/kernels/
 ├── attention_bwd.py        cuDNN fused_attn_bwd timing  (new)
 └── optimizer.py            fused Adam timing            (new)
 
-dryrun/cost/training/
+srl/cost/training/
 ├── training_ops.py         TrainingOps: the per-microbatch op list   (new)
 └── composed.py             ComposedTraining(TrainingLatencyModel)    (new)
 ```
@@ -356,7 +356,7 @@ before anything is built on top.
 7. **No regression.** The rollout path must be untouched: `tests/test_collective_baseline_regression.py`
    and the composed-rollout tests pass with values re-pinned only where B0's re-sweep moved them.
 
-All GPU work requires `source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh`.
+All GPU work requires `source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh`.
 
 ## 7. Deliberately out of scope
 

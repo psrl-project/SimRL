@@ -1,6 +1,6 @@
-# DryRun-RL
+# SimRL
 
-DryRun-RL is a discrete-event simulator for asynchronous, disaggregated RL post-training of large language
+SimRL is a discrete-event simulator for asynchronous, disaggregated RL post-training of large language
 models. You profile a real system once, fit cost models from those measurements, then simulate configurations
 you never ran (different parallelism, staleness policies, or rollout-to-training ratios) in seconds rather
 than GPU-hours.
@@ -12,7 +12,7 @@ silently.
 ## Install
 
 ```bash
-conda create -n dryrun-rl python=3.12 -y && conda activate dryrun-rl
+conda create -n simrl python=3.12 -y && conda activate simrl
 bash third_party/install.sh
 pip install -e ".[dev]"
 ```
@@ -26,7 +26,7 @@ conda environment. It also builds flash-attn from source. The source trees are n
 No GPU, no profiling data, and no checkpoint required:
 
 ```bash
-dryrun policy=areal rollout_cost=roofline training_cost=fixed workload=uniform \
+srl policy=areal rollout_cost=roofline training_cost=fixed workload=uniform \
     job.n_versions=5 job.batch_size=32 rollout.n_instances=2
 ```
 

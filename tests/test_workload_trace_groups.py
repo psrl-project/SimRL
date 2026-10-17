@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from dryrun.workload.trace import (
+from srl.workload.trace import (
     RequestGroup,
     compute_group_stats,
     compute_length_stats,

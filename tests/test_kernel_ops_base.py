@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.cost.kernel.interp import KernelCoverageError
-from dryrun.cost.kernel.ops.base import (
+from srl.cost.kernel.interp import KernelCoverageError
+from srl.cost.kernel.ops.base import (
     OP_REGISTRY,
     families,
     op_for,
@@ -15,7 +15,7 @@ from dryrun.cost.kernel.ops.base import (
     ops_in,
     register_op,
 )
-from dryrun.cost.kernel.sol import SolComponents
+from srl.cost.kernel.sol import SolComponents
 
 
 class _FakeOp:
@@ -119,7 +119,7 @@ def test_the_registry_import_does_not_load_torch():
     import sys
 
     probe = (
-        "import sys; import dryrun.cost.kernel.ops.base; "
+        "import sys; import srl.cost.kernel.ops.base; "
         "assert 'torch' not in sys.modules, 'ops.base pulled in torch'; "
         "assert 'vllm' not in sys.modules, 'ops.base pulled in vllm'; print('clean')"
     )
@@ -130,7 +130,7 @@ def test_the_registry_import_does_not_load_torch():
 
 def test_the_table_module_no_longer_exports_a_schema_type():
     """TableSchema is absorbed into KernelOp; leaving an alias invites two sources of truth."""
-    import dryrun.cost.kernel.table as table_module
+    import srl.cost.kernel.table as table_module
 
     for name in (
         "TableSchema",
@@ -149,8 +149,8 @@ def test_a_table_loads_against_an_op_and_exposes_it():
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from dryrun.cost.kernel.ops.gemm import GEMM_OP
-    from dryrun.cost.kernel.table import KernelTable
+    from srl.cost.kernel.ops.gemm import GEMM_OP
+    from srl.cost.kernel.table import KernelTable
 
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "gemm_perf.parquet"
@@ -181,7 +181,7 @@ def test_the_config_serves_a_sweep_per_op_name():
     import os
     from pathlib import Path as _Path
 
-    from dryrun.profiler.kernel.config import KernelProfileConfig
+    from srl.profiler.kernel.config import KernelProfileConfig
 
     config_path = _Path(__file__).resolve().parents[1] / "examples" / "profile" / "kernel" / "qwen3_8b_h20_tp1.yaml"
     if not config_path.is_file():
@@ -196,7 +196,7 @@ def test_the_config_serves_a_sweep_per_op_name():
     # Load through the CLI's loader, not `yaml.safe_load`: the example configs read
     # their checkpoint from `${oc.env:MODEL_PATH,...}`, which only a resolving loader
     # turns into a path.
-    from dryrun.cli.profile import _load_config
+    from srl.cli.profile import _load_config
 
     payload, base_dir = _load_config(config_path)
     config = KernelProfileConfig.from_dict(payload, base_dir=base_dir)

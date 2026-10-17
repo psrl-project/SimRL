@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.workload.grouped import GroupedWorkload
-from dryrun.workload.trace import RequestGroup, write_group_trace
+from srl.workload.grouped import GroupedWorkload
+from srl.workload.trace import RequestGroup, write_group_trace
 
 
 def _groups() -> list[RequestGroup]:

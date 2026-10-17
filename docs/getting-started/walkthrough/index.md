@@ -34,7 +34,7 @@ optional: a parametric workload works without it, but group-relative advantage d
 ## Before you start
 
 ```bash
-conda activate dryrun-rl
+conda activate simrl
 export MODEL_PATH=/path/to/Qwen3-8B
 export DATASET_PATH=/path/to/dapo-math-17k.parquet
 ```

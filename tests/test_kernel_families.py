@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.profiler.kernel.grid.families import FAMILY_REGISTRY, family_for, register_family
-from dryrun.profiler.kernel.grid.families_dense import DENSE_LLAMA_FAMILY
-from dryrun.profiler.schema import ModelDescriptor, ProfileValidationError
+from srl.profiler.kernel.grid.families import FAMILY_REGISTRY, family_for, register_family
+from srl.profiler.kernel.grid.families_dense import DENSE_LLAMA_FAMILY
+from srl.profiler.schema import ModelDescriptor, ProfileValidationError
 
 
 def _qwen3_like(**extra) -> ModelDescriptor:
@@ -128,8 +128,8 @@ def test_flashinfer_decode_group_sizes_exclude_this_checkpoints_ratio():
 
     DeepSeek-R1-Distill-Qwen-14B is the motivating case at 40 query heads to 8 KV heads.
     """
-    from dryrun.profiler.kernel.grid.attention import rank_head_counts
-    from dryrun.profiler.kernel.runner._flashinfer_attn import (
+    from srl.profiler.kernel.grid.attention import rank_head_counts
+    from srl.profiler.kernel.runner._flashinfer_attn import (
         _FLASHINFER_DECODE_GROUP_SIZES,
     )
 

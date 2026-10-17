@@ -7,20 +7,20 @@ queue, and that capacity is released only at the events the router watches.
 
 from __future__ import annotations
 
-from dryrun.component.rollout.engine import EngineEvent, EventKind, Request
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.cost.training import (
+from srl.component.rollout.engine import EngineEvent, EventKind, Request
+from srl.cost.rollout import UnifiedRoofline
+from srl.cost.training import (
     FixedTrainingLatency,
     FixedTrainingMemory,
     TrainingCostModel,
 )
-from dryrun.policy.areal import ArealPolicy
-from dryrun.policy.psrl import PSRLPolicy
-from dryrun.simulator.config import SimConfig
-from dryrun.simulator.simulator import Simulator
-from dryrun.workload.distributions import uniform
-from dryrun.workload.grouped import GroupedWorkload
-from dryrun.workload.trace import RequestGroup
+from srl.policy.areal import ArealPolicy
+from srl.policy.psrl import PSRLPolicy
+from srl.simulator.config import SimConfig
+from srl.simulator.simulator import Simulator
+from srl.workload.distributions import uniform
+from srl.workload.grouped import GroupedWorkload
+from srl.workload.trace import RequestGroup
 
 
 def _sim(cfg: SimConfig, lengths=None, policy=None) -> Simulator:

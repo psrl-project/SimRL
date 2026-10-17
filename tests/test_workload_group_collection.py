@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.workload.inference import build_completion_payload, parse_group_response
-from dryrun.workload.trace import RequestGroup
+from srl.workload.inference import build_completion_payload, parse_group_response
+from srl.workload.trace import RequestGroup
 
 
 def _payload(lengths: list[int], prompt_len: int = 5) -> dict:

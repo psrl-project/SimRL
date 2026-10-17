@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from dryrun.profiler.kernel.utils.timing import (
+from srl.profiler.kernel.utils.timing import (
     time_cuda_call,
     time_cuda_graph_replay,
     torch_dtype,
@@ -23,7 +23,7 @@ def test_every_registered_op_declares_a_timing_mode() -> None:
     check off the registry makes the invariant self-maintaining rather than relying on the
     next op's author remembering.
     """
-    from dryrun.cost.kernel.ops.base import OP_REGISTRY
+    from srl.cost.kernel.ops.base import OP_REGISTRY
 
     for name, op in sorted(OP_REGISTRY.items()):
         assert isinstance(getattr(op, "graph_replayed", None), bool), (
@@ -39,7 +39,7 @@ def test_training_ops_are_never_graph_replayed() -> None:
     model, where the launch cost is on the critical path, and `training_ops.py` already
     depends on that asymmetry when it charges elementwise for training but not for rollout.
     """
-    from dryrun.cost.kernel.ops.base import OP_REGISTRY
+    from srl.cost.kernel.ops.base import OP_REGISTRY
 
     training_only = {"optimizer_step", "elementwise"}
     for name, op in sorted(OP_REGISTRY.items()):
@@ -56,7 +56,7 @@ def test_the_two_phases_of_a_split_family_disagree() -> None:
     This is the whole point of making the flag per-op rather than per-family: a change that
     collapsed it to a family-level setting would silently pick one phase's answer for both.
     """
-    from dryrun.cost.kernel.ops.base import op_for
+    from srl.cost.kernel.ops.base import op_for
 
     assert op_for("generation_attention").graph_replayed
     assert not op_for("context_attention").graph_replayed

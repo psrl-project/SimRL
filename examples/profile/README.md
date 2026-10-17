@@ -1,6 +1,6 @@
 # Qwen3-8B profiling
 
-These workflows call pinned official benchmark entrypoints. DryRun-RL preserves their raw output and writes a
+These workflows call pinned official benchmark entrypoints. SimRL preserves their raw output and writes a
 validated JSONL normalization as the only regression input.
 
 The same three workflows applied to a second checkpoint, with only the differences recorded:
@@ -11,7 +11,7 @@ the worked example of what a different architecture actually forces you to chang
 Install pinned vLLM and Megatron-Bridge into the current conda environment first:
 
 ```bash
-conda activate dryrun-rl
+conda activate simrl
 bash third_party/install.sh
 pip install -e ".[dev]"
 ```
@@ -60,7 +60,7 @@ bash examples/profile/vllm/profile_qwen3_8b.sh all
 When multiple GPUs are visible, TP=1 benchmark points are sharded across them and
 run concurrently. Set `CUDA_VISIBLE_DEVICES` to choose the GPU pool, or force the
 legacy serial layout with `MAX_PARALLEL=1` (equivalent to
-`dryrun-profile vllm run --max-parallel 1`). `--max-parallel auto` is the
+`srl-profile vllm run --max-parallel 1`). `--max-parallel auto` is the
 default; a workflow can set the same policy with `run.max_parallel: auto|N`.
 Each parallel worker gets an isolated server port, experiment directory,
 and scheduler log.
@@ -107,12 +107,12 @@ recomputation. The same topology is not repeated.
 smaller than PP leaves the pipeline underfilled, so peak activation memory is lower than a full `PP` in-flight
 window.
 
-DryRun owns the training entry point. `prepare` writes a `launch_spec.json` and `run` starts
-`torchrun -m dryrun.profiler.adapters.megatron.launch`, which applies the candidate to the library recipe's
+SimRL owns the training entry point. `prepare` writes a `launch_spec.json` and `run` starts
+`torchrun -m srl.profiler.adapters.megatron.launch`, which applies the candidate to the library recipe's
 `ConfigContainer` in Python. The vendored `scripts/performance` CLI is not used: it parses only its own known
 arguments and discards the rest, so recompute, profiling, and output-path settings never reached the model, and its
 `--gpu` choices exclude H20 outright. Because the launcher owns the loop, step times and per-rank CUDA peaks are
-measured through the official callback API and written to `dryrun_metrics.json`, which replaces TensorBoard scalar
+measured through the official callback API and written to `srl_metrics.json`, which replaces TensorBoard scalar
 scraping and memory-snapshot pickles.
 
 Generate candidates from architecture, topology, batch, and pipeline constraints:

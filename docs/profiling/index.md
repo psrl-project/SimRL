@@ -1,6 +1,6 @@
 # Profiling
 
-Profiling is the measurement half of DryRun-RL. Its output is never a model. It is
+Profiling is the measurement half of SimRL. Its output is never a model. It is
 versioned JSONL describing what a real system did, which
 {doc}`../cost-models/index` then fits.
 
@@ -9,9 +9,9 @@ versioned JSONL describing what a real system did, which
 Every backend exposes the same three subcommands, in this order:
 
 ```bash
-dryrun-profile <backend> generate --config CFG   # enumerate candidates
-dryrun-profile <backend> run      --config CFG   # execute them
-dryrun-profile <backend> collect  --config CFG   # normalise into JSONL
+srl-profile <backend> generate --config CFG   # enumerate candidates
+srl-profile <backend> run      --config CFG   # execute them
+srl-profile <backend> collect  --config CFG   # normalise into JSONL
 ```
 
 `generate` writes a candidate list and does not touch a GPU, so it is the cheapest way
@@ -30,7 +30,7 @@ re-profiling.
 | {doc}`kernels` | individual GEMM / attention / elementwise / collective kernels | perf tables (parquet) | **no** |
 | {doc}`tensor-parallel` | the same, sharded, plus the collectives a `tp>1` step pays | perf tables (parquet) | **no** |
 | {doc}`megatron` | training steps under Megatron-Bridge | `training_hydraulis.json` | yes |
-| {doc}`fsdp` | training steps under the DryRun FSDP2 launcher | `training_fsdp.json` | yes |
+| {doc}`fsdp` | training steps under the SimRL FSDP2 launcher | `training_fsdp.json` | yes |
 
 Read {doc}`methodology` before running a long sweep. It collects the measurement rules
 this project learned the expensive way: how many steps to discard, which dispersion

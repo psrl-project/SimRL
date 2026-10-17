@@ -13,9 +13,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-DRYRUN_ENV="${DRYRUN_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh}"
+SIMRL_ENV="${SIMRL_ENV:-/apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh}"
 # shellcheck disable=SC1090
-[[ -f "${DRYRUN_ENV}" ]] && source "${DRYRUN_ENV}" >/dev/null 2>&1
+[[ -f "${SIMRL_ENV}" ]] && source "${SIMRL_ENV}" >/dev/null 2>&1
 
 CAP="${CAP:-160}"
 N_VERSIONS="${N_VERSIONS:-4}"
@@ -61,7 +61,7 @@ run_repeat() {
         dir="${OUT}/${name}/rep${rep}"
         mkdir -p "${dir}"
         /usr/bin/time -f "%e %U %S" -o "${dir}/time.txt" \
-            env DRYRUN_BACKEND="${backend}" DRYRUN_UNDOABLE_EVENTS="${undo}" \
+            env SIMRL_BACKEND="${backend}" SIMRL_UNDOABLE_EVENTS="${undo}" \
             POLICY=psrl ACTIVE_CAP="${CAP}" N_VERSIONS="${N_VERSIONS}" \
             EXTRA_OVERRIDES="${OV}" OUTPUT_DIR="${dir}" \
             bash "${ROOT_DIR}/examples/simulate/psrl_aligned.sh" >"${dir}/stdout.log" 2>&1 || true

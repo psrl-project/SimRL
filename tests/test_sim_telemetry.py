@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dryrun.component.rollout.engine import NativeInstance, Request
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.telemetry.store import JsonlStore
-from dryrun.telemetry.writer import SimTelemetry
+from srl.component.rollout.engine import NativeInstance, Request
+from srl.cost.rollout import UnifiedRoofline
+from srl.telemetry.store import JsonlStore
+from srl.telemetry.writer import SimTelemetry
 
 
 def _make_instance(kv_blocks: int = 1000) -> NativeInstance:

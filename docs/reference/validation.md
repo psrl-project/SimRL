@@ -34,7 +34,7 @@ encodes that no held-out records were reserved. These are in-sample only.
 ## `ComposedRollout`
 
 `ComposedRollout` has no regression step and therefore no `CostArtifact`. Its accuracy is
-measured end to end by `dryrun-profile kernels validate` against a real vLLM profiling
+measured end to end by `srl-profile kernels validate` against a real vLLM profiling
 baseline. See {doc}`../cost-models/composed-rollout` for the segment integrator, the
 elementwise design decision, and the known limitations.
 

@@ -194,7 +194,7 @@ This is the point of having done the measurement. Hydra's multirun crosses any s
 overrides:
 
 ```bash
-dryrun --multirun \
+srl --multirun \
     rollout.n_instances=2,4,8 job.max_staleness=1,2,4 \
     policy=areal training_cost=hydraulis \
     training_cost.artifact_path=outputs/cost/qwen3_8b/training_hydraulis.json \

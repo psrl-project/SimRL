@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.interp import (
+from srl.cost.kernel.interp import (
     KernelCoverageError,
     UtilityGrid,
     UtilitySample,

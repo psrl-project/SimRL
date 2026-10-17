@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.component.rollout.engine import InstanceView, Request, TrajView, traj_view
-from dryrun.component.rollout.router import build_strategy
-from dryrun.forecast import NoisyOracleLength
+from srl.component.rollout.engine import InstanceView, Request, TrajView, traj_view
+from srl.component.rollout.router import build_strategy
+from srl.forecast import NoisyOracleLength
 
 
 def _group(group_id: int, lengths: list[int], rid0: int = 0) -> list[Request]:

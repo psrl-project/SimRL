@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.database import ElementwiseQuery
-from dryrun.cost.training.training_ops import TrainingOps
-from dryrun.profiler.schema import ModelDescriptor, ProfileValidationError
+from srl.cost.kernel.database import ElementwiseQuery
+from srl.cost.training.training_ops import TrainingOps
+from srl.profiler.schema import ModelDescriptor, ProfileValidationError
 
 # Qwen3-8B. `qk_layernorm` is in `extra` because that is where `load_hf_model_descriptor`
 # puts it, and a test model that spelled it differently would not exercise the read.
@@ -244,7 +244,7 @@ def test_the_plumbing_multiplier_is_a_traced_count_not_a_derived_one():
     stage their buffers rather than anything about the architecture, and so does not transfer
     to another framework or version. Asserted explicitly for that reason.
     """
-    from dryrun.cost.training.training_ops import PLUMBING_LAUNCHES_PER_LAYER
+    from srl.cost.training.training_ops import PLUMBING_LAUNCHES_PER_LAYER
 
     for recompute in ("full", "none"):
         ops = _ops(recompute=recompute)
@@ -268,14 +268,14 @@ def test_the_plumbing_query_is_sized_on_the_sequence_parallel_shard():
 
 def test_every_elementwise_query_names_a_measured_kind():
     """A typo'd kind must raise at construction, not resolve to a neighbouring curve."""
-    from dryrun.cost.kernel.ops.elementwise import ELEMENTWISE_KINDS
+    from srl.cost.kernel.ops.elementwise import ELEMENTWISE_KINDS
 
     for query, _ in _ops().elementwise_queries(4096):
         assert query.op_kind in ELEMENTWISE_KINDS
 
 
 def test_an_unknown_elementwise_kind_is_refused():
-    from dryrun.cost.kernel.interp import KernelCoverageError
+    from srl.cost.kernel.interp import KernelCoverageError
 
     with pytest.raises(KernelCoverageError, match="Unknown elementwise op_kind"):
         ElementwiseQuery(op_kind="layer_norm", n_elements=4096)

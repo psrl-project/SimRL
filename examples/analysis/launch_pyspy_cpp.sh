@@ -9,11 +9,11 @@ SNAP="${SNAP:-/apdcephfs_zwfy/share_303760348/lhy/bench_snapshot_diag}"
 cd "${SNAP}"
 set +u
 # shellcheck disable=SC1091
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh >/dev/null 2>&1
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh >/dev/null 2>&1
 set -u
 RES="${SNAP}/outputs_diag"
 mkdir -p "${RES}"
-export DRYRUN_KV_CACHE="${SNAP}/outputs/bench_backends/kv_capacity.json"
+export SIMRL_KV_CACHE="${SNAP}/outputs/bench_backends/kv_capacity.json"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4}"
 export MAX_OUTPUT_LENGTH=65536 N_VERSIONS=4 POLICY=psrl ACTIVE_CAP=160
 TRACE="${SNAP}/outputs/workload/dapo_64k/joint.jsonl"
@@ -27,13 +27,13 @@ rollout.router.reject_preempted_on_waiting=true \
 profile_one() {
     local name="$1" undo="$2" out="/tmp/diag_cpp_$1" pid=""
     rm -rf "${out}"
-    env DRYRUN_BACKEND=cpp DRYRUN_UNDOABLE_EVENTS="${undo}" \
+    env SIMRL_BACKEND=cpp SIMRL_UNDOABLE_EVENTS="${undo}" \
         EXTRA_OVERRIDES="${OV}" OUTPUT_DIR="${out}" \
         bash examples/simulate/psrl_aligned.sh >"${RES}/stdout_cpp_${name}.log" 2>&1 &
     local job=$!
     # The simulator is the only Python process whose argv names this output dir.
     for _ in $(seq 1 600); do
-        pid=$(pgrep -f "^python -m dryrun.cli.main.*output_dir=${out}( |$)" | head -1 || true)
+        pid=$(pgrep -f "^python -m srl.cli.main.*output_dir=${out}( |$)" | head -1 || true)
         [[ -n "${pid}" ]] && break
         sleep 0.2
     done

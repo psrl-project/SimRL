@@ -77,6 +77,8 @@ class Point:
     rho: float = 0.6
     ours_args: dict = field(default_factory=dict)
     """Strategy args for the gated `inventory_deadline_wm` arm; empty skips that arm."""
+    eviction_strategy: str = "vllm_lru"
+    """Eviction strategy for all arms at this point. Override to test deadline-aware eviction."""
 
 
 @dataclass
@@ -117,7 +119,23 @@ def points(grid: str) -> list[Point]:
             Point("rho0.5_tau600", cv=0.5, train_s=600.0, rho=0.5, ours_args={"kv_watermark": 0.6}),
             Point("s3_tau600", cv=0.5, train_s=600.0, staleness=3, ours_args={"kv_watermark": 0.6}),
         ]
-    raise KeyError(f"Unknown grid {grid!r}. Known: ['best', 'heldout'].")
+    if grid == "ppo":
+        """group_size=1 (PPO) counterparts to the best-grid points.
+
+        batch=256 keeps the same number of responses per training step as GRPO
+        best-grid (batch=32 × group_size=8 = 256 responses/step), so the system
+        operates at comparable concurrency and rollout pressure. Points cover the
+        same (cv, tau) axes plus a high-CV point that was broken in GRPO.
+        """
+        return [
+            Point("ppo_cv0.5_tau600",  cv=0.5, train_s=600.0, group_size=1, batch=256, ours_args={"kv_watermark": 0.6}),
+            Point("ppo_cv1.0_tau600",  cv=1.0, train_s=600.0, group_size=1, batch=256, ours_args={"kv_watermark": 0.6}),
+            Point("ppo_cv1.5_tau345",  cv=1.5, train_s=345.0, group_size=1, batch=256, ours_args={"kv_watermark": 0.6}),
+            Point("ppo_cv0.5_tau345",  cv=0.5, train_s=345.0, group_size=1, batch=256, ours_args={"kv_watermark": 0.6}),
+            Point("ppo_cv0.5_tau150",  cv=0.5, train_s=150.0, group_size=1, batch=256, ours_args={"kv_watermark": 0.6}),
+            Point("ppo_cv2.0_tau345",  cv=2.0, train_s=345.0, group_size=1, batch=256, ours_args={"kv_watermark": 0.6}),
+        ]
+    raise KeyError(f"Unknown grid {grid!r}. Known: ['best', 'heldout', 'ppo'].")
 
 
 def _regime(fa, point: Point, *, strategy: str, strategy_args: dict, cap: int):
@@ -137,6 +155,7 @@ def _regime(fa, point: Point, *, strategy: str, strategy_args: dict, cap: int):
         n_instances=point.n_instances,
         strategy=strategy,
         strategy_args=strategy_args,
+        eviction_strategy=point.eviction_strategy,
     )
 
 
@@ -313,7 +332,7 @@ def _report(args: argparse.Namespace) -> None:
             print(f"  {row['point']['name']:<20}{arm:<20}vs best static {best_static / ours:>8.4f}x  vs cap48 {cap48 / ours:>8.4f}x  {verdict}")
 
 
-GRIDS = {"best": None, "heldout": None}
+GRIDS = {"best": None, "heldout": None, "ppo": None}
 
 
 def main() -> None:

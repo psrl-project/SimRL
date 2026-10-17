@@ -1,6 +1,6 @@
 # Kernel profiling
 
-The kernel pipeline is the only profiling path in DryRun-RL with no regression step. Instead of
+The kernel pipeline is the only profiling path in SimRL with no regression step. Instead of
 fitting a parametric model, it writes parquet *performance tables*, one per `(op, backend)` pair,
 and {doc}`../cost-models/composed-rollout` reads those tables directly, summing measured kernel
 latencies per inference step. A simulation that uses `ComposedRollout` therefore requires this
@@ -34,10 +34,10 @@ TP=2 bash examples/profile/kernel/profile_qwen3_8b.sh run   # qwen3_8b_h20_tp2.y
 The individual subcommands are also available directly:
 
 ```bash
-dryrun-profile kernels run       --config CFG [--family all|gemm|attention|elementwise|collective]
-dryrun-profile kernels fit-floor --config CFG [--candidates-us 0 2 4 6 8 12 16 22 32 45 60 80]
-dryrun-profile kernels holdout   --config CFG [--fraction 1.0] [--gate 5.0] [--output PATH]
-dryrun-profile kernels validate  --config CFG --baseline VLLM_JSONL [--surface pchip|shepard] [--gate PCT]
+srl-profile kernels run       --config CFG [--family all|gemm|attention|elementwise|collective]
+srl-profile kernels fit-floor --config CFG [--candidates-us 0 2 4 6 8 12 16 22 32 45 60 80]
+srl-profile kernels holdout   --config CFG [--fraction 1.0] [--gate 5.0] [--output PATH]
+srl-profile kernels validate  --config CFG --baseline VLLM_JSONL [--surface pchip|shepard] [--gate PCT]
 ```
 
 Run them in that order. `fit-floor` is not optional: attention latency does not fall to zero at
@@ -190,7 +190,7 @@ a 64x increase in KV work at batch 1, which is conclusive that the cost structur
 `max(math_work, memory_work, floor)`, not `floor + roofline`. The floor is a lower bound, not an
 addend, because adding it would double-count in the overhead-dominated regime.
 
-`dryrun-profile kernels fit-floor` fits per-backend, per-op floor values from real measurements,
+`srl-profile kernels fit-floor` fits per-backend, per-op floor values from real measurements,
 writing them to `floors.json`. The fallback when that file is absent is `FALLBACK_FLOORS_S` in
 `sol.py`. Fitted values on H20 (Qwen3-8B, TP=1, 2026-08-24):
 
@@ -363,7 +363,7 @@ those kernels reproduces a real vLLM engine iteration, a different and harder cl
 the holdout gate passes (or is accepted):
 
 ```bash
-dryrun-profile kernels validate \
+srl-profile kernels validate \
     --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
     --baseline outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl \
     --model-path $MODEL_PATH \

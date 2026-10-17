@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from omegaconf import OmegaConf
 
-from dryrun.cli.main import build_rollout_cost
-from dryrun.config.schema import RolloutCostConfig
-from dryrun.cost.rollout.composed import ComposedRollout
+from srl.cli.main import build_rollout_cost
+from srl.config.schema import RolloutCostConfig
+from srl.cost.rollout.composed import ComposedRollout
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CHECKPOINT = Path("/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B")
@@ -56,7 +56,7 @@ def test_a_composed_model_is_built_from_config():
 
 
 def test_the_built_model_predicts_a_positive_decode_step():
-    from dryrun.cost.rollout import RolloutWorkload
+    from srl.cost.rollout import RolloutWorkload
 
     model = build_rollout_cost(_config())
     workload = RolloutWorkload(
@@ -67,7 +67,7 @@ def test_the_built_model_predicts_a_positive_decode_step():
 
 def test_the_surface_choice_reaches_the_prediction():
     """Two surfaces must give different predictions, or the setting is not wired."""
-    from dryrun.cost.rollout import RolloutWorkload
+    from srl.cost.rollout import RolloutWorkload
 
     workload = RolloutWorkload(
         phase="decode", n_tokens=48, sum_l2=0.0, ctxsum=48 * 3000.0, request_count=48
@@ -85,8 +85,8 @@ def test_tp_above_one_builds_now_that_the_all_reduce_op_exists():
     was never measured rather than silently returning a number. That refusal moving from
     construction to the query is the point: it now names the specific missing table.
     """
-    from dryrun.cost.kernel.interp import KernelCoverageError
-    from dryrun.cost.rollout import RolloutWorkload
+    from srl.cost.kernel.interp import KernelCoverageError
+    from srl.cost.rollout import RolloutWorkload
 
     model = build_rollout_cost(_config(parallelism={"tp": 2, "pp": 1, "dp": 1, "cp": 1}))
     assert isinstance(model, ComposedRollout)
@@ -105,8 +105,8 @@ def test_tp_two_against_the_tp2_tree_prices_a_collective():
     tp never propagated would look identical to a working one: the prediction would still be a
     plausible number, just missing 72 all-reduces.
     """
-    from dryrun.cost.kernel.model_ops import ModelOps
-    from dryrun.cost.rollout import RolloutWorkload
+    from srl.cost.kernel.model_ops import ModelOps
+    from srl.cost.rollout import RolloutWorkload
 
     tables = _REPO_ROOT / "outputs/profile/qwen3_8b/kernel_tp2/kernel"
     if not (tables / "h20" / "collective").is_dir():
@@ -136,7 +136,7 @@ def test_tp_two_against_the_tp2_tree_prices_a_collective():
 
 def test_tp_one_pays_for_no_collective():
     """The mirror of the above: at one rank there is no collective to pay for."""
-    from dryrun.cost.kernel.model_ops import ModelOps
+    from srl.cost.kernel.model_ops import ModelOps
 
     ops = ModelOps.from_checkpoint(str(_CHECKPOINT), tensor_parallel=1)
     assert ops.comm_queries(16) == ()
@@ -161,7 +161,7 @@ def test_an_empty_attention_backend_means_the_vllm_selected_one():
     """A prediction must reflect the backend the server runs, which on H20 is FA3, not FlashInfer."""
     model = build_rollout_cost(_config(attention_backend=""))
     explicit = build_rollout_cost(_config(attention_backend="vllm"))
-    from dryrun.cost.rollout import RolloutWorkload
+    from srl.cost.rollout import RolloutWorkload
 
     workload = RolloutWorkload(
         phase="decode", n_tokens=16, sum_l2=0.0, ctxsum=16 * 2048.0, request_count=16
@@ -171,7 +171,7 @@ def test_an_empty_attention_backend_means_the_vllm_selected_one():
 
 def test_the_other_models_are_unaffected():
     """Adding a branch must not perturb the existing ones."""
-    from dryrun.cost.rollout import UnifiedRoofline
+    from srl.cost.rollout import UnifiedRoofline
 
     model = build_rollout_cost(OmegaConf.create({"name": "roofline", "F": 0.005}))
     assert isinstance(model, UnifiedRoofline)

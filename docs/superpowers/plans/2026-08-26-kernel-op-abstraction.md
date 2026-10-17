@@ -4,14 +4,14 @@
 
 **Goal:** Make one class per kernel op the single source of truth for its schema, SOL formula, floor policy, sweep config, and measurement routine, then add `elementwise` and `all_reduce` through that abstraction.
 
-**Architecture:** A `KernelOp` protocol in a new torch-free `dryrun/cost/kernel/ops/` package absorbs `TableSchema` and replaces the two independent SOL bindings in `database._sol` and `holdout._make_sol_fn` with one `op.sol()`. `floors.json` is re-keyed from phase to op name, which deletes four phase-to-op translations. The profiler's per-family writer methods and sweep config fields collapse onto the same ops.
+**Architecture:** A `KernelOp` protocol in a new torch-free `srl/cost/kernel/ops/` package absorbs `TableSchema` and replaces the two independent SOL bindings in `database._sol` and `holdout._make_sol_fn` with one `op.sol()`. `floors.json` is re-keyed from phase to op name, which deletes four phase-to-op translations. The profiler's per-family writer methods and sweep config fields collapse onto the same ops.
 
 **Tech Stack:** Python 3.12, pyarrow 23.0.1, numpy 1.26.4, torch (profiler side only), vLLM (third_party checkout), Hydra/OmegaConf, pytest, ruff.
 
 ## Global Constraints
 
-- Activate the environment before any run: `source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh`
-- ruff: `line-length = 119`, `select = ["E", "F", "W", "I"]`, `known-first-party = ["dryrun"]`
+- Activate the environment before any run: `source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh`
+- ruff: `line-length = 119`, `select = ["E", "F", "W", "I"]`, `known-first-party = ["srl"]`
 - pytest: `testpaths = ["tests"]`; tests are flat `tests/test_*.py`, no subdirectories
 - Suite baseline is **713 passed** measured 2026-08-27 at commit `70a5071`, with
   `--ignore=tests/test_fsdp_cost.py`. **Always pass that ignore flag**: another session is
@@ -21,26 +21,26 @@
   means a parametrization was dropped; one that grew by more means a test was collected twice.
   (An earlier draft of this plan said 635/725; both figures predate the other session's ~78
   tests and must not be used.)
-- **Do not touch `dryrun/cost/training/`, `dryrun/profiler/adapters/`, or `tests/test_fsdp_*`.**
+- **Do not touch `srl/cost/training/`, `srl/profiler/adapters/`, or `tests/test_fsdp_*`.**
   Those belong to the concurrent FSDP/Megatron plan and are orthogonal to this one.
 - **Run the baseline capture and the Stage 1 gate on idle GPUs.** `nvidia-smi` must show no
   concurrent load. `tests/test_kernel_attention_vllm.py:test_generation_latency_grows_with_kv_history`
   asserts a measured latency ratio above 1.20x and was observed failing under contention from
   the other session while passing in isolation. A timing failure is not a regression until you
   have checked for concurrent GPU work.
-- Exactly **7 pre-existing ruff findings** exist, none in files this plan touches: `I001` in `dryrun/cost/training/hydraulis.py`, `dryrun/profiler/adapters/vllm/collect.py`, `tests/test_plots.py`, `tests/test_profile_adapters.py`, `tests/test_telemetry.py`, `tests/test_training_cost.py`; plus `F841` at `tests/test_training_cost.py:109`. Leave them. Everything you touch must be clean.
+- Exactly **7 pre-existing ruff findings** exist, none in files this plan touches: `I001` in `srl/cost/training/hydraulis.py`, `srl/profiler/adapters/vllm/collect.py`, `tests/test_plots.py`, `tests/test_profile_adapters.py`, `tests/test_telemetry.py`, `tests/test_training_cost.py`; plus `F841` at `tests/test_training_cost.py:109`. Leave them. Everything you touch must be clean.
 - Coding style per `.claude/coding-style.md`: identifier strings (dict keys, `==` comparands, argparse `choices`) never take a trailing period and never change casing; human-readable messages are capitalized and end with `.`; **one-line docstrings are the established convention: do not expand them**; type hints use `X | None` and lowercase builtins.
 - Latency is in **seconds** everywhere, never milliseconds.
 - No backward compatibility. Remove obsolete paths rather than adding fallbacks or migrations.
-- Do not modify `dryrun/cost/kernel/{hardware,interp,surface}.py` or `dryrun/cost/rollout/{psrl,roofline,distserve,segment,advance}.py` behaviour.
-- **Never run `git stash`, `git stash pop`, `git checkout: <path>`, `git restore`, `git reset`, `git clean`, `git add -A`, or `git add .`** The repository owner has extensive uncommitted work in `dryrun/workload/`, `dryrun/cli/workload.py`, `examples/`, and `tests/test_workload_*.py`. Stage only the explicit paths each task names.
+- Do not modify `srl/cost/kernel/{hardware,interp,surface}.py` or `srl/cost/rollout/{psrl,roofline,distserve,segment,advance}.py` behaviour.
+- **Never run `git stash`, `git stash pop`, `git checkout: <path>`, `git restore`, `git reset`, `git clean`, `git add -A`, or `git add .`** The repository owner has extensive uncommitted work in `srl/workload/`, `srl/cli/workload.py`, `examples/`, and `tests/test_workload_*.py`. Stage only the explicit paths each task names.
 - `.claude/settings.local.json` must stay gitignored and must never be committed.
 
 ### Verified facts: do not re-derive these
 
 Every number below was measured on this machine at commit `72f00f5`.
 
-**Naming collision, must be resolved in Task 2.** `dryrun/cost/kernel/model_ops.py:30` already
+**Naming collision, must be resolved in Task 2.** `srl/cost/kernel/model_ops.py:30` already
 defines a frozen dataclass named `GemmOp`, meaning "one GEMM in the per-step op list": a
 different concept from this plan's `GemmOp` (a kernel *family*). The existing name is read by
 `tests/test_kernel_model_ops.py` (`.name`, `.n`, `.k`, `.per_layer`) and
@@ -89,7 +89,7 @@ came from a server already running these kernels between them. See the spec's el
 section.
 
 **`GpuSpec.link_bandwidth_bytes_per_s` already exists**, so collective SOL needs no change to
-`dryrun/cost/kernel/data/gpu_specs.yaml`.
+`srl/cost/kernel/data/gpu_specs.yaml`.
 
 **8x H20 are available**, so `all_reduce` is measurable at world sizes 2, 4, 8.
 
@@ -121,23 +121,23 @@ Task 7's re-keying turns green).
 
 | File | Responsibility |
 |---|---|
-| `dryrun/cost/kernel/ops/base.py` | new. `KernelOp` protocol, `OP_REGISTRY`, and the four lookups `op_for` / `ops_for_family` / `families` / `ops_in`. |
-| `dryrun/cost/kernel/ops/gemm.py` | new. `GemmKernelOp`: schema, SOL, no floor. |
-| `dryrun/cost/kernel/ops/attention.py` | new. `ContextAttentionKernelOp`, `GenerationAttentionKernelOp`: shared slice columns, fitted floor. |
-| `dryrun/cost/kernel/ops/elementwise.py` | new. `ElementwiseKernelOp`: bandwidth-only SOL, fitted floor. |
-| `dryrun/cost/kernel/ops/collective.py` | new. `AllReduceKernelOp`: link-bandwidth SOL, `world_size` in the slice. |
-| `dryrun/cost/kernel/table.py` | modified. `TableSchema` and `schema_for` deleted; `KernelTable` takes a `KernelOp`. |
-| `dryrun/cost/kernel/database.py` | modified. `_sol` delegates to `op.sol()`; floors keyed by op name. |
-| `dryrun/cost/kernel/holdout.py` | modified. `_make_sol_fn` and the three `_sol_for_*` helpers deleted; discovery uses `ops_in`. |
-| `dryrun/cost/kernel/floor.py` | modified. `_ATTENTION_OPS` deleted; fitting loops over `op.fits_floor`; old-format rejection. |
-| `dryrun/cost/kernel/sol.py` | modified. `ATTENTION_FLOOR_S` re-keyed by op name and renamed `FALLBACK_FLOORS_S`. |
-| `dryrun/cost/kernel/model_ops.py` | modified. Gains `comm_queries`. |
-| `dryrun/cost/rollout/composed.py` | modified. `tp>1` allowed; comm term added. |
-| `dryrun/profiler/kernels/measurements.py` | modified. `write_gemm`/`write_attention` collapse into `write`. |
-| `dryrun/profiler/kernels/config.py` | modified. Named sweep fields replaced by `config.sweep(op_name)`. |
-| `dryrun/profiler/kernels/elementwise.py` | new. Raw fused-op timing for the three elementwise kernels. |
-| `dryrun/profiler/kernels/collective.py` | modified. Writes a perf table; JSON dataclasses deleted. |
-| `dryrun/cli/profile.py` | modified. `--family` choices and dispatch derived from the registry. |
+| `srl/cost/kernel/ops/base.py` | new. `KernelOp` protocol, `OP_REGISTRY`, and the four lookups `op_for` / `ops_for_family` / `families` / `ops_in`. |
+| `srl/cost/kernel/ops/gemm.py` | new. `GemmKernelOp`: schema, SOL, no floor. |
+| `srl/cost/kernel/ops/attention.py` | new. `ContextAttentionKernelOp`, `GenerationAttentionKernelOp`: shared slice columns, fitted floor. |
+| `srl/cost/kernel/ops/elementwise.py` | new. `ElementwiseKernelOp`: bandwidth-only SOL, fitted floor. |
+| `srl/cost/kernel/ops/collective.py` | new. `AllReduceKernelOp`: link-bandwidth SOL, `world_size` in the slice. |
+| `srl/cost/kernel/table.py` | modified. `TableSchema` and `schema_for` deleted; `KernelTable` takes a `KernelOp`. |
+| `srl/cost/kernel/database.py` | modified. `_sol` delegates to `op.sol()`; floors keyed by op name. |
+| `srl/cost/kernel/holdout.py` | modified. `_make_sol_fn` and the three `_sol_for_*` helpers deleted; discovery uses `ops_in`. |
+| `srl/cost/kernel/floor.py` | modified. `_ATTENTION_OPS` deleted; fitting loops over `op.fits_floor`; old-format rejection. |
+| `srl/cost/kernel/sol.py` | modified. `ATTENTION_FLOOR_S` re-keyed by op name and renamed `FALLBACK_FLOORS_S`. |
+| `srl/cost/kernel/model_ops.py` | modified. Gains `comm_queries`. |
+| `srl/cost/rollout/composed.py` | modified. `tp>1` allowed; comm term added. |
+| `srl/profiler/kernels/measurements.py` | modified. `write_gemm`/`write_attention` collapse into `write`. |
+| `srl/profiler/kernels/config.py` | modified. Named sweep fields replaced by `config.sweep(op_name)`. |
+| `srl/profiler/kernels/elementwise.py` | new. Raw fused-op timing for the three elementwise kernels. |
+| `srl/profiler/kernels/collective.py` | modified. Writes a perf table; JSON dataclasses deleted. |
+| `srl/cli/profile.py` | modified. `--family` choices and dispatch derived from the registry. |
 
 Four separations are deliberate. `ops/` is a package rather than one module because each op
 carries a SOL formula with real physics and a docstring explaining it; one file per family
@@ -165,17 +165,17 @@ preserved behaviour, and capturing it after an edit proves nothing.
 - [ ] **Step 1: Capture the four artifacts**
 
 ```bash
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
-cd /apdcephfs_zwfy/share_303760348/lhy/DryRun-RL
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
+cd /apdcephfs_zwfy/share_303760348/lhy/SimRL
 mkdir -p .superpowers/sdd/baseline
 
-dryrun-profile kernels holdout \
+srl-profile kernels holdout \
     --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
     --fraction 1.0 --gate 100 \
     --output .superpowers/sdd/baseline/holdout.json
 
 for surface in pchip shepard; do
-  dryrun-profile kernels validate \
+  srl-profile kernels validate \
       --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
       --baseline outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl \
       --model-path /apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B \
@@ -274,7 +274,7 @@ _FLOORS = {
 
 
 def test_holdout_accuracy_has_not_moved():
-    from dryrun.cost.kernel.holdout import holdout_report
+    from srl.cost.kernel.holdout import holdout_report
 
     results = {(r.op_name, r.backend): r for r in holdout_report(_TABLES, gpu="h20", fraction=1.0)}
     for key, (mre, count) in _HOLDOUT.items():
@@ -284,10 +284,10 @@ def test_holdout_accuracy_has_not_moved():
 
 
 def test_composed_model_accuracy_has_not_moved():
-    from dryrun.cost.kernel.database import KernelDatabase
-    from dryrun.cost.kernel.model_ops import ModelOps
-    from dryrun.cost.kernel.validate import load_baseline, score_model
-    from dryrun.cost.rollout.composed import ComposedRollout
+    from srl.cost.kernel.database import KernelDatabase
+    from srl.cost.kernel.model_ops import ModelOps
+    from srl.cost.kernel.validate import load_baseline, score_model
+    from srl.cost.rollout.composed import ComposedRollout
 
     database = KernelDatabase.from_root(_TABLES, gpu="h20", utility_surface="pchip")
     ops = ModelOps.from_checkpoint(_CHECKPOINT, tensor_parallel=1)
@@ -303,7 +303,7 @@ def test_composed_model_accuracy_has_not_moved():
 @pytest.mark.parametrize("backend", sorted(_FLOORS))
 def test_fitted_floors_have_not_moved(backend):
     """Floors are keyed by op name after this refactor; the values must not change."""
-    from dryrun.cost.kernel.floor import load_floors
+    from srl.cost.kernel.floor import load_floors
 
     backend_dir = _TABLES / "h20" / "attention" / backend
     versions = sorted(item for item in backend_dir.iterdir() if item.is_dir())
@@ -369,11 +369,11 @@ local as the raw evidence.
 ## Task 2: The `KernelOp` protocol and the four lookups
 
 **Files:**
-- Create: `dryrun/cost/kernel/ops/__init__.py`, `dryrun/cost/kernel/ops/base.py`
+- Create: `srl/cost/kernel/ops/__init__.py`, `srl/cost/kernel/ops/base.py`
 - Test: `tests/test_kernel_ops_base.py`
 
 **Interfaces:**
-- Consumes: `dryrun.cost.kernel.hardware.GpuSpec`, `dryrun.cost.kernel.interp.KernelCoverageError`, `dryrun.cost.kernel.sol.SolComponents`.
+- Consumes: `srl.cost.kernel.hardware.GpuSpec`, `srl.cost.kernel.interp.KernelCoverageError`, `srl.cost.kernel.sol.SolComponents`.
 - Produces:
   - `KernelOp`: a `typing.Protocol` with attributes `name: str`, `family: str`, `slice_columns: tuple[str, ...]`, `axis_columns: tuple[str, ...]`, `fits_floor: bool`, and methods `sol(spec, *, slice_key, coords, floor_s) -> SolComponents`, `parse_sweep(value: dict) -> object`, `table_columns() -> tuple[str, ...]`.
   - `OP_REGISTRY: dict[str, KernelOp]`: empty in this task; populated by Tasks 3-4 and 10-11.
@@ -396,8 +396,8 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.cost.kernel.interp import KernelCoverageError
-from dryrun.cost.kernel.ops.base import (
+from srl.cost.kernel.interp import KernelCoverageError
+from srl.cost.kernel.ops.base import (
     OP_REGISTRY,
     families,
     op_for,
@@ -405,7 +405,7 @@ from dryrun.cost.kernel.ops.base import (
     ops_in,
     register_op,
 )
-from dryrun.cost.kernel.sol import SolComponents
+from srl.cost.kernel.sol import SolComponents
 
 
 class _FakeOp:
@@ -509,7 +509,7 @@ def test_the_registry_import_does_not_load_torch():
     import sys
 
     probe = (
-        "import sys; import dryrun.cost.kernel.ops.base; "
+        "import sys; import srl.cost.kernel.ops.base; "
         "assert 'torch' not in sys.modules, 'ops.base pulled in torch'; "
         "assert 'vllm' not in sys.modules, 'ops.base pulled in vllm'; print('clean')"
     )
@@ -524,11 +524,11 @@ def test_the_registry_import_does_not_load_torch():
 python -m pytest tests/test_kernel_ops_base.py -q
 ```
 
-Expected: FAIL with `ModuleNotFoundError: No module named 'dryrun.cost.kernel.ops'`.
+Expected: FAIL with `ModuleNotFoundError: No module named 'srl.cost.kernel.ops'`.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `dryrun/cost/kernel/ops/__init__.py`:
+Create `srl/cost/kernel/ops/__init__.py`:
 
 ```python
 """One class per kernel op, each owning its schema, SOL formula, and floor policy."""
@@ -537,7 +537,7 @@ Create `dryrun/cost/kernel/ops/__init__.py`:
 Leave it at that single line. Populating `__init__` with re-exports would make importing any
 op import all of them, and `ops_in` only needs the registry.
 
-Create `dryrun/cost/kernel/ops/base.py`:
+Create `srl/cost/kernel/ops/base.py`:
 
 ```python
 """
@@ -686,7 +686,7 @@ def ops_in(version_dir: str | Path) -> tuple[KernelOp, ...]:
 ```bash
 python -m pytest tests/test_kernel_ops_base.py -q
 python -m pytest tests/ -q
-ruff check dryrun/ tests/
+ruff check srl/ tests/
 ```
 
 Expected: **11 passed** in the new file, the suite grows by exactly the new file's test count and stays green (635 + 11 + the 2 baseline tests
@@ -695,7 +695,7 @@ from Task 1 that pass today), and no new ruff findings.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add dryrun/cost/kernel/ops/__init__.py dryrun/cost/kernel/ops/base.py tests/test_kernel_ops_base.py
+git add srl/cost/kernel/ops/__init__.py srl/cost/kernel/ops/base.py tests/test_kernel_ops_base.py
 git commit -m "feat: add the KernelOp protocol and its registry
 
 Op-specific knowledge is spread across ten sites, but the count is only the
@@ -721,20 +721,20 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ## Task 3: `GemmKernelOp`
 
 The simplest op, so it is where the `sol()` contract gets pinned down. Note the class is named
-`GemmKernelOp`, not `GemmOp`: `dryrun/cost/kernel/model_ops.py:30` already defines `GemmOp`
+`GemmKernelOp`, not `GemmOp`: `srl/cost/kernel/model_ops.py:30` already defines `GemmOp`
 meaning "one GEMM in the per-step op list", a different concept read by two existing test
 files. Do not rename that one.
 
 **Files:**
-- Create: `dryrun/cost/kernel/ops/gemm.py`
+- Create: `srl/cost/kernel/ops/gemm.py`
 - Test: `tests/test_kernel_ops_gemm.py`
 
 **Interfaces:**
-- Consumes: `KernelOp`, `register_op` (Task 2); `dryrun.cost.kernel.sol.gemm_sol`.
+- Consumes: `KernelOp`, `register_op` (Task 2); `srl.cost.kernel.sol.gemm_sol`.
 - Produces: `GemmKernelOp` with `name = "gemm"`, `family = "gemm"`,
   `slice_columns = ("gemm_dtype", "n", "k")`, `axis_columns = ("m",)`, `fits_floor = False`,
   and `GEMM_OP: GemmKernelOp` registered at import. Also `GemmSweep` re-exported from
-  `dryrun.profiler.kernels.config` is NOT used here: `parse_sweep` imports it lazily so the
+  `srl.profiler.kernels.config` is NOT used here: `parse_sweep` imports it lazily so the
   cost path stays free of the profiler package.
 
 - [ ] **Step 1: Write the failing test**
@@ -748,10 +748,10 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.ops.base import op_for
-from dryrun.cost.kernel.ops.gemm import GEMM_OP
-from dryrun.cost.kernel.sol import gemm_sol
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.ops.base import op_for
+from srl.cost.kernel.ops.gemm import GEMM_OP
+from srl.cost.kernel.sol import gemm_sol
 
 
 @pytest.fixture(scope="module")
@@ -819,7 +819,7 @@ def test_parse_sweep_builds_the_gemm_grid():
 
 
 def test_parse_sweep_rejects_an_empty_grid():
-    from dryrun.profiler.schema import ProfileValidationError
+    from srl.profiler.schema import ProfileValidationError
 
     with pytest.raises(ProfileValidationError, match="token_counts"):
         GEMM_OP.parse_sweep({"token_counts": []})
@@ -831,11 +831,11 @@ def test_parse_sweep_rejects_an_empty_grid():
 python -m pytest tests/test_kernel_ops_gemm.py -q
 ```
 
-Expected: FAIL with `ModuleNotFoundError: No module named 'dryrun.cost.kernel.ops.gemm'`.
+Expected: FAIL with `ModuleNotFoundError: No module named 'srl.cost.kernel.ops.gemm'`.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `dryrun/cost/kernel/ops/gemm.py`:
+Create `srl/cost/kernel/ops/gemm.py`:
 
 ```python
 """
@@ -904,9 +904,9 @@ class GemmKernelOp:
 
     def parse_sweep(self, value: dict[str, Any]) -> Any:
         """Parse the `gemm:` sweep subtree into a `GemmSweep`."""
-        # Imported lazily: `dryrun.profiler.kernels.config` reaches the profiler package, and
+        # Imported lazily: `srl.profiler.kernels.config` reaches the profiler package, and
         # a simulator run that only prices kernels must not load it. Four dots because this
-        # module is `dryrun.cost.kernel.ops.gemm`; Step 4 verifies the depth resolves.
+        # module is `srl.cost.kernel.ops.gemm`; Step 4 verifies the depth resolves.
         from ....profiler.kernels.config import GemmSweep
 
         return GemmSweep.from_dict(value)
@@ -926,10 +926,10 @@ register_op(GEMM_OP)
 python -m pytest tests/test_kernel_ops_gemm.py -q
 python -m pytest tests/test_kernel_ops_base.py -q
 python -m pytest tests/ -q
-ruff check dryrun/ tests/
+ruff check srl/ tests/
 python -c "
 import sys
-import dryrun.cost.kernel.ops.gemm
+import srl.cost.kernel.ops.gemm
 print('torch imported:', 'torch' in sys.modules)"
 ```
 
@@ -940,7 +940,7 @@ op must not reach the profiler package.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add dryrun/cost/kernel/ops/gemm.py tests/test_kernel_ops_gemm.py
+git add srl/cost/kernel/ops/gemm.py tests/test_kernel_ops_gemm.py
 git commit -m "feat: add GemmKernelOp
 
 The simplest op, so it pins the sol() contract: read the categorical dimensions
@@ -969,11 +969,11 @@ belong in one module. They differ only in their third axis (`isl` vs `step`) and
 formula they call.
 
 **Files:**
-- Create: `dryrun/cost/kernel/ops/attention.py`
+- Create: `srl/cost/kernel/ops/attention.py`
 - Test: `tests/test_kernel_ops_attention.py`
 
 **Interfaces:**
-- Consumes: `KernelOp`, `register_op` (Task 2); `context_attention_sol`, `generation_attention_sol` from `dryrun.cost.kernel.sol`.
+- Consumes: `KernelOp`, `register_op` (Task 2); `context_attention_sol`, `generation_attention_sol` from `srl.cost.kernel.sol`.
 - Produces: `ContextAttentionKernelOp` (`name = "context_attention"`, `axis_columns = ("num_heads", "batch_size", "isl")`), `GenerationAttentionKernelOp` (`name = "generation_attention"`, `axis_columns = ("num_heads", "batch_size", "step")`), both with `family = "attention"`, `fits_floor = True`, and `slice_columns = ("num_key_value_heads", "head_dim", "attn_dtype", "kv_cache_dtype", "block_size", "window_size")`. Registered as `CONTEXT_ATTENTION_OP` and `GENERATION_ATTENTION_OP`.
 
 - [ ] **Step 1: Write the failing test**
@@ -987,10 +987,10 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.ops.attention import CONTEXT_ATTENTION_OP, GENERATION_ATTENTION_OP
-from dryrun.cost.kernel.ops.base import op_for
-from dryrun.cost.kernel.sol import context_attention_sol, generation_attention_sol
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.ops.attention import CONTEXT_ATTENTION_OP, GENERATION_ATTENTION_OP
+from srl.cost.kernel.ops.base import op_for
+from srl.cost.kernel.sol import context_attention_sol, generation_attention_sol
 
 # (num_kv_heads, head_dim, attn_dtype, kv_cache_dtype, block_size, window_size)
 _SLICE = (8, 128, "bfloat16", "bfloat16", 16, 0)
@@ -1125,11 +1125,11 @@ def test_a_negative_generation_step_is_rejected(spec):
 python -m pytest tests/test_kernel_ops_attention.py -q
 ```
 
-Expected: FAIL with `ModuleNotFoundError: No module named 'dryrun.cost.kernel.ops.attention'`.
+Expected: FAIL with `ModuleNotFoundError: No module named 'srl.cost.kernel.ops.attention'`.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `dryrun/cost/kernel/ops/attention.py`:
+Create `srl/cost/kernel/ops/attention.py`:
 
 ```python
 """
@@ -1283,7 +1283,7 @@ register_op(GENERATION_ATTENTION_OP)
 ```bash
 python -m pytest tests/test_kernel_ops_attention.py -q
 python -m pytest tests/ -q
-ruff check dryrun/ tests/
+ruff check srl/ tests/
 ```
 
 Expected: **12 passed**, the suite grows by exactly the new file's test count and stays green, no new ruff findings.
@@ -1291,7 +1291,7 @@ Expected: **12 passed**, the suite grows by exactly the new file's test count an
 - [ ] **Step 5: Commit**
 
 ```bash
-git add dryrun/cost/kernel/ops/attention.py tests/test_kernel_ops_attention.py
+git add srl/cost/kernel/ops/attention.py tests/test_kernel_ops_attention.py
 git commit -m "feat: add the two attention kernel ops
 
 Prefill and decode are different regimes: one quadratic in sequence length,
@@ -1318,10 +1318,10 @@ names; per the spec, mechanical renames are the only permitted test edit and **n
 be weakened or deleted**.
 
 **Files:**
-- Modify: `dryrun/cost/kernel/table.py`
-- Modify: `dryrun/profiler/kernels/measurements.py:22,76,124` (import and the two `schema_for` calls)
+- Modify: `srl/cost/kernel/table.py`
+- Modify: `srl/profiler/kernels/measurements.py:22,76,124` (import and the two `schema_for` calls)
 - Modify: `tests/test_kernel_table.py`, `tests/test_kernel_holdout.py`, `tests/test_kernel_floor.py`, `tests/test_kernel_measurements.py`, `tests/test_kernel_surface_wiring.py`, `tests/test_kernel_attention_vllm.py`, `tests/test_kernel_attention_flashinfer.py`, `tests/test_kernel_gemm.py` (mechanical rename only)
-- Modify: `dryrun/cost/kernel/holdout.py:23`, `dryrun/cost/kernel/floor.py:34`, `dryrun/cost/kernel/database.py:26` (imports only; their bodies change in Tasks 6-8)
+- Modify: `srl/cost/kernel/holdout.py:23`, `srl/cost/kernel/floor.py:34`, `srl/cost/kernel/database.py:26` (imports only; their bodies change in Tasks 6-8)
 
 **Interfaces:**
 - Consumes: `op_for`, `KernelOp` (Task 2); `GEMM_OP` (Task 3); the attention ops (Task 4).
@@ -1329,15 +1329,15 @@ be weakened or deleted**.
   - `KernelTable.load(path, op: KernelOp) -> KernelTable`: second parameter is now an op.
   - `KernelTable.op -> KernelOp`: replaces the `schema` property.
   - `KernelTable.grid(slice_key, sol_fn, *, surface="shepard")`: unchanged signature.
-  - `dryrun.cost.kernel.table` no longer exports `TableSchema`, `schema_for`, `GEMM_SCHEMA`, `CONTEXT_ATTENTION_SCHEMA`, or `GENERATION_ATTENTION_SCHEMA`.
+  - `srl.cost.kernel.table` no longer exports `TableSchema`, `schema_for`, `GEMM_SCHEMA`, `CONTEXT_ATTENTION_SCHEMA`, or `GENERATION_ATTENTION_SCHEMA`.
 
 - [ ] **Step 1: Record the exact rename sites before editing**
 
 ```bash
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
-cd /apdcephfs_zwfy/share_303760348/lhy/DryRun-RL
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
+cd /apdcephfs_zwfy/share_303760348/lhy/SimRL
 grep -rn "TableSchema\|schema_for\|GEMM_SCHEMA\|CONTEXT_ATTENTION_SCHEMA\|GENERATION_ATTENTION_SCHEMA\|\.schema\b" \
-    dryrun/ tests/ --include=*.py | tee .superpowers/sdd/task5-sites.txt | wc -l
+    srl/ tests/ --include=*.py | tee .superpowers/sdd/task5-sites.txt | wc -l
 ```
 
 Expected: a non-empty list. Keep the file; Step 5 diffs against it to prove every site moved.
@@ -1349,7 +1349,7 @@ Append to `tests/test_kernel_ops_base.py`:
 ```python
 def test_the_table_module_no_longer_exports_a_schema_type():
     """TableSchema is absorbed into KernelOp; leaving an alias invites two sources of truth."""
-    import dryrun.cost.kernel.table as table_module
+    import srl.cost.kernel.table as table_module
 
     for name in (
         "TableSchema",
@@ -1366,8 +1366,8 @@ def test_a_table_loads_against_an_op_and_exposes_it():
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from dryrun.cost.kernel.ops.gemm import GEMM_OP
-    from dryrun.cost.kernel.table import KernelTable
+    from srl.cost.kernel.ops.gemm import GEMM_OP
+    from srl.cost.kernel.table import KernelTable
 
     import tempfile
 
@@ -1408,7 +1408,7 @@ from `load`.
 
 - [ ] **Step 4: Rewrite `table.py`**
 
-In `dryrun/cost/kernel/table.py`, replace the import block, delete the schema definitions, and
+In `srl/cost/kernel/table.py`, replace the import block, delete the schema definitions, and
 rewrite the class to hold an op.
 
 Replace lines 13-26 (imports through `_LATENCY_COLUMN`) with:
@@ -1519,8 +1519,8 @@ In `rows`, change the error message's `self._schema.op_name` to `self._op.name`.
 
 - [ ] **Step 5: Repoint every caller and test**
 
-In `dryrun/profiler/kernels/measurements.py`, replace the `schema_for` import with
-`from dryrun.cost.kernel.ops.base import op_for` and change `table_path`:
+In `srl/profiler/kernels/measurements.py`, replace the `schema_for` import with
+`from srl.cost.kernel.ops.base import op_for` and change `table_path`:
 
 ```python
         op = op_for(op_name)
@@ -1536,16 +1536,16 @@ In `dryrun/profiler/kernels/measurements.py`, replace the `schema_for` import wi
 
 and in `write_attention`, change the guard to `if op_for(op_name).family != "attention":`.
 
-In `dryrun/cost/kernel/holdout.py`, `floor.py`, and `database.py`, change
+In `srl/cost/kernel/holdout.py`, `floor.py`, and `database.py`, change
 `from .table import KernelTable, schema_for` to `from .table import KernelTable` and add
 `from .ops.base import op_for` where `schema_for` was used, replacing each
 `schema_for(x)` with `op_for(x)` and each `schema.family` with `op.family`. Their remaining
 bodies change in Tasks 6-8; this step only keeps them importable.
 
 In the eight test files, apply the mechanical rename: `schema_for("gemm")` -> `op_for("gemm")`,
-`GEMM_SCHEMA` -> `GEMM_OP` (importing from `dryrun.cost.kernel.ops.gemm`),
+`GEMM_SCHEMA` -> `GEMM_OP` (importing from `srl.cost.kernel.ops.gemm`),
 `CONTEXT_ATTENTION_SCHEMA` -> `CONTEXT_ATTENTION_OP` and `GENERATION_ATTENTION_SCHEMA` ->
-`GENERATION_ATTENTION_OP` (from `dryrun.cost.kernel.ops.attention`), `table.schema` ->
+`GENERATION_ATTENTION_OP` (from `srl.cost.kernel.ops.attention`), `table.schema` ->
 `table.op`, and `schema.op_name` -> `op.name`. Change **no expected values**: if a test's
 asserted number moves, the refactor was not behaviour-neutral and the code is what must change.
 
@@ -1553,7 +1553,7 @@ Then prove every site moved:
 
 ```bash
 grep -rn "TableSchema\|schema_for\|GEMM_SCHEMA\|CONTEXT_ATTENTION_SCHEMA\|GENERATION_ATTENTION_SCHEMA" \
-    dryrun/ tests/ --include=*.py || echo "ALL SCHEMA REFERENCES GONE"
+    srl/ tests/ --include=*.py || echo "ALL SCHEMA REFERENCES GONE"
 ```
 
 Expected: `ALL SCHEMA REFERENCES GONE`.
@@ -1566,7 +1566,7 @@ python -m pytest tests/test_kernel_ops_base.py tests/test_kernel_table.py \
 python -m pytest tests/test_kernel_baseline_regression.py -q \
     -k "holdout_accuracy or composed_model_accuracy"
 python -m pytest tests/ -q
-ruff check dryrun/ tests/
+ruff check srl/ tests/
 git diff --stat tests/
 ```
 
@@ -1578,8 +1578,8 @@ something behavioural changed.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add dryrun/cost/kernel/table.py dryrun/profiler/kernels/measurements.py \
-        dryrun/cost/kernel/holdout.py dryrun/cost/kernel/floor.py dryrun/cost/kernel/database.py \
+git add srl/cost/kernel/table.py srl/profiler/kernels/measurements.py \
+        srl/cost/kernel/holdout.py srl/cost/kernel/floor.py srl/cost/kernel/database.py \
         tests/test_kernel_ops_base.py tests/test_kernel_table.py tests/test_kernel_holdout.py \
         tests/test_kernel_floor.py tests/test_kernel_measurements.py \
         tests/test_kernel_surface_wiring.py tests/test_kernel_attention_vllm.py \
@@ -1605,7 +1605,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 Half of the duplication this plan exists to remove.
 
 **Files:**
-- Modify: `dryrun/cost/kernel/database.py:298-328` (`_sol`) and `359-373` (`_grid`)
+- Modify: `srl/cost/kernel/database.py:298-328` (`_sol`) and `359-373` (`_grid`)
 - Test: `tests/test_kernel_database_op_binding.py`
 
 **Interfaces:**
@@ -1639,7 +1639,7 @@ def test_the_database_has_no_isinstance_branch_on_query_type():
     """A type switch here is the duplication that let database and holdout drift apart."""
     import inspect
 
-    from dryrun.cost.kernel.database import KernelDatabase
+    from srl.cost.kernel.database import KernelDatabase
 
     source = inspect.getsource(KernelDatabase._sol)
     assert "isinstance" not in source, "_sol still branches on query type instead of asking the op"
@@ -1647,8 +1647,8 @@ def test_the_database_has_no_isinstance_branch_on_query_type():
 
 
 def test_a_gemm_query_prices_through_the_gemm_op():
-    from dryrun.cost.kernel.database import GemmQuery, KernelDatabase
-    from dryrun.cost.kernel.ops.gemm import GEMM_OP
+    from srl.cost.kernel.database import GemmQuery, KernelDatabase
+    from srl.cost.kernel.ops.gemm import GEMM_OP
 
     database = KernelDatabase.from_root(_TABLES, gpu="h20")
     query = GemmQuery(m=128, n=24576, k=4096)
@@ -1660,8 +1660,8 @@ def test_a_gemm_query_prices_through_the_gemm_op():
 
 
 def test_an_attention_query_prices_through_its_phase_op():
-    from dryrun.cost.kernel.database import AttentionQuery, KernelDatabase
-    from dryrun.cost.kernel.ops.attention import GENERATION_ATTENTION_OP
+    from srl.cost.kernel.database import AttentionQuery, KernelDatabase
+    from srl.cost.kernel.ops.attention import GENERATION_ATTENTION_OP
 
     database = KernelDatabase.from_root(_TABLES, gpu="h20")
     query = AttentionQuery(
@@ -1680,9 +1680,9 @@ def test_an_attention_query_prices_through_its_phase_op():
 
 def test_a_measured_shape_still_prices_to_its_measurement():
     """The round trip SOL/utility must return the stored latency at a measured point."""
-    from dryrun.cost.kernel.database import GemmQuery, KernelDatabase
-    from dryrun.cost.kernel.ops.base import op_for
-    from dryrun.cost.kernel.table import KernelTable
+    from srl.cost.kernel.database import GemmQuery, KernelDatabase
+    from srl.cost.kernel.ops.base import op_for
+    from srl.cost.kernel.table import KernelTable
 
     parquet = next((_TABLES / "h20" / "gemm" / "vllm").glob("*/gemm_perf.parquet"))
     table = KernelTable.load(parquet, op_for("gemm"))
@@ -1705,7 +1705,7 @@ still contains `isinstance(query, GemmQuery)`; the attention test fails with `Ke
 
 - [ ] **Step 3: Rewrite `_sol`**
 
-In `dryrun/cost/kernel/database.py`, replace the whole `_sol` method with:
+In `srl/cost/kernel/database.py`, replace the whole `_sol` method with:
 
 ```python
     def _sol(
@@ -1742,7 +1742,7 @@ python -m pytest tests/test_kernel_database_op_binding.py -q \
     -k "no_isinstance_branch or gemm_query_prices or measured_shape_still_prices"
 python -m pytest tests/test_kernel_database.py tests/test_kernel_surface_wiring.py -q
 python -m pytest tests/test_kernel_baseline_regression.py -q -k "composed_model_accuracy"
-ruff check dryrun/cost/kernel/database.py
+ruff check srl/cost/kernel/database.py
 ```
 
 Expected: **3 passed** in the new file, the two existing files pass untouched, the composed
@@ -1752,7 +1752,7 @@ red until Task 7: note that in the commit message rather than weakening it.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add dryrun/cost/kernel/database.py tests/test_kernel_database_op_binding.py
+git add srl/cost/kernel/database.py tests/test_kernel_database_op_binding.py
 git commit -m "refactor: obtain SOL from the op inside KernelDatabase
 
 _sol branched on isinstance(query, GemmQuery) and then on query.phase to pick a
@@ -1777,15 +1777,15 @@ This is the format change. It deletes four phase-to-op translations and is what 
 receive a fitted floor with no edit to `floor.py`.
 
 **Files:**
-- Modify: `dryrun/cost/kernel/sol.py:44-60` (rename and re-key the fallback map)
-- Modify: `dryrun/cost/kernel/floor.py` (delete `_ATTENTION_OPS`, loop over `op.fits_floor`, reject the old format)
-- Modify: `dryrun/cost/kernel/holdout.py:218-229` (drop the phase translation)
+- Modify: `srl/cost/kernel/sol.py:44-60` (rename and re-key the fallback map)
+- Modify: `srl/cost/kernel/floor.py` (delete `_ATTENTION_OPS`, loop over `op.fits_floor`, reject the old format)
+- Modify: `srl/cost/kernel/holdout.py:218-229` (drop the phase translation)
 - Test: `tests/test_kernel_floor_op_keys.py`
 
 **Interfaces:**
 - Consumes: `op_for`, `ops_in` (Task 2), `op.fits_floor` (Tasks 3-4).
 - Produces:
-  - `dryrun.cost.kernel.sol.FALLBACK_FLOORS_S: dict[str, dict[str, float]]`: keyed `{backend: {op_name: floor_s}}`. `ATTENTION_FLOOR_S` is deleted.
+  - `srl.cost.kernel.sol.FALLBACK_FLOORS_S: dict[str, dict[str, float]]`: keyed `{backend: {op_name: floor_s}}`. `ATTENTION_FLOOR_S` is deleted.
   - `load_floors(version_dir, *, backend, warn_missing=True) -> dict[str, float] | None`: returns `{op_name: floor_s}`; raises `KernelCoverageError` on an old-format file.
   - `fit_floors(version_dir, *, backend, gpu, gpu_spec=None, candidates_us=CANDIDATE_FLOORS_US, seed=0) -> dict[str, Any]`: writes op-name keys.
   - `evaluate_holdout(...)`'s `floor_override` keeps its meaning.
@@ -1803,8 +1803,8 @@ import json
 
 import pytest
 
-from dryrun.cost.kernel.floor import load_floors, write_floors
-from dryrun.cost.kernel.interp import KernelCoverageError
+from srl.cost.kernel.floor import load_floors, write_floors
+from srl.cost.kernel.interp import KernelCoverageError
 
 
 def test_floors_round_trip_under_op_name_keys(tmp_path):
@@ -1832,7 +1832,7 @@ def test_an_old_phase_keyed_file_is_rejected_naming_the_fit_command(tmp_path):
 
 
 def test_a_missing_file_falls_back_to_the_hardcoded_map_under_op_keys(tmp_path):
-    from dryrun.cost.kernel.sol import FALLBACK_FLOORS_S
+    from srl.cost.kernel.sol import FALLBACK_FLOORS_S
 
     loaded = load_floors(tmp_path, backend="vllm", warn_missing=True)
     assert loaded == FALLBACK_FLOORS_S["vllm"]
@@ -1844,7 +1844,7 @@ def test_a_missing_file_returns_none_when_not_warning(tmp_path):
 
 
 def test_the_fallback_map_is_keyed_by_op_name_not_phase():
-    from dryrun.cost.kernel.sol import FALLBACK_FLOORS_S
+    from srl.cost.kernel.sol import FALLBACK_FLOORS_S
 
     assert FALLBACK_FLOORS_S["vllm"] == {
         "context_attention": 32e-6,
@@ -1858,7 +1858,7 @@ def test_the_fallback_map_is_keyed_by_op_name_not_phase():
 
 def test_the_old_attention_floor_name_is_gone():
     """Leaving both names would let a caller read the phase-keyed map by accident."""
-    import dryrun.cost.kernel.sol as sol_module
+    import srl.cost.kernel.sol as sol_module
 
     assert not hasattr(sol_module, "ATTENTION_FLOOR_S")
 
@@ -1867,7 +1867,7 @@ def test_floor_fitting_skips_ops_that_declare_no_floor():
     """GEMM is excluded by fits_floor=False, not by absence from a hardcoded map."""
     import inspect
 
-    from dryrun.cost.kernel import floor as floor_module
+    from srl.cost.kernel import floor as floor_module
 
     source = inspect.getsource(floor_module)
     assert "_ATTENTION_OPS" not in source, "the phase map is still there"
@@ -1899,13 +1899,13 @@ Replace the `ATTENTION_FLOOR_S` block (lines 44-60) with:
 ```python
 # Per-backend, per-op dispatch floor in seconds, used only when a fitted floors.json is absent.
 # Fitted for H20 + Qwen3-8B TP=1 (2026-08-24): these are the MRE-minimising floors for that
-# hardware and those backend versions, not general truths. Run `dryrun-profile kernels fit-floor`
+# hardware and those backend versions, not general truths. Run `srl-profile kernels fit-floor`
 # to generate floors.json for the actual deployment; it is loaded in place of these values.
 #
 # Keyed by op name rather than by phase. The phase spelling forced four separate translations
 # between `generation` and `generation_attention` (in floor fitting, in two holdout sites, and
 # in the database), each of which was a place a new floor-taking op had to be threaded through.
-# See `dryrun/cost/kernel/floor.py` for the fitting procedure.
+# See `srl/cost/kernel/floor.py` for the fitting procedure.
 FALLBACK_FLOORS_S: dict[str, dict[str, float]] = {
     "vllm": {
         "context_attention": 32e-6,
@@ -1924,7 +1924,7 @@ honest" to "A module-level mapping keyed by backend and op name is honest".
 
 - [ ] **Step 4: Rewrite the floor fitting and loading**
 
-In `dryrun/cost/kernel/floor.py`:
+In `srl/cost/kernel/floor.py`:
 
 Replace the imports of `ATTENTION_FLOOR_S` and `schema_for` with:
 
@@ -1947,7 +1947,7 @@ Delete the `_ATTENTION_OPS` dict entirely and replace the `fit_floors` loop head
         try:
             table = KernelTable.load(parquet_path, op)
         except Exception as exc:
-            dryrun_logger.warning(
+            srl_logger.warning(
                 f"Skipping {op.name} floor fit for {backend!r}: could not load table: {exc}."
             )
             continue
@@ -1959,7 +1959,7 @@ log message with `op.name`, and the two result assignments:
 ```python
         fitted_floors[op.name] = best_floor_s
         fitted_mre[op.name] = round(best_mre, 4)
-        dryrun_logger.info(
+        srl_logger.info(
             f"Fitted {backend}/{op.name}: floor {best_floor_s * 1e6:.0f} us, MRE {best_mre:.2f}%."
         )
 ```
@@ -1998,17 +1998,17 @@ def load_floors(
     floors_path = version_dir / "floors.json"
     if not floors_path.is_file():
         if warn_missing:
-            dryrun_logger.warning(
+            srl_logger.warning(
                 f"No floors.json in {version_dir}; falling back to hardcoded FALLBACK_FLOORS_S "
                 f"for backend {backend!r} (fitted for H20, may be wrong for other hardware or "
-                f"backend versions). Run dryrun-profile kernels fit-floor to generate it."
+                f"backend versions). Run srl-profile kernels fit-floor to generate it."
             )
             return dict(FALLBACK_FLOORS_S.get(backend, {}))
         return None
     try:
         raw = json.loads(floors_path.read_text(encoding="utf-8"))
     except Exception as exc:
-        dryrun_logger.warning(
+        srl_logger.warning(
             f"Could not read {floors_path}: {exc}. "
             f"Falling back to hardcoded FALLBACK_FLOORS_S for backend {backend!r}."
         )
@@ -2017,7 +2017,7 @@ def load_floors(
         raise KernelCoverageError(
             f"{floors_path} uses the retired phase keys {sorted(_LEGACY_PHASE_KEYS & set(raw))}. "
             f"Floors are now keyed by op name. Regenerate it with "
-            f"dryrun-profile kernels fit-floor."
+            f"srl-profile kernels fit-floor."
         )
     result: dict[str, float] = {}
     for key, value in raw.items():
@@ -2056,7 +2056,7 @@ and change `attention_dir = root / slug / "attention"` to walk every family:
                     continue
                 if not any(op.fits_floor for op in ops_in(version_dir)):
                     continue
-                dryrun_logger.info(f"Fitting floors for {backend!r} version {version_dir.name!r}...")
+                srl_logger.info(f"Fitting floors for {backend!r} version {version_dir.name!r}...")
                 data = fit_floors(
                     version_dir,
                     backend=backend,
@@ -2067,7 +2067,7 @@ and change `attention_dir = root / slug / "attention"` to walk every family:
                 )
                 path = write_floors(version_dir, data)
                 written.append(path)
-                dryrun_logger.info(f"Wrote fitted floors to {path}.")
+                srl_logger.info(f"Wrote fitted floors to {path}.")
     return written
 ```
 
@@ -2076,7 +2076,7 @@ Replace the early `if not attention_dir.is_dir()` guard with:
 ```python
     gpu_dir = root / slug
     if not gpu_dir.is_dir():
-        dryrun_logger.warning(f"No perf tables found at {gpu_dir}.")
+        srl_logger.warning(f"No perf tables found at {gpu_dir}.")
         return []
 ```
 
@@ -2148,7 +2148,7 @@ The committed files still carry phase keys, so every real load now raises until 
 regenerated. That is the intended breaking change.
 
 ```bash
-dryrun-profile kernels fit-floor --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml
+srl-profile kernels fit-floor --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml
 python - <<'PY'
 import glob, json
 for path in sorted(glob.glob("outputs/profile/qwen3_8b/kernel_tp1/kernel/h20/attention/*/*/floors.json")):
@@ -2173,7 +2173,7 @@ python -m pytest tests/test_kernel_floor_op_keys.py tests/test_kernel_floor.py -
 python -m pytest tests/test_kernel_database_op_binding.py -q
 python -m pytest tests/test_kernel_baseline_regression.py -q
 python -m pytest tests/ -q
-ruff check dryrun/ tests/
+ruff check srl/ tests/
 ```
 
 Expected: **8 passed** in the new file, the existing floor tests pass, all **4 database binding
@@ -2184,7 +2184,7 @@ proves the re-keying preserved the values. Suite **680 passed**, no new ruff fin
 - [ ] **Step 8: Commit**
 
 ```bash
-git add dryrun/cost/kernel/sol.py dryrun/cost/kernel/floor.py dryrun/cost/kernel/holdout.py \
+git add srl/cost/kernel/sol.py srl/cost/kernel/floor.py srl/cost/kernel/holdout.py \
         tests/test_kernel_floor_op_keys.py tests/test_kernel_floor.py
 git commit -m "refactor: key dispatch floors by op name instead of phase
 
@@ -2217,9 +2217,9 @@ The profiler side of the abstraction. After this, adding an op needs no new writ
 new config field.
 
 **Files:**
-- Modify: `dryrun/profiler/kernels/measurements.py` (replace `write_gemm`/`write_attention` with `write`; delete `GemmRow`/`AttentionRow`)
-- Modify: `dryrun/profiler/kernels/config.py` (replace the `gemm`/`attention` fields with `sweeps` + `sweep(op_name)`)
-- Modify: `dryrun/profiler/kernels/gemm.py`, `dryrun/profiler/kernels/_vllm_attn.py`, `dryrun/profiler/kernels/_flashinfer_attn.py` (call `write`)
+- Modify: `srl/profiler/kernels/measurements.py` (replace `write_gemm`/`write_attention` with `write`; delete `GemmRow`/`AttentionRow`)
+- Modify: `srl/profiler/kernels/config.py` (replace the `gemm`/`attention` fields with `sweeps` + `sweep(op_name)`)
+- Modify: `srl/profiler/kernels/gemm.py`, `srl/profiler/kernels/_vllm_attn.py`, `srl/profiler/kernels/_flashinfer_attn.py` (call `write`)
 - Modify: `tests/test_kernel_measurements.py`, `tests/test_kernel_holdout.py`, `tests/test_kernel_table.py`, `tests/test_kernel_database.py`, `tests/test_profiling_cli.py` (mechanical rewrite to `write`)
 - Test: `tests/test_kernel_writer_columns.py`
 
@@ -2242,7 +2242,7 @@ from __future__ import annotations
 import pyarrow.parquet as pq
 import pytest
 
-from dryrun.profiler.kernels.measurements import PerfTableWriter
+from srl.profiler.kernels.measurements import PerfTableWriter
 
 
 @pytest.fixture
@@ -2273,8 +2273,8 @@ def test_a_gemm_table_is_written_with_provenance_and_payload(writer):
 
 def test_the_written_table_loads_back_through_its_op(writer):
     """A table the writer produced must satisfy the reader's contract by construction."""
-    from dryrun.cost.kernel.ops.base import op_for
-    from dryrun.cost.kernel.table import KernelTable
+    from srl.cost.kernel.ops.base import op_for
+    from srl.cost.kernel.table import KernelTable
 
     path = writer.write("gemm", [_gemm_row(1), _gemm_row(16)])
     table = KernelTable.load(path, op_for("gemm"))
@@ -2303,7 +2303,7 @@ def test_an_empty_row_list_is_rejected(writer):
 
 
 def test_an_unknown_op_is_rejected(writer):
-    from dryrun.cost.kernel.interp import KernelCoverageError
+    from srl.cost.kernel.interp import KernelCoverageError
 
     with pytest.raises(KernelCoverageError, match="wodget"):
         writer.write("wodget", [{"latency_s": 1.0}])
@@ -2343,7 +2343,7 @@ def test_the_config_serves_a_sweep_per_op_name():
     """Adding an op must not require adding a named field to KernelProfileConfig."""
     from pathlib import Path as _Path
 
-    from dryrun.profiler.kernels.config import KernelProfileConfig
+    from srl.profiler.kernels.config import KernelProfileConfig
 
     config_path = _Path(__file__).resolve().parents[1] / "examples" / "profile" / "kernel" / "qwen3_8b_h20_tp1.yaml"
     if not config_path.is_file():
@@ -2370,7 +2370,7 @@ Expected: FAIL with `AttributeError: 'PerfTableWriter' object has no attribute '
 
 - [ ] **Step 3: Collapse the writer**
 
-In `dryrun/profiler/kernels/measurements.py`, delete the `GemmRow` and `AttentionRow`
+In `srl/profiler/kernels/measurements.py`, delete the `GemmRow` and `AttentionRow`
 dataclasses and both `write_*` methods, and replace them with one `write`:
 
 ```python
@@ -2424,8 +2424,8 @@ imports:
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from dryrun.cost.kernel.hardware import gpu_slug
-from dryrun.cost.kernel.ops.base import op_for
+from srl.cost.kernel.hardware import gpu_slug
+from srl.cost.kernel.ops.base import op_for
 ```
 
 Update the module docstring's last paragraph:
@@ -2438,7 +2438,7 @@ at read time.
 
 - [ ] **Step 4: Move sweeps onto the config**
 
-In `dryrun/profiler/kernels/config.py`, delete the `gemm: GemmSweep` and
+In `srl/profiler/kernels/config.py`, delete the `gemm: GemmSweep` and
 `attention: AttentionSweep` fields from `KernelProfileConfig` and add a parsed-sweep mapping:
 
 ```python
@@ -2515,7 +2515,7 @@ from ...cost.kernel.ops.base import OP_REGISTRY, op_for
 ```
 
 **Do NOT add per-op module imports here.** Task 5 moved registration into
-`dryrun/cost/kernel/ops/__init__.py`, which is the correct layer: `op_for` is called from
+`srl/cost/kernel/ops/__init__.py`, which is the correct layer: `op_for` is called from
 `database.py`, `floor.py`, and the perf-table writer, none of which should depend on the
 profiler package having been imported first. Importing `ops.base` pulls in `ops/__init__.py`
 and therefore every op. An earlier draft of this plan deferred registration to this file, which
@@ -2528,7 +2528,7 @@ moving them would create a cycle.
 
 - [ ] **Step 5: Repoint the three profiler call sites**
 
-In `dryrun/profiler/kernels/gemm.py`, replace the `GemmRow` construction and the write:
+In `srl/profiler/kernels/gemm.py`, replace the `GemmRow` construction and the write:
 
 ```python
     rows: list[dict[str, object]] = []
@@ -2570,9 +2570,9 @@ python -m pytest tests/test_kernel_measurements.py tests/test_kernel_gemm.py \
     tests/test_kernel_attention_sweep.py tests/test_profiling_cli.py -q
 python -m pytest tests/test_kernel_baseline_regression.py -q
 python -m pytest tests/ -q
-ruff check dryrun/ tests/
+ruff check srl/ tests/
 grep -rn "write_gemm\|write_attention\|GemmRow\|AttentionRow\|config\.gemm\b\|config\.attention\b" \
-    dryrun/ tests/ --include=*.py || echo "OLD WRITER API GONE"
+    srl/ tests/ --include=*.py || echo "OLD WRITER API GONE"
 ```
 
 Expected: **10 passed** in the writer file, the profiler tests pass, all **3 baseline tests
@@ -2581,9 +2581,9 @@ pass**, the suite grows by exactly the new file's test count and stays green, no
 - [ ] **Step 7: Commit**
 
 ```bash
-git add dryrun/profiler/kernels/measurements.py dryrun/profiler/kernels/config.py \
-        dryrun/profiler/kernels/gemm.py dryrun/profiler/kernels/_vllm_attn.py \
-        dryrun/profiler/kernels/_flashinfer_attn.py \
+git add srl/profiler/kernels/measurements.py srl/profiler/kernels/config.py \
+        srl/profiler/kernels/gemm.py srl/profiler/kernels/_vllm_attn.py \
+        srl/profiler/kernels/_flashinfer_attn.py \
         tests/test_kernel_writer_columns.py tests/test_kernel_ops_base.py \
         tests/test_kernel_measurements.py tests/test_kernel_holdout.py \
         tests/test_kernel_table.py tests/test_kernel_database.py tests/test_profiling_cli.py
@@ -2615,7 +2615,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 The last hardcoded op list.
 
 **Files:**
-- Modify: `dryrun/cli/profile.py:207-248` (`cmd_kernels_run`) and `492-501` (the `--family` parser)
+- Modify: `srl/cli/profile.py:207-248` (`cmd_kernels_run`) and `492-501` (the `--family` parser)
 - Test: `tests/test_kernel_op_coverage.py`
 - Test: `tests/test_profiling_cli.py` (add one parser test)
 
@@ -2636,7 +2636,7 @@ from pathlib import Path
 
 import pytest
 
-from dryrun.cost.kernel.ops.base import OP_REGISTRY, families
+from srl.cost.kernel.ops.base import OP_REGISTRY, families
 
 _REPO = Path(__file__).resolve().parents[1]
 _TABLES = _REPO / "outputs" / "profile" / "qwen3_8b" / "kernel_tp1" / "kernel"
@@ -2648,7 +2648,7 @@ def test_the_registry_covers_the_three_original_ops():
 
 def test_the_cli_family_choices_come_from_the_registry():
     """A hardcoded choices list is the last place adding an op means editing the CLI."""
-    from dryrun.cli.profile import build_parser
+    from srl.cli.profile import build_parser
 
     parser = build_parser()
     args = parser.parse_args(["kernels", "run", "--config", "c.yaml"])
@@ -2659,7 +2659,7 @@ def test_the_cli_family_choices_come_from_the_registry():
 
 
 def test_an_unknown_family_is_rejected():
-    from dryrun.cli.profile import build_parser
+    from srl.cli.profile import build_parser
 
     parser = build_parser()
     with pytest.raises(SystemExit):
@@ -2675,7 +2675,7 @@ def test_the_family_choices_are_not_a_hardcoded_literal():
     """
     import inspect
 
-    from dryrun.cli import profile as profile_module
+    from srl.cli import profile as profile_module
 
     source = inspect.getsource(profile_module.build_parser)
     assert '"gemm", "attention"' not in source, "family choices are still a hardcoded literal"
@@ -2710,7 +2710,7 @@ Append to `tests/test_profiling_cli.py`, matching that file's existing style:
 
 ```python
 def test_kernels_run_accepts_every_registered_family():
-    from dryrun.cost.kernel.ops.base import families
+    from srl.cost.kernel.ops.base import families
 
     parser = build_parser()
     for family in families():
@@ -2734,7 +2734,7 @@ is gone is what actually fails now.
 
 - [ ] **Step 3: Rewrite the CLI dispatch**
 
-In `dryrun/cli/profile.py`, replace `cmd_kernels_run`'s body with the following. Note it calls
+In `srl/cli/profile.py`, replace `cmd_kernels_run`'s body with the following. Note it calls
 `measure` once per **family**, not once per op: both attention phases come out of a single
 backend sweep, so a per-op loop would measure the grid twice and could select a different
 backend for each phase.
@@ -2772,11 +2772,11 @@ def cmd_kernels_run(args: argparse.Namespace) -> None:
         written.extend(ops[0].measure(config.model, config, writer_factory=writer_factory))
 
     for path in written:
-        dryrun_logger.info(f"Wrote kernel perf table {path}.")
+        srl_logger.info(f"Wrote kernel perf table {path}.")
 ```
 
 `ops[0].measure` measuring the whole family is a real constraint of the attention sweep, so it
-must be stated in the `KernelOp` protocol docstring. In `dryrun/cost/kernel/ops/base.py`, add
+must be stated in the `KernelOp` protocol docstring. In `srl/cost/kernel/ops/base.py`, add
 `measure` to the protocol:
 
 ```python
@@ -2859,7 +2859,7 @@ Add `from typing import Any` where needed, and replace the `--family` parser arg
     )
 ```
 
-with a module-level helper in `dryrun/cli/profile.py`:
+with a module-level helper in `srl/cli/profile.py`:
 
 ```python
 def _kernel_families() -> tuple[str, ...]:
@@ -2880,9 +2880,9 @@ Step 4 rather than assuming it.
 python -m pytest tests/test_kernel_op_coverage.py tests/test_profiling_cli.py -q
 python -m pytest tests/test_kernel_baseline_regression.py -q
 python -m pytest tests/ -q
-ruff check dryrun/ tests/
+ruff check srl/ tests/
 python -c "
-from dryrun.cli.profile import build_parser
+from srl.cli.profile import build_parser
 p = build_parser()
 a = p.parse_args(['kernels','run','--config','c.yaml','--family','attention'])
 print('parsed family:', a.family)"
@@ -2899,9 +2899,9 @@ The dispatch rewrite changes how the profiler is entered, so it must be exercise
 before the stage-1 gate can be called clean.
 
 ```bash
-dryrun-profile kernels run --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml --family gemm
-dryrun-profile kernels fit-floor --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml
-dryrun-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
+srl-profile kernels run --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml --family gemm
+srl-profile kernels fit-floor --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml
+srl-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
     --fraction 1.0 --gate 100 --output /tmp/holdout-after-task9.json
 python - <<'PY'
 import json
@@ -2941,8 +2941,8 @@ ten baseline numbers are pinned to those exact files.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add dryrun/cli/profile.py dryrun/cost/kernel/ops/base.py dryrun/cost/kernel/ops/gemm.py \
-        dryrun/cost/kernel/ops/attention.py tests/test_kernel_op_coverage.py tests/test_profiling_cli.py
+git add srl/cli/profile.py srl/cost/kernel/ops/base.py srl/cost/kernel/ops/gemm.py \
+        srl/cost/kernel/ops/attention.py tests/test_kernel_op_coverage.py tests/test_profiling_cli.py
 git commit -m "refactor: derive kernel CLI dispatch from the op registry
 
 --family carried the literal choices [all, gemm, attention] and the command body
@@ -2975,19 +2975,19 @@ behaviour-neutral. A new op measured before this point would make the comparison
 - [ ] **Run the full gate**
 
 ```bash
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
-cd /apdcephfs_zwfy/share_303760348/lhy/DryRun-RL
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
+cd /apdcephfs_zwfy/share_303760348/lhy/SimRL
 
 python -m pytest tests/ -q --ignore=tests/test_fsdp_cost.py
-ruff check dryrun/ tests/
+ruff check srl/ tests/
 
 # Do NOT re-sweep before this. The gate reads the pinned tables under outputs/; re-measuring
 # them moves latency_s by ~0.35% per kernel and would fail the comparison for reasons that have
 # nothing to do with the refactor.
-dryrun-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
+srl-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
     --fraction 1.0 --gate 100 --output /tmp/gate-holdout.json
 for surface in pchip shepard; do
-  dryrun-profile kernels validate \
+  srl-profile kernels validate \
       --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
       --baseline outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl \
       --model-path /apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B \
@@ -3032,19 +3032,19 @@ accommodating the two families that shaped it. **It is deliberately not wired in
 `ComposedRollout.predict()`**: see the spec's elementwise section and the test in Step 6.
 
 **Files:**
-- Create: `dryrun/cost/kernel/ops/elementwise.py`
-- Create: `dryrun/profiler/kernels/elementwise.py`
-- Modify: `dryrun/profiler/kernels/config.py` (import the new op so it registers)
+- Create: `srl/cost/kernel/ops/elementwise.py`
+- Create: `srl/profiler/kernels/elementwise.py`
+- Modify: `srl/profiler/kernels/config.py` (import the new op so it registers)
 - Modify: `examples/profile/kernel/qwen3_8b_h20_tp1.yaml` (add the `elementwise:` block)
 - Test: `tests/test_kernel_ops_elementwise.py`
 
 **Interfaces:**
-- Consumes: `KernelOp`, `register_op` (Task 2); `PerfTableWriter.write` (Task 8); `MeasurementConfig` from `dryrun.profiler.kernels.config`.
+- Consumes: `KernelOp`, `register_op` (Task 2); `PerfTableWriter.write` (Task 8); `MeasurementConfig` from `srl.profiler.kernels.config`.
 - Produces:
-  - `ElementwiseSweep(token_counts: tuple[int, ...])`: frozen, in `dryrun/profiler/kernels/config.py`.
+  - `ElementwiseSweep(token_counts: tuple[int, ...])`: frozen, in `srl/profiler/kernels/config.py`.
   - `ElementwiseKernelOp` with `name = "elementwise"`, `family = "elementwise"`, `slice_columns = ("dtype", "op_kind")`, `axis_columns = ("n_elements",)`, `fits_floor = True`, registered as `ELEMENTWISE_OP`.
   - `ELEMENTWISE_KINDS: tuple[str, ...] = ("rms_norm", "rotary_embedding", "silu_and_mul", "qk_norm")`.
-  - `dryrun.profiler.kernels.elementwise.profile_elementwise(model, config, *, writer_factory) -> tuple[Path, ...]`.
+  - `srl.profiler.kernels.elementwise.profile_elementwise(model, config, *, writer_factory) -> tuple[Path, ...]`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3057,9 +3057,9 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.ops.base import op_for
-from dryrun.cost.kernel.ops.elementwise import ELEMENTWISE_KINDS, ELEMENTWISE_OP
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.ops.base import op_for
+from srl.cost.kernel.ops.elementwise import ELEMENTWISE_KINDS, ELEMENTWISE_OP
 
 
 @pytest.fixture(scope="module")
@@ -3138,7 +3138,7 @@ def test_parse_sweep_builds_the_token_grid():
 
 
 def test_parse_sweep_rejects_an_empty_grid():
-    from dryrun.profiler.schema import ProfileValidationError
+    from srl.profiler.schema import ProfileValidationError
 
     with pytest.raises(ProfileValidationError, match="token_counts"):
         ELEMENTWISE_OP.parse_sweep({"token_counts": []})
@@ -3154,7 +3154,7 @@ def test_the_composed_model_does_not_add_an_elementwise_term():
     """
     import inspect
 
-    from dryrun.cost.rollout.composed import ComposedRollout
+    from srl.cost.rollout.composed import ComposedRollout
 
     source = inspect.getsource(ComposedRollout)
     assert "elementwise" not in source.lower() or "query_elementwise" not in source, (
@@ -3170,11 +3170,11 @@ def test_the_composed_model_does_not_add_an_elementwise_term():
 python -m pytest tests/test_kernel_ops_elementwise.py -q
 ```
 
-Expected: FAIL with `ModuleNotFoundError: No module named 'dryrun.cost.kernel.ops.elementwise'`.
+Expected: FAIL with `ModuleNotFoundError: No module named 'srl.cost.kernel.ops.elementwise'`.
 
 - [ ] **Step 3: Add the sweep type**
 
-In `dryrun/profiler/kernels/config.py`, add beside `GemmSweep`:
+In `srl/profiler/kernels/config.py`, add beside `GemmSweep`:
 
 ```python
 @dataclass(frozen=True)
@@ -3194,7 +3194,7 @@ class ElementwiseSweep:
 
 - [ ] **Step 4: Write the cost-side op**
 
-Create `dryrun/cost/kernel/ops/elementwise.py`:
+Create `srl/cost/kernel/ops/elementwise.py`:
 
 ```python
 """
@@ -3306,11 +3306,11 @@ register_op(ELEMENTWISE_OP)
 ```
 
 Add `from ...cost.kernel.ops import elementwise as _elementwise_ops  # noqa: F401  (registers the op)`
-to `dryrun/profiler/kernels/config.py`'s import block.
+to `srl/profiler/kernels/config.py`'s import block.
 
 - [ ] **Step 5: Write the profiler side**
 
-Create `dryrun/profiler/kernels/elementwise.py`:
+Create `srl/profiler/kernels/elementwise.py`:
 
 ```python
 """
@@ -3515,7 +3515,7 @@ elementwise:
 python -m pytest tests/test_kernel_ops_elementwise.py -q
 python -m pytest tests/test_kernel_baseline_regression.py -q
 python -m pytest tests/ -q
-ruff check dryrun/ tests/
+ruff check srl/ tests/
 ```
 
 Expected: **14 passed** in the new file, all 3 baseline tests pass (the new op must not touch
@@ -3524,9 +3524,9 @@ tp=1 accuracy, since nothing consumes it), the suite grows by exactly the new fi
 - [ ] **Step 7: Measure it and gate its interpolation**
 
 ```bash
-dryrun-profile kernels run --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml --family elementwise
-dryrun-profile kernels fit-floor --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml
-dryrun-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
+srl-profile kernels run --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml --family elementwise
+srl-profile kernels fit-floor --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml
+srl-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
     --fraction 1.0 --gate 100 --output /tmp/holdout-elementwise.json
 python - <<'PY'
 import json
@@ -3555,8 +3555,8 @@ poorly conditioned.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add dryrun/cost/kernel/ops/elementwise.py dryrun/profiler/kernels/elementwise.py \
-        dryrun/profiler/kernels/config.py examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
+git add srl/cost/kernel/ops/elementwise.py srl/profiler/kernels/elementwise.py \
+        srl/profiler/kernels/config.py examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
         tests/test_kernel_ops_elementwise.py
 git commit -m "feat: add the elementwise op, measured but not priced into a rollout
 
@@ -3593,20 +3593,20 @@ The fourth family and the one with a genuinely different measurement model: a mu
 spawn rather than a single kernel call. That is what `measure()`'s coarse signature exists for.
 
 **Files:**
-- Create: `dryrun/cost/kernel/ops/collective.py`
-- Modify: `dryrun/profiler/kernels/collective.py` (write a perf table; delete the JSON dataclasses)
-- Modify: `dryrun/profiler/kernels/config.py` (import the op; add `CollectiveSweep`)
+- Create: `srl/cost/kernel/ops/collective.py`
+- Modify: `srl/profiler/kernels/collective.py` (write a perf table; delete the JSON dataclasses)
+- Modify: `srl/profiler/kernels/config.py` (import the op; add `CollectiveSweep`)
 - Modify: `examples/profile/kernel/qwen3_8b_h20_tp1.yaml`; create `examples/profile/kernel/qwen3_8b_h20_tp2.yaml`
 - Test: `tests/test_kernel_ops_collective.py`
 
 **Interfaces:**
 - Consumes: `KernelOp`, `register_op` (Task 2); `PerfTableWriter.write` (Task 8).
 - Produces:
-  - `CollectiveSweep(token_counts: tuple[int, ...])`: frozen, in `dryrun/profiler/kernels/config.py`.
+  - `CollectiveSweep(token_counts: tuple[int, ...])`: frozen, in `srl/profiler/kernels/config.py`.
   - `AllReduceKernelOp` with `name = "all_reduce"`, `family = "collective"`, `slice_columns = ("dtype", "world_size")`, `axis_columns = ("message_bytes",)`, `fits_floor = True`, registered as `ALL_REDUCE_OP`.
-  - `CommQuery(world_size: int, message_bytes: int, dtype: str = "bfloat16")`: frozen, in `dryrun/cost/kernel/database.py`, with `op_name`, `slice_key`, `coords` matching the other queries.
+  - `CommQuery(world_size: int, message_bytes: int, dtype: str = "bfloat16")`: frozen, in `srl/cost/kernel/database.py`, with `op_name`, `slice_key`, `coords` matching the other queries.
   - `KernelDatabase.query_comm(query: CommQuery) -> float`: replaces the raising stub.
-  - `dryrun.profiler.kernels.collective.profile_collective(model, config, *, writer_factory) -> tuple[Path, ...]`; `CollectiveProfile` and `CollectiveMeasurement` are deleted.
+  - `srl.profiler.kernels.collective.profile_collective(model, config, *, writer_factory) -> tuple[Path, ...]`; `CollectiveProfile` and `CollectiveMeasurement` are deleted.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3619,9 +3619,9 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.ops.base import op_for
-from dryrun.cost.kernel.ops.collective import ALL_REDUCE_OP
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.ops.base import op_for
+from srl.cost.kernel.ops.collective import ALL_REDUCE_OP
 
 
 @pytest.fixture(scope="module")
@@ -3699,7 +3699,7 @@ def test_parse_sweep_builds_the_token_grid():
 
 
 def test_a_comm_query_exposes_the_ops_slice_and_coords():
-    from dryrun.cost.kernel.database import CommQuery
+    from srl.cost.kernel.database import CommQuery
 
     query = CommQuery(world_size=4, message_bytes=1 << 20)
     assert query.op_name == "all_reduce"
@@ -3708,8 +3708,8 @@ def test_a_comm_query_exposes_the_ops_slice_and_coords():
 
 
 def test_a_comm_query_rejects_a_non_positive_world_size():
-    from dryrun.cost.kernel.database import CommQuery
-    from dryrun.cost.kernel.interp import KernelCoverageError
+    from srl.cost.kernel.database import CommQuery
+    from srl.cost.kernel.interp import KernelCoverageError
 
     with pytest.raises(KernelCoverageError, match="world_size"):
         CommQuery(world_size=0, message_bytes=1 << 20)
@@ -3719,7 +3719,7 @@ def test_query_comm_no_longer_raises_unconditionally():
     """It raised on every call as a placeholder; now it must reach the table machinery."""
     import inspect
 
-    from dryrun.cost.kernel.database import KernelDatabase
+    from srl.cost.kernel.database import KernelDatabase
 
     source = inspect.getsource(KernelDatabase.query_comm)
     assert "phase 1b" not in source, "query_comm is still the placeholder stub"
@@ -3732,11 +3732,11 @@ def test_query_comm_no_longer_raises_unconditionally():
 python -m pytest tests/test_kernel_ops_collective.py -q
 ```
 
-Expected: FAIL with `ModuleNotFoundError: No module named 'dryrun.cost.kernel.ops.collective'`.
+Expected: FAIL with `ModuleNotFoundError: No module named 'srl.cost.kernel.ops.collective'`.
 
 - [ ] **Step 3: Add the sweep type and the cost-side op**
 
-In `dryrun/profiler/kernels/config.py`, add beside `ElementwiseSweep`:
+In `srl/profiler/kernels/config.py`, add beside `ElementwiseSweep`:
 
 ```python
 @dataclass(frozen=True)
@@ -3754,7 +3754,7 @@ class CollectiveSweep:
         )
 ```
 
-Create `dryrun/cost/kernel/ops/collective.py`:
+Create `srl/cost/kernel/ops/collective.py`:
 
 ```python
 """
@@ -3854,11 +3854,11 @@ register_op(ALL_REDUCE_OP)
 ```
 
 Add `from ...cost.kernel.ops import collective as _collective_ops  # noqa: F401  (registers the op)`
-to `dryrun/profiler/kernels/config.py`.
+to `srl/profiler/kernels/config.py`.
 
 - [ ] **Step 4: Add `CommQuery` and implement `query_comm`**
 
-In `dryrun/cost/kernel/database.py`, add beside `AttentionQuery`:
+In `srl/cost/kernel/database.py`, add beside `AttentionQuery`:
 
 ```python
 @dataclass(frozen=True)
@@ -3924,7 +3924,7 @@ rather than keep them.
 
 - [ ] **Step 5: Rewrite the collective profiler to write a table**
 
-In `dryrun/profiler/kernels/collective.py`, delete `CollectiveMeasurement` and
+In `srl/profiler/kernels/collective.py`, delete `CollectiveMeasurement` and
 `CollectiveProfile`, and rewrite `profile_collective`:
 
 ```python
@@ -3955,7 +3955,7 @@ def profile_collective(
     import torch.multiprocessing as mp
 
     if config.tensor_parallel <= 1:
-        dryrun_logger.warning(
+        srl_logger.warning(
             f"tensor_parallel is {config.tensor_parallel}; no TP all-reduce runs at that world "
             f"size, so no collective table is written."
         )
@@ -3988,7 +3988,7 @@ def profile_collective(
 
 Update the imports: add `from collections.abc import Callable`, `from pathlib import Path`,
 `import logging`, `from .measurements import PerfTableWriter`, and a module logger
-`dryrun_logger = logging.getLogger(__file__)`. Move `import torch`, `import torch.distributed as
+`srl_logger = logging.getLogger(__file__)`. Move `import torch`, `import torch.distributed as
 dist`, and `import torch.multiprocessing as mp` inside the functions that use them so importing
 this module stays cheap; `_collective_worker` needs `dist` and `torch` at its top.
 
@@ -4013,7 +4013,7 @@ Create `examples/profile/kernel/qwen3_8b_h20_tp2.yaml` by copying the tp1 file, 
 
 - [ ] **Step 6: Wire the comm term into `ModelOps` and `ComposedRollout`**
 
-In `dryrun/cost/kernel/model_ops.py`, add `comm_queries` after `gemm_queries`:
+In `srl/cost/kernel/model_ops.py`, add `comm_queries` after `gemm_queries`:
 
 ```python
     def comm_queries(self, token_count: int) -> tuple[tuple[CommQuery, int], ...]:
@@ -4068,7 +4068,7 @@ with `dtype: str = "bfloat16"` added as a keyword parameter to both `__init__` a
         return self._tensor_parallel
 ```
 
-In `dryrun/cost/rollout/composed.py`, delete the `tensor_parallel != 1` rejection block entirely
+In `srl/cost/rollout/composed.py`, delete the `tensor_parallel != 1` rejection block entirely
 and add the comm term to `predict`:
 
 ```python
@@ -4089,8 +4089,8 @@ python -m pytest tests/test_kernel_model_ops.py tests/test_rollout_composed.py \
     tests/test_rollout_composed_config.py -q
 python -m pytest tests/test_kernel_baseline_regression.py -q
 python -m pytest tests/ -q
-ruff check dryrun/ tests/
-grep -rn "CollectiveProfile\|CollectiveMeasurement\|query_elementwise" dryrun/ tests/ --include=*.py \
+ruff check srl/ tests/
+grep -rn "CollectiveProfile\|CollectiveMeasurement\|query_elementwise" srl/ tests/ --include=*.py \
     || echo "RETIRED APIS GONE"
 ```
 
@@ -4103,9 +4103,9 @@ feature: replace it with a test that `tp=2` constructs, and say so in the commit
 - [ ] **Step 8: Measure at tp=2 and gate it**
 
 ```bash
-dryrun-profile kernels run --config examples/profile/kernel/qwen3_8b_h20_tp2.yaml --family collective
-dryrun-profile kernels fit-floor --config examples/profile/kernel/qwen3_8b_h20_tp2.yaml
-dryrun-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp2.yaml \
+srl-profile kernels run --config examples/profile/kernel/qwen3_8b_h20_tp2.yaml --family collective
+srl-profile kernels fit-floor --config examples/profile/kernel/qwen3_8b_h20_tp2.yaml
+srl-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp2.yaml \
     --fraction 1.0 --gate 100 --output /tmp/holdout-collective.json
 python - <<'PY'
 import json
@@ -4126,9 +4126,9 @@ world size, so the slice has a single `world_size` value and interpolation happe
 - [ ] **Step 9: Commit**
 
 ```bash
-git add dryrun/cost/kernel/ops/collective.py dryrun/cost/kernel/database.py \
-        dryrun/cost/kernel/model_ops.py dryrun/cost/rollout/composed.py \
-        dryrun/profiler/kernels/collective.py dryrun/profiler/kernels/config.py \
+git add srl/cost/kernel/ops/collective.py srl/cost/kernel/database.py \
+        srl/cost/kernel/model_ops.py srl/cost/rollout/composed.py \
+        srl/profiler/kernels/collective.py srl/profiler/kernels/config.py \
         examples/profile/kernel/qwen3_8b_h20_tp1.yaml examples/profile/kernel/qwen3_8b_h20_tp2.yaml \
         tests/test_kernel_ops_collective.py tests/test_rollout_composed.py
 git commit -m "feat: add the all_reduce op and unblock tensor parallelism
@@ -4179,15 +4179,15 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 Do not copy numbers from this plan. Re-run and record what the branch actually produces.
 
 ```bash
-source /apdcephfs_zwfy/share_303760348/lhy/env/dryrun-rl.sh
-cd /apdcephfs_zwfy/share_303760348/lhy/DryRun-RL
+source /apdcephfs_zwfy/share_303760348/lhy/env/simrl.sh
+cd /apdcephfs_zwfy/share_303760348/lhy/SimRL
 
-dryrun-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
+srl-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
     --fraction 1.0 --gate 100 --output /tmp/final-holdout-tp1.json
-dryrun-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp2.yaml \
+srl-profile kernels holdout --config examples/profile/kernel/qwen3_8b_h20_tp2.yaml \
     --fraction 1.0 --gate 100 --output /tmp/final-holdout-tp2.json
 for surface in pchip shepard; do
-  dryrun-profile kernels validate \
+  srl-profile kernels validate \
       --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
       --baseline outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl \
       --model-path /apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B \
@@ -4260,15 +4260,15 @@ the sweep needs them. Add the tp=2 config to the examples.
 
 Read it first and match its existing format. Add the five new `cost/kernel/ops/` modules and
 `profiler/kernels/elementwise.py`; record that `TableSchema` and `schema_for` are gone from
-`table.py`; note that `dryrun/cost/kernel/ops/*` imports `dryrun/profiler/kernels/config` lazily
-inside `parse_sweep` and `measure`, and that `dryrun/profiler/kernels/config` imports the op
+`table.py`; note that `srl/cost/kernel/ops/*` imports `srl/profiler/kernels/config` lazily
+inside `parse_sweep` and `measure`, and that `srl/profiler/kernels/config` imports the op
 modules at module scope to populate the registry.
 
 - [ ] **Step 6: Verify every claim traces to a command**
 
 ```bash
 python -m pytest tests/ -q
-ruff check dryrun/ tests/
+ruff check srl/ tests/
 grep -rn "partly absorbed\|phase 1b" docs/ examples/ || echo "STALE CLAIMS REMOVED"
 grep -rn "0.03%" docs/ || echo "NO STALE ESTIMATE"
 ```

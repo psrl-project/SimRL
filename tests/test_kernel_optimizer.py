@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.kernel.database import OptimizerQuery
-from dryrun.cost.kernel.hardware import load_gpu_spec
-from dryrun.cost.kernel.interp import KernelCoverageError
-from dryrun.cost.kernel.ops.base import op_for
-from dryrun.cost.kernel.ops.optimizer import BYTES_PER_PARAMETER, OPTIMIZER_STEP_OP
-from dryrun.profiler.kernel.sweep import OptimizerSweep
-from dryrun.profiler.schema import ProfileValidationError
+from srl.cost.kernel.database import OptimizerQuery
+from srl.cost.kernel.hardware import load_gpu_spec
+from srl.cost.kernel.interp import KernelCoverageError
+from srl.cost.kernel.ops.base import op_for
+from srl.cost.kernel.ops.optimizer import BYTES_PER_PARAMETER, OPTIMIZER_STEP_OP
+from srl.profiler.kernel.sweep import OptimizerSweep
+from srl.profiler.schema import ProfileValidationError
 
 _SLICE = ("adam", "master_fp32")
 
@@ -149,7 +149,7 @@ def test_an_unallocated_optimizer_state_is_refused_rather_than_timed():
     floor fit accepts it and the holdout MRE *improves*, because the point is easy to
     interpolate.
     """
-    from dryrun.profiler.kernel.runner.optimizer import _require_allocated_state
+    from srl.profiler.kernel.runner.optimizer import _require_allocated_state
 
     parameter = object()
     with pytest.raises(ProfileValidationError, match="was not allocated"):
@@ -158,7 +158,7 @@ def test_an_unallocated_optimizer_state_is_refused_rather_than_timed():
 
 def test_a_partially_allocated_optimizer_state_is_refused():
     """All three of master, exp_avg and exp_avg_sq must be present."""
-    from dryrun.profiler.kernel.runner.optimizer import _require_allocated_state
+    from srl.profiler.kernel.runner.optimizer import _require_allocated_state
 
     parameter = object()
     state = {"exp_avg": _FakeTensor(1_000), "master_param": _FakeTensor(1_000)}
@@ -168,7 +168,7 @@ def test_a_partially_allocated_optimizer_state_is_refused():
 
 def test_a_state_tensor_of_the_wrong_length_is_refused():
     """A short state tensor means the timed step measures a different size than the grid names."""
-    from dryrun.profiler.kernel.runner.optimizer import _require_allocated_state
+    from srl.profiler.kernel.runner.optimizer import _require_allocated_state
 
     parameter = object()
     state = {name: _FakeTensor(500) for name in ("exp_avg", "exp_avg_sq", "master_param")}
@@ -177,7 +177,7 @@ def test_a_state_tensor_of_the_wrong_length_is_refused():
 
 
 def test_a_fully_allocated_state_passes():
-    from dryrun.profiler.kernel.runner.optimizer import _require_allocated_state
+    from srl.profiler.kernel.runner.optimizer import _require_allocated_state
 
     parameter = object()
     state = {name: _FakeTensor(1_000) for name in ("exp_avg", "exp_avg_sq", "master_param")}
@@ -186,8 +186,8 @@ def test_a_fully_allocated_state_passes():
 
 def test_the_shard_divides_by_every_parallelism_degree_that_splits_parameters():
     """tp, pp and (under the distributed optimizer) dp each reduce what one rank updates."""
-    from dryrun.cost.training.training_ops import TrainingOps
-    from dryrun.profiler.schema import ModelDescriptor
+    from srl.cost.training.training_ops import TrainingOps
+    from srl.profiler.schema import ModelDescriptor
 
     model = ModelDescriptor(
         name="test",
@@ -218,8 +218,8 @@ def test_an_unknown_parameter_count_omits_the_term_rather_than_refusing_to_predi
     Refusing the whole prediction over a term measured at 0.3% would trade a small known
     error for a total one. The decomposition reports the zero.
     """
-    from dryrun.cost.training.training_ops import TrainingOps
-    from dryrun.profiler.schema import ModelDescriptor
+    from srl.cost.training.training_ops import TrainingOps
+    from srl.profiler.schema import ModelDescriptor
 
     model = ModelDescriptor(
         name="test",

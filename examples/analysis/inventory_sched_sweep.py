@@ -30,8 +30,8 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from dryrun.simulator.config import SimConfig
-from dryrun.simulator.simulator import Simulator
+from srl.simulator.config import SimConfig
+from srl.simulator.simulator import Simulator
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT_ROOT = ROOT / "outputs" / "simulate" / "inventory_sched"

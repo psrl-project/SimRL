@@ -7,8 +7,8 @@ of one tree agree bit for bit and a digest mismatch between two trees is a behav
 
 Usage:
     python examples/analysis/sim_digest.py list
-    python examples/analysis/sim_digest.py run psrl_s1 --root /tmp/dryrun_ref --out /tmp/psrl_s1.json
-    python examples/analysis/sim_digest.py table --root /tmp/dryrun_ref --out reference.json
+    python examples/analysis/sim_digest.py run psrl_s1 --root /tmp/srl_ref --out /tmp/psrl_s1.json
+    python examples/analysis/sim_digest.py table --root /tmp/srl_ref --out reference.json
     python examples/analysis/sim_digest.py check --reference reference.json
 """
 
@@ -179,7 +179,7 @@ def file_md5(path: Path) -> str:
 
 
 def engine_extension(root: Path) -> Path:
-    return next((root / "dryrun").glob("_engine_cpp*.so"))
+    return next((root / "srl").glob("_engine_cpp*.so"))
 
 
 def child_env(root: Path, backend: str, psrl_pin: Path | None) -> dict[str, str]:
@@ -191,17 +191,17 @@ def child_env(root: Path, backend: str, psrl_pin: Path | None) -> dict[str, str]
         paths.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(paths)
     env["PYTHONHASHSEED"] = "0"
-    env["DRYRUN_BACKEND"] = backend
-    env.pop("DRYRUN_UNDOABLE_EVENTS", None)
+    env["SIMRL_BACKEND"] = backend
+    env.pop("SIMRL_UNDOABLE_EVENTS", None)
     return env
 
 
 @lru_cache(maxsize=None)
 def verify_import(root: Path, backend: str, psrl_pin: Path | None) -> tuple[str, str]:
-    """Return where `dryrun` and its engine extension import from, and require both under `root`."""
-    probe = "import dryrun, dryrun._engine_cpp as e; print(dryrun.__file__); print(e.__file__)"
+    """Return where `srl` and its engine extension import from, and require both under `root`."""
+    probe = "import srl, srl._engine_cpp as e; print(srl.__file__); print(e.__file__)"
     if psrl_pin is not None:
-        probe += "; import dryrun.policy.psrl as p; print(p._controller.__file__)"
+        probe += "; import srl.policy.psrl as p; print(p._controller.__file__)"
     out = subprocess.run(
         [sys.executable, "-c", probe],
         env=child_env(root, backend, psrl_pin),
@@ -313,11 +313,11 @@ def run_config(
 ) -> dict:
     cfg = CONFIGS[name]
     trace = ensure_trace()
-    dryrun_file, engine_file = verify_import(root, cfg.backend, psrl_pin)
+    srl_file, engine_file = verify_import(root, cfg.backend, psrl_pin)
     run_dir = SCRATCH / (f"{name}.{tag}" if tag else name)
     shutil.rmtree(run_dir, ignore_errors=True)
     run_dir.mkdir(parents=True)
-    argv = [sys.executable, "-m", "dryrun.cli.main", *hydra_overrides(cfg, run_dir, trace)]
+    argv = [sys.executable, "-m", "srl.cli.main", *hydra_overrides(cfg, run_dir, trace)]
     started = time.perf_counter()
     with (run_dir / "run.log").open("w") as log:
         proc = subprocess.run(
@@ -333,7 +333,7 @@ def run_config(
         "name": name,
         "root": str(root),
         "backend": cfg.backend,
-        "dryrun_file": dryrun_file,
+        "srl_file": srl_file,
         "engine_file": engine_file,
         "engine_md5": file_md5(Path(engine_file)),
         "trace_md5": file_md5(trace),

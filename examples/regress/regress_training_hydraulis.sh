@@ -6,7 +6,7 @@ INPUT="${INPUT:-${ROOT_DIR}/outputs/profile/qwen3_8b/megatron_bridge/profiles/me
 OUTPUT="${OUTPUT:-${ROOT_DIR}/outputs/cost/qwen3_8b/training_hydraulis.json}"
 
 cd "${ROOT_DIR}"
-dryrun-regress training \
+srl-regress training \
     --latency-model hydraulis \
     --memory-model hydraulis \
     --input "${INPUT}" \

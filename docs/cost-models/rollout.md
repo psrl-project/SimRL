@@ -12,7 +12,7 @@ in {doc}`../reference/validation`.
 All three models are fitted with a single command:
 
 ```bash
-dryrun-regress rollout --model roofline \
+srl-regress rollout --model roofline \
     --input  outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl \
     --output outputs/cost/qwen3_8b/rollout_roofline.json
 # --model accepts: roofline | psrl | distserve
@@ -20,7 +20,7 @@ dryrun-regress rollout --model roofline \
 # --block-size 16            KV block size used in A_p denominator
 ```
 
-The command reads the vLLM JSONL produced by `dryrun-profile vllm collect`, groups records by
+The command reads the vLLM JSONL produced by `srl-profile vllm collect`, groups records by
 parallelism topology, fits one entry per topology, and writes a `CostArtifact` JSON. A compact
 example of the artifact format:
 

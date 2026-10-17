@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dryrun.cost.training.fsdp_inventory import fsdp_inventory
+from srl.cost.training.fsdp_inventory import fsdp_inventory
 
 
 def test_fp32_master_dtype_gives_sixteen_p_over_world_size():

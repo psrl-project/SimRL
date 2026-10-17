@@ -48,7 +48,7 @@ if [[ -n "${UTC_OFFSET_HOURS}" ]]; then
     ARGS+=(--utc-offset-hours "${UTC_OFFSET_HOURS}")
 fi
 
-python -m dryrun.cli.psrl_plot "${ARGS[@]}"
+python -m srl.cli.psrl_plot "${ARGS[@]}"
 
 cp "${OUTPUT_DIR}/plots/instance_load.png" "${FIGURE}"
 echo "Figure copied to: ${FIGURE}"

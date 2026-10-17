@@ -30,19 +30,19 @@ fi
 
 case "${ACTION}" in
     generate)
-        dryrun-profile megatron generate \
+        srl-profile megatron generate \
             --config "${CONFIG}" \
             --candidates "${CANDIDATES}"
         ;;
     run)
-        dryrun-profile megatron run \
+        srl-profile megatron run \
             --config "${CONFIG}" \
             --candidates "${CANDIDATES}" \
             "${selection_args[@]}" \
             "${@:2}"
         ;;
     collect)
-        dryrun-profile megatron collect \
+        srl-profile megatron collect \
             --config "${CONFIG}" \
             --candidates "${CANDIDATES}" \
             "${selection_args[@]}"

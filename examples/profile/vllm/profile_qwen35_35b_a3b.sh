@@ -45,25 +45,25 @@ cd "${ROOT_DIR}"
 
 case "${ACTION}" in
     generate)
-        MODEL_PATH="${MODEL_PATH}" dryrun-profile vllm generate \
+        MODEL_PATH="${MODEL_PATH}" srl-profile vllm generate \
             --config "${CONFIG}" --phase "${PHASE}"
         ;;
     run)
-        MODEL_PATH="${MODEL_PATH}" dryrun-profile vllm run \
+        MODEL_PATH="${MODEL_PATH}" srl-profile vllm run \
             --config "${CONFIG}" --phase "${PHASE}" \
             "${RUN_ARGS[@]}" "${@:2}"
         ;;
     collect)
-        MODEL_PATH="${MODEL_PATH}" dryrun-profile vllm collect \
+        MODEL_PATH="${MODEL_PATH}" srl-profile vllm collect \
             --config "${CONFIG}" --phase "${PHASE}"
         ;;
     all)
-        MODEL_PATH="${MODEL_PATH}" dryrun-profile vllm generate \
+        MODEL_PATH="${MODEL_PATH}" srl-profile vllm generate \
             --config "${CONFIG}" --phase "${PHASE}"
-        MODEL_PATH="${MODEL_PATH}" dryrun-profile vllm run \
+        MODEL_PATH="${MODEL_PATH}" srl-profile vllm run \
             --config "${CONFIG}" --phase "${PHASE}" \
             "${RUN_ARGS[@]}"
-        MODEL_PATH="${MODEL_PATH}" dryrun-profile vllm collect \
+        MODEL_PATH="${MODEL_PATH}" srl-profile vllm collect \
             --config "${CONFIG}" --phase "${PHASE}"
         ;;
     *)

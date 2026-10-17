@@ -67,7 +67,7 @@ Every step that used an extrapolated prediction is therefore auditable after the
 ## Which features are defensible to extrapolate
 
 Not all features are safe to extrapolate, even upward. The FSDP artifact documents the
-reasoning per feature in `dryrun/config/defaults/training_cost/fsdp.yaml`.
+reasoning per feature in `srl/config/defaults/training_cost/fsdp.yaml`.
 
 ### `num_microbatches`: yes, upward
 

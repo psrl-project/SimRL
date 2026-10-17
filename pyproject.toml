@@ -1,5 +1,5 @@
 [project]
-name = "dryrun-rl"
+name = "simrl"
 version = "0.1.0"
 description = "Async disaggregate RL training simulator"
 requires-python = ">=3.10"
@@ -21,23 +21,23 @@ dev = [
 profile = []
 
 [project.scripts]
-dryrun = "dryrun.cli.main:main"
-dryrun-profile = "dryrun.cli.profile:main"
-dryrun-regress = "dryrun.cli.regress:main"
-dryrun-plot = "dryrun.cli.plot:main"
-dryrun-psrl-plot = "dryrun.cli.psrl_plot:main"
-dryrun-compare = "dryrun.cli.compare:main"
-dryrun-workload = "dryrun.cli.workload:main"
+srl = "srl.cli.main:main"
+srl-profile = "srl.cli.profile:main"
+srl-regress = "srl.cli.regress:main"
+srl-plot = "srl.cli.plot:main"
+srl-psrl-plot = "srl.cli.psrl_plot:main"
+srl-compare = "srl.cli.compare:main"
+srl-workload = "srl.cli.workload:main"
 
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["dryrun*"]
+include = ["srl*"]
 
 [tool.setuptools.package-data]
-"dryrun.cost.kernel" = ["data/*.yaml"]
+"srl.cost.kernel" = ["data/*.yaml"]
 
 [tool.ruff]
 line-length = 119
@@ -46,7 +46,7 @@ line-length = 119
 select = ["E", "F", "W", "I"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["dryrun"]
+known-first-party = ["srl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

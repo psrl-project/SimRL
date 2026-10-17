@@ -3,7 +3,7 @@
 import pytest
 
 try:
-    from dryrun._engine_cpp import CppRequest, ReqStatus, EventKind, CppEngineEvent
+    from srl._engine_cpp import CppEngineEvent, CppRequest, EventKind, ReqStatus
     HAS_CPP = True
 except ImportError:
     HAS_CPP = False

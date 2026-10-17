@@ -11,9 +11,9 @@ from dataclasses import dataclass, field
 import pytest
 from psrl.workers.ps.inventory_forecast import BufferView, InventorySnapshot, forecast_ready_times
 
-from dryrun.component.rollout.engine import NativeInstance, Request, traj_view
-from dryrun.cost.rollout import UnifiedRoofline
-from dryrun.forecast import (
+from srl.component.rollout.engine import NativeInstance, Request, traj_view
+from srl.cost.rollout import UnifiedRoofline
+from srl.forecast import (
     FleetForecast,
     InstanceForecast,
     InstanceState,
@@ -28,7 +28,7 @@ from dryrun.forecast import (
     group_etas_from_fleet,
     placement_order,
 )
-from dryrun.forecast.plan import _without_arrival
+from srl.forecast.plan import _without_arrival
 
 BLOCK = 16
 BUDGET = 8192

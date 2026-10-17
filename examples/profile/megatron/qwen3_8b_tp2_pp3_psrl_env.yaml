@@ -1,7 +1,7 @@
 # The same shapes as qwen3_8b_tp2_pp3_psrl_shapes.yaml, measured in PSRL's OWN
-# conda environment rather than DryRun's.
+# conda environment rather than SimRL's.
 #
-# Why. Profiling the baseline run's exact shape in DryRun's environment gave
+# Why. Profiling the baseline run's exact shape in SimRL's environment gave
 # 74.21 s against the run's own 110.95 s for the same 606k tokens, while the
 # loopback run's shape agreed to 0.5%. A per-step constant cannot produce
 # agreement at one shape and a 1.49x gap at another, and solving the two matched
@@ -9,7 +9,7 @@
 # step. A scale factor on a fitted cost model is a fudge unless its cause is
 # known, and the two environments do not run the same kernels:
 #
-#   package              DryRun (dryrun-rl)   PSRL
+#   package              SimRL (simrl)   PSRL
 #   megatron-core        0.17.1               0.19.0
 #   transformer-engine   2.14.1               2.7.0
 #   flash-attn           2.8.3.post1          2.8.1

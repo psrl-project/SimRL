@@ -34,7 +34,7 @@ STARTUP_STAGGER_S="${STARTUP_STAGGER_S:-25}"
 mkdir -p "${SHARD_DIR}"
 
 WORKER_ROWS="$(
-    cd "${ROOT_DIR}" && python -m dryrun.cli.workload list-workers \
+    cd "${ROOT_DIR}" && python -m srl.cli.workload list-workers \
         --hosts-file "${HOSTS_FILE}" \
         --base-port "${BASE_PORT}"
 )"
@@ -95,7 +95,7 @@ if [[ "${DRY_RUN:-}" == "1" ]]; then
     for entry in "${WORKERS[@]}"; do
         read -r INDEX HOST GPU PORT <<<"${entry}"
         SHARD="$(printf '%s/worker-%02d.jsonl' "${SHARD_DIR}" "${INDEX}")"
-        CMD="source ${ENV_SCRIPT} >/dev/null 2>&1; cd ${ROOT_DIR} && python -m dryrun.cli.workload collect-groups"
+        CMD="source ${ENV_SCRIPT} >/dev/null 2>&1; cd ${ROOT_DIR} && python -m srl.cli.workload collect-groups"
         CMD+=" --dataset ${DATASET} --tokenizer ${TOKENIZER} --model ${MODEL}"
         CMD+=" --output ${SHARD} --worker-index ${INDEX} --n-workers ${N_WORKERS}"
         CMD+=" --sample-size ${SAMPLE_SIZE} --n ${GROUP_N} --max-tokens ${MAX_TOKENS}"
@@ -117,7 +117,7 @@ fi
 # already committed.
 _shard_is_complete() {
     local shard_path="$1"
-    (cd "${ROOT_DIR}" && python -m dryrun.cli.workload check-shard --path "${shard_path}")
+    (cd "${ROOT_DIR}" && python -m srl.cli.workload check-shard --path "${shard_path}")
 }
 
 LOCAL_IPS="$(hostname -I)"
@@ -132,7 +132,7 @@ for entry in "${WORKERS[@]}"; do
             echo "worker-${INDEX} on ${HOST} gpu ${GPU}: shard exists but is SHORT, re-collecting."
         fi
     fi
-    CMD="source ${ENV_SCRIPT} >/dev/null 2>&1; cd ${ROOT_DIR} && python -m dryrun.cli.workload collect-groups"
+    CMD="source ${ENV_SCRIPT} >/dev/null 2>&1; cd ${ROOT_DIR} && python -m srl.cli.workload collect-groups"
     CMD+=" --dataset ${DATASET} --tokenizer ${TOKENIZER} --model ${MODEL}"
     CMD+=" --output ${SHARD} --worker-index ${INDEX} --n-workers ${N_WORKERS}"
     CMD+=" --sample-size ${SAMPLE_SIZE} --n ${GROUP_N} --max-tokens ${MAX_TOKENS}"
@@ -171,7 +171,7 @@ if (( FAILED > 0 )); then
 fi
 
 cd "${ROOT_DIR}"
-python -m dryrun.cli.workload merge-shards \
+python -m srl.cli.workload merge-shards \
     --shard-dir "${SHARD_DIR}" \
     --n-workers "${N_WORKERS}" \
     --output "${TRACE}" \
@@ -179,7 +179,7 @@ python -m dryrun.cli.workload merge-shards \
 echo "Joint trace: ${TRACE}"
 
 # Verify that the merged trace contains the requested number of groups.
-python -m dryrun.cli.workload verify-collection \
+python -m srl.cli.workload verify-collection \
     --trace "${TRACE}" \
     --expected-groups "${SAMPLE_SIZE}" \
     --shard-dir "${SHARD_DIR}" \

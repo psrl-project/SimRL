@@ -20,7 +20,7 @@ What remains is a per-microbatch cost the trace has not yet named. At 4096 token
 74.7 / 72.5 / 69.7 ms per microbatch across nmb 1 / 4 / 64, i.e. very nearly a constant, and
 it grows with the token count (5 / 111 / 138 ms at 12288). It is deliberately not fitted.
 See `test_the_residual_is_a_per_microbatch_cost` and the module docstring of
-`dryrun/cost/training/composed.py`.
+`srl/cost/training/composed.py`.
 """
 
 from __future__ import annotations
@@ -111,10 +111,10 @@ _SHARE_TOLERANCE_PP = 1.0
 
 
 def _scored():
-    from dryrun.cost.kernel.database import KernelDatabase
-    from dryrun.cost.training.composed import ComposedTraining
-    from dryrun.cost.training.training_ops import TrainingOps
-    from dryrun.cost.training.validate import load_training_records, score_composed_training
+    from srl.cost.kernel.database import KernelDatabase
+    from srl.cost.training.composed import ComposedTraining
+    from srl.cost.training.training_ops import TrainingOps
+    from srl.cost.training.validate import load_training_records, score_composed_training
 
     database = KernelDatabase.from_root(_TABLES, gpu="h20", utility_surface="pchip")
     ops = TrainingOps.from_checkpoint(
