@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..component.rollout.engine import Request
 
@@ -14,68 +14,84 @@ class GroupView:
     group_id: int
     admit_version: int
     start_version: int
-    """Weight version the group was admitted under."""
+    """Earliest weight version that produced any token, or `admit_version` before generation."""
     status: str
-    """`running | partial | done | dropped`."""
+    """`running | partial | done`."""
     admit_time: float
     complete_time: float | None
+    members: tuple[int, ...]
+    """Request ids of the group, in admission order."""
+
+
+@dataclass
+class _Entry:
+    """Mutable ledger state for one live group."""
+
+    members: list[Request]
+    admit_version: int
+    admit_time: float
+    status: str = "running"
+    complete_time: float | None = None
+    completed: set[int] = field(default_factory=set)
 
 
 class GroupLedger:
     """Tracks group membership and lifecycle. The simulator calls the mutators."""
 
     def __init__(self) -> None:
-        self._members: dict[int, list[Request]] = {}
+        self._groups: dict[int, _Entry] = {}
         self._rid_to_group: dict[int, int] = {}
-        self._admit_version: dict[int, int] = {}
-        self._admit_time: dict[int, float] = {}
-        self._status: dict[int, str] = {}
-        self._complete_time: dict[int, float | None] = {}
-        self._completed: dict[int, set[int]] = {}
 
     def begin(self, group: list[Request], version: int, now: float) -> None:
         group_id = group[0].group_id
-        self._members[group_id] = list(group)
+        self._groups[group_id] = _Entry(
+            members=list(group),
+            admit_version=version,
+            admit_time=now,
+        )
         for req in group:
             self._rid_to_group[req.rid] = group_id
-        self._admit_version[group_id] = version
-        self._admit_time[group_id] = now
-        self._status[group_id] = "running"
-        self._complete_time[group_id] = None
-        self._completed[group_id] = set()
 
     def complete(self, rid: int, now: float) -> None:
         """Record that request `rid` finished, completing its group once every member has."""
         group_id = self._rid_to_group.get(rid)
         if group_id is None:
             return
-        self._status[group_id] = "partial"
-        self._completed[group_id].add(rid)
-        if all(req.rid in self._completed[group_id] for req in self._members[group_id]):
-            self._status[group_id] = "done"
-            self._complete_time[group_id] = now
+        entry = self._groups[group_id]
+        if entry.status == "done":
+            return
+        entry.status = "partial"
+        entry.completed.add(rid)
+        if all(req.rid in entry.completed for req in entry.members):
+            entry.status = "done"
+            entry.complete_time = max(
+                (req.complete_time for req in entry.members if req.complete_time is not None),
+                default=now,
+            )
 
     def drop(self, group_id: int) -> None:
-        for req in self._members.pop(group_id, ()):
+        entry = self._groups.pop(group_id, None)
+        if entry is None:
+            return
+        for req in entry.members:
             self._rid_to_group.pop(req.rid, None)
-        self._admit_version.pop(group_id, None)
-        self._admit_time.pop(group_id, None)
-        self._status.pop(group_id, None)
-        self._complete_time.pop(group_id, None)
-        self._completed.pop(group_id, None)
 
     def peek(self, group_id: int) -> GroupView | None:
-        status = self._status.get(group_id)
-        if status is None:
+        entry = self._groups.get(group_id)
+        if entry is None:
             return None
         return GroupView(
             group_id=group_id,
-            admit_version=self._admit_version[group_id],
-            start_version=self._admit_version[group_id],
-            status=status,
-            admit_time=self._admit_time[group_id],
-            complete_time=self._complete_time[group_id],
+            admit_version=entry.admit_version,
+            start_version=min(
+                (req.v_min for req in entry.members),
+                default=entry.admit_version,
+            ),
+            status=entry.status,
+            admit_time=entry.admit_time,
+            complete_time=entry.complete_time,
+            members=tuple(req.rid for req in entry.members),
         )
 
     def views(self) -> tuple[GroupView, ...]:
-        return tuple(view for gid in self._status if (view := self.peek(gid)) is not None)
+        return tuple(view for gid in self._groups if (view := self.peek(gid)) is not None)

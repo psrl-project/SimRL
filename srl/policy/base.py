@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from ..component.rollout.engine import Request
-from .ledger import GroupView  # noqa: F401  (re-exported through this module)
+from .ledger import GroupView
 
 
 class CompleteAction(Enum):

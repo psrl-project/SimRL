@@ -380,7 +380,7 @@ class Simulator:
 
     def _collect(self, done: list[Request]) -> None:
         """Retire finished responses, releasing a group once it is whole."""
-        st = self._state()
+        complete: list[list[Request]] = []
         for req in done:
             if req in self.inflight:
                 self.inflight.remove(req)
@@ -392,12 +392,18 @@ class Simulator:
             siblings.append(req)
             if len(siblings) < self.cfg.group_size:
                 continue
-            group = sorted(self.pending.pop(req.group_id), key=lambda r: r.group_index)
+            complete.append(sorted(self.pending.pop(req.group_id), key=lambda r: r.group_index))
+        if not complete:
+            return
+        # One snapshot after every completion, so each policy call sees this batch.
+        st = self._state()
+        for group in complete:
             if self.policy.on_group_complete(group, st) is CompleteAction.DROP:
                 for member in group:
                     member.status = ReqStatus.DROPPED
                     self.dropped.append(member)
                     self.telemetry.write_request("drop", self.t, member)
+                self._ledger.drop(group[0].group_id)
                 self._grant_drop_replacements([group])
             else:
                 self.ready_groups.append(group)
@@ -853,6 +859,8 @@ class Simulator:
         ]
         taken = {id(req) for req in batch}
         self.ready = [req for req in self.ready if id(req) not in taken]
+        for group_id in consumed_ids:
+            self._ledger.drop(group_id)
         # A consumed group is finished with its instance, so its sticky pin is
         # released. SMG drops the pin when the group's last request retires;
         # holding it would let a repeating workload be pinned by a group that
