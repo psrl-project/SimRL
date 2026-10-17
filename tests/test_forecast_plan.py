@@ -521,6 +521,40 @@ class TestGroupAdmission:
         loose = PlanSession.build(runtime, ORACLE, horizon_buffers=1, kv_watermark=0.6)
         assert loose.evaluate_admission(members)[0] is not None
 
+    def _budgeted_session(self, seed: int = 13):
+        """A delay-budgeted session with a finite baseline, since a DEFER that never fills is `inf`."""
+        runtime, members = self._runtime_with_staged_group(seed=seed)
+        session = PlanSession.build(runtime, ORACLE, horizon_buffers=1, delay_budget=True)
+        candidate = session.evaluate_admission(members)[0]
+        assert candidate is not None, "the fixture group must be admissible"
+        ready = candidate.ready[0]
+        buffer_id = candidate.buffers[0]
+        session.baseline = dataclasses.replace(session.baseline, ready=(ready - 1.0,))
+        return session, members, buffer_id, ready
+
+    def test_delay_budget_refuses_an_admission_past_the_buffers_remaining_budget(self):
+        session, members, buffer_id, ready = self._budgeted_session()
+
+        session._anchor = {buffer_id: ready - 1.0}
+        assert session.evaluate_admission(members, budget=1.0)[0] is not None, (
+            "a delay exactly at the budget must be admissible"
+        )
+
+        session._anchor = {buffer_id: ready - 1.5}
+        assert session.evaluate_admission(members, budget=1.0)[0] is None, (
+            "the same admission must be refused once the buffer already sits 0.5s past its budget"
+        )
+
+    def test_delay_budget_is_keyed_by_buffer_so_a_new_buffer_gets_a_fresh_budget(self):
+        session, members, buffer_id, ready = self._budgeted_session()
+        session._anchor = {buffer_id: ready - 1.5}
+        assert session.evaluate_admission(members, budget=1.0)[0] is None
+
+        session._anchor = {buffer_id + 1: ready - 1.5}
+        assert session.evaluate_admission(members, budget=1.0)[0] is not None, (
+            "a different buffer has spent none of its budget"
+        )
+
     def test_admission_changes_the_pipeline_consistently_with_psrl_forecast_ready_times(self):
         runtime, members = self._runtime_with_staged_group(seed=13)
         session = PlanSession.build(runtime, ORACLE, horizon_buffers=2)

@@ -92,7 +92,18 @@ class SimConfig:
     Must equal `workload.group_size`. Only a trace carries real groups; the
     synthetic distributions produce one response per prompt.
     """
-    max_staleness: int = 1
+    staleness_horizon: int | None = None
+    """Version bound the policy declares, or None for a system without one.
+
+    A read-only copy: the policy owns the ground truth. Set by the CLI from
+    `policy.horizon`.
+    """
+    ingress_window_groups: int = 0
+    """Groups admitted before the dataset stops feeding the router.
+
+    0 derives `(staleness_horizon + 1) * batch_size`, or `2 * batch_size` when
+    the policy declares no horizon.
+    """
     n_versions: int = 20
     sync_time: float = 0.0
     training_tp: int = 1

@@ -50,21 +50,21 @@ def _run_sim(policy, lengths, cfg):
 
 class TestPSRLBoundHolds:
     def test_uniform_lengths(self):
-        cfg = SimConfig(batch_size=4, max_staleness=2, n_versions=10)
+        cfg = SimConfig(batch_size=4, staleness_horizon=2, n_versions=10)
         lengths = uniform(100, 50, 200, seed=42)
         result = _run_sim(PSRLPolicy(), lengths, cfg)
         assert not result.livelocked
         assert result.versions_done == 10
         for r in result.consumed:
-            assert r.staleness_true() <= cfg.max_staleness
+            assert r.staleness_true() <= cfg.staleness_horizon
 
     def test_bimodal_lengths(self):
-        cfg = SimConfig(batch_size=4, max_staleness=2, n_versions=8)
+        cfg = SimConfig(batch_size=4, staleness_horizon=2, n_versions=8)
         lengths = bimodal(100, short_len=50, long_len=500, long_frac=0.25, seed=42)
         result = _run_sim(PSRLPolicy(), lengths, cfg)
         assert not result.livelocked
         for r in result.consumed:
-            assert r.staleness_true() <= cfg.max_staleness
+            assert r.staleness_true() <= cfg.staleness_horizon
 
 
 class TestPSRLRequestLifecycle:
@@ -174,7 +174,7 @@ class TestPSRLInventorySnapshot:
 
 class TestArealTokenBucket:
     def test_bucket_invariant(self):
-        cfg = SimConfig(batch_size=4, max_staleness=2, n_versions=10)
+        cfg = SimConfig(batch_size=4, staleness_horizon=2, n_versions=10)
         lengths = uniform(100, 50, 100, seed=0)
         result = _run_sim(ArealPolicy(), lengths, cfg)
         assert not result.livelocked
@@ -183,12 +183,12 @@ class TestArealTokenBucket:
 
 class TestRollBound:
     def test_bound_holds_uniform(self):
-        cfg = SimConfig(batch_size=4, max_staleness=2, n_versions=10)
+        cfg = SimConfig(batch_size=4, staleness_horizon=2, n_versions=10)
         lengths = uniform(100, 50, 100, seed=0)
         result = _run_sim(RollPolicy(), lengths, cfg)
         assert not result.livelocked
         for r in result.consumed:
-            assert r.staleness_true() <= cfg.max_staleness
+            assert r.staleness_true() <= cfg.staleness_horizon
 
 
 def _roll_sim(group_size: int, store=None, n_versions: int = 10):
@@ -209,7 +209,8 @@ def _roll_sim(group_size: int, store=None, n_versions: int = 10):
     cfg = SimConfig(
         batch_size=4,
         group_size=group_size,
-        max_staleness=2,
+        staleness_horizon=2,
+        ingress_window_groups=3 * 4,
         n_versions=n_versions,
         workload=workload,
     )
@@ -263,7 +264,7 @@ class TestRollGarbageCollection:
     def test_expired_groups_are_replaced(self):
         sim, policy = _roll_sim(1)
         sim.run()
-        assert sim.n_admitted >= (sim.cfg.max_staleness + 1 + sim.cfg.n_versions) * sim.cfg.batch_size, (
+        assert sim.n_admitted >= (sim.cfg.staleness_horizon + 1 + sim.cfg.n_versions) * sim.cfg.batch_size, (
             "each GC'd group must be refilled with a fresh prompt."
         )
 
@@ -298,7 +299,7 @@ class TestSlimeBarrier:
     def test_staleness_equals_interval(self):
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=1,
+            staleness_horizon=1,
             n_versions=10,
         )
         lengths = uniform(100, 50, 100, seed=0)
@@ -311,7 +312,7 @@ class TestSlimeBarrier:
 
 class TestVerlAsync:
     def test_runs_without_crash(self):
-        cfg = SimConfig(batch_size=4, max_staleness=1, n_versions=8)
+        cfg = SimConfig(batch_size=4, staleness_horizon=1, n_versions=8)
         lengths = uniform(100, 50, 100, seed=0)
         policy = VerlPolicy(staleness_threshold=0.1)
         result = _run_sim(policy, lengths, cfg)
@@ -346,7 +347,7 @@ class TestVerlAsync:
 
 class TestDeterminism:
     def test_same_seed_same_result(self):
-        cfg = SimConfig(batch_size=4, max_staleness=2, n_versions=5)
+        cfg = SimConfig(batch_size=4, staleness_horizon=2, n_versions=5)
         lengths = uniform(50, 50, 100, seed=42)
         r1 = _run_sim(PSRLPolicy(), lengths, cfg)
         r2 = _run_sim(PSRLPolicy(), lengths, cfg)
@@ -359,7 +360,7 @@ class TestMultiInstance:
     def test_two_instances(self):
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=8,
             n_instances=2,
         )
@@ -368,7 +369,7 @@ class TestMultiInstance:
         assert not result.livelocked
         assert result.versions_done == 8
         for r in result.consumed:
-            assert r.staleness_true() <= cfg.max_staleness
+            assert r.staleness_true() <= cfg.staleness_horizon
 
 
 class TestVariablePromptLengths:
@@ -376,7 +377,7 @@ class TestVariablePromptLengths:
         prompt_lengths = uniform(100, 100, 1000, seed=7)
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=8,
             workload=GroupedWorkload.from_lengths(prompt_lengths, uniform(100, 50, 100, seed=0)),
         )
@@ -415,7 +416,8 @@ class TestPartialRolloutPublish:
         )
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
+            ingress_window_groups=3 * 4,
             n_versions=4,
             n_instances=1,
             sync_time=0.25,
@@ -466,7 +468,8 @@ class TestPartialRolloutPublish:
         )
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
+            ingress_window_groups=3 * 4,
             n_versions=4,
             n_instances=1,
             sync_time=0.25,
@@ -501,7 +504,8 @@ class TestPartialRolloutPublish:
         )
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
+            ingress_window_groups=3 * 4,
             n_versions=4,
             n_instances=1,
             sync_time=0.25,
@@ -519,16 +523,16 @@ class TestPartialRolloutPublish:
 
         assert not result.livelocked
         assert not result.dropped
-        assert all(r.staleness_true() <= cfg.max_staleness for r in result.consumed)
-        assert sim.n_admitted == (cfg.max_staleness + 1 + cfg.n_versions) * cfg.batch_size
-        assert sim.n_admitted - sim.n_consumed == (cfg.max_staleness + 1) * cfg.batch_size
+        assert all(r.staleness_true() <= cfg.staleness_horizon for r in result.consumed)
+        assert sim.n_admitted == (cfg.staleness_horizon + 1 + cfg.n_versions) * cfg.batch_size
+        assert sim.n_admitted - sim.n_consumed == (cfg.staleness_horizon + 1) * cfg.batch_size
 
         admit_counts: dict[float, int] = {}
         for row in store.iter("request"):
             if row["event"] == "admit":
                 admit_counts[row["t"]] = admit_counts.get(row["t"], 0) + 1
         trains = list(store.iter("train"))
-        assert admit_counts.pop(0.0) == (cfg.max_staleness + 1) * cfg.batch_size
+        assert admit_counts.pop(0.0) == (cfg.staleness_horizon + 1) * cfg.batch_size
         for train in trains:
             assert admit_counts.pop(train["end"]) == cfg.batch_size
         assert not admit_counts, "PSRL should admit only initially and when a version is published."
@@ -579,7 +583,7 @@ class TestLengthCaps:
     def test_simulator_truncates_prompt_and_output(self):
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=4,
             workload=GroupedWorkload.from_lengths([100, 4000, 50], [500, 400, 10]),
             max_prompt_length=256,
@@ -606,7 +610,7 @@ class TestGrouping:
         kwargs = dict(
             batch_size=2,
             group_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=6,
             workload=GroupedWorkload.from_groups(groups),
             log_telemetry=False,

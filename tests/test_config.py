@@ -21,9 +21,9 @@ from srl.cli.main import (
 )
 from srl.component.recompute.cost import FixedRecomputeCost, TrainingForwardRecomputeCost
 from srl.component.sync.cost import FixedSyncCost
+from srl.config.policies import preset_config
 from srl.config.schema import (
     DistributionConfig,
-    PolicyConfig,
     RolloutCostConfig,
     SimulateConfig,
     WorkloadConfig,
@@ -41,11 +41,6 @@ from srl.cost.training import (
     TrainingParallelism,
     TrainingWorkload,
 )
-from srl.policy.areal import ArealPolicy
-from srl.policy.psrl import PSRLPolicy
-from srl.policy.roll import RollPolicy
-from srl.policy.slime import SlimePolicy
-from srl.policy.verl import VerlPolicy
 from srl.profiler.schema import ModelDescriptor
 
 
@@ -55,7 +50,6 @@ class TestStructuredConfigs:
     def test_simulate_defaults(self):
         cfg = SimulateConfig()
         assert cfg.job.batch_size == 8
-        assert cfg.job.max_staleness == 2
         assert cfg.job.n_versions == 20
         assert cfg.job.max_prompt_length is None
         assert cfg.job.max_output_length is None
@@ -81,8 +75,47 @@ class TestStructuredConfigs:
         assert cfg.A_d == 1e-7
 
     def test_policy_defaults(self):
-        cfg = PolicyConfig()
-        assert cfg.name == "psrl"
+        cfg = SimulateConfig()
+        assert cfg.policy.name == "psrl"
+
+    def test_policy_presets_compose(self) -> None:
+        from hydra import compose, initialize_config_dir
+
+        from srl.config import register_configs
+
+        register_configs()
+        config_dir = str(Path(srl.config.__file__).parent / "defaults")
+        for name in ["psrl", "verl", "areal", "roll", "slime"]:
+            with initialize_config_dir(config_dir=config_dir, version_base=None):
+                cfg = compose(config_name="simulate", overrides=[f"policy={name}"])
+            assert cfg.policy.name == name
+            assert "max_staleness" not in cfg.job
+            preset = preset_config(cfg.policy)
+            assert preset.name == name
+            assert preset.ingress_window_groups(batch_size=8) >= 8
+
+    def test_unknown_policy_key_fails_to_compose(self) -> None:
+        from hydra import compose, initialize_config_dir
+
+        from srl.config import register_configs
+
+        register_configs()
+        config_dir = str(Path(srl.config.__file__).parent / "defaults")
+        with pytest.raises(Exception):
+            with initialize_config_dir(config_dir=config_dir, version_base=None):
+                compose(config_name="simulate", overrides=["policy=psrl", "policy.bogus_knob=1"])
+
+    def test_build_policy_reads_its_own_name(self) -> None:
+        policy = build_policy(OmegaConf.create({"name": "areal", "max_head_offpolicyness": 0}))
+        assert policy.name == "areal"
+
+    def test_each_policy_declares_an_ingress_window(self) -> None:
+        from srl.config.policies import PRESETS
+
+        for name, cls in PRESETS.items():
+            preset = cls()
+            assert preset.name == name
+            assert preset.ingress_window_groups(batch_size=8) >= 8
 
     def test_distribution_defaults(self):
         cfg = DistributionConfig()
@@ -121,41 +154,10 @@ class TestFactoryFunctions:
         with pytest.raises(ValueError, match="Unknown rollout cost model"):
             build_rollout_cost(cfg)
 
-    def test_build_all_policies(self):
-        for name, cls in [
-            ("psrl", PSRLPolicy),
-            ("areal", ArealPolicy),
-            ("roll", RollPolicy),
-            ("slime", SlimePolicy),
-            ("verl", VerlPolicy),
-        ]:
-            cfg = OmegaConf.create({"name": name})
-            policy = build_policy(cfg, max_staleness=2)
-            assert isinstance(policy, cls), f"Expected {cls}, got {type(policy)}."
-            assert policy.name == name
-
-    def test_build_verl_uses_staleness_fallback(self):
-        fallback = build_policy(
-            OmegaConf.create({"name": "verl", "staleness_threshold": None}),
-            max_staleness=2,
-        )
-        assert isinstance(fallback, VerlPolicy)
-        assert fallback.threshold == 2.0
-
-        explicit = build_policy(
-            OmegaConf.create({
-                "name": "verl",
-                "staleness_threshold": 0.25,
-            }),
-            max_staleness=2,
-        )
-        assert isinstance(explicit, VerlPolicy)
-        assert explicit.threshold == 0.25
-
     def test_build_unknown_policy(self):
         cfg = OmegaConf.create({"name": "nonexistent"})
         with pytest.raises(ValueError, match="Unknown policy"):
-            build_policy(cfg, max_staleness=2)
+            build_policy(cfg)
 
     def test_build_all_distributions(self):
         for name in ["uniform", "bimodal", "lognormal", "normal", "powerlaw"]:

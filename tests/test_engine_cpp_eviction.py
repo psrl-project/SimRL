@@ -29,7 +29,7 @@ from srl.workload.grouped import GroupedWorkload  # noqa: E402
 def _run(backend: str, eviction: str, tmp_path):
     cfg = SimConfig(
         batch_size=4,
-        max_staleness=1,
+        staleness_horizon=1,
         n_versions=6,
         kv_blocks=120,
         token_budget=512,

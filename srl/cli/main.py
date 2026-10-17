@@ -19,6 +19,7 @@ from ..component.recompute.cost import (
 )
 from ..component.sync.cost import BandwidthSyncCost, FixedSyncCost, SyncCostModel
 from ..config import register_configs
+from ..config.policies import preset_config
 from ..cost.rollout import (
     ROLLOUT_MODEL_REGISTRY,
     DistServe,
@@ -39,12 +40,8 @@ from ..cost.training import (
     TrainingCostModel,
     TrainingParallelism,
 )
-from ..policy.areal import ArealPolicy
 from ..policy.base import StalenessPolicy
-from ..policy.psrl import PSRLPolicy
-from ..policy.roll import RollPolicy
-from ..policy.slime import SlimePolicy
-from ..policy.verl import VerlPolicy
+from ..policy.registry import POLICY_REGISTRY
 from ..profiler.hf import load_hf_model_descriptor
 from ..profiler.schema import Parallelism, mib_to_bytes
 from ..simulator import SimConfig, Simulator
@@ -129,34 +126,23 @@ def build_rollout_cost(cfg: DictConfig) -> RolloutCostModel:
     raise AssertionError(f"Unhandled rollout cost registry entry: {name!r}.")
 
 
-def build_policy(cfg: DictConfig, max_staleness: int) -> StalenessPolicy:
-    """Instantiate a staleness policy from config."""
+def build_policy(cfg: DictConfig, max_inflight: int | None = None) -> StalenessPolicy:
+    """Instantiate a staleness policy from its preset config."""
+    build = getattr(cfg, "build", None)
+    if callable(build):
+        return build(max_inflight=max_inflight)
     name = cfg.get("name", "psrl")
-    if name == "psrl":
-        return PSRLPolicy(
-            proactive_filter=cfg.get("proactive_filter", False),
-            proactive_threshold=cfg.get("proactive_threshold", 0),
-        )
-    if name == "areal":
-        return ArealPolicy(max_inflight=cfg.get("max_inflight", None))
-    if name == "roll":
-        return RollPolicy(max_inflight=cfg.get("max_inflight", None))
-    if name == "slime":
-        return SlimePolicy(
-            update_weights_interval=cfg.get("update_weights_interval", 1),
-            over_sampling_ratio=cfg.get("over_sampling_ratio", 1.0),
-            max_inflight=cfg.get("max_inflight", None),
-        )
-    if name == "verl":
-        configured_threshold = cfg.get("staleness_threshold", None)
-        return VerlPolicy(
-            staleness_threshold=float(
-                max_staleness if configured_threshold is None else configured_threshold
-            ),
-            require_batches=cfg.get("require_batches", 1),
-            max_inflight=cfg.get("max_inflight", None),
-        )
-    raise ValueError(f"Unknown policy: {name!r}.")
+    cls = POLICY_REGISTRY.get(name)
+    if cls is None:
+        raise ValueError(f"Unknown policy: {name!r}.")
+    params = inspect.signature(cls.__init__).parameters
+    fields = {name for name, param in params.items() if name != "self" and param.kind is param.POSITIONAL_OR_KEYWORD}
+    kwargs = {key: value for key, value in cfg.items() if key in fields and key != "max_inflight"}
+    if "max_inflight" in fields:
+        kwargs["max_inflight"] = max_inflight
+    policy = cls(**kwargs)
+    policy.name = name
+    return policy
 
 
 def build_distribution(cfg: DictConfig) -> list[int]:
@@ -533,10 +519,14 @@ def run_simulate(cfg: DictConfig) -> None:
     # None adopts the workload's own arity; an explicit value is checked against
     # it by SimConfig, so a run against the wrong trace fails loudly.
     group_size = job.group_size if job.group_size is not None else workload.group_size
+    preset = preset_config(cfg.policy)
+    policy = build_policy(preset, max_inflight=rollout.get("max_inflight", None))
+    ingest_groups = preset.ingress_window_groups(batch_size=job.batch_size)
     sim_cfg = SimConfig(
         batch_size=job.batch_size,
         group_size=group_size,
-        max_staleness=job.max_staleness,
+        staleness_horizon=preset.horizon,
+        ingress_window_groups=ingest_groups,
         n_versions=job.n_versions,
         sync_time=cfg.sync_cost.get("sync_time", 0.0),
         weight_load_time=cfg.sync_cost.get("weight_load_time", 0.0),
@@ -589,7 +579,6 @@ def run_simulate(cfg: DictConfig) -> None:
     )
 
     rollout_cost = build_rollout_cost(cfg.rollout_cost)
-    policy = build_policy(cfg.policy, job.max_staleness)
     training_cost = build_training_cost(cfg.training_cost)
     sync_cost = build_sync_cost(cfg.sync_cost)
     # The checkpoint is only consulted when the training model carries no fitted
@@ -674,7 +663,7 @@ def run_simulate(cfg: DictConfig) -> None:
         # is printed first for that reason: check it matches before comparing.
         print("  SCG(S) = tokens from trajectories with staleness <= S, per second:")
         for staleness, value in sorted(result.scg_curve().items()):
-            marker = "  <- job.max_staleness" if staleness == cfg.job.max_staleness else ""
+            marker = "  <- policy.horizon" if staleness == preset.horizon else ""
             share = value / result.throughput * 100 if result.throughput > 0 else 0.0
             print(f"    S={staleness}: {value:>9.1f} tok/s ({share:>5.1f}% of throughput){marker}")
     if result.livelocked:

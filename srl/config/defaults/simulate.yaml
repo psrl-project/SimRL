@@ -18,12 +18,6 @@ job:
   # the workload; only a trace carries real groups.
   group_size: null
 
-  # Maximum allowed staleness of consumed training data.
-  # Used as a version bound by areal, psrl, and roll. For verl it is the
-  # sample-overage ratio fallback when policy.staleness_threshold is null.
-  # Ignored by slime: its bound is policy.update_weights_interval.
-  max_staleness: 2
-
   # Per-request prompt cap in tokens. Sampled prompts longer than this are
   # truncated. null = no cap.
   max_prompt_length: null
@@ -81,6 +75,9 @@ rollout:
 
   # Max sequences in the running batch (vLLM max_num_seqs). null = unlimited.
   max_concurrency: null
+
+  # Cap on concurrently generating prompt groups the policy may admit. null = policy default.
+  max_inflight: null
 
   # Admission gates applied when a request is offered to an instance.
   admission_control:

@@ -1,8 +1,8 @@
 # Staleness policy name.
 name: verl
 
-# Sample-overage ratio. null falls back to job.max_staleness.
-staleness_threshold: null
+# Sample-overage ratio of the hand-off window.
+staleness_threshold: 2.0
 
 # Number of training batches that must be ready before a train step.
 require_batches: 1

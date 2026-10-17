@@ -227,7 +227,7 @@ def hydra_overrides(cfg: Config, run_dir: Path, trace: Path) -> list[str]:
         f"job.n_versions={VERSIONS}",
         f"job.batch_size={BATCH}",
         f"job.group_size={GROUP_SIZE}",
-        f"job.max_staleness={cfg.staleness}",
+        f"policy.horizon={cfg.staleness}",
         "job.max_prompt_length=1024",
         f"job.max_output_length={TRACE_SHAPE['cap']}",
         f"rollout.n_instances={INSTANCES}",

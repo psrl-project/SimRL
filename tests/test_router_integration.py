@@ -50,14 +50,14 @@ class TestBehaviourPreservation:
         must produce the identical run. A difference here is a plumbing bug."""
         results = {}
         for strategy in ("request_num_balance", "round_robin", "kv_cache_aware"):
-            cfg = SimConfig(batch_size=4, max_staleness=2, n_versions=6, n_instances=1)
+            cfg = SimConfig(batch_size=4, staleness_horizon=2, n_versions=6, n_instances=1)
             cfg.routing_strategy = strategy
             result = _sim(cfg, uniform(100, 50, 100, seed=0)).run()
             results[strategy] = (result.sim_time, result.n_consumed, result.versions_done)
         assert len(set(results.values())) == 1, results
 
     def test_the_default_strategy_balances_two_instances(self):
-        cfg = SimConfig(batch_size=4, max_staleness=2, n_versions=8, n_instances=2)
+        cfg = SimConfig(batch_size=4, staleness_horizon=2, n_versions=8, n_instances=2)
         result = _sim(cfg, uniform(100, 50, 100, seed=0)).run()
         assert not result.livelocked
         assert result.versions_done == 8
@@ -69,7 +69,7 @@ class TestBehaviourPreservation:
         that silently collapses onto one instance is worse than useless, since
         the run still completes and only the figure reveals it."""
         for strategy in ("request_num_balance", "kv_cache_aware", "round_robin"):
-            cfg = SimConfig(batch_size=8, max_staleness=2, n_versions=5, n_instances=2)
+            cfg = SimConfig(batch_size=8, staleness_horizon=2, n_versions=5, n_instances=2)
             cfg.routing_strategy = strategy
             sim = _sim(cfg, uniform(100, 100, 300, seed=1))
             sim.run()
@@ -84,7 +84,7 @@ class TestNoStarvation:
         untouched until the next training step."""
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=1,
+            staleness_horizon=1,
             n_versions=6,
             n_instances=2,
             max_concurrency=2,  # force a backlog the router has to hold
@@ -100,7 +100,7 @@ class TestNoStarvation:
     def test_requests_are_not_lost_when_the_fleet_is_full(self):
         cfg = SimConfig(
             batch_size=2,
-            max_staleness=1,
+            staleness_horizon=1,
             n_versions=4,
             n_instances=1,
             max_concurrency=1,
@@ -123,7 +123,7 @@ class TestPlacementTimeAdmission:
         """
         cfg = SimConfig(
             batch_size=2,
-            max_staleness=1,
+            staleness_horizon=1,
             n_versions=1,
             n_instances=1,
             max_concurrent_seqs_per_instance=1,
@@ -148,7 +148,7 @@ class TestPlacementTimeAdmission:
         cfg = SimConfig(
             batch_size=1,
             group_size=2,
-            max_staleness=0,
+            staleness_horizon=0,
             n_versions=1,
             max_concurrent_seqs_per_instance=1,
             workload=workload,
@@ -171,7 +171,7 @@ class TestPlacementTimeAdmission:
         """
         cfg = SimConfig(
             batch_size=2,
-            max_staleness=1,
+            staleness_horizon=1,
             n_versions=1,
             n_instances=1,
             max_concurrent_seqs_per_instance=1,
@@ -198,7 +198,7 @@ class TestPreemptOverflowInAFullRun:
     def test_global_waiting_gate_keeps_the_rest_in_the_router(self):
         cfg = SimConfig(
             batch_size=2,
-            max_staleness=1,
+            staleness_horizon=1,
             n_versions=1,
             n_instances=2,
             router_reject_on_waiting=True,
@@ -214,7 +214,7 @@ class TestPreemptOverflowInAFullRun:
     def test_preempt_only_waiting_gate_keeps_initial_admission_permissive(self):
         cfg = SimConfig(
             batch_size=2,
-            max_staleness=1,
+            staleness_horizon=1,
             n_versions=1,
             n_instances=2,
             router_reject_preempted_on_waiting=True,
@@ -229,7 +229,7 @@ class TestPreemptOverflowInAFullRun:
     def test_global_waiting_gate_collects_simultaneous_completions(self):
         cfg = SimConfig(
             batch_size=1,
-            max_staleness=1,
+            staleness_horizon=1,
             n_versions=1,
             n_instances=2,
             router_reject_on_waiting=True,
@@ -242,7 +242,7 @@ class TestPreemptOverflowInAFullRun:
     def test_completion_with_preemption_loops_back_and_is_collected(self):
         cfg = SimConfig(
             batch_size=1,
-            max_staleness=1,
+            staleness_horizon=1,
             n_versions=1,
             max_waiting_after_preempt=1,
             router_reject_preempted_on_waiting=True,
@@ -297,7 +297,7 @@ class TestPreemptOverflowInAFullRun:
         this workload actually reaches is the only way to execute it."""
         cfg = SimConfig(
             batch_size=8,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=5,
             n_instances=2,
             kv_blocks=700,  # tight enough that preemption happens
@@ -317,7 +317,7 @@ class TestPreemptOverflowInAFullRun:
         which is the behaviour before this path existed."""
         cfg = SimConfig(
             batch_size=8,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=5,
             n_instances=2,
             kv_blocks=700,
@@ -339,7 +339,7 @@ class TestCapacityReleaseIsWatched:
         path and can retire requests, which is the same release as a
         REQUEST_COMPLETE and is followed by a dispatch anyway.
         """
-        cfg = SimConfig(batch_size=4, max_staleness=2, n_versions=5, n_instances=2)
+        cfg = SimConfig(batch_size=4, staleness_horizon=2, n_versions=5, n_instances=2)
         sim = _sim(cfg, uniform(100, 100, 300, seed=11))
 
         releasing = {

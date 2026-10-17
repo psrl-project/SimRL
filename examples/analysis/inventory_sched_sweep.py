@@ -69,7 +69,7 @@ def _run_one(fa, regime, *, strategy: str, strategy_args: dict, cap: int) -> Arm
     cfg = SimConfig(
         batch_size=regime.batch,
         group_size=regime.group_size,
-        max_staleness=regime.staleness,
+        staleness_horizon=regime.staleness,
         n_versions=regime.n_versions,
         n_instances=regime.n_instances,
         weight_load_time=regime.weight_load,

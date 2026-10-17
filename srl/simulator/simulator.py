@@ -14,7 +14,7 @@ from typing import get_args
 from tqdm import tqdm
 
 from ..component.recompute.cost import FixedRecomputeCost, RecomputeCostModel
-from ..component.rollout.engine import EngineEvent, EventKind, NativeInstance, ReqStatus, Request
+from ..component.rollout.engine import EngineEvent, NativeInstance, ReqStatus, Request
 from ..component.rollout.engine.eviction import build_eviction
 from ..component.rollout.router import AdmissionGate, Router, SortKey, build_strategy
 from ..component.sync.cost import FixedSyncCost, SyncCostModel
@@ -149,7 +149,9 @@ class Simulator:
         self._staged_groups: dict[int, list[Request]] = {}
         self._admitted_group_ids: set[int] = set()
         # A flow limit on dataset ingress, not a staleness bound. See `_stage`.
-        self._ingress_group_credits = (cfg.max_staleness + 1) * cfg.batch_size
+        self._ingress_group_credits = (
+            cfg.ingress_window_groups or self._default_ingress_groups(cfg)
+        )
         self.pending: dict[int, list[Request]] = {}
         """Finished responses whose group is not complete yet, by group id.
 
@@ -178,6 +180,16 @@ class Simulator:
         # here, so this class only ever calls high-level telemetry methods).
         self.telemetry = SimTelemetry(store, enabled=cfg.log_telemetry)
 
+    @staticmethod
+    def _default_ingress_groups(cfg: SimConfig) -> int:
+        """Derive the ingress window when the caller did not supply the policy's.
+
+        A policy without a horizon still needs a finite window, so fall back to
+        two batches.
+        """
+        span = 2 if cfg.staleness_horizon is None else cfg.staleness_horizon + 1
+        return span * cfg.batch_size
+
     def _state(self) -> SimState:
         return SimState(
             now=self.t,
@@ -185,7 +197,7 @@ class Simulator:
             rollout_version=self.rollout_version,
             batch_size=self.cfg.batch_size,
             group_size=self.cfg.group_size,
-            max_staleness=self.cfg.max_staleness,
+            max_staleness=self.cfg.staleness_horizon or 0,
             inflight=self.inflight,
             ready=self.ready,
             ready_groups=self.ready_groups,

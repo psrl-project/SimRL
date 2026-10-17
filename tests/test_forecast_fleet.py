@@ -377,7 +377,7 @@ class TestMembersOfAgainstARealRun:
         cfg = SimConfig(
             batch_size=2,
             group_size=2,
-            max_staleness=1,
+            staleness_horizon=1,
             n_versions=4,
             n_instances=2,
             weight_load_time=1.0,

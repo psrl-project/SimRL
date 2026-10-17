@@ -1,6 +1,9 @@
 # Staleness policy name.
 name: psrl
 
+# Weight versions a consumed group may lag the training version.
+staleness: 2
+
 # Drop leftover reserved buffer entries that are unlikely to be filled in time.
 proactive_filter: false
 

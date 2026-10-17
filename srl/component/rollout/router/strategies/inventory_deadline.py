@@ -246,7 +246,9 @@ class InventoryDeadline:
         try:
             return session.deadline(group_id)
         except KeyError:
-            return session.rollout_version + session.runtime.max_staleness
+            # Without a version bound, the ingress window is the only finite lag.
+            span = session.runtime.horizon or session.runtime.ingress_window_groups
+            return session.rollout_version + span
 
     def _eps(self, session: PlanSession) -> float:
         if not session.train_cache:

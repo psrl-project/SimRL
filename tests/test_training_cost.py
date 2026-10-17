@@ -362,7 +362,7 @@ def test_fitted_training_cost_integrates_with_simulator(tmp_path: Path):
         cfg=SimConfig(
             batch_size=8,
             n_versions=1,
-            max_staleness=2,
+            staleness_horizon=2,
             training_pp=2,
             training_micro_batch_size=2,
             workload=GroupedWorkload.from_lengths([512], uniform(32, 50, 100, seed=1)),

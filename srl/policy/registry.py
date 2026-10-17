@@ -1,0 +1,17 @@
+"""Maps a preset name to its policy class."""
+
+from __future__ import annotations
+
+from .areal import ArealPolicy
+from .psrl import PSRLPolicy
+from .roll import RollPolicy
+from .slime import SlimePolicy
+from .verl import VerlPolicy
+
+POLICY_REGISTRY: dict[str, type] = {
+    "psrl": PSRLPolicy,
+    "areal": ArealPolicy,
+    "roll": RollPolicy,
+    "slime": SlimePolicy,
+    "verl": VerlPolicy,
+}

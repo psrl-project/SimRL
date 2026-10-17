@@ -466,7 +466,7 @@ class PlanSession:
         try:
             db = self.snapshot.deadline(f.group_id)
         except KeyError:
-            db = self.rollout_version + self.runtime.max_staleness
+            db = self.rollout_version + self.runtime.horizon
         for member in group:
             member.deadline_buffer = db
         for member in rest_sorted:

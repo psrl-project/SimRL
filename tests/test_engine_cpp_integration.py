@@ -89,7 +89,7 @@ class TestCppBackendMatchesNative:
     def test_psrl_uniform(self):
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=8,
             log_telemetry=False,
         )
@@ -102,7 +102,7 @@ class TestCppBackendMatchesNative:
     def test_areal_uniform(self):
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=6,
             log_telemetry=False,
         )
@@ -115,7 +115,7 @@ class TestCppBackendMatchesNative:
     def test_roll_uniform(self):
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=6,
             log_telemetry=False,
         )
@@ -128,7 +128,7 @@ class TestCppBackendMatchesNative:
     def test_verl_uniform(self):
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=1,
+            staleness_horizon=1,
             n_versions=6,
             log_telemetry=False,
         )
@@ -143,7 +143,7 @@ class TestCppBackendMatchesNative:
     def test_two_instances(self):
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=6,
             n_instances=2,
             log_telemetry=False,
@@ -157,7 +157,7 @@ class TestCppBackendMatchesNative:
     def test_partial_rollout(self):
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=4,
             n_instances=1,
             sync_time=0.25,
@@ -173,7 +173,7 @@ class TestCppBackendMatchesNative:
     def test_bimodal_lengths(self):
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=6,
             log_telemetry=False,
         )
@@ -195,7 +195,7 @@ class TestCppBackendTelemetry:
         store_cpp = JsonlStore(tmp_path / "cpp")
         cfg = SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=4,
             n_instances=1,
         )
@@ -257,7 +257,7 @@ class TestCppBackendGrouping:
         cfg = SimConfig(
             batch_size=2,
             group_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=4,
             workload=GroupedWorkload.from_groups(groups),
             log_telemetry=False,
@@ -272,7 +272,7 @@ class TestCppBackendAutoDetection:
 
     def test_auto_selects_cpp_when_available(self):
         cfg = SimConfig(
-            batch_size=4, max_staleness=2, n_versions=2,
+            batch_size=4, staleness_horizon=2, n_versions=2,
             log_telemetry=False,
         )
         cost = UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7)

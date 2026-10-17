@@ -16,7 +16,7 @@ def _simulate_into_store(tmp_path, n_instances=2):
     cost = UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7)
     cfg = SimConfig(
         batch_size=4,
-        max_staleness=2,
+        staleness_horizon=2,
         n_versions=5,
         n_instances=n_instances,
         workload=GroupedWorkload.from_lengths([512], uniform(80, 50, 120, seed=1)),

@@ -14,6 +14,7 @@ from srl.workload.grouped import GroupedWorkload
 def _cfg(batch_size: int, n_versions: int) -> SimConfig:
     return SimConfig(
         batch_size=batch_size,
+        staleness_horizon=1,
         n_versions=n_versions,
         workload=GroupedWorkload.from_lengths([150], uniform(16, 50, 200, seed=5)),
     )
@@ -373,7 +374,7 @@ def _long_run(policy) -> Simulator:
         policy=policy,
         cfg=SimConfig(
             batch_size=4,
-            max_staleness=2,
+            staleness_horizon=2,
             n_versions=4,
             sync_time=0.25,
             workload=GroupedWorkload.from_lengths([512], uniform(80, 200, 400, seed=0)),

@@ -1,14 +1,24 @@
 """Hydra configuration for SimRL."""
 
-from hydra.core.config_store import ConfigStore
+from dataclasses import asdict
 
+from hydra.core.config_store import ConfigStore
+from omegaconf import OmegaConf
+
+from .policies import (
+    PRESETS,
+    ArealPolicyConfig,
+    PsrlPolicyConfig,
+    RollPolicyConfig,
+    SlimePolicyConfig,
+    VerlPolicyConfig,
+)
 from .schema import (
     AdmissionControlConfig,
     DistributionConfig,
     JobConfig,
     JointTraceConfig,
     ParallelismConfig,
-    PolicyConfig,
     RecomputeCostConfig,
     RolloutConfig,
     RolloutCostConfig,
@@ -20,28 +30,41 @@ from .schema import (
 
 __all__ = [
     "AdmissionControlConfig",
+    "ArealPolicyConfig",
     "DistributionConfig",
     "JobConfig",
     "JointTraceConfig",
     "ParallelismConfig",
-    "PolicyConfig",
+    "PsrlPolicyConfig",
     "RecomputeCostConfig",
+    "RollPolicyConfig",
     "RolloutConfig",
     "RolloutCostConfig",
     "SimulateConfig",
+    "SlimePolicyConfig",
     "SyncCostConfig",
     "TrainingCostConfig",
+    "VerlPolicyConfig",
     "WorkloadConfig",
     "register_configs",
 ]
 
 
+def _simulate_schema():
+    """Return the primary schema with an untyped `policy`, so a group can replace it."""
+    schema = OmegaConf.structured(SimulateConfig)
+    schema.policy = OmegaConf.create(asdict(PsrlPolicyConfig()))
+    return schema
+
+
 def register_configs() -> None:
     """Register structured configs with Hydra's ConfigStore."""
     cs = ConfigStore.instance()
-    cs.store(name="simulate_schema", node=SimulateConfig)
+    cs.store(name="simulate_schema", node=_simulate_schema())
     cs.store(group="rollout_cost", name="roofline_schema", node=RolloutCostConfig)
-    cs.store(group="policy", name="psrl_schema", node=PolicyConfig)
+    for name, cls in PRESETS.items():
+        cs.store(group="policy", name=f"{name}_schema", node=cls)
+        cs.store(group="policy", name=name, node=cls)
     cs.store(group="workload", name="workload_schema", node=WorkloadConfig)
     cs.store(group="training_cost", name="fixed_schema", node=TrainingCostConfig)
     cs.store(group="sync_cost", name="fixed_schema", node=SyncCostConfig)

@@ -59,7 +59,7 @@ class RuntimeProbeStub:
         rt = self.runtime
         rt.train_version
         rt.rollout_version
-        rt.max_staleness
+        rt.horizon
         rt.batch_size
         rt.group_size
         rt.weight_load
@@ -78,7 +78,7 @@ def _cfg() -> SimConfig:
     workload = GroupedWorkload.from_lengths([150], uniform(80, 40, 120, seed=5))
     return SimConfig(
         batch_size=2,
-        max_staleness=1,
+        staleness_horizon=1,
         n_versions=5,
         n_instances=2,
         weight_load_time=WEIGHT_LOAD,

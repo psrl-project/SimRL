@@ -163,7 +163,7 @@ def _build(regime: Regime) -> _ForecastingSimulator:
     cfg = SimConfig(
         batch_size=regime.batch,
         group_size=regime.group_size,
-        max_staleness=regime.staleness,
+        staleness_horizon=regime.staleness,
         n_versions=regime.n_versions,
         n_instances=regime.n_instances,
         weight_load_time=regime.weight_load,
@@ -601,7 +601,7 @@ def _build_medium(regime: MediumRegime, cost_model, mdt_module) -> _MediumSimula
     cfg = SimConfig(
         batch_size=regime.batch,
         group_size=regime.group_size,
-        max_staleness=regime.staleness,
+        staleness_horizon=regime.staleness,
         n_versions=regime.n_versions,
         n_instances=regime.n_instances,
         weight_load_time=regime.weight_load,

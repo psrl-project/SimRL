@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
+
+from .policies import PsrlPolicyConfig
 
 
 @dataclass
@@ -46,20 +49,6 @@ class RolloutCostConfig:
     # the lattice integrator. Defaults to effectively disabled: measured end to end on the
     # DAPO trace the fast path gave 1.2x for 4.6% deviation, which is not a good trade.
     saturation_step_threshold: int = 1 << 62
-
-
-@dataclass
-class PolicyConfig:
-    """Staleness policy configuration."""
-
-    name: str = "psrl"
-    proactive_filter: bool = False
-    proactive_threshold: int = 0
-    max_inflight: int | None = None
-    update_weights_interval: int = 1
-    over_sampling_ratio: float = 1.0
-    staleness_threshold: float | None = None
-    require_batches: int = 1
 
 
 @dataclass
@@ -194,7 +183,6 @@ class JobConfig:
     """Prompt groups consumed per training step, not responses."""
     group_size: int | None = None
     """Responses per prompt. None reads it from the workload."""
-    max_staleness: int = 2
     # Per-request caps applied after sampling. None means no truncation.
     max_prompt_length: int | None = None
     max_output_length: int | None = None
@@ -338,6 +326,8 @@ class RolloutConfig:
     data state rather than a second code path.
     """
     max_concurrency: int | None = None
+    max_inflight: int | None = None
+    """Cap on concurrently generating prompt groups the policy may admit."""
     admission_control: AdmissionControlConfig = field(default_factory=AdmissionControlConfig)
     router: RouterConfig = field(default_factory=RouterConfig)
     livelock_rounds: int = 50
@@ -350,7 +340,9 @@ class SimulateConfig:
     """Top-level simulation configuration."""
 
     rollout_cost: RolloutCostConfig = field(default_factory=RolloutCostConfig)
-    policy: PolicyConfig = field(default_factory=PolicyConfig)
+    # Any, because Hydra cannot compose a union of structured dataclasses. The group
+    # node selected under `policy:` supplies the typed preset.
+    policy: Any = field(default_factory=PsrlPolicyConfig)
     workload: WorkloadConfig = field(default_factory=WorkloadConfig)
     training_cost: TrainingCostConfig = field(default_factory=TrainingCostConfig)
     sync_cost: SyncCostConfig = field(default_factory=SyncCostConfig)

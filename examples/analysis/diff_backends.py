@@ -244,7 +244,7 @@ def main() -> int:
     for case, policy, seed, cost_name in itertools.product(
         args.cases, args.policies, args.seeds, args.costs
     ):
-        cfg_kwargs = dict(batch_size=4, group_size=1, max_staleness=1, n_versions=6)
+        cfg_kwargs = dict(batch_size=4, group_size=1, staleness_horizon=1, n_versions=6)
         cfg_kwargs.update(CASES[case])
         if args.undoable is not None:
             cfg_kwargs["undoable_events"] = frozenset(args.undoable)

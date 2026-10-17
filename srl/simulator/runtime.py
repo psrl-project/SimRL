@@ -41,8 +41,12 @@ class SchedulingRuntime:
         return self._sim.rollout_version
 
     @property
-    def max_staleness(self) -> int:
-        return self._sim.cfg.max_staleness
+    def horizon(self) -> int | None:
+        return self._sim.cfg.staleness_horizon
+
+    @property
+    def ingress_window_groups(self) -> int:
+        return self._sim._ingress_group_credits
 
     @property
     def batch_size(self) -> int:

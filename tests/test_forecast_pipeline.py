@@ -185,7 +185,7 @@ def _build_simulator(train_c: float, sync_c: float, weight_load: float) -> tuple
     workload = GroupedWorkload.from_lengths([150], uniform(80, 40, 120, seed=3))
     cfg = SimConfig(
         batch_size=2,
-        max_staleness=1,
+        staleness_horizon=1,
         n_versions=6,
         n_instances=1,
         weight_load_time=weight_load,

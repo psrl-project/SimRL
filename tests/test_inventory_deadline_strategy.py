@@ -75,7 +75,7 @@ class StubRuntime:
     batch_size: int = 1
     group_size: int = 1
     rollout_version: int = 0
-    max_staleness: int = 1
+    horizon: int | None = 1
 
     @property
     def now(self) -> float:
@@ -119,12 +119,12 @@ class _FakeSession:
     from whether `PlanSession` prices an option correctly -- that is `test_forecast_plan.py`'s job.
     """
 
-    def __init__(self, members=(), staged_groups=None, deadlines=None, rollout_version=0, max_staleness=1):
+    def __init__(self, members=(), staged_groups=None, deadlines=None, rollout_version=0, horizon=1):
         self.members = set(members)
         self.staged_groups = staged_groups or {}
         self._deadlines = deadlines or {}
         self.rollout_version = rollout_version
-        self.runtime = types.SimpleNamespace(max_staleness=max_staleness)
+        self.runtime = types.SimpleNamespace(horizon=horizon, ingress_window_groups=1)
         self._member_options: dict[int, dict] = {}
         self._admission_options: dict[int, dict] = {}
         self.train_cache: dict = {}
@@ -142,7 +142,7 @@ class _FakeSession:
     def evaluate_member(self, req):
         return self._member_options[req.rid]
 
-    def evaluate_admission(self, group):
+    def evaluate_admission(self, group, budget=None):
         return self._admission_options[group[0].group_id]
 
     def commit(self, req, option) -> None:
@@ -395,12 +395,12 @@ class TestAllowVersionBypass:
 class TestDeadlineFallback:
     def test_a_reserved_group_uses_the_snapshot_deadline(self):
         s = strategy()
-        session = _FakeSession(deadlines={1: 7}, rollout_version=3, max_staleness=2)
+        session = _FakeSession(deadlines={1: 7}, rollout_version=3, horizon=2)
         assert s._deadline(session, 1) == 7
 
     def test_a_group_admitted_this_burst_falls_back_to_version_plus_staleness(self):
         s = strategy()
-        session = _FakeSession(rollout_version=3, max_staleness=2)
+        session = _FakeSession(rollout_version=3, horizon=2)
         assert s._deadline(session, 999) == 5
 
 
@@ -426,7 +426,7 @@ class TestEndToEnd:
             for i in range(40)
         ]
         cfg = SimConfig(
-            batch_size=4, group_size=4, max_staleness=max_staleness, n_versions=8,
+            batch_size=4, group_size=4, staleness_horizon=max_staleness, n_versions=8,
             n_instances=n_instances, weight_load_time=1.0,
             workload=GroupedWorkload.from_groups(groups), log_telemetry=False,
             routing_strategy="inventory_deadline", routing_strategy_args=routing_strategy_args or {},

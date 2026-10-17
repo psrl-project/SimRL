@@ -6,3 +6,6 @@ update_weights_interval: 1
 
 # Admit this many times batch_size before waiting to collect a full batch.
 over_sampling_ratio: 1.0
+
+# What a weight push does to in-flight generation.
+pause_mode: abort
