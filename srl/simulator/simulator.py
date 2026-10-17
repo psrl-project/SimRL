@@ -26,7 +26,7 @@ from ..cost.training import (
     TrainingParallelism,
     TrainingWorkload,
 )
-from ..policy.base import CompleteAction, SimState, StalenessPolicy
+from ..policy.base import Cancel, CancelAction, CompleteAction, SimState, StalenessPolicy
 from ..policy.ledger import GroupLedger
 from ..telemetry.store import JsonlStore
 from ..telemetry.writer import SimTelemetry
@@ -428,12 +428,17 @@ class Simulator:
         if callable(observe):
             observe(self.train_version, self.t)
 
-    def _discard(self, reqs: list[Request]) -> None:
+    def _discard(self, reqs: list[Request], grant_replacements: bool = True) -> None:
         """Drop requests, widening to whole prompt groups.
 
         A group that loses one response can never be consumed, so its surviving
         siblings would hold KV for the rest of the run. Dropping the group keeps
         the invariant that everything in flight is still trainable.
+
+        Args:
+            reqs: Requests to remove.
+            grant_replacements: Whether `policy.replacement_groups_on_drop` may
+                credit dataset replacements for the dropped groups.
         """
         seen: set[int] = set()
         unique_reqs: list[Request] = []
@@ -483,7 +488,8 @@ class Simulator:
             [req for req in unique_reqs if req.group_id == group_id]
             for group_id in dropped_groups
         ]
-        self._grant_drop_replacements(groups)
+        if grant_replacements:
+            self._grant_drop_replacements(groups)
         self._stage()
 
     def _grant_drop_replacements(self, groups: list[list[Request]]) -> None:
@@ -499,6 +505,23 @@ class Simulator:
         self._ingress_group_credits += self.policy.replacement_groups_on_drop(
             groups,
             self._state(),
+        )
+
+    def _apply_cancels(self, cancels: list[Cancel]) -> None:
+        """Drop cancelled groups and credit one replacement per non-DROP action."""
+        actions = {cancel.group_id: cancel.action for cancel in cancels}
+        live = [
+            req
+            for group_id in actions
+            for req in (*self.inflight, *self.ready)
+            if req.group_id == group_id
+        ]
+        if not live:
+            return
+        # L2 action semantics own the credit, so bypass the policy drop hook.
+        self._discard(live, grant_replacements=False)
+        self._ingress_group_credits += sum(
+            1 for action in actions.values() if action is not CancelAction.DROP
         )
 
     def _expand_to_groups(self, reqs: list[Request]) -> list[Request]:
@@ -773,6 +796,7 @@ class Simulator:
         """
         previous_rollout_version = self.rollout_version
         self.train_version += 1
+        self._apply_cancels(self.policy.on_publish(self.train_version, self._state()))
         self._observe_train_cycle()
         self.policy.on_train_version_advance(self.train_version, self._state())
         self.rollout_version = self.policy.rollout_version_after_train(self._state())

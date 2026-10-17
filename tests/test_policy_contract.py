@@ -1,7 +1,9 @@
+import pytest
+
 from srl.component.rollout.engine import Request
 from srl.cost.rollout import UnifiedRoofline
 from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
-from srl.policy.base import CompleteAction, StalenessPolicy
+from srl.policy.base import Cancel, CancelAction, CompleteAction, SimState, StalenessPolicy
 from srl.policy.ledger import GroupLedger
 from srl.policy.psrl import PSRLPolicy
 from srl.simulator import SimConfig, Simulator
@@ -202,3 +204,77 @@ def test_recollecting_a_committed_completion_keeps_one_entry() -> None:
     assert views[0].status == "done"
     assert views[0].complete_time == 1.0
     assert views[0].members == (0,)
+
+
+class _CancelAtOne(PSRLPolicy):
+    def on_publish(self, new_version, st):
+        if new_version == 1:
+            return [Cancel(g.group_id, CancelAction.DROP) for g in st.groups]
+        return []
+
+
+def test_on_publish_cancel_drops_inflight_groups() -> None:
+    result = _sim(_CancelAtOne(), batch_size=2, n_versions=4).run()
+    assert result.dropped, "the publish hook must be able to discard groups."
+    assert all(r.status.name == "DROPPED" for r in result.dropped)
+
+
+def test_default_publish_hook_is_a_no_op() -> None:
+    assert PSRLPolicy().on_publish(3, SimState()) == []
+
+
+def test_cancel_action_values_are_stable() -> None:
+    assert {a.value for a in CancelAction} == {"drop", "replace", "retry_from_scratch"}
+    assert CompleteAction.KEEP.value == "keep"
+
+
+class _ReplacingKeepPolicy(_KeepPolicy):
+    """Refill every permanently dropped group, the way ROLL does."""
+
+    def replacement_groups_on_drop(self, groups, st):
+        return len(groups)
+
+
+def _live_group(sim: Simulator, group_id: int = 0, version: int = 0) -> list[Request]:
+    reqs = [
+        Request(rid=group_id * 10 + index, prompt_len=10, target_len=20, v_traj=version, group_id=group_id)
+        for index in range(sim.cfg.group_size)
+    ]
+    sim._staged_groups.pop(group_id, None)
+    sim._admitted_group_ids.add(group_id)
+    sim.inflight.extend(reqs)
+    sim._ledger.begin(reqs, version=version, now=sim.t)
+    return reqs
+
+
+@pytest.mark.parametrize(
+    ("action", "credits"),
+    [
+        (CancelAction.DROP, 0),
+        (CancelAction.REPLACE, 1),
+        (CancelAction.RETRY_FROM_SCRATCH, 1),
+    ],
+)
+def test_cancel_credit_follows_the_action(action: CancelAction, credits: int) -> None:
+    sim = _sim(_ReplacingKeepPolicy(), batch_size=1, n_versions=1)
+    reqs = _live_group(sim)
+    sim._ingress_group_credits = 0
+
+    sim._apply_cancels([Cancel(0, action)])
+
+    assert all(req.status.name == "DROPPED" for req in reqs)
+    assert sim._ledger.peek(0) is None, "a cancelled group must leave no ledger entry."
+    assert sim._ingress_group_credits == credits
+
+
+def test_cancel_of_a_non_live_group_is_a_no_op() -> None:
+    sim = _sim(_ReplacingKeepPolicy(), batch_size=1, n_versions=1)
+    reqs = _live_group(sim)
+    sim._ingress_group_credits = 0
+    sim._discard(reqs)
+    dropped = len(sim.dropped)
+
+    sim._apply_cancels([Cancel(0, CancelAction.REPLACE), Cancel(99, CancelAction.DROP)])
+
+    assert len(sim.dropped) == dropped, "an already dropped group must not be dropped twice."
+    assert sim._ingress_group_credits == 0, "a non-live group must not grant a credit."

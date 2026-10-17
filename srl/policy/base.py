@@ -15,6 +15,20 @@ class CompleteAction(Enum):
     DROP = "drop"
 
 
+class CancelAction(Enum):
+    DROP = "drop"
+    REPLACE = "replace"
+    RETRY_FROM_SCRATCH = "retry_from_scratch"
+
+
+@dataclass(frozen=True)
+class Cancel:
+    """Cancel one live group at publication and choose how it is replaced."""
+
+    group_id: int
+    action: CancelAction
+
+
 @dataclass
 class SimState:
     """What a policy is allowed to see when making decisions."""
@@ -134,6 +148,14 @@ class StalenessPolicy(ABC):
 
     def on_batch_unavailable(self, st: SimState) -> None:
         """Called when no training batch is currently available."""
+
+    def on_publish(self, new_version: int, st: SimState) -> list[Cancel]:
+        """Decide which live groups the newly published `new_version` makes worthless.
+
+        Called after `train_version` advances and before the weights reach the
+        rollout engines, so `st.train_version == new_version`.
+        """
+        return []
 
     def on_train_version_advance(self, train_version: int, st: SimState) -> None:
         """Called after training finishes and `train_version` is published."""
