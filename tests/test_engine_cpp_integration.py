@@ -160,7 +160,6 @@ class TestCppBackendMatchesNative:
             max_staleness=2,
             n_versions=4,
             n_instances=1,
-            partial_rollout=True,
             sync_time=0.25,
             log_telemetry=False,
         )

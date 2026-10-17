@@ -10,7 +10,7 @@ from srl.cost.training import (
     TrainingCostModel,
 )
 from srl.policy.areal import ArealPolicy
-from srl.policy.base import CompleteAction, SimState
+from srl.policy.base import CancelAction, CompleteAction, SimState
 from srl.policy.psrl import PSRLPolicy
 from srl.policy.roll import RollPolicy
 from srl.policy.slime import SlimePolicy
@@ -19,6 +19,7 @@ from srl.simulator import SimConfig, Simulator, clip_length, clip_total_length
 from srl.telemetry.store import JsonlStore
 from srl.workload.distributions import bimodal, uniform
 from srl.workload.grouped import GroupedWorkload
+from srl.workload.trace import RequestGroup
 
 
 def _run_sim(policy, lengths, cfg):
@@ -190,16 +191,118 @@ class TestRollBound:
             assert r.staleness_true() <= cfg.max_staleness
 
 
+def _roll_sim(group_size: int, store=None, n_versions: int = 10):
+    lengths = uniform(64, 50, 900, seed=7)
+    if group_size == 1:
+        workload = GroupedWorkload.from_lengths([150], lengths)
+    else:
+        workload = GroupedWorkload.from_groups(
+            [
+                RequestGroup(
+                    group_id=i,
+                    prompt_len=150,
+                    output_lens=tuple(lengths[(i * group_size + j) % 64] for j in range(group_size)),
+                )
+                for i in range(16)
+            ]
+        )
+    cfg = SimConfig(
+        batch_size=4,
+        group_size=group_size,
+        max_staleness=2,
+        n_versions=n_versions,
+        workload=workload,
+    )
+    policy = RollPolicy()
+    sim = Simulator(
+        rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+        training_cost=TrainingCostModel(FixedTrainingLatency(0.5), FixedTrainingMemory(0)),
+        policy=policy,
+        cfg=cfg,
+        store=store,
+    )
+    return sim, policy
+
+
+class TestRollGarbageCollection:
+    @pytest.mark.parametrize("group_size", [1, 4])
+    def test_every_drop_is_a_gc_of_a_whole_group(self, group_size):
+        sim, policy = _roll_sim(group_size)
+        result = sim.run()
+        assert not result.livelocked
+        assert policy.gc_dropped > 0, "the fixture must make GC fire."
+        assert len(result.dropped) == policy.gc_dropped * group_size
+
+    @pytest.mark.parametrize("group_size", [1, 4])
+    def test_policy_counters_agree_with_the_ledger(self, group_size):
+        sim, policy = _roll_sim(group_size)
+        sim.run()
+        views = sim._ledger.views()
+        running = {gid for cohort in policy.cohorts.values() for gid in cohort.running}
+        finished = {group[0].group_id for cohort in policy.cohorts.values() for group in cohort.finished}
+        assert running == {v.group_id for v in views if v.status != "done"}
+        assert finished == {v.group_id for v in views if v.status == "done"}
+        assert policy.running_prompts == len(running)
+        consumed_groups = sim.n_consumed // group_size
+        assert policy.completed_prompts == consumed_groups + len(finished)
+
+    def test_gc_fires_at_publish_not_at_batch_commit(self, tmp_path):
+        store = JsonlStore(tmp_path / "logs")
+        sim, policy = _roll_sim(1, store=store)
+        sim.run()
+        store.close()
+        assert policy.gc_dropped > 0
+        trains = list(store.iter("train"))
+        drops = [row["t"] for row in store.iter("request") if row["event"] == "drop"]
+        for t in drops:
+            assert any(abs(t - train["end"]) < 1e-9 for train in trains), (
+                f"drop at t={t} is not at a weight publication."
+            )
+        assert sum(train["n_dropped_step"] for train in trains) == len(drops)
+
+    def test_expired_groups_are_replaced(self):
+        sim, policy = _roll_sim(1)
+        sim.run()
+        assert sim.n_admitted >= (sim.cfg.max_staleness + 1 + sim.cfg.n_versions) * sim.cfg.batch_size, (
+            "each GC'd group must be refilled with a fresh prompt."
+        )
+
+    def test_on_publish_cancels_only_cohorts_below_the_window(self):
+        policy = RollPolicy()
+        st = SimState(batch_size=2, group_size=1, max_staleness=1, train_version=0)
+        policy.admit_quota(st)
+        reqs = {
+            gid: Request(rid=gid, prompt_len=1, target_len=1, v_traj=version, group_id=gid)
+            for gid, version in ((0, 0), (1, 0), (2, 2))
+        }
+        for req in reqs.values():
+            policy.on_admit([req], st)
+        policy.on_group_complete([reqs[1]], st)
+
+        late = SimState(batch_size=2, group_size=1, max_staleness=1, train_version=1)
+        assert policy.on_publish(1, late) == []
+
+        late.train_version = 3
+        cancels = policy.on_publish(3, late)
+        assert {(c.group_id, c.action) for c in cancels} == {
+            (0, CancelAction.REPLACE),
+            (1, CancelAction.REPLACE),
+        }
+        assert policy.gc_dropped == 2
+        assert policy.running_prompts == 1
+        assert policy.completed_prompts == 0
+        assert 2 in {gid for cohort in policy.cohorts.values() for gid in cohort.running}
+
+
 class TestSlimeBarrier:
     def test_staleness_equals_interval(self):
         cfg = SimConfig(
             batch_size=4,
             max_staleness=1,
             n_versions=10,
-            partial_rollout=False,
         )
         lengths = uniform(100, 50, 100, seed=0)
-        policy = SlimePolicy(update_weights_interval=2)
+        policy = SlimePolicy(update_weights_interval=2, pause_mode="in_place")
         result = _run_sim(policy, lengths, cfg)
         assert not result.livelocked
         for r in result.consumed:
@@ -315,7 +418,6 @@ class TestPartialRolloutPublish:
             max_staleness=2,
             n_versions=4,
             n_instances=1,
-            partial_rollout=True,
             sync_time=0.25,
             workload=GroupedWorkload.from_lengths([512], uniform(80, 200, 400, seed=0)),
         )
@@ -367,7 +469,6 @@ class TestPartialRolloutPublish:
             max_staleness=2,
             n_versions=4,
             n_instances=1,
-            partial_rollout=True,
             sync_time=0.25,
             workload=GroupedWorkload.from_lengths([512], uniform(80, 200, 400, seed=0)),
         )
@@ -403,7 +504,6 @@ class TestPartialRolloutPublish:
             max_staleness=2,
             n_versions=4,
             n_instances=1,
-            partial_rollout=True,
             sync_time=0.25,
             workload=GroupedWorkload.from_lengths([512], uniform(80, 200, 400, seed=0)),
         )

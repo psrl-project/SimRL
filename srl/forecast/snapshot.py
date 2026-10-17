@@ -80,7 +80,7 @@ class Arrival:
 class Interrupt:
     """A scheduled weight publish: every resident is aborted and the instance idles until resume.
 
-    Mirrors `Simulator._publish_weights` under `partial_rollout`: at `time` every running and
+    Mirrors `Simulator._publish_weights` under the `abort` pause mode: at `time` every running and
     waiting request, and any arrival already admitted, is aborted in place (tokens kept, KV and the
     prefix cache dropped). The instance then does nothing until `time + resume_delay`, when the
     aborted set is queued again with `prefilled` reset to 0.

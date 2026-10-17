@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from ..component.rollout.engine import Request
-from .base import CompleteAction, SimState, StalenessPolicy
+from .base import Cancel, CancelAction, CompleteAction, SimState, StalenessPolicy
 
 
 @dataclass
@@ -23,7 +23,8 @@ class RollPolicy(StalenessPolicy):
 
     Same token bucket as AReaL for admission, but enforces the bound via:
     1. Consumption floor (min_step) prevents old batches.
-    2. Per-step GC purges stragglers whose group aged past the window.
+    2. GC at weight publication purges groups that aged past the window, as ROLL's `gc()`
+       does before the model update. Each purged group is replaced by a fresh prompt.
     """
 
     name = "roll"
@@ -122,28 +123,24 @@ class RollPolicy(StalenessPolicy):
         """ROLL replaces groups permanently removed by its expiry rules."""
         return len(groups)
 
-    def expire(self, st: SimState, expected_train_version: int) -> list[Request]:
-        max_gc_step = (expected_train_version - 1) - st.max_staleness
+    def on_publish(self, new_version: int, st: SimState) -> list[Cancel]:
+        max_gc_step = (new_version - 1) - st.max_staleness
         if max_gc_step < 0:
             return []
-        by_group: dict[int, list[Request]] = {}
-        for req in (*st.inflight, *st.ready):
-            by_group.setdefault(req.group_id, []).append(req)
-        victims = []
+        cancels: list[Cancel] = []
         for step in [s for s in self.cohorts if s <= max_gc_step]:
             cohort = self.cohorts.pop(step)
-            # Finished groups that aged out of the consume window are dropped,
-            # not consumed. This can happen when they complete after the last
-            # take_batch that was still allowed to pull from this cohort.
+            # Finished groups that aged out of the consume window are dropped, not consumed.
             while cohort.finished:
-                victims.extend(cohort.finished.popleft())
+                group = cohort.finished.popleft()
+                cancels.append(Cancel(group[0].group_id, CancelAction.REPLACE))
                 self.completed_prompts -= 1
                 self.gc_dropped += 1
             for group_id in cohort.running:
-                victims.extend(by_group.get(group_id, ()))
+                cancels.append(Cancel(group_id, CancelAction.REPLACE))
                 self.running_prompts -= 1
                 self.gc_dropped += 1
-        return victims
+        return cancels
 
     def check_invariants(self, st: SimState) -> None:
         floor = st.train_version - st.max_staleness

@@ -136,14 +136,15 @@ The consumption floor (`min_step = train_version - max_staleness`) prevents batc
 from being built out of requests dispatched before the window. At each call to
 `peek_batch`, only groups whose step is within `[min_step, train_version]` are eligible.
 
-Enforcement is *proactive* rather than reactive: the `expire` method, called when a
-training batch is committed, garbage-collects any group whose step is below
-`expected_train_version - max_staleness`. In-flight requests in a GC'd group are
-discarded immediately, before training finishes. This keeps the window tight across
-training steps and avoids allowing a burst of completions from an old group to
-invalidate the staleness contract.
+Enforcement is *proactive* rather than reactive: the `on_publish` hook, called when a
+training step publishes, garbage-collects any group whose step is below
+`new_version - 1 - max_staleness`, the point where ROLL runs `gc()` before the model
+update. Each GC'd group is cancelled with `REPLACE`, so a fresh prompt takes its place.
+Groups that expire keep generating through the training step and are discarded at
+publish. This keeps the window tight across training steps and avoids allowing a burst of
+completions from an old group to invalidate the staleness contract.
 
-The `gc_dropped` counter records how many requests were evicted by GC, which is useful
+The `gc_dropped` counter records how many groups were evicted by GC, which is useful
 for diagnosing a configuration where the staleness window is too tight for the workload.
 
 ### Configurable knobs
@@ -175,9 +176,11 @@ dispatch more requests than one batch requires, so it can select the best `batch
 responses from a slightly larger pool, matching the behaviour of real slime deployments
 that intentionally generate redundant samples.
 
-When `partial_rollout=False` (the default), any in-flight requests at weight-push time
-are evicted rather than resumed. When `partial_rollout=True`, interrupted requests are
-retained, and the staleness invariant is then the caller's responsibility.
+The `pause_mode` constructor argument decides what a weight push does to in-flight
+requests. `abort` (the default) interrupts and re-enqueues them, so their KV is lost and
+they re-prefill. `in_place` leaves them running under the new weights with their KV
+retained. Between pushes `rollout_version_after_train` returns the old version, so no pause
+happens.
 
 The `rollout_version_after_train` hook drives weight-push synchronisation: the rollout
 engine's visible weight version only advances every `update_weights_interval` steps,
@@ -283,7 +286,9 @@ The remaining hooks have do-nothing defaults and can be overridden selectively:
 | `will_sync_after_train` | Whether this step ends with a weight push (default: always) |
 | `on_interrupt` | When in-flight requests are interrupted by a weight push |
 | `on_discard` | When requests are permanently removed |
-| `expire` | Called before training commits, to evict requests that would exceed staleness |
+| `on_publish` | At weight publication, before the weights reach the engines. Returns `Cancel` entries for live groups the new version makes worthless |
+| `can_sample` | Wait gate checked before every batch request. False keeps generating (default: always open) |
+| `pause_mode` | What a publication does to in-flight work: `abort` (re-enqueue, KV lost, re-prefill) or `in_place` (keep running with KV retained) |
 | `rollout_version_after_train` | What version the rollout engine should serve after publish |
 | `check_invariants` | Assert the policy's own contract (called in debug mode) |
 

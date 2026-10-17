@@ -5,9 +5,18 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Literal, TypeAlias
 
 from ..component.rollout.engine import Request
 from .ledger import GroupView
+
+
+PauseMode: TypeAlias = Literal["abort", "in_place"]
+"""What a weight publication does to in-flight generation.
+
+`abort` interrupts every request and re-enqueues it, so its KV is lost and it re-prefills.
+`in_place` leaves requests running, so they continue under the new weights with their KV retained.
+"""
 
 
 class CompleteAction(Enum):
@@ -146,6 +155,10 @@ class StalenessPolicy(ABC):
         """Consume and return the next training batch."""
         return self.peek_batch(st)
 
+    def can_sample(self, st: SimState) -> bool:
+        """Whether a training batch may be taken now. False keeps generation running."""
+        return True
+
     def on_batch_unavailable(self, st: SimState) -> None:
         """Called when no training batch is currently available."""
 
@@ -159,6 +172,10 @@ class StalenessPolicy(ABC):
 
     def on_train_version_advance(self, train_version: int, st: SimState) -> None:
         """Called after training finishes and `train_version` is published."""
+
+    def pause_mode(self, st: SimState) -> PauseMode:
+        """What a weight publication does to in-flight generation."""
+        return "abort"
 
     def will_sync_after_train(self, st: SimState) -> bool:
         """Whether the current training step ends with a rollout weight sync."""
@@ -177,15 +194,6 @@ class StalenessPolicy(ABC):
     ) -> int:
         """Return dataset groups to stage after permanent policy drops."""
         return 0
-
-    def expire(self, st: SimState, expected_train_version: int) -> list[Request]:
-        """Drop requests that would violate staleness at `expected_train_version`.
-
-        Called when a batch is committed, before training actually finishes.
-        `st.train_version` is still the last published version, `expected_train_version`
-        is the version this batch will produce.
-        """
-        return []
 
     def rollout_version_after_train(self, st: SimState) -> int:
         """The weight version the rollout engine should serve after publish."""

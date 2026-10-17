@@ -80,6 +80,7 @@ def run(
     """Run one simulation and write its telemetry under `out`."""
     cfg_kwargs = dict(cfg_kwargs)
     group_size = cfg_kwargs.pop("group_size", 1)
+    pause_mode = cfg_kwargs.pop("pause_mode", "abort")
     if group_size == 1:
         workload = GroupedWorkload.from_lengths(prompts, lengths)
     else:
@@ -98,6 +99,7 @@ def run(
     # `SimConfig` checks `group_size` against the workload at construction.
     cfg = SimConfig(group_size=group_size, workload=workload, **cfg_kwargs)
     policy = build(policy_name)
+    policy.pause_mode = lambda st: pause_mode
     store = JsonlStore(out, overwrite=True, exclude=exclude)
     sim = Simulator(
         rollout_cost=build_cost(cost_name),
@@ -161,7 +163,7 @@ CASES = {
                              max_waiting_after_preempt=1),
     "router_cap": dict(kv_blocks=2000, token_budget=512, n_instances=2,
                        max_concurrent_seqs_per_instance=2),
-    "no_partial": dict(kv_blocks=300, token_budget=256, partial_rollout=False),
+    "no_partial": dict(kv_blocks=300, token_budget=256, pause_mode="in_place"),
     # Paths the default configuration never reaches.
     "groups": dict(kv_blocks=300, token_budget=256, n_instances=2, group_size=4),
     "groups_sticky": dict(kv_blocks=300, token_budget=256, n_instances=2, group_size=4,

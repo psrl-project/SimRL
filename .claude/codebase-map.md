@@ -273,7 +273,9 @@ The unit of work every component handles. Import it from the engine package:
 - `on_complete(req, st) -> CompleteAction`
 - `select_batch(st) -> list[Request] | None`
 - `on_version_advance(version, st) -> None`
-- `expire(st) -> list[Request]`
+- `on_publish(new_version, st) -> list[Cancel]`
+- `can_sample(st) -> bool`
+- `pause_mode(st) -> 'abort' | 'in_place'`
 - `engine_version_after_train(st) -> int`
 
 ### Simulator (srl/simulator/simulator.py)

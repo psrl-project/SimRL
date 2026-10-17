@@ -37,9 +37,6 @@ rollout:
   # Number of rollout engine instances.
   n_instances: 1
 
-  # Abort in-flight rollouts when a new weight version is published.
-  partial_rollout: true
-
   # Per-step token budget of one instance (max tokens per engine step).
   token_budget: 8192
 

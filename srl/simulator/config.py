@@ -111,7 +111,6 @@ class SimConfig:
     activation_recompute: str = "none"
     training_optimizer: str = "adam"
     training_gpu_memory_bytes: int | None = None
-    partial_rollout: bool = True
     token_budget: int = 8192
     kv_blocks: int = 100_000
     block_size: int = 16

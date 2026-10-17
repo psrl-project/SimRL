@@ -553,7 +553,6 @@ def run_simulate(cfg: DictConfig) -> None:
         activation_recompute=training.get("activation_recompute", "none"),
         training_optimizer=training.get("optimizer", "adam"),
         training_gpu_memory_bytes=None if memory_mib is None else mib_to_bytes(int(memory_mib)),
-        partial_rollout=rollout.partial_rollout,
         token_budget=rollout.token_budget,
         kv_blocks=resolve_kv_blocks(rollout, cfg.job, cfg.rollout_cost),
         block_size=rollout.block_size,

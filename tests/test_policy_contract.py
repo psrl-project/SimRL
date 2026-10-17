@@ -278,3 +278,152 @@ def test_cancel_of_a_non_live_group_is_a_no_op() -> None:
 
     assert len(sim.dropped) == dropped, "an already dropped group must not be dropped twice."
     assert sim._ingress_group_credits == 0, "a non-live group must not grant a credit."
+
+
+class _WaitForDrain(PSRLPolicy):
+    """Hold sampling until every admitted group has finished."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.denials = 0
+        self.leaked_takes = 0
+
+    def can_sample(self, st):
+        if st.inflight:
+            self.denials += 1
+            return False
+        return True
+
+    def take_batch(self, st):
+        batch = super().take_batch(st)
+        if batch is not None and st.inflight:
+            self.leaked_takes += 1
+        return batch
+
+
+def test_can_sample_delays_a_batch_but_every_version_completes() -> None:
+    policy = _WaitForDrain()
+    gated = _sim(policy, batch_size=2, n_versions=3)
+    ungated = _sim(PSRLPolicy(), batch_size=2, n_versions=3)
+
+    gated_result = gated.run()
+    ungated_result = ungated.run()
+
+    assert policy.denials > 0, "the gate must have been consulted and closed."
+    assert gated_result.versions_done == 3
+    assert not gated_result.livelocked
+    assert gated_result.train_timestamps[0][0] > ungated_result.train_timestamps[0][0], (
+        "a closed gate must delay the first batch."
+    )
+
+
+def test_can_sample_gates_the_take_site() -> None:
+    policy = _WaitForDrain()
+    _sim(policy, batch_size=2, n_versions=3).run()
+    assert policy.leaked_takes == 0, "take_batch was reached while the gate was closed."
+
+
+def test_can_sample_gates_the_engine_stop_site() -> None:
+    sim = _sim(_WaitForDrain(), batch_size=2, n_versions=3)
+    stops_with_gate_closed = 0
+    original = sim._run_engine
+
+    def spy(deadline=None, stop_on_batch=False):
+        nonlocal stops_with_gate_closed
+        original(deadline=deadline, stop_on_batch=stop_on_batch)
+        if stop_on_batch and sim.inflight:
+            stops_with_gate_closed += 1
+
+    sim._run_engine = spy
+    sim.run()
+    assert stops_with_gate_closed == 0, "the engine stopped for a batch the gate had not released."
+
+
+def test_a_gate_that_never_opens_is_reported_as_livelock() -> None:
+    class Never(PSRLPolicy):
+        def can_sample(self, st):
+            return False
+
+    result = _sim(Never(), batch_size=2, n_versions=2).run()
+    assert result.livelocked
+    assert result.versions_done == 0
+
+
+def test_default_policy_always_samples() -> None:
+    assert PSRLPolicy().can_sample(SimState()) is True
+
+
+def test_expire_is_not_part_of_the_contract() -> None:
+    assert not hasattr(StalenessPolicy, "expire")
+
+
+def test_pause_mode_comes_from_the_policy() -> None:
+    assert PSRLPolicy().pause_mode(SimState()) == "abort"
+
+
+class _InPlace(PSRLPolicy):
+    def pause_mode(self, st):
+        return "in_place"
+
+
+def _long_run(policy) -> Simulator:
+    sim = Simulator(
+        rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+        training_cost=TrainingCostModel(FixedTrainingLatency(1.0), FixedTrainingMemory(0)),
+        policy=policy,
+        cfg=SimConfig(
+            batch_size=4,
+            max_staleness=2,
+            n_versions=4,
+            sync_time=0.25,
+            workload=GroupedWorkload.from_lengths([512], uniform(80, 200, 400, seed=0)),
+        ),
+    )
+    sim.run()
+    return sim
+
+
+def test_abort_mode_loses_the_kv_and_reprefills() -> None:
+    sim = _long_run(PSRLPolicy())
+    requests = [*sim.consumed, *sim.inflight]
+    assert any(req.num_aborts > 0 for req in requests)
+    assert any(req.reprefill_tokens > 0 for req in requests)
+
+
+def test_in_place_mode_keeps_the_kv_and_switches_the_weight_version() -> None:
+    sim = _long_run(_InPlace())
+    requests = [*sim.consumed, *sim.inflight]
+    assert all(req.num_aborts == 0 for req in requests), "in_place must not abort anything."
+    assert all(req.reprefill_tokens == 0 for req in requests), "in_place must retain the KV."
+    assert any(len(req.segments) > 1 for req in sim.consumed), (
+        "tokens generated after a publish must be tagged with the new version."
+    )
+
+
+def test_unsupported_pause_mode_is_rejected() -> None:
+    class Blocking(PSRLPolicy):
+        def pause_mode(self, st):
+            return "block"
+
+    with pytest.raises(ValueError, match="pause mode"):
+        _sim(Blocking(), batch_size=2, n_versions=3).run()
+
+
+def test_slime_pauses_only_at_a_push() -> None:
+    from srl.policy.slime import SlimePolicy
+
+    sim = _sim(SlimePolicy(update_weights_interval=2), batch_size=2, n_versions=6)
+    pauses: list[int] = []
+    for inst in sim.instances:
+        original = inst.abort_all
+
+        def spy(requeue=True, _original=original):
+            pauses.append(sim.train_version)
+            return _original(requeue=requeue)
+
+        inst.abort_all = spy
+    sim.run()
+    assert pauses, "the push steps must pause in-flight generation."
+    assert all(version % 2 == 0 for version in pauses), (
+        f"slime paused between pushes at versions {pauses}."
+    )

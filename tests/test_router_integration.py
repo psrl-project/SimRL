@@ -23,6 +23,13 @@ from srl.workload.grouped import GroupedWorkload
 from srl.workload.trace import RequestGroup
 
 
+class _InPlacePolicy(PSRLPolicy):
+    """Publishes without aborting, to isolate preemption from weight-update aborts."""
+
+    def pause_mode(self, st):
+        return "in_place"
+
+
 def _sim(cfg: SimConfig, lengths=None, policy=None) -> Simulator:
     cost = UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7)
     if lengths is not None:
@@ -315,9 +322,8 @@ class TestPreemptOverflowInAFullRun:
             n_instances=2,
             kv_blocks=700,
             block_size=16,
-            partial_rollout=False,  # isolate preemption from weight-update aborts
         )
-        sim = _sim(cfg, uniform(100, 400, 900, seed=17))
+        sim = _sim(cfg, uniform(100, 400, 900, seed=17), policy=_InPlacePolicy())
         sim.run()
         assert sum(inst.n_preemptions for inst in sim.instances) > 0
         assert sim.router.n_reroutes == 0

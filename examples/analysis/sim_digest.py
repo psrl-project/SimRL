@@ -114,11 +114,6 @@ CONFIGS: dict[str, Config] = {
         staleness=1,
         extra=_WEIGHT_LOAD,
     ),
-    "psrl_s1_nopartial_wload": Config(
-        "psrl, staleness 1, no partial rollout, weight load charge",
-        staleness=1,
-        extra=("rollout.partial_rollout=false", *_WEIGHT_LOAD),
-    ),
     "psrl_s2_reclaim": Config(
         "psrl, staleness 2, preempted requests handed back to the router",
         extra=("rollout.router.max_waiting_after_preempt=4",),

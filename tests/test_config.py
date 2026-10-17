@@ -60,7 +60,6 @@ class TestStructuredConfigs:
         assert cfg.job.max_prompt_length is None
         assert cfg.job.max_output_length is None
         assert cfg.rollout.n_instances == 1
-        assert cfg.rollout.partial_rollout is True
         assert cfg.rollout.admission_control.reject_if_kv_full is False
         assert cfg.rollout.admission_control.reject_if_waiting is False
         assert cfg.rollout.admission_control.reject_if_running_full is False

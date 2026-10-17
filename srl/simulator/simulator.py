@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import heapq
 import math
+from typing import get_args
 
 from tqdm import tqdm
 
@@ -26,7 +27,7 @@ from ..cost.training import (
     TrainingParallelism,
     TrainingWorkload,
 )
-from ..policy.base import Cancel, CancelAction, CompleteAction, SimState, StalenessPolicy
+from ..policy.base import Cancel, CancelAction, CompleteAction, PauseMode, SimState, StalenessPolicy
 from ..policy.ledger import GroupLedger
 from ..telemetry.store import JsonlStore
 from ..telemetry.writer import SimTelemetry
@@ -348,7 +349,7 @@ class Simulator:
             while self.train_version < self.cfg.n_versions:
                 self._stage()
 
-                batch = self.policy.take_batch(self._state())
+                batch = self._next_batch(consume=True)
                 if batch is None:
                     self.policy.on_batch_unavailable(self._state())
                     if not self.inflight and self._stage() == 0:
@@ -377,6 +378,16 @@ class Simulator:
             return self._result()
         finally:
             pbar.close()
+
+    def _next_batch(self, consume: bool) -> list[Request] | None:
+        """Return the next training batch, or None while the policy's sampling gate is closed.
+
+        The only place a batch is requested, so `run` and the engine's stop check cannot disagree.
+        """
+        st = self._state()
+        if not self.policy.can_sample(st):
+            return None
+        return self.policy.take_batch(st) if consume else self.policy.peek_batch(st)
 
     def _collect(self, done: list[Request]) -> None:
         """Retire finished responses, releasing a group once it is whole."""
@@ -724,7 +735,7 @@ class Simulator:
                 self._collect(event.completed)
 
                 if stop_on_batch:
-                    if self.policy.peek_batch(self._state()) is not None:
+                    if self._next_batch(consume=False) is not None:
                         if not cross_instance:
                             self._undo_and_align(events, queue, t_event)
                         self.telemetry.sync_all(self.instances)
@@ -788,11 +799,12 @@ class Simulator:
         self.telemetry.sync_all(self.instances)
 
     def _publish_weights(self) -> None:
-        """Publish the finished training step, then interrupt and refill.
+        """Publish the finished training step, then pause generation as the policy directs.
 
-        `train_version` advances here, after recompute/train/sync actually
-        finished. Rollout then loads the new weights, aborts in-flight partials,
-        rebases unstarted staged groups, and opens one new dataset batch.
+        `train_version` advances here, after recompute/train/sync actually finished. The
+        policy's publish hook runs first, then rollout loads the new weights, interrupts
+        in-flight work if the policy's pause mode is `abort`, rebases unstarted staged
+        groups, and opens one new dataset batch.
         """
         previous_rollout_version = self.rollout_version
         self.train_version += 1
@@ -801,13 +813,19 @@ class Simulator:
         self.policy.on_train_version_advance(self.train_version, self._state())
         self.rollout_version = self.policy.rollout_version_after_train(self._state())
         weights_changed = self.rollout_version != previous_rollout_version
+        pause_mode = self.policy.pause_mode(self._state())
+        if pause_mode not in get_args(PauseMode):
+            raise ValueError(
+                f"Unsupported pause mode {pause_mode!r} from policy {self.policy.name!r}, "
+                f"expected one of {get_args(PauseMode)!r}."
+            )
         if weights_changed and self._staged_groups:
             staged = [req for group in self._staged_groups.values() for req in group]
             for req in staged:
                 assert req.generated == 0
                 req.v_traj = self.rollout_version
             self.router.rekey(staged)
-        if weights_changed and self.cfg.partial_rollout and self.inflight:
+        if weights_changed and pause_mode == "abort" and self.inflight:
             aborted: list[Request] = []
             for inst in self.instances:
                 aborted.extend(inst.abort_all(requeue=False))
@@ -869,14 +887,13 @@ class Simulator:
         return training_estimate, training_workload, sync_time, recompute_time
 
     def _train(self, batch: list[Request]) -> None:
-        """Consume `batch`, expire against the expected version, train, then publish.
+        """Consume `batch`, train while rollout keeps generating, then publish.
 
-        Committing this batch means it will become `train_version + 1`. Stale
-        in-flight work is expired against that expected version immediately,
-        without publishing yet. Rollout keeps the previous `rollout_version`
-        until train+sync finish.
+        Rollout keeps the previous `rollout_version` until train+sync finish, and the
+        policy decides at publish which live groups the new version makes worthless.
         """
         train_start = self.t
+        dropped_before = len(self.dropped)
         consumed_ids = {req.group_id for req in batch}
         self.ready_groups = [
             group for group in self.ready_groups if group[0].group_id not in consumed_ids
@@ -895,12 +912,6 @@ class Simulator:
             self.consumed.append(req)
             self.n_consumed += 1
             self.telemetry.write_request("consume", self.t, req)
-
-        expected_train_version = self.train_version + 1
-        expired = self.policy.expire(self._state(), expected_train_version)
-        if expired:
-            self._discard(expired)
-            self.telemetry.emit_instance_all(self.instances)
 
         sequence_lengths = tuple(self._training_sequence_length(req) for req in batch)
         total_tokens = sum(sequence_lengths)
@@ -948,7 +959,7 @@ class Simulator:
             n_inflight=len(self.inflight),
             n_ready=len(self.ready),
             n_pending=sum(len(group) for group in self.pending.values()),
-            n_dropped_step=len(expired or []),
+            n_dropped_step=len(self.dropped) - dropped_before,
             extrapolation_notes=training_estimate.diagnostics.get("extrapolation_notes"),
         )
         self.policy.check_invariants(self._state())

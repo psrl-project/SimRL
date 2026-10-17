@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from typing import get_args
+
 from ..component.rollout.engine import Request
-from .base import CompleteAction, SimState, StalenessPolicy
+from .base import CompleteAction, PauseMode, SimState, StalenessPolicy
 
 
 class SlimePolicy(StalenessPolicy):
@@ -21,14 +23,15 @@ class SlimePolicy(StalenessPolicy):
         self,
         update_weights_interval: int = 1,
         over_sampling_ratio: float = 1.0,
-        partial_rollout: bool = False,
+        pause_mode: PauseMode = "abort",
         max_inflight: int | None = None,
     ):
         assert update_weights_interval >= 1, "update_weights_interval must be >= 1."
         assert over_sampling_ratio >= 1.0, "over_sampling_ratio must be >= 1.0."
+        assert pause_mode in get_args(PauseMode), f"Unsupported pause_mode {pause_mode!r}."
         self.interval = update_weights_interval
         self.over_sampling_ratio = over_sampling_ratio
-        self.partial_rollout = partial_rollout
+        self.pause = pause_mode
         self.max_inflight = max_inflight
 
         self.remaining = 0
@@ -85,14 +88,11 @@ class SlimePolicy(StalenessPolicy):
     def will_sync_after_train(self, st: SimState) -> bool:
         return self._steps_since_push + 1 >= self.interval
 
-    def expire(self, st: SimState, expected_train_version: int) -> list[Request]:
-        if self.partial_rollout:
-            return []
-        return list(st.inflight)
+    def pause_mode(self, st: SimState) -> PauseMode:
+        return self.pause
 
     def check_invariants(self, st: SimState) -> None:
-        if not self.partial_rollout:
-            assert st.train_version - self._rollout_version <= self.interval, (
-                f"Version gap {st.train_version - self._rollout_version} exceeds "
-                f"interval {self.interval}."
-            )
+        assert st.train_version - self._rollout_version <= self.interval, (
+            f"Version gap {st.train_version - self._rollout_version} exceeds "
+            f"interval {self.interval}."
+        )

@@ -326,7 +326,6 @@ class RolloutConfig:
     """Rollout engine knobs."""
 
     n_instances: int = 1
-    partial_rollout: bool = True
     token_budget: int = 8192
     kv_blocks: int = 100_000
     block_size: int = 16
