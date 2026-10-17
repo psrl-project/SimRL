@@ -387,7 +387,7 @@ class Simulator:
             # complete_time is already set by _retire via t_local. Do not overwrite.
             self.telemetry.write_request("complete", self.t, req)
             self._observe_completion(req)
-            self._ledger.complete(req.rid, self.t)
+            self._ledger.complete(req)
             siblings = self.pending.setdefault(req.group_id, [])
             siblings.append(req)
             if len(siblings) < self.cfg.group_size:

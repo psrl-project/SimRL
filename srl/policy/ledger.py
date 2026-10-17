@@ -14,7 +14,7 @@ class GroupView:
     group_id: int
     admit_version: int
     start_version: int
-    """Earliest weight version that produced any token, or `admit_version` before generation."""
+    """Earliest weight version among completed members, or `admit_version` before any completes."""
     status: str
     """`running | partial | done`."""
     admit_time: float
@@ -30,6 +30,8 @@ class _Entry:
     members: list[Request]
     admit_version: int
     admit_time: float
+    start_version: int | None = None
+    """`None` until a member completes, then the minimum `v_min` over completed members."""
     status: str = "running"
     complete_time: float | None = None
     completed: set[int] = field(default_factory=set)
@@ -40,7 +42,6 @@ class GroupLedger:
 
     def __init__(self) -> None:
         self._groups: dict[int, _Entry] = {}
-        self._rid_to_group: dict[int, int] = {}
 
     def begin(self, group: list[Request], version: int, now: float) -> None:
         group_id = group[0].group_id
@@ -49,32 +50,30 @@ class GroupLedger:
             admit_version=version,
             admit_time=now,
         )
-        for req in group:
-            self._rid_to_group[req.rid] = group_id
 
-    def complete(self, rid: int, now: float) -> None:
-        """Record that request `rid` finished, completing its group once every member has."""
-        group_id = self._rid_to_group.get(rid)
-        if group_id is None:
-            return
-        entry = self._groups[group_id]
-        if entry.status == "done":
+    def complete(self, req: Request) -> None:
+        """Record that `req` finished, completing its group once every member has.
+
+        Only committed completions reach here, so `start_version` updates from
+        committed tokens rather than from segments a speculative event may undo.
+        """
+        entry = self._groups.get(req.group_id)
+        if entry is None or entry.status == "done":
             return
         entry.status = "partial"
-        entry.completed.add(rid)
-        if all(req.rid in entry.completed for req in entry.members):
+        entry.completed.add(req.rid)
+        if entry.start_version is None:
+            entry.start_version = req.v_min
+        else:
+            entry.start_version = min(entry.start_version, req.v_min)
+        if len(entry.completed) == len(entry.members):
+            missing = [member.rid for member in entry.members if member.complete_time is None]
+            assert not missing, f"Group {req.group_id} completed without times for {missing!r}."
             entry.status = "done"
-            entry.complete_time = max(
-                (req.complete_time for req in entry.members if req.complete_time is not None),
-                default=now,
-            )
+            entry.complete_time = max(member.complete_time for member in entry.members)
 
     def drop(self, group_id: int) -> None:
-        entry = self._groups.pop(group_id, None)
-        if entry is None:
-            return
-        for req in entry.members:
-            self._rid_to_group.pop(req.rid, None)
+        self._groups.pop(group_id, None)
 
     def peek(self, group_id: int) -> GroupView | None:
         entry = self._groups.get(group_id)
@@ -83,10 +82,7 @@ class GroupLedger:
         return GroupView(
             group_id=group_id,
             admit_version=entry.admit_version,
-            start_version=min(
-                (req.v_min for req in entry.members),
-                default=entry.admit_version,
-            ),
+            start_version=(entry.admit_version if entry.start_version is None else entry.start_version),
             status=entry.status,
             admit_time=entry.admit_time,
             complete_time=entry.complete_time,

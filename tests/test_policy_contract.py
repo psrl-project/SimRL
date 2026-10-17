@@ -1,7 +1,7 @@
 from srl.component.rollout.engine import Request
 from srl.cost.rollout import UnifiedRoofline
 from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
-from srl.policy.base import CompleteAction
+from srl.policy.base import CompleteAction, StalenessPolicy
 from srl.policy.ledger import GroupLedger
 from srl.policy.psrl import PSRLPolicy
 from srl.simulator import SimConfig, Simulator
@@ -26,15 +26,22 @@ def _sim(policy, batch_size: int = 2, n_versions: int = 4) -> Simulator:
     )
 
 
-def _req(rid: int, group_id: int = 0, v: int = 3) -> Request:
-    return Request(rid=rid, prompt_len=10, target_len=20, v_traj=v, group_id=group_id)
+def _req(rid: int, group_id: int = 0, v: int = 3, complete_time: float | None = None) -> Request:
+    return Request(
+        rid=rid,
+        prompt_len=10,
+        target_len=20,
+        v_traj=v,
+        group_id=group_id,
+        complete_time=complete_time,
+    )
 
 
 def test_ledger_records_admit_and_start_versions() -> None:
     ledger = GroupLedger()
-    group = [_req(0), _req(1)]
+    group = [_req(0, complete_time=4.0), _req(1)]
     ledger.begin(group, version=3, now=1.5)
-    ledger.complete(0, now=4.0)
+    ledger.complete(group[0])
 
     view = ledger.peek(0)
     assert view is not None
@@ -47,29 +54,46 @@ def test_ledger_records_admit_and_start_versions() -> None:
 
 def test_ledger_completes_only_after_the_last_member() -> None:
     ledger = GroupLedger()
-    group = [_req(0), _req(1)]
+    group = [_req(0, complete_time=1.0), _req(1, complete_time=1.75)]
     ledger.begin(group, version=3, now=0.0)
     assert ledger.peek(0).start_version == 3
 
     group[0].add_tokens(4, 5)
-    ledger.complete(0, now=1.0)
+    ledger.complete(group[0])
     assert ledger.peek(0).status == "partial"
+    assert ledger.peek(0).start_version == 4
 
     group[1].add_tokens(4, 5)
-    group[1].complete_time = 1.75
-    ledger.complete(1, now=2.0)
+    ledger.complete(group[1])
     assert ledger.peek(0).status == "done"
     assert ledger.peek(0).complete_time == 1.75
     assert ledger.peek(0).start_version == 4
 
 
+def test_ledger_ignores_uncommitted_segments() -> None:
+    ledger = GroupLedger()
+    group = [_req(0, v=1), _req(1, v=1)]
+    ledger.begin(group, version=1, now=0.0)
+    assert ledger.peek(0).start_version == 1
+
+    # A speculative event may add segments that a later undo removes.
+    group[0].add_tokens(5, 10)
+    assert ledger.peek(0).start_version == 1
+
+    group[0].segments.clear()
+    group[0].generated = 0
+    assert ledger.peek(0).start_version == 1
+
+
 def test_ledger_does_not_demote_a_completed_group() -> None:
     ledger = GroupLedger()
-    ledger.begin([_req(0)], version=1, now=0.0)
-    ledger.complete(0, now=2.0)
+    req = _req(0, complete_time=2.0)
+    ledger.begin([req], version=1, now=0.0)
+    ledger.complete(req)
     assert ledger.peek(0).status == "done"
+    assert ledger.peek(0).complete_time == 2.0
 
-    ledger.complete(0, now=9.0)
+    ledger.complete(req)
     assert ledger.peek(0).status == "done"
     assert ledger.peek(0).complete_time == 2.0
 
@@ -138,3 +162,43 @@ def test_simulator_prunes_dropped_groups() -> None:
     assert dropped, "the probe must drop one group."
     live = {view.group_id for view in sim._state().groups}
     assert not (live & dropped), "dropped groups must not remain in SimState.groups."
+
+
+class _KeepPolicy(StalenessPolicy):
+    """Admit freely and never select a batch."""
+
+    name = "keep"
+
+    def admit_quota(self, st):
+        return 10**9
+
+    def peek_batch(self, st):
+        return None
+
+
+def test_discard_of_a_done_group_removes_the_ledger_entry() -> None:
+    sim = _sim(_KeepPolicy(), batch_size=1, n_versions=1)
+    req = Request(rid=0, prompt_len=10, target_len=20, v_traj=0, complete_time=1.0)
+    sim._ingress_group_credits = 0
+    sim._ledger.begin([req], version=0, now=0.0)
+    sim._ledger.complete(req)
+    assert sim._ledger.peek(0).status == "done"
+
+    sim._discard([req])
+    assert sim._ledger.peek(0) is None
+
+
+def test_recollecting_a_committed_completion_keeps_one_entry() -> None:
+    sim = _sim(_KeepPolicy(), batch_size=1, n_versions=1)
+    req = Request(rid=0, prompt_len=10, target_len=20, v_traj=0, complete_time=1.0)
+    sim._ingress_group_credits = 0
+    sim._ledger.begin([req], version=0, now=0.0)
+
+    sim._collect([req])
+    sim._collect([req])
+
+    views = [view for view in sim._state().groups if view.group_id == 0]
+    assert len(views) == 1, "a repeated collection must not duplicate the group."
+    assert views[0].status == "done"
+    assert views[0].complete_time == 1.0
+    assert views[0].members == (0,)
