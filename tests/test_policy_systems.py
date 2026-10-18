@@ -425,4 +425,4 @@ class TestDressageIntegration:
 
         assert not result.livelocked
         assert result.versions_done == 8
-        assert policy._active <= policy.max_active_groups
+        assert 0 <= policy._active <= policy.max_active_groups
