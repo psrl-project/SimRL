@@ -161,6 +161,10 @@ class TestSkyRLWarnOnly:
 
         assert violations == 1, "only the group past the threshold is counted."
 
+    def test_zero_threshold_is_fully_synchronous_not_rejected(self) -> None:
+        policy = SkyRLPolicy(max_staleness_steps=0)
+        assert policy.admit_quota(SimState(batch_size=4, train_version=0)) == 4 * 1
+
     def test_skyrl_never_cancels(self) -> None:
         policy = SkyRLPolicy(max_staleness_steps=1)
         ancient = GroupView(0, admit_version=0, start_version=0, status="done", admit_time=0.0, complete_time=0.0, members=(0,))

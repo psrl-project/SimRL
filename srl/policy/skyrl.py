@@ -24,7 +24,7 @@ class SkyRLPolicy(StalenessPolicy):
         pause_mode: PauseMode = "in_place",
         max_inflight: int | None = None,
     ):
-        assert max_staleness_steps > 0, "max_staleness_steps must be > 0."
+        assert max_staleness_steps >= 0, "max_staleness_steps must be >= 0."
         self._quota = ProgressQuota(ofp=max_staleness_steps)
         self._warn = WarnOnly(threshold=max_staleness_steps)
         self.pause = pause_mode
