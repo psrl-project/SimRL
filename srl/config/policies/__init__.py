@@ -12,6 +12,7 @@ from .psrl import PsrlPolicyConfig
 from .roll import RollPolicyConfig
 from .skyrl import SkyRLPolicyConfig
 from .slime import SlimePolicyConfig
+from .trl import TRLPolicyConfig
 from .verl import VerlPolicyConfig
 from .verl_v1 import VerlV1PolicyConfig
 
@@ -26,6 +27,7 @@ PRESETS: dict[str, type] = {
     "openrlhf": OpenRLHFPolicyConfig,
     "dressage": DressagePolicyConfig,
     "nemo_rl": NeMoRLPolicyConfig,
+    "trl": TRLPolicyConfig,
 }
 
 
@@ -53,6 +55,7 @@ __all__ = [
     "RollPolicyConfig",
     "SkyRLPolicyConfig",
     "SlimePolicyConfig",
+    "TRLPolicyConfig",
     "VerlPolicyConfig",
     "VerlV1PolicyConfig",
     "preset_config",

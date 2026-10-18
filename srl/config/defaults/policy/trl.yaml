@@ -1,0 +1,13 @@
+# Staleness policy name.
+name: trl
+
+# Generation-version window. A group survives at train_version V iff
+# V - admit_version <= max_staleness.
+max_staleness: 4
+
+# Cap on tasks admitted but not yet consumed by training. -1 resolves to
+# max(max_staleness, 1) * batch_size once batch_size is known.
+max_inflight_tasks: -1
+
+# What a weight push does to in-flight generation.
+pause_mode: in_place

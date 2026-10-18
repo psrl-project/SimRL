@@ -77,6 +77,29 @@ class WarnOnly:
 
 
 @dataclass
+class VersionWindow:
+    """Sweep completed groups once the live version outruns admission by more than threshold.
+
+    Keys on `admit_version`: TRL calls this `model_version`, stamped at group
+    creation, and prime-rl indexes its horizon by the same dispatch step.
+    Restricted to `status == "done"`, so a system with no runtime-cancel
+    primitive of its own (TRL) never touches generation still in flight.
+    """
+
+    threshold: int
+    refill: bool = True
+
+    def on_publish(self, ctx: PolicyContext, new_version: int) -> list[Cancel]:
+        action = CancelAction.REPLACE if self.refill else CancelAction.DROP
+        stale = sorted(
+            g.group_id
+            for g in ctx.state.groups
+            if g.status == "done" and new_version - g.admit_version > self.threshold
+        )
+        return [Cancel(group_id, action) for group_id in stale]
+
+
+@dataclass
 class DistinctVersionWindow:
     """Dressage's L3: keep the last `keep` distinct observed versions, in arrival order.
 

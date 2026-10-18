@@ -15,6 +15,7 @@ from .policies import (
     RollPolicyConfig,
     SkyRLPolicyConfig,
     SlimePolicyConfig,
+    TRLPolicyConfig,
     VerlPolicyConfig,
     VerlV1PolicyConfig,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "SkyRLPolicyConfig",
     "SlimePolicyConfig",
     "SyncCostConfig",
+    "TRLPolicyConfig",
     "TrainingCostConfig",
     "VerlPolicyConfig",
     "VerlV1PolicyConfig",

@@ -14,6 +14,7 @@ from srl.policy.nemo_rl import NeMoRLPolicy
 from srl.policy.openrlhf import OpenRLHFPolicy
 from srl.policy.rules import WarnOnly
 from srl.policy.skyrl import SkyRLPolicy
+from srl.policy.trl import TRLPolicy
 from srl.policy.verl_v1 import VerlV1Policy
 from srl.simulator import SimConfig, Simulator
 from srl.workload.grouped import GroupedWorkload
@@ -568,3 +569,57 @@ class TestNeMoRLAdmissionGate:
             policy.on_admit(_req_group(group_id), st)
         # One full cohort admitted. dispatch_index is now 1, equal to train_version(0) + lookahead(1).
         assert policy.admit_quota(st) == 0
+
+
+class TestTRLBoundedQueue:
+    def test_negative_cap_resolves_from_max_staleness_and_batch_size(self) -> None:
+        policy = TRLPolicy(max_staleness=4, max_inflight_tasks=-1)
+        st = SimState(batch_size=8, group_size=1, train_version=0)
+        assert policy.admit_quota(st) == 32
+        assert policy.max_inflight_tasks == 32
+
+    def test_quota_closes_once_the_queue_is_full(self) -> None:
+        policy = TRLPolicy(max_staleness=1, max_inflight_tasks=2)
+        st = SimState(batch_size=2, group_size=1)
+        for group_id in range(2):
+            policy.on_admit(_req_group(group_id), st)
+        assert policy.admit_quota(st) == 0
+
+    def test_pause_mode_is_in_place(self) -> None:
+        assert TRLPolicy().pause_mode(SimState()) == "in_place"
+
+
+class TestTRLVersionWindow:
+    """Reproduces the brief's scenario: groups admitted at [0, 3, 5], max_staleness=4, v_train=5."""
+
+    def test_only_the_group_more_than_four_versions_stale_is_dropped(self) -> None:
+        policy = TRLPolicy(max_staleness=4, max_inflight_tasks=10)
+        groups = tuple(_group_view(v, admit_version=v) for v in (0, 3, 5))
+        st = SimState(groups=groups, train_version=5)
+
+        cancels = policy.on_publish(5, st)
+
+        assert {c.group_id for c in cancels} == {0}
+        assert all(c.action == CancelAction.REPLACE for c in cancels), "TRL refills a dropped slot."
+        assert policy.gc_dropped == 1
+
+
+class TestTRLIntegration:
+    def test_a_straggler_is_dropped_and_refilled_once_it_goes_stale(self) -> None:
+        workload = GroupedWorkload.from_lengths([150], [3000] + [50] * 11)
+        cfg = SimConfig(batch_size=2, n_versions=20, workload=workload, ingress_window_groups=24)
+        policy = TRLPolicy(max_staleness=0, max_inflight_tasks=24)
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.1), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+        result = sim.run()
+
+        assert not result.livelocked
+        assert policy.gc_dropped > 0, "some group must go stale under a zero-tolerance window."
+        dropped_ids = {r.group_id for r in result.dropped}
+        consumed_ids = {r.group_id for r in result.consumed}
+        assert len(dropped_ids) == policy.gc_dropped
+        assert dropped_ids.isdisjoint(consumed_ids), "a dropped group is never also trained on."

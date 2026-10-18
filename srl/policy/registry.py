@@ -10,6 +10,7 @@ from .psrl import PSRLPolicy
 from .roll import RollPolicy
 from .skyrl import SkyRLPolicy
 from .slime import SlimePolicy
+from .trl import TRLPolicy
 from .verl import VerlPolicy
 from .verl_v1 import VerlV1Policy
 
@@ -24,4 +25,5 @@ POLICY_REGISTRY: dict[str, type] = {
     "openrlhf": OpenRLHFPolicy,
     "dressage": DressagePolicy,
     "nemo_rl": NeMoRLPolicy,
+    "trl": TRLPolicy,
 }

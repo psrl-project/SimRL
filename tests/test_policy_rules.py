@@ -6,7 +6,14 @@ from srl.policy.areal import ArealPolicy
 from srl.policy.base import Cancel, CancelAction, PolicyContext, SimState
 from srl.policy.ledger import GroupView
 from srl.policy.roll import RollPolicy
-from srl.policy.rules import CancelBelowVersion, FIFO, LegacyOverage, ProgressQuota, WatermarkGate
+from srl.policy.rules import (
+    CancelBelowVersion,
+    FIFO,
+    LegacyOverage,
+    ProgressQuota,
+    VersionWindow,
+    WatermarkGate,
+)
 from srl.component.rollout.engine import Request
 
 
@@ -107,6 +114,28 @@ class TestCancelBelowVersion:
         assert cancels == [Cancel(0, CancelAction.DROP)], (
             "admit_version=0 is below the floor even though start_version=4 is not."
         )
+
+
+class TestVersionWindow:
+    def test_drops_only_groups_that_outran_the_threshold(self) -> None:
+        groups = tuple(_group_view(group_id=v, admit_version=v, status="done") for v in (0, 3, 5))
+        st = SimState(groups=groups)
+        cancels = VersionWindow(threshold=4).on_publish(PolicyContext(state=st), new_version=5)
+        assert {c.group_id for c in cancels} == {0}, "only the group admitted at v0 is more than 4 versions stale."
+
+    def test_refill_replaces_the_default_drops_do_not(self) -> None:
+        old = _group_view(group_id=0, admit_version=0, status="done")
+        st = SimState(groups=(old,))
+        refilled = VersionWindow(threshold=0, refill=True).on_publish(PolicyContext(state=st), new_version=1)
+        assert refilled == [Cancel(0, CancelAction.REPLACE)]
+        dropped = VersionWindow(threshold=0, refill=False).on_publish(PolicyContext(state=st), new_version=1)
+        assert dropped == [Cancel(0, CancelAction.DROP)]
+
+    def test_never_cancels_a_group_still_generating(self) -> None:
+        running = _group_view(group_id=0, admit_version=0, status="running")
+        st = SimState(groups=(running,))
+        cancels = VersionWindow(threshold=0).on_publish(PolicyContext(state=st), new_version=5)
+        assert cancels == []
 
 
 class TestRollEquivalence:
