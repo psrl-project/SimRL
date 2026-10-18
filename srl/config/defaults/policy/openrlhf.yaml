@@ -2,7 +2,8 @@
 name: openrlhf
 
 # Generation permits. At most this many batch_size lumps generate or await
-# training at once.
+# training at once. Above 1 requires partial_rollout_enable: true, since
+# nothing else models the lock that would keep overlap from happening.
 async_queue_size: 1
 
 # False releases a permit only after the step that consumed it publishes, so

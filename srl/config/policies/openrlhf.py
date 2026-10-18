@@ -9,7 +9,10 @@ from srl.policy.openrlhf import OpenRLHFPolicy
 
 @dataclass
 class OpenRLHFPolicyConfig:
-    """Generation permit pool knobs."""
+    """Generation permit pool knobs.
+
+    `async_queue_size > 1` requires `partial_rollout_enable: true`.
+    """
 
     name: str = "openrlhf"
     async_queue_size: int = 1
