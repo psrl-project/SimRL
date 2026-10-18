@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from srl.component.rollout.engine import Request
 from srl.cost.rollout import UnifiedRoofline
 from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
@@ -210,6 +212,19 @@ def _req_group(group_id: int) -> list[Request]:
     return [Request(rid=group_id, prompt_len=1, target_len=1, v_traj=0, group_id=group_id)]
 
 
+class _OverlapObservingPolicy(OpenRLHFPolicy):
+    """Counts publishes that found genuinely in-flight work, to prove overlap occurred."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.overlapping_publishes = 0
+
+    def on_train_version_advance(self, train_version: int, st: SimState) -> None:
+        super().on_train_version_advance(train_version, st)
+        if st.inflight:
+            self.overlapping_publishes += 1
+
+
 class TestOpenRLHFPermitPool:
     def test_quota_closes_once_a_lump_is_fully_admitted(self) -> None:
         policy = OpenRLHFPolicy(async_queue_size=1)
@@ -276,3 +291,28 @@ class TestOpenRLHFIntegration:
 
         assert not result.livelocked
         assert result.versions_done == 8
+
+    def test_queue_size_above_one_requires_partial_rollout(self) -> None:
+        with pytest.raises(AssertionError):
+            OpenRLHFPolicy(async_queue_size=2, partial_rollout_enable=False)
+
+    def test_in_place_preserves_a_lump_overlapping_a_publish(self) -> None:
+        """queue_size=2 lets a second lump generate while the first one trains.
+
+        in_place must leave that overlapping lump's progress intact rather
+        than aborting and re-prefilling it.
+        """
+        workload = GroupedWorkload.from_lengths([150], uniform(32, 50, 150, seed=5))
+        cfg = SimConfig(batch_size=4, n_versions=8, workload=workload, ingress_window_groups=8)
+        policy = _OverlapObservingPolicy(async_queue_size=2, partial_rollout_enable=True)
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.5), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+        result = sim.run()
+
+        assert not result.livelocked
+        assert policy.overlapping_publishes > 0, "queue_size=2 must let a second lump overlap a publish."
+        assert all(r.num_aborts == 0 for r in result.consumed), "in_place must never abort overlapping work."

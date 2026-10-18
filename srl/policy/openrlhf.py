@@ -27,6 +27,12 @@ class OpenRLHFPolicy(StalenessPolicy):
         max_inflight: int | None = None,
     ):
         assert async_queue_size > 0, "async_queue_size must be > 0."
+        assert partial_rollout_enable or async_queue_size == 1, (
+            "async_queue_size > 1 without partial_rollout_enable is not modeled. "
+            "Real OpenRLHF blocks generation against weight broadcast with a lock "
+            "that this simulator has no equivalent for, so a second lump could be "
+            "genuinely in flight at a publish and get wrongly aborted."
+        )
         self.queue_size = async_queue_size
         self.partial_rollout_enable = partial_rollout_enable
         self.max_inflight = max_inflight
