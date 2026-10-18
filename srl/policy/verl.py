@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from collections import deque
-
 from ..component.rollout.engine import Request
 from .base import CompleteAction, SimState, StalenessPolicy
+from .rules import LegacyOverage
 
 
 class VerlPolicy(StalenessPolicy):
@@ -14,7 +13,7 @@ class VerlPolicy(StalenessPolicy):
 
     staleness_threshold is a float sample-overage ratio (not a version count).
     The window resets at every weight sync. The hand-off queue drops oldest
-    on overflow.
+    on overflow. Delegates its queue/counter bookkeeping to `LegacyOverage`.
     """
 
     name = "verl"
@@ -27,66 +26,58 @@ class VerlPolicy(StalenessPolicy):
     ):
         assert staleness_threshold >= 0, "staleness_threshold must be >= 0."
         assert require_batches >= 1, "require_batches must be >= 1."
-        self.threshold = staleness_threshold
-        self.require_batches = require_batches
+        self._overage = LegacyOverage(threshold=staleness_threshold, require_batches=require_batches)
         self.max_inflight = max_inflight
 
-        self.staleness_samples = 0
-        self.queue: deque = deque()
-        self.max_queue_size = 1
-        self.max_required = 1
-        self.dropped = 0
-        self._configured = False
+    @property
+    def threshold(self) -> float:
+        return self._overage.threshold
 
-    def _configure(self, st: SimState) -> None:
-        # Every count here is in prompt groups, so the queue evicts a whole
-        # group rather than orphaning one response of it.
-        required = st.batch_size * self.require_batches
-        self.max_required = int(required * (self.threshold + 1))
-        self.max_queue_size = self.max_required
-        self.queue = deque(self.queue, maxlen=self.max_queue_size)
-        self._configured = True
+    @property
+    def require_batches(self) -> int:
+        return self._overage.require_batches
+
+    @property
+    def staleness_samples(self) -> int:
+        return self._overage.staleness_samples
+
+    @property
+    def queue(self):
+        return self._overage.queue
+
+    @property
+    def max_queue_size(self) -> int:
+        return self._overage.max_queue_size
+
+    @property
+    def max_required(self) -> int:
+        return self._overage.max_required
+
+    @property
+    def dropped(self) -> int:
+        return self._overage.dropped
 
     def admit_quota(self, st: SimState) -> int:
-        if not self._configured:
-            self._configure(st)
-        if len(self.queue) >= self.max_queue_size:
-            return 0
-        if self.staleness_samples >= self.max_required:
-            return 0
-        room = self.max_required - self.staleness_samples
+        room = self._overage.admit_quota(st.batch_size)
         if self.max_inflight is not None:
             room = min(room, self.max_inflight - len(st.inflight) // st.group_size)
         return max(0, room) * st.group_size
 
     def on_admit(self, group: list[Request], st: SimState) -> None:
-        self.staleness_samples += 1
+        self._overage.on_admit()
 
     def on_group_complete(self, group: list[Request], st: SimState) -> CompleteAction:
-        if not self._configured:
-            self._configure(st)
-        if len(self.queue) >= self.max_queue_size:
-            self.dropped += 1
-            return CompleteAction.DROP
-        self.queue.append(group)
-        return CompleteAction.KEEP
+        keep = self._overage.on_group_complete(group, st.batch_size)
+        return CompleteAction.KEEP if keep else CompleteAction.DROP
 
     def peek_batch(self, st: SimState) -> list[Request] | None:
-        required = st.batch_size * self.require_batches
-        if len(self.queue) < required:
-            return None
-        return [req for group in list(self.queue)[:required] for req in group]
+        return self._overage.peek_batch(st.batch_size)
 
     def take_batch(self, st: SimState) -> list[Request] | None:
-        batch = self.peek_batch(st)
-        if batch is None:
-            return None
-        required = st.batch_size * self.require_batches
-        popped = [self.queue.popleft() for _ in range(required)]
-        return [req for group in popped for req in group]
+        return self._overage.take_batch(st.batch_size)
 
     def on_train_version_advance(self, train_version: int, st: SimState) -> None:
-        self.staleness_samples = len(st.inflight) // st.group_size + len(self.queue)
+        self._overage.on_train_version_advance(len(st.inflight) // st.group_size)
 
     def check_invariants(self, st: SimState) -> None:
         assert len(self.queue) <= self.max_queue_size, (

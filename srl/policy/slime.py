@@ -6,6 +6,7 @@ from typing import get_args
 
 from ..component.rollout.engine import Request
 from .base import CompleteAction, PauseMode, SimState, StalenessPolicy
+from .rules import WatermarkGate
 
 
 class SlimePolicy(StalenessPolicy):
@@ -42,9 +43,7 @@ class SlimePolicy(StalenessPolicy):
 
     def admit_quota(self, st: SimState) -> int:
         # Counted in prompt groups, then converted: a group is indivisible.
-        if self.remaining >= st.batch_size:
-            return 0
-        room = max(1, int(round(self.over_sampling_ratio * st.batch_size)))
+        room = WatermarkGate(self.over_sampling_ratio).quota(self.remaining, st.batch_size)
         if self.max_inflight is not None:
             room = min(room, self.max_inflight - len(st.inflight) // st.group_size)
         return max(0, room) * st.group_size

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from ..component.rollout.engine import Request
-from .base import CompleteAction, SimState, StalenessPolicy
+from .base import CompleteAction, PolicyContext, SimState, StalenessPolicy
+from .rules import FIFO, ProgressQuota
 
 
 class ArealPolicy(StalenessPolicy):
@@ -25,8 +26,8 @@ class ArealPolicy(StalenessPolicy):
 
     def admit_quota(self, st: SimState) -> int:
         # The bucket counts prompt groups, since a group is what training consumes.
-        ofp, B = st.max_staleness, st.batch_size
-        staleness_capacity = (ofp + st.train_version + 1) * B - (self.accepted + self.running)
+        ctx = PolicyContext(state=st, accepted=self.accepted, running=self.running)
+        staleness_capacity = ProgressQuota(ofp=st.max_staleness).quota(ctx)
         if self.max_inflight is not None:
             staleness_capacity = min(staleness_capacity, self.max_inflight - self.running)
         return max(0, staleness_capacity) * st.group_size
@@ -40,12 +41,7 @@ class ArealPolicy(StalenessPolicy):
         return CompleteAction.KEEP
 
     def peek_batch(self, st: SimState) -> list[Request] | None:
-        if len(st.ready_groups) < st.batch_size:
-            return None
-        ordered = sorted(
-            st.ready_groups, key=lambda g: (g[0].dispatch_time, g[0].group_id)
-        )
-        return [req for group in ordered[: st.batch_size] for req in group]
+        return FIFO().select(st.ready_groups, st.batch_size)
 
     def check_invariants(self, st: SimState) -> None:
         unconsumed = st.n_admitted - st.n_consumed

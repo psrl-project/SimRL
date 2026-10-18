@@ -39,6 +39,16 @@ class Cancel:
 
 
 @dataclass
+class PolicyContext:
+    """State a rule primitive needs, without exposing the whole policy."""
+
+    state: SimState
+    accepted: int = 0
+    running: int = 0
+    completed: int = 0
+
+
+@dataclass
 class SimState:
     """What a policy is allowed to see when making decisions."""
 
