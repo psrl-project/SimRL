@@ -7,6 +7,7 @@ from .psrl import PSRLPolicy
 from .roll import RollPolicy
 from .slime import SlimePolicy
 from .verl import VerlPolicy
+from .verl_v1 import VerlV1Policy
 
 POLICY_REGISTRY: dict[str, type] = {
     "psrl": PSRLPolicy,
@@ -14,4 +15,5 @@ POLICY_REGISTRY: dict[str, type] = {
     "roll": RollPolicy,
     "slime": SlimePolicy,
     "verl": VerlPolicy,
+    "verl_v1": VerlV1Policy,
 }

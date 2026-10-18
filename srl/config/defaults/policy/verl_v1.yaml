@@ -1,0 +1,15 @@
+# Staleness policy name.
+name: verl_v1
+
+# Groups admitted once before the first weight sync.
+num_warmup_batches: 1.0
+
+# Admission-span threshold. null disables L3 entirely.
+max_off_policy_threshold: 8
+
+# drop: evict finished groups past the threshold, refilled from the dataset.
+# wait: block sampling while any still-generating group reaches the threshold.
+max_off_policy_strategy: drop
+
+# What a weight push does to in-flight generation.
+pause_mode: abort

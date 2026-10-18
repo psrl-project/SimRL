@@ -12,6 +12,7 @@ from .policies import (
     RollPolicyConfig,
     SlimePolicyConfig,
     VerlPolicyConfig,
+    VerlV1PolicyConfig,
 )
 from .schema import (
     AdmissionControlConfig,
@@ -45,6 +46,7 @@ __all__ = [
     "SyncCostConfig",
     "TrainingCostConfig",
     "VerlPolicyConfig",
+    "VerlV1PolicyConfig",
     "WorkloadConfig",
     "register_configs",
 ]

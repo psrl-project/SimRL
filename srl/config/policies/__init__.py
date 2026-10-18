@@ -9,6 +9,7 @@ from .psrl import PsrlPolicyConfig
 from .roll import RollPolicyConfig
 from .slime import SlimePolicyConfig
 from .verl import VerlPolicyConfig
+from .verl_v1 import VerlV1PolicyConfig
 
 PRESETS: dict[str, type] = {
     "psrl": PsrlPolicyConfig,
@@ -16,6 +17,7 @@ PRESETS: dict[str, type] = {
     "roll": RollPolicyConfig,
     "slime": SlimePolicyConfig,
     "verl": VerlPolicyConfig,
+    "verl_v1": VerlV1PolicyConfig,
 }
 
 
@@ -40,5 +42,6 @@ __all__ = [
     "RollPolicyConfig",
     "SlimePolicyConfig",
     "VerlPolicyConfig",
+    "VerlV1PolicyConfig",
     "preset_config",
 ]
