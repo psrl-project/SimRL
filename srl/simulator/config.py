@@ -238,6 +238,9 @@ class SimResult:
 
     consumed: list[Request] = field(default_factory=list)
     dropped: list[Request] = field(default_factory=list)
+    dropped_reasons: list[tuple[Request, str]] = field(default_factory=list)
+    """Parallel to `dropped`. The reason lives here since a C++-backed request
+    does not support new attributes, not on `Request` itself."""
     sim_time: float = 0.0
     versions_done: int = 0
     livelocked: bool = False
@@ -247,13 +250,8 @@ class SimResult:
     """The policy's declared horizon, copied from `SimConfig` for `staleness_report`."""
 
     def staleness_report(self) -> StalenessReport:
-        """Token-weighted staleness distribution plus wasted tokens from drops.
-
-        Every dropped request is attributed to reason "unknown" until a
-        policy-level drop site stamps `Request.drop_reason`.
-        """
-        dropped = [(r, getattr(r, "drop_reason", None) or "unknown") for r in self.dropped]
-        return summarize(self.consumed, dropped, self.staleness_horizon)
+        """Token-weighted staleness distribution plus wasted tokens from drops."""
+        return summarize(self.consumed, self.dropped_reasons, self.staleness_horizon)
 
     @property
     def n_consumed(self) -> int:

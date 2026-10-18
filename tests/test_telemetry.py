@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from srl.component.rollout.engine import Request
 from srl.cost.rollout import UnifiedRoofline
+from srl.policy.base import Cancel, CancelAction, CompleteAction, SimState, StalenessPolicy
 from srl.policy.psrl import PSRLPolicy
+from srl.policy.verl import VerlPolicy
 from srl.simulator import SimConfig, Simulator
 from srl.telemetry.store import JsonlStore
 from srl.workload.distributions import uniform
@@ -213,3 +216,95 @@ class TestRequestStream:
             assert r["v_min"] <= r["v_max"]
             assert r["staleness_true"] == r["consume_version"] - r["v_min"]
             assert r["staleness_reported"] == r["consume_version"] - r["v_max"]
+
+
+def _bare_sim(tmp_path, policy):
+    store = JsonlStore(tmp_path / "logs")
+    cost = UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7)
+    cfg = SimConfig(batch_size=1, n_versions=1, workload=GroupedWorkload.from_lengths([10], [10]))
+    sim = Simulator(rollout_cost=cost, policy=policy, cfg=cfg, store=store)
+    return sim, store
+
+
+def _drop_rows(store):
+    return [r for r in store.iter("request") if r["event"] == "drop"]
+
+
+class TestDropReasonTelemetry:
+    def test_l2_cancel_for_a_group_still_generating(self, tmp_path):
+        sim, store = _bare_sim(tmp_path, PSRLPolicy())
+        req = Request(rid=0, prompt_len=1, target_len=10, v_traj=0, group_id=0)
+        sim.inflight.append(req)
+
+        sim._apply_cancels([Cancel(0, CancelAction.DROP)])
+        store.close()
+
+        rows = _drop_rows(store)
+        assert len(rows) == 1
+        assert rows[0]["drop_reason"] == "l2_cancel"
+        assert rows[0]["retry"] is False
+
+    def test_l3_stale_for_a_group_already_in_the_ready_pool(self, tmp_path):
+        sim, store = _bare_sim(tmp_path, PSRLPolicy())
+        req = Request(rid=0, prompt_len=1, target_len=10, v_traj=0, group_id=0)
+        sim.ready.append(req)
+
+        sim._apply_cancels([Cancel(0, CancelAction.REPLACE)])
+        store.close()
+
+        rows = _drop_rows(store)
+        assert len(rows) == 1
+        assert rows[0]["drop_reason"] == "l3_stale"
+        assert rows[0]["retry"] is False
+
+    def test_span_cap_and_retry_for_a_retry_from_scratch_cancel(self, tmp_path):
+        sim, store = _bare_sim(tmp_path, PSRLPolicy())
+        req = Request(rid=0, prompt_len=1, target_len=10, v_traj=0, group_id=0)
+        sim.inflight.append(req)
+
+        sim._apply_cancels([Cancel(0, CancelAction.RETRY_FROM_SCRATCH)])
+        store.close()
+
+        rows = _drop_rows(store)
+        assert len(rows) == 1
+        assert rows[0]["drop_reason"] == "span_cap"
+        assert rows[0]["retry"] is True
+
+    def test_l3_stale_is_the_default_for_an_undistinguished_on_group_complete_drop(self, tmp_path):
+        class _AlwaysDropPolicy(StalenessPolicy):
+            name = "always_drop"
+
+            def admit_quota(self, st: SimState) -> int:
+                return 0
+
+            def on_group_complete(self, group, st) -> CompleteAction:
+                return CompleteAction.DROP
+
+            def peek_batch(self, st: SimState):
+                return None
+
+        sim, store = _bare_sim(tmp_path, _AlwaysDropPolicy())
+        req = Request(rid=0, prompt_len=1, target_len=10, v_traj=0, group_id=0)
+        req.complete_time = 0.0
+
+        sim._collect([req])
+        store.close()
+
+        rows = _drop_rows(store)
+        assert len(rows) == 1
+        assert rows[0]["drop_reason"] == "l3_stale"
+
+    def test_queue_overflow_for_a_verl_legacy_handoff_queue_drop(self, tmp_path):
+        policy = VerlPolicy(staleness_threshold=0.0, require_batches=1)
+        sim, store = _bare_sim(tmp_path, policy)
+        stale_occupant = [Request(rid=99, prompt_len=1, target_len=10, v_traj=0, group_id=99)]
+        policy._overage.queue.append(stale_occupant)
+
+        req = Request(rid=0, prompt_len=1, target_len=10, v_traj=0, group_id=0)
+        req.complete_time = 0.0
+        sim._collect([req])
+        store.close()
+
+        rows = _drop_rows(store)
+        assert len(rows) == 1
+        assert rows[0]["drop_reason"] == "queue_overflow"

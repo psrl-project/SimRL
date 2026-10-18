@@ -150,6 +150,11 @@ class StalenessPolicy(ABC):
 
         Called once, when the group's last response finishes. Returning `DROP`
         discards the whole group, since a partial group is not trainable.
+
+        A policy whose drop has a cause more specific than the generic L3
+        sampling-layer one (verl-legacy's queue overflow) may define an
+        optional `drop_reason_for_complete(group) -> str` sibling method.
+        The simulator probes for it via `getattr` rather than requiring it here.
         """
         return CompleteAction.KEEP
 

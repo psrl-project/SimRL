@@ -70,6 +70,9 @@ class VerlPolicy(StalenessPolicy):
         keep = self._overage.on_group_complete(group, st.batch_size)
         return CompleteAction.KEEP if keep else CompleteAction.DROP
 
+    def drop_reason_for_complete(self, group: list[Request]) -> str:
+        return "queue_overflow"
+
     def peek_batch(self, st: SimState) -> list[Request] | None:
         return self._overage.peek_batch(st.batch_size)
 

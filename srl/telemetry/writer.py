@@ -229,7 +229,14 @@ class SimTelemetry:
 
     # --- request lifecycle ("request" stream) ---------------------------
 
-    def write_request(self, event: str, t: float, req: Request) -> None:
+    def write_request(
+        self,
+        event: str,
+        t: float,
+        req: Request,
+        drop_reason: str | None = None,
+        retry: bool = False,
+    ) -> None:
         if self.store is None:
             return
         self.store.write(
@@ -265,6 +272,8 @@ class SimTelemetry:
             # left the cost of a loopback inferable but not measurable.
             reprefill_tokens=req.reprefill_tokens,
             prefix_hit_tokens=req.prefix_hit_tokens,
+            drop_reason=drop_reason,
+            retry=retry,
         )
 
     # --- train steps ("train" stream) -----------------------------------

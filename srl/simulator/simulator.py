@@ -162,6 +162,9 @@ class Simulator:
         self.ready_groups: list[list[Request]] = []
         self.consumed: list[Request] = []
         self.dropped: list[Request] = []
+        self.dropped_reasons: list[tuple[Request, str]] = []
+        """Parallel to `dropped`, since the reason lives here rather than on `Request`:
+        a C++-backed request does not support new attributes."""
         self.n_admitted: int = 0
         self.n_consumed: int = 0
         self.train_timestamps: list[tuple[float, float]] = []
@@ -422,15 +425,27 @@ class Simulator:
         st = self._state()
         for group in complete:
             if self.policy.on_group_complete(group, st) is CompleteAction.DROP:
+                reason = self._drop_reason_for_complete(group)
                 for member in group:
                     member.status = ReqStatus.DROPPED
                     self.dropped.append(member)
-                    self.telemetry.write_request("drop", self.t, member)
+                    self.dropped_reasons.append((member, reason))
+                    self.telemetry.write_request("drop", self.t, member, drop_reason=reason)
                 self._ledger.drop(group[0].group_id)
                 self._grant_drop_replacements([group])
             else:
                 self.ready_groups.append(group)
                 self.ready.extend(group)
+
+    def _drop_reason_for_complete(self, group: list[Request]) -> str:
+        """Why a policy's `on_group_complete` refused this finished group.
+
+        `CompleteAction` carries no reason, so a policy with a more specific
+        cause (verl-legacy's queue overflow) opts in via `drop_reason_for_complete`.
+        Everything else defaults to the generic L3 sampling-layer cause.
+        """
+        hook = getattr(self.policy, "drop_reason_for_complete", None)
+        return hook(group) if callable(hook) else "l3_stale"
 
     def _observe_completion(self, req: Request) -> None:
         """Offer a finished trajectory to a strategy that implements `observe_completion`.
@@ -451,7 +466,12 @@ class Simulator:
         if callable(observe):
             observe(self.train_version, self.t)
 
-    def _discard(self, reqs: list[Request], grant_replacements: bool = True) -> None:
+    def _discard(
+        self,
+        reqs: list[Request],
+        grant_replacements: bool = True,
+        group_reasons: dict[int, tuple[str, bool]] | None = None,
+    ) -> None:
         """Drop requests, widening to whole prompt groups.
 
         A group that loses one response can never be consumed, so its surviving
@@ -462,6 +482,9 @@ class Simulator:
             reqs: Requests to remove.
             grant_replacements: Whether `policy.replacement_groups_on_drop` may
                 credit dataset replacements for the dropped groups.
+            group_reasons: group_id -> (drop_reason, retry). A sibling widened in by
+                `_expand_to_groups` shares its group's reason, since it is removed
+                for the same cause even though it never matched a `Cancel` itself.
         """
         seen: set[int] = set()
         unique_reqs: list[Request] = []
@@ -500,7 +523,9 @@ class Simulator:
                 self.ready.remove(req)
             req.status = ReqStatus.DROPPED
             self.dropped.append(req)
-            self.telemetry.write_request("drop", self.t, req)
+            reason, retry = (group_reasons or {}).get(req.group_id, ("l2_cancel", False))
+            self.dropped_reasons.append((req, reason))
+            self.telemetry.write_request("drop", self.t, req, drop_reason=reason, retry=retry)
         if to_cancel:
             for inst in self.instances:
                 inst.cancel(
@@ -541,8 +566,19 @@ class Simulator:
         ]
         if not live:
             return
+        inflight_group_ids = {req.group_id for req in self.inflight}
+        group_reasons: dict[int, tuple[str, bool]] = {}
+        for group_id, action in actions.items():
+            if action is CancelAction.RETRY_FROM_SCRATCH:
+                # RETRY_FROM_SCRATCH is span_cap's only current user.
+                # Cancel itself carries no primitive identity to key on instead.
+                group_reasons[group_id] = ("span_cap", True)
+            elif group_id in inflight_group_ids:
+                group_reasons[group_id] = ("l2_cancel", False)
+            else:
+                group_reasons[group_id] = ("l3_stale", False)
         # L2 action semantics own the credit, so bypass the policy drop hook.
-        self._discard(live, grant_replacements=False)
+        self._discard(live, grant_replacements=False, group_reasons=group_reasons)
         self._ingress_group_credits += sum(
             1 for action in actions.values() if action is not CancelAction.DROP
         )
@@ -980,6 +1016,7 @@ class Simulator:
         return SimResult(
             consumed=self.consumed,
             dropped=self.dropped,
+            dropped_reasons=self.dropped_reasons,
             sim_time=self.t,
             versions_done=self.train_version,
             livelocked=livelocked,
