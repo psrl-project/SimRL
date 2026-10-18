@@ -76,7 +76,9 @@ class DressagePolicy(StalenessPolicy):
         return FIFO().select(st.ready_groups, st.batch_size)
 
     def on_publish(self, new_version: int, st: SimState) -> list[Cancel]:
-        return self._span_cap.on_publish(PolicyContext(state=st), new_version)
+        cancels = self._span_cap.on_publish(PolicyContext(state=st), new_version)
+        self._active -= len(cancels)
+        return cancels
 
     def pause_mode(self, st: SimState) -> PauseMode:
         return self.pause

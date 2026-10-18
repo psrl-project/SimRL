@@ -405,3 +405,24 @@ class TestDressageIntegration:
 
         assert not result.livelocked
         assert result.versions_done == 8
+
+    def test_span_cap_cancellations_release_the_active_slot(self) -> None:
+        """A group discarded by VersionSpanCap must free its L1 slot, not leak it.
+
+        A tight preempt cap forces repeated cancellation. If the freed slot
+        leaked, admission would shrink every cycle until the run livelocks.
+        """
+        workload = GroupedWorkload.from_lengths([150], uniform(16, 50, 150, seed=5))
+        cfg = SimConfig(batch_size=4, n_versions=8, workload=workload, ingress_window_groups=16)
+        policy = DressagePolicy(max_active_groups=2, max_partial_rollout_preempts=0)
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.5), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+        result = sim.run()
+
+        assert not result.livelocked
+        assert result.versions_done == 8
+        assert policy._active <= policy.max_active_groups
