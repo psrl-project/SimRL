@@ -45,7 +45,7 @@ class VersionSpanCap:
             versions = by_group.setdefault(req.group_id, {new_version})
             versions.update(segment.version for segment in req.segments)
         cancels = [
-            Cancel(group_id, self.action)
+            Cancel(group_id, self.action, reason="span_cap")
             for group_id, versions in sorted(by_group.items())
             if len(versions) - 1 > self.max_preempts
         ]

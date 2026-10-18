@@ -257,7 +257,27 @@ class TestDropReasonTelemetry:
         assert rows[0]["drop_reason"] == "l3_stale"
         assert rows[0]["retry"] is False
 
-    def test_span_cap_and_retry_for_a_retry_from_scratch_cancel(self, tmp_path):
+    def test_span_cap_and_retry_for_a_retry_from_scratch_cancel_with_an_explicit_reason(self, tmp_path):
+        sim, store = _bare_sim(tmp_path, PSRLPolicy())
+        req = Request(rid=0, prompt_len=1, target_len=10, v_traj=0, group_id=0)
+        sim.inflight.append(req)
+
+        sim._apply_cancels([Cancel(0, CancelAction.RETRY_FROM_SCRATCH, "span_cap")])
+        store.close()
+
+        rows = _drop_rows(store)
+        assert len(rows) == 1
+        assert rows[0]["drop_reason"] == "span_cap"
+        assert rows[0]["retry"] is True
+
+    def test_retry_from_scratch_without_an_explicit_reason_is_not_mislabeled_span_cap(self, tmp_path):
+        """A Cancel's action alone must not imply span_cap.
+
+        A future (or already-configurable: prime-rl's own `action` knob)
+        RETRY_FROM_SCRATCH user that is not VersionSpanCap still gets the
+        same running/ready inference as any other cancel, only `retry`
+        distinguishes it.
+        """
         sim, store = _bare_sim(tmp_path, PSRLPolicy())
         req = Request(rid=0, prompt_len=1, target_len=10, v_traj=0, group_id=0)
         sim.inflight.append(req)
@@ -267,7 +287,7 @@ class TestDropReasonTelemetry:
 
         rows = _drop_rows(store)
         assert len(rows) == 1
-        assert rows[0]["drop_reason"] == "span_cap"
+        assert rows[0]["drop_reason"] == "l2_cancel"
         assert rows[0]["retry"] is True
 
     def test_l3_stale_is_the_default_for_an_undistinguished_on_group_complete_drop(self, tmp_path):

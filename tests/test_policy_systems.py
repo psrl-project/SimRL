@@ -381,7 +381,7 @@ class TestDressageVersionSpanCap:
 
         cancels = policy.on_publish(2, st)
 
-        assert cancels == [Cancel(0, CancelAction.RETRY_FROM_SCRATCH)]
+        assert cancels == [Cancel(0, CancelAction.RETRY_FROM_SCRATCH, "span_cap")]
 
     def test_disabled_cap_never_cancels(self) -> None:
         policy = DressagePolicy(max_partial_rollout_preempts=None)

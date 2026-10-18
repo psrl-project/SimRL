@@ -36,6 +36,10 @@ class Cancel:
 
     group_id: int
     action: CancelAction
+    reason: str | None = None
+    """The primitive's own telemetry reason, when it is unambiguous regardless of
+    the group's running/done status (e.g. VersionSpanCap's "span_cap"). None lets
+    the simulator infer l2_cancel/l3_stale from whether the group is still running."""
 
 
 @dataclass

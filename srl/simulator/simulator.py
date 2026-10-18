@@ -558,6 +558,7 @@ class Simulator:
     def _apply_cancels(self, cancels: list[Cancel]) -> None:
         """Drop cancelled groups and credit one replacement per non-DROP action."""
         actions = {cancel.group_id: cancel.action for cancel in cancels}
+        explicit_reasons = {cancel.group_id: cancel.reason for cancel in cancels if cancel.reason is not None}
         live = [
             req
             for group_id in actions
@@ -569,14 +570,14 @@ class Simulator:
         inflight_group_ids = {req.group_id for req in self.inflight}
         group_reasons: dict[int, tuple[str, bool]] = {}
         for group_id, action in actions.items():
-            if action is CancelAction.RETRY_FROM_SCRATCH:
-                # RETRY_FROM_SCRATCH is span_cap's only current user.
-                # Cancel itself carries no primitive identity to key on instead.
-                group_reasons[group_id] = ("span_cap", True)
+            retry = action is CancelAction.RETRY_FROM_SCRATCH
+            if group_id in explicit_reasons:
+                reason = explicit_reasons[group_id]
             elif group_id in inflight_group_ids:
-                group_reasons[group_id] = ("l2_cancel", False)
+                reason = "l2_cancel"
             else:
-                group_reasons[group_id] = ("l3_stale", False)
+                reason = "l3_stale"
+            group_reasons[group_id] = (reason, retry)
         # L2 action semantics own the credit, so bypass the policy drop hook.
         self._discard(live, grant_replacements=False, group_reasons=group_reasons)
         self._ingress_group_credits += sum(
