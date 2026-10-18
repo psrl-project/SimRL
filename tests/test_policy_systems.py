@@ -24,11 +24,17 @@ def _group_view(group_id: int, admit_version: int, status: str = "done") -> Grou
     )
 
 
-def _verl_v1_sim(strategy: str, threshold: int | None, n_versions: int = 8) -> Simulator:
+def _verl_v1_sim(
+    strategy: str,
+    threshold: int | None,
+    n_versions: int = 8,
+    warmup: float = 1.0,
+    policy_cls: type[VerlV1Policy] = VerlV1Policy,
+) -> Simulator:
     workload = GroupedWorkload.from_lengths([150], uniform(16, 50, 150, seed=3))
     cfg = SimConfig(batch_size=4, n_versions=n_versions, workload=workload, ingress_window_groups=16)
-    policy = VerlV1Policy(
-        num_warmup_batches=1.0, max_off_policy_threshold=threshold, max_off_policy_strategy=strategy
+    policy = policy_cls(
+        num_warmup_batches=warmup, max_off_policy_threshold=threshold, max_off_policy_strategy=strategy
     )
     return Simulator(
         rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
@@ -38,19 +44,22 @@ def _verl_v1_sim(strategy: str, threshold: int | None, n_versions: int = 8) -> S
     )
 
 
-class TestVerlV1OnPublish:
-    """Direct state-level proof of the L3 span check.
+class _CountingPolicy(VerlV1Policy):
+    """Counts how many times `can_sample` denies, to prove the gate fires in situ."""
 
-    An end-to-end run cannot exercise this reliably: `OffPolicySpan.select`
-    is oldest-admit_version-first, so a group that is globally the oldest
-    ready-and-done group is always consumed by the very take that triggers
-    the publish which would otherwise evict it -- it never lingers long
-    enough to be "done but unconsumed" when `on_publish` runs. Real verl's
-    eviction instead runs on every buffer poll, independent of whether a
-    batch is currently assemblable, which this simulator has no equivalent
-    tick for. State-level construction sidesteps that gap entirely, the same
-    way `tests/test_e2e.py`'s Roll `on_publish` test does.
-    """
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.blocked = 0
+
+    def can_sample(self, st: SimState) -> bool:
+        allowed = super().can_sample(st)
+        if not allowed:
+            self.blocked += 1
+        return allowed
+
+
+class TestVerlV1OnPublish:
+    """State-level proof of the L3 span check, isolated from admission timing."""
 
     def test_drop_evicts_a_finished_group_past_the_threshold(self) -> None:
         policy = VerlV1Policy(max_off_policy_threshold=1, max_off_policy_strategy="drop")
@@ -62,7 +71,7 @@ class TestVerlV1OnPublish:
         cancels = policy.on_publish(3, st)
 
         assert cancels == [Cancel(0, CancelAction.REPLACE)], (
-            "only the finished group past the span threshold is evicted; a "
+            "only the finished group past the span threshold is evicted. A "
             "running group at the same age is immune under drop."
         )
 
@@ -99,8 +108,6 @@ class TestVerlV1Unbounded:
 
 
 class TestVerlV1Integration:
-    """The full pipeline runs correctly under both strategies; drop-timing is proven above."""
-
     def test_drop_runs_to_completion(self) -> None:
         result = _verl_v1_sim("drop", threshold=2, n_versions=6).run()
         assert not result.livelocked
@@ -110,4 +117,30 @@ class TestVerlV1Integration:
         result = _verl_v1_sim("wait", threshold=2, n_versions=6).run()
         assert not result.livelocked
         assert result.versions_done == 6
+        assert result.dropped == []
+
+    def test_drop_evicts_a_cohort_surplus_end_to_end(self) -> None:
+        """num_warmup_batches=2.0 admits two batches worth at once.
+
+        The fastest `batch_size` of them form the first publish, leaving the
+        slower same-cohort members behind as a done, unconsumed surplus that
+        the very next publish finds stale.
+        """
+        result = _verl_v1_sim("drop", threshold=1, n_versions=12, warmup=2.0).run()
+        assert not result.livelocked
+        assert result.dropped, "a cohort surplus must be evicted end to end under drop."
+
+    def test_wait_blocks_sampling_in_situ(self) -> None:
+        workload = GroupedWorkload.from_lengths([150], [2000, 50, 50, 50])
+        cfg = SimConfig(batch_size=4, n_versions=3, workload=workload, ingress_window_groups=8)
+        policy = _CountingPolicy(max_off_policy_threshold=1, max_off_policy_strategy="wait")
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.5), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+        result = sim.run()
+        assert not result.livelocked
+        assert policy.blocked > 0, "the straggler must hold can_sample closed for a while."
         assert result.dropped == []

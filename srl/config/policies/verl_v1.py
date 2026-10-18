@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from srl.policy.verl_v1 import VerlV1Policy
@@ -33,4 +34,5 @@ class VerlV1PolicyConfig:
 
     def ingress_window_groups(self, batch_size: int) -> int:
         h = self.max_off_policy_threshold or 1
-        return (h + 2) * batch_size
+        burst = math.ceil(self.num_warmup_batches)
+        return (max(h, burst) + 2) * batch_size

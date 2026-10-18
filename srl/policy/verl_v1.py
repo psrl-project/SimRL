@@ -30,6 +30,10 @@ class VerlV1Policy(StalenessPolicy):
         assert max_off_policy_strategy in ("drop", "wait"), (
             f"Unsupported max_off_policy_strategy {max_off_policy_strategy!r}."
         )
+        assert num_warmup_batches > 0, "num_warmup_batches must be > 0, or nothing is ever admitted."
+        assert max_off_policy_threshold is None or max_off_policy_threshold > 0, (
+            "max_off_policy_threshold must be > 0, or None to disable it."
+        )
         self.warmup = num_warmup_batches
         self._span = OffPolicySpan(threshold=max_off_policy_threshold, strategy=max_off_policy_strategy)
         self.pause = pause_mode
