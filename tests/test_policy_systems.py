@@ -10,6 +10,7 @@ from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, Trainin
 from srl.policy.base import Cancel, CancelAction, CompleteAction, PolicyContext, SimState
 from srl.policy.dressage import DressagePolicy
 from srl.policy.ledger import GroupView
+from srl.policy.nemo_rl import NeMoRLPolicy
 from srl.policy.openrlhf import OpenRLHFPolicy
 from srl.policy.rules import WarnOnly
 from srl.policy.skyrl import SkyRLPolicy
@@ -426,3 +427,144 @@ class TestDressageIntegration:
         assert not result.livelocked
         assert result.versions_done == 8
         assert 0 <= policy._active <= policy.max_active_groups
+
+
+def _nemo_rl_groups() -> tuple[list[list[Request]], tuple[GroupView, ...]]:
+    """Three groups at admit_version 0, 2, 4, with group_id matching arrival order."""
+    groups = [_req_group(gid) for gid in (0, 1, 2)]
+    views = (
+        _group_view(0, admit_version=0),
+        _group_view(1, admit_version=2),
+        _group_view(2, admit_version=4),
+    )
+    return groups, views
+
+
+def _nemo_rl_sim(sampler: str, n_versions: int = 8, **kwargs) -> Simulator:
+    workload = GroupedWorkload.from_lengths([150], uniform(32, 50, 150, seed=5))
+    cfg = SimConfig(batch_size=4, n_versions=n_versions, workload=workload, ingress_window_groups=16)
+    policy = NeMoRLPolicy(sampler=sampler, max_inflight_prompts=16, max_buffered_rollouts=16, **kwargs)
+    return Simulator(
+        rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+        training_cost=TrainingCostModel(FixedTrainingLatency(0.5), FixedTrainingMemory(0)),
+        policy=policy,
+        cfg=cfg,
+    )
+
+
+class TestNeMoRLWindowed:
+    def test_selects_oldest_first_within_the_window(self) -> None:
+        policy = NeMoRLPolicy(sampler="windowed", max_staleness_versions=2)
+        groups, views = _nemo_rl_groups()
+        st = SimState(batch_size=2, train_version=4, ready_groups=groups, groups=views)
+
+        batch = policy.peek_batch(st)
+
+        assert {req.group_id for req in batch} == {1, 2}, "only versions 2 and 4 are within a window of 2."
+
+    def test_freshest_first_takes_the_newest_version_first(self) -> None:
+        policy = NeMoRLPolicy(sampler="windowed", max_staleness_versions=2, sample_freshest_first=True)
+        groups, views = _nemo_rl_groups()
+        st = SimState(batch_size=2, train_version=4, ready_groups=groups, groups=views)
+
+        batch = policy.peek_batch(st)
+
+        assert batch[0].group_id == 2, "version 4 (group 2) must be selected first when freshest-first."
+
+    def test_on_publish_cancels_both_running_and_ready_groups_below_the_window(self) -> None:
+        policy = NeMoRLPolicy(sampler="windowed", max_staleness_versions=2)
+        running = _group_view(5, admit_version=0, status="running")
+        done = _group_view(6, admit_version=0, status="done")
+        fresh = _group_view(7, admit_version=4, status="done")
+        st = SimState(train_version=4, groups=(running, done, fresh))
+
+        cancels = policy.on_publish(4, st)
+
+        assert {c.group_id for c in cancels} == {5, 6}
+        assert policy.gc_dropped == 2
+
+    def test_runs_to_completion(self) -> None:
+        result = _nemo_rl_sim("windowed", max_staleness_versions=2).run()
+        assert not result.livelocked
+        assert result.versions_done == 8
+
+
+class TestNeMoRLWeightFifo:
+    def test_filters_to_the_window_but_never_cancels(self) -> None:
+        policy = NeMoRLPolicy(sampler="weight_fifo", max_staleness_versions=2)
+        groups, views = _nemo_rl_groups()
+        st = SimState(batch_size=2, train_version=4, ready_groups=groups, groups=views)
+
+        batch = policy.peek_batch(st)
+
+        assert {req.group_id for req in batch} == {1, 2}
+        assert policy.on_publish(4, st) == [], "weight_fifo has no L2, it only filters at selection."
+
+    def test_runs_to_completion(self) -> None:
+        result = _nemo_rl_sim("weight_fifo", max_staleness_versions=2).run()
+        assert not result.livelocked
+        assert result.versions_done == 8
+
+
+class TestNeMoRLReadyFirst:
+    def test_ignores_the_window_entirely(self) -> None:
+        policy = NeMoRLPolicy(sampler="ready_first")
+        groups, views = _nemo_rl_groups()
+        st = SimState(batch_size=2, train_version=4, ready_groups=groups, groups=views)
+
+        batch = policy.peek_batch(st)
+
+        assert {req.group_id for req in batch} == {0, 1}, "no lower bound: takes whichever arrived first."
+        assert policy.on_publish(4, st) == []
+
+    def test_runs_to_completion(self) -> None:
+        result = _nemo_rl_sim("ready_first").run()
+        assert not result.livelocked
+        assert result.versions_done == 8
+
+
+class TestNeMoRLInOrder:
+    def test_takes_only_the_cohort_whose_target_step_matches_train_version(self) -> None:
+        policy = NeMoRLPolicy(sampler="in_order", max_lookahead_versions=1)
+        admit_state = SimState(batch_size=2, group_size=1, train_version=0)
+        cohort_a = [_req_group(0), _req_group(1)]
+        cohort_b = [_req_group(2), _req_group(3)]
+        for group in cohort_a + cohort_b:
+            policy.on_admit(group, admit_state)
+
+        ready = [group for group in cohort_a + cohort_b]
+        select_state = SimState(batch_size=2, train_version=0, ready_groups=ready)
+
+        batch = policy.peek_batch(select_state)
+
+        assert {req.group_id for req in batch} == {0, 1}, "only the version-0 cohort is selectable now."
+
+    def test_the_next_cohort_becomes_selectable_once_train_version_catches_up(self) -> None:
+        policy = NeMoRLPolicy(sampler="in_order", max_lookahead_versions=1)
+        admit_state = SimState(batch_size=2, group_size=1, train_version=0)
+        cohort_a = [_req_group(0), _req_group(1)]
+        cohort_b = [_req_group(2), _req_group(3)]
+        for group in cohort_a + cohort_b:
+            policy.on_admit(group, admit_state)
+
+        ready = [group for group in cohort_a + cohort_b]
+        select_state = SimState(batch_size=2, train_version=1, ready_groups=ready)
+
+        batch = policy.peek_batch(select_state)
+
+        assert {req.group_id for req in batch} == {2, 3}
+
+    def test_runs_to_completion(self) -> None:
+        result = _nemo_rl_sim("in_order", max_lookahead_versions=2).run()
+        assert not result.livelocked
+        assert result.versions_done == 8
+
+
+class TestNeMoRLAdmissionGate:
+    def test_dispatch_lag_gate_closes_once_the_lookahead_is_exhausted(self) -> None:
+        policy = NeMoRLPolicy(sampler="in_order", max_lookahead_versions=1, max_inflight_prompts=100, max_buffered_rollouts=100)
+        st = SimState(batch_size=2, group_size=1, train_version=0)
+        for group_id in range(2):
+            policy.on_admit(_req_group(group_id), st)
+        # One full cohort admitted. dispatch_index is now 1, equal to train_version(0) + lookahead(1).
+        assert policy.admit_quota(st) == 0

@@ -6,6 +6,7 @@ from dataclasses import fields
 
 from .areal import ArealPolicyConfig
 from .dressage import DressagePolicyConfig
+from .nemo_rl import NeMoRLPolicyConfig
 from .openrlhf import OpenRLHFPolicyConfig
 from .psrl import PsrlPolicyConfig
 from .roll import RollPolicyConfig
@@ -24,6 +25,7 @@ PRESETS: dict[str, type] = {
     "skyrl": SkyRLPolicyConfig,
     "openrlhf": OpenRLHFPolicyConfig,
     "dressage": DressagePolicyConfig,
+    "nemo_rl": NeMoRLPolicyConfig,
 }
 
 
@@ -45,6 +47,7 @@ __all__ = [
     "PRESETS",
     "ArealPolicyConfig",
     "DressagePolicyConfig",
+    "NeMoRLPolicyConfig",
     "OpenRLHFPolicyConfig",
     "PsrlPolicyConfig",
     "RollPolicyConfig",

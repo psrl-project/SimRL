@@ -1,0 +1,27 @@
+# Staleness policy name.
+name: nemo_rl
+
+# windowed | weight_fifo | ready_first | in_order.
+sampler: in_order
+
+# windowed/weight_fifo: groups with admit_version below train_version minus
+# this are below the window. windowed also cancels them. weight_fifo just
+# never selects them.
+max_staleness_versions: 1
+
+# in_order: admission gate width. A cohort dispatched at index d is only
+# admitted once train_version >= d - max_lookahead_versions.
+max_lookahead_versions: 1
+
+# windowed only: sort the in-window ready groups newest-first instead of
+# oldest-first.
+sample_freshest_first: false
+
+# Cap on concurrently-generating prompts.
+max_inflight_prompts: 32
+
+# Cap on prompts admitted but not yet consumed by training.
+max_buffered_rollouts: 64
+
+# What a weight push does to in-flight generation.
+pause_mode: abort
