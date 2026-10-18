@@ -666,6 +666,17 @@ def run_simulate(cfg: DictConfig) -> None:
             marker = "  <- policy.horizon" if staleness == preset.horizon else ""
             share = value / result.throughput * 100 if result.throughput > 0 else 0.0
             print(f"    S={staleness}: {value:>9.1f} tok/s ({share:>5.1f}% of throughput){marker}")
+
+        report = result.staleness_report()
+        print(
+            f"  Staleness report: mean={report.mean:.2f} p50={report.p50:.0f} "
+            f"p95={report.p95:.0f} p99={report.p99:.0f} max={report.max} "
+            f"horizon={report.configured_horizon} strict={report.strict}"
+        )
+        if report.wasted_tokens:
+            wasted_total = sum(report.wasted_tokens.values())
+            breakdown = ", ".join(f"{reason}={count}" for reason, count in sorted(report.wasted_tokens.items()))
+            print(f"  Wasted tokens: {wasted_total} ({breakdown})")
     if result.livelocked:
         print("  WARNING: Simulation livelocked!")
 

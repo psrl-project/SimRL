@@ -985,6 +985,7 @@ class Simulator:
             livelocked=livelocked,
             train_timestamps=self.train_timestamps,
             train_peak_memory_bytes=self.train_peak_memory_bytes,
+            staleness_horizon=self.cfg.staleness_horizon,
         )
 
 

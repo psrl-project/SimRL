@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from ..component.rollout.engine import Request
 from ..workload.grouped import GroupedWorkload
+from .report import StalenessReport, summarize
 
 
 def clip_length(length: int, max_length: int | None) -> int:
@@ -242,6 +243,17 @@ class SimResult:
     livelocked: bool = False
     train_timestamps: list[tuple[float, float]] = field(default_factory=list)
     train_peak_memory_bytes: list[int] = field(default_factory=list)
+    staleness_horizon: int | None = None
+    """The policy's declared horizon, copied from `SimConfig` for `staleness_report`."""
+
+    def staleness_report(self) -> StalenessReport:
+        """Token-weighted staleness distribution plus wasted tokens from drops.
+
+        Every dropped request is attributed to reason "unknown" until a
+        policy-level drop site stamps `Request.drop_reason`.
+        """
+        dropped = [(r, getattr(r, "drop_reason", None) or "unknown") for r in self.dropped]
+        return summarize(self.consumed, dropped, self.staleness_horizon)
 
     @property
     def n_consumed(self) -> int:
