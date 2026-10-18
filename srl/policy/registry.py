@@ -6,6 +6,7 @@ from .areal import ArealPolicy
 from .dressage import DressagePolicy
 from .nemo_rl import NeMoRLPolicy
 from .openrlhf import OpenRLHFPolicy
+from .prime_rl import PrimeRLPolicy
 from .psrl import PSRLPolicy
 from .roll import RollPolicy
 from .skyrl import SkyRLPolicy
@@ -26,4 +27,5 @@ POLICY_REGISTRY: dict[str, type] = {
     "dressage": DressagePolicy,
     "nemo_rl": NeMoRLPolicy,
     "trl": TRLPolicy,
+    "prime_rl": PrimeRLPolicy,
 }

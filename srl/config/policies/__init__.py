@@ -8,6 +8,7 @@ from .areal import ArealPolicyConfig
 from .dressage import DressagePolicyConfig
 from .nemo_rl import NeMoRLPolicyConfig
 from .openrlhf import OpenRLHFPolicyConfig
+from .prime_rl import PrimeRLPolicyConfig
 from .psrl import PsrlPolicyConfig
 from .roll import RollPolicyConfig
 from .skyrl import SkyRLPolicyConfig
@@ -28,6 +29,7 @@ PRESETS: dict[str, type] = {
     "dressage": DressagePolicyConfig,
     "nemo_rl": NeMoRLPolicyConfig,
     "trl": TRLPolicyConfig,
+    "prime_rl": PrimeRLPolicyConfig,
 }
 
 
@@ -51,6 +53,7 @@ __all__ = [
     "DressagePolicyConfig",
     "NeMoRLPolicyConfig",
     "OpenRLHFPolicyConfig",
+    "PrimeRLPolicyConfig",
     "PsrlPolicyConfig",
     "RollPolicyConfig",
     "SkyRLPolicyConfig",

@@ -87,7 +87,7 @@ class TestStructuredConfigs:
         config_dir = str(Path(srl.config.__file__).parent / "defaults")
         for name in [
             "psrl", "verl", "verl_v1", "areal", "roll", "slime", "skyrl", "openrlhf",
-            "dressage", "nemo_rl", "trl",
+            "dressage", "nemo_rl", "trl", "prime_rl",
         ]:
             with initialize_config_dir(config_dir=config_dir, version_base=None):
                 cfg = compose(config_name="simulate", overrides=[f"policy={name}"])

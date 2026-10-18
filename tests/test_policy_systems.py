@@ -12,6 +12,7 @@ from srl.policy.dressage import DressagePolicy
 from srl.policy.ledger import GroupView
 from srl.policy.nemo_rl import NeMoRLPolicy
 from srl.policy.openrlhf import OpenRLHFPolicy
+from srl.policy.prime_rl import PrimeRLPolicy
 from srl.policy.rules import WarnOnly
 from srl.policy.skyrl import SkyRLPolicy
 from srl.policy.trl import TRLPolicy
@@ -623,3 +624,88 @@ class TestTRLIntegration:
         consumed_ids = {r.group_id for r in result.consumed}
         assert len(dropped_ids) == policy.gc_dropped
         assert dropped_ids.isdisjoint(consumed_ids), "a dropped group is never also trained on."
+
+
+class TestPrimeRLAdmission:
+    def test_dispatch_lag_gate_closes_once_the_lookahead_is_exhausted(self) -> None:
+        policy = PrimeRLPolicy(target_lag=1, max_inflight=100)
+        st = SimState(batch_size=2, group_size=1, train_version=0)
+        for group_id in range(2):
+            policy.on_admit(_req_group(group_id), st)
+        # One full cohort admitted. dispatch_index is now 1, equal to train_version(0) + target_lag(1).
+        assert policy.admit_quota(st) == 0
+
+    def test_inflight_cap_closes_independent_of_dispatch_lag(self) -> None:
+        policy = PrimeRLPolicy(target_lag=100, max_inflight=1)
+        st = SimState(batch_size=4, group_size=1, train_version=0)
+        policy.on_admit(_req_group(0), st)
+        assert policy.admit_quota(st) == 0
+
+    def test_pause_mode_is_in_place(self) -> None:
+        assert PrimeRLPolicy().pause_mode(SimState()) == "in_place"
+
+
+class TestPrimeRLPublishDedup:
+    """A finished stale group is matched by both CancelBelowVersion and VersionWindow.
+
+    Without deduplication by group id, `_inflight_groups` would be
+    decremented twice for one group, leaking capacity the policy believes
+    is still occupied.
+    """
+
+    def test_a_stale_done_group_is_cancelled_exactly_once(self) -> None:
+        policy = PrimeRLPolicy(max_off_policy_steps=0, max_inflight=10)
+        st = SimState(batch_size=1, group_size=1, train_version=0)
+        policy.on_admit(_req_group(0), st)
+
+        stale_done = _group_view(group_id=0, admit_version=0, status="done")
+        cancels = policy.on_publish(1, SimState(groups=(stale_done,), train_version=1))
+
+        assert cancels == [Cancel(0, CancelAction.REPLACE)], "the ready-pool sweep always refills, winning over DROP."
+        assert policy.gc_dropped == 1
+        assert policy._inflight_groups == 0, "one admit, one cancel: never negative, never stuck at 1."
+
+    def test_a_stale_running_group_is_also_cancelled(self) -> None:
+        policy = PrimeRLPolicy(max_off_policy_steps=0, max_inflight=10)
+        st = SimState(batch_size=1, group_size=1, train_version=0)
+        policy.on_admit(_req_group(0), st)
+
+        stale_running = _group_view(group_id=0, admit_version=0, status="running")
+        cancels = policy.on_publish(1, SimState(groups=(stale_running,), train_version=1))
+
+        assert cancels == [Cancel(0, CancelAction.DROP)], "pause_mode=in_place leaves this as the only interrupt path."
+
+
+class _FirstCancelObservingPolicy(PrimeRLPolicy):
+    """Records the train_version of the first publish that cancelled anything."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.first_cancel_version: int | None = None
+
+    def on_publish(self, new_version: int, st: SimState) -> list[Cancel]:
+        cancels = super().on_publish(new_version, st)
+        if cancels and self.first_cancel_version is None:
+            self.first_cancel_version = new_version
+        return cancels
+
+
+class TestPrimeRLIntegration:
+    def test_a_straggler_is_cancelled_at_v1_and_nothing_stale_is_ever_trained(self) -> None:
+        workload = GroupedWorkload.from_lengths([150], [3000] + [50] * 15)
+        cfg = SimConfig(batch_size=2, n_versions=20, workload=workload, ingress_window_groups=20)
+        policy = _FirstCancelObservingPolicy(max_off_policy_steps=0, max_inflight=20, target_lag=100)
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.1), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+        result = sim.run()
+
+        assert not result.livelocked
+        assert policy.first_cancel_version == 1, "a straggler admitted at v0 is stale the moment v1 publishes."
+        assert policy.gc_dropped > 0
+        assert all(req.staleness_true() <= 0 for req in result.consumed), (
+            "S=0 tolerates zero lag: every trained request's earliest token is at the version it was trained under."
+        )

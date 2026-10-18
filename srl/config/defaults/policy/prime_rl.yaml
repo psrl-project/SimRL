@@ -1,0 +1,14 @@
+# Staleness policy name.
+name: prime_rl
+
+# Publish-time cancel horizon and ready-pool sweep threshold, in versions.
+max_off_policy_steps: 8
+
+# Flat cap on groups admitted but not yet consumed or cancelled.
+max_inflight: 1024
+
+# Dispatch-lag admission gate: block while dispatch_index >= train_version + target_lag.
+target_lag: 1
+
+# How a group past max_off_policy_steps is cancelled. Only drop is modeled.
+action: drop
