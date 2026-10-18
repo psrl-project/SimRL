@@ -7,6 +7,7 @@ from dataclasses import fields
 from .areal import ArealPolicyConfig
 from .psrl import PsrlPolicyConfig
 from .roll import RollPolicyConfig
+from .skyrl import SkyRLPolicyConfig
 from .slime import SlimePolicyConfig
 from .verl import VerlPolicyConfig
 from .verl_v1 import VerlV1PolicyConfig
@@ -18,6 +19,7 @@ PRESETS: dict[str, type] = {
     "slime": SlimePolicyConfig,
     "verl": VerlPolicyConfig,
     "verl_v1": VerlV1PolicyConfig,
+    "skyrl": SkyRLPolicyConfig,
 }
 
 
@@ -40,6 +42,7 @@ __all__ = [
     "ArealPolicyConfig",
     "PsrlPolicyConfig",
     "RollPolicyConfig",
+    "SkyRLPolicyConfig",
     "SlimePolicyConfig",
     "VerlPolicyConfig",
     "VerlV1PolicyConfig",

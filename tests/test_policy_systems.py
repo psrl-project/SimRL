@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from srl.cost.rollout import UnifiedRoofline
 from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
-from srl.policy.base import Cancel, CancelAction, SimState
+from srl.policy.base import Cancel, CancelAction, PolicyContext, SimState
 from srl.policy.ledger import GroupView
+from srl.policy.rules import WarnOnly
+from srl.policy.skyrl import SkyRLPolicy
 from srl.policy.verl_v1 import VerlV1Policy
 from srl.simulator import SimConfig, Simulator
 from srl.workload.grouped import GroupedWorkload
@@ -144,3 +146,43 @@ class TestVerlV1Integration:
         assert not result.livelocked
         assert policy.blocked > 0, "the straggler must hold can_sample closed for a while."
         assert result.dropped == []
+
+
+class TestSkyRLWarnOnly:
+    """State-level proof that WarnOnly counts without ever producing a Cancel."""
+
+    def test_counts_a_violation_past_the_threshold(self) -> None:
+        rule = WarnOnly(threshold=1)
+        stale = GroupView(0, admit_version=0, start_version=0, status="done", admit_time=0.0, complete_time=0.0, members=(0,))
+        fresh = GroupView(1, admit_version=3, start_version=3, status="done", admit_time=0.0, complete_time=0.0, members=(1,))
+        st = SimState(train_version=3, groups=(stale, fresh))
+
+        violations = rule.count_violations(PolicyContext(state=st), {0, 1})
+
+        assert violations == 1, "only the group past the threshold is counted."
+
+    def test_skyrl_never_cancels(self) -> None:
+        policy = SkyRLPolicy(max_staleness_steps=1)
+        ancient = GroupView(0, admit_version=0, start_version=0, status="done", admit_time=0.0, complete_time=0.0, members=(0,))
+        st = SimState(train_version=10, groups=(ancient,))
+
+        assert policy.on_publish(10, st) == [], "SkyRL has no L2 action, staleness only warns."
+
+
+class TestSkyRLIntegration:
+    def test_a_straggler_is_consumed_and_counted_as_a_violation(self) -> None:
+        workload = GroupedWorkload.from_lengths([150], [2000, 50, 50, 50, 50, 50, 50, 50])
+        cfg = SimConfig(batch_size=4, n_versions=10, workload=workload, ingress_window_groups=16)
+        policy = SkyRLPolicy(max_staleness_steps=1)
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.5), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+        result = sim.run()
+
+        assert not result.livelocked
+        assert result.dropped == [], "SkyRL never drops for staleness."
+        assert 0 in {r.group_id for r in result.consumed}, "the straggler is still trained."
+        assert policy.staleness_violations > 0, "the straggler must be flagged, not silently ignored."

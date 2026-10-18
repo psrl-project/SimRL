@@ -58,3 +58,19 @@ class OffPolicySpan:
         admit_version = {g.group_id: g.admit_version for g in ctx.state.groups}
         ordered = sorted(ready_groups, key=lambda group: admit_version.get(group[0].group_id, 0))
         return [req for group in ordered[:batch_size] for req in group]
+
+
+@dataclass
+class WarnOnly:
+    """SkyRL's L3: count how many taken groups exceed the threshold, never drop any."""
+
+    threshold: int
+
+    def count_violations(self, ctx: PolicyContext, taken_group_ids: set[int]) -> int:
+        admit_version = {g.group_id: g.admit_version for g in ctx.state.groups}
+        return sum(
+            1
+            for group_id in taken_group_ids
+            if ctx.state.train_version - admit_version.get(group_id, ctx.state.train_version)
+            > self.threshold
+        )

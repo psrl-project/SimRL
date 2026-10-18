@@ -1,0 +1,8 @@
+# Staleness policy name.
+name: skyrl
+
+# Admission capacity bound in training steps, and the warn-only threshold.
+max_staleness_steps: 4
+
+# What a weight push does to in-flight generation.
+pause_mode: in_place
