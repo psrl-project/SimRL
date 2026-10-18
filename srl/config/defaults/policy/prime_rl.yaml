@@ -10,5 +10,7 @@ max_inflight: 1024
 # Dispatch-lag admission gate: block while dispatch_index >= train_version + target_lag.
 target_lag: 1
 
-# How a group past max_off_policy_steps is cancelled. Only drop is modeled.
+# How CancelBelowVersion cancels a still-generating group past the horizon.
+# A finished group past the horizon is always replaced regardless of this
+# setting, since the ready-pool sweep (VersionWindow) never reads it.
 action: drop

@@ -37,7 +37,12 @@ class PrimeRLPolicy(StalenessPolicy):
         self.max_off_policy_steps = max_off_policy_steps
         self.max_inflight = max_inflight
         self.target_lag = target_lag
-        cancel_action = CancelAction[action.upper()]
+        try:
+            cancel_action = CancelAction[action.upper()]
+        except KeyError:
+            raise ValueError(
+                f"Unknown action {action!r}, expected one of {[a.name.lower() for a in CancelAction]}."
+            ) from None
         self._runtime_cancel = CancelBelowVersion(horizon=max_off_policy_steps, action=cancel_action)
         self._window = VersionWindow(threshold=max_off_policy_steps, refill=True)
 

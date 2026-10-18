@@ -644,6 +644,29 @@ class TestPrimeRLAdmission:
     def test_pause_mode_is_in_place(self) -> None:
         assert PrimeRLPolicy().pause_mode(SimState()) == "in_place"
 
+    def test_unknown_action_raises_a_readable_error(self) -> None:
+        with pytest.raises(ValueError, match="Unknown action 'bogus'"):
+            PrimeRLPolicy(action="bogus")
+
+
+class TestPrimeRLIngressWindow:
+    def test_scales_with_target_lag_once_it_exceeds_the_staleness_bound(self) -> None:
+        from srl.config.policies.prime_rl import PrimeRLPolicyConfig
+
+        tight = PrimeRLPolicyConfig(max_off_policy_steps=8, max_inflight=1024, target_lag=1)
+        loose = PrimeRLPolicyConfig(max_off_policy_steps=8, max_inflight=1024, target_lag=100)
+
+        assert tight.ingress_window_groups(batch_size=8) == 80
+        assert loose.ingress_window_groups(batch_size=8) == 808, (
+            "a wide dispatch-lag gate admits far more than (max_off_policy_steps+2)*batch_size ahead."
+        )
+
+    def test_never_exceeds_max_inflight(self) -> None:
+        from srl.config.policies.prime_rl import PrimeRLPolicyConfig
+
+        cfg = PrimeRLPolicyConfig(max_off_policy_steps=8, max_inflight=50, target_lag=100)
+        assert cfg.ingress_window_groups(batch_size=8) == 50
+
 
 class TestPrimeRLPublishDedup:
     """A finished stale group is matched by both CancelBelowVersion and VersionWindow.

@@ -32,4 +32,6 @@ class PrimeRLPolicyConfig:
         return self.max_off_policy_steps
 
     def ingress_window_groups(self, batch_size: int) -> int:
-        return min(self.max_inflight, (self.max_off_policy_steps + 2) * batch_size)
+        lag_bound = (self.target_lag + 1) * batch_size
+        staleness_bound = (self.max_off_policy_steps + 2) * batch_size
+        return min(self.max_inflight, max(lag_bound, staleness_bound))
