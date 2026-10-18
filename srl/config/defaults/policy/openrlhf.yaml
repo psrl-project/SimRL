@@ -1,0 +1,11 @@
+# Staleness policy name.
+name: openrlhf
+
+# Generation permits. At most this many batch_size lumps generate or await
+# training at once.
+async_queue_size: 1
+
+# False releases a permit only after the step that consumed it publishes, so
+# nothing is ever in flight at a weight sync. True releases at consumption,
+# letting the next lump generate while this one trains.
+partial_rollout_enable: false

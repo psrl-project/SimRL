@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from srl.component.rollout.engine import Request
 from srl.cost.rollout import UnifiedRoofline
 from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
 from srl.policy.base import Cancel, CancelAction, PolicyContext, SimState
 from srl.policy.ledger import GroupView
+from srl.policy.openrlhf import OpenRLHFPolicy
 from srl.policy.rules import WarnOnly
 from srl.policy.skyrl import SkyRLPolicy
 from srl.policy.verl_v1 import VerlV1Policy
@@ -190,3 +192,87 @@ class TestSkyRLIntegration:
         assert result.dropped == [], "SkyRL never drops for staleness."
         assert 0 in {r.group_id for r in result.consumed}, "the straggler is still trained."
         assert policy.staleness_violations > 0, "the straggler must be flagged, not silently ignored."
+
+
+class _PeakTrackingPolicy(OpenRLHFPolicy):
+    """Records the highest `_lumps_in_flight` ever reached, to prove the permit holds."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.peak_lumps_in_flight = 0
+
+    def on_admit(self, group, st: SimState) -> None:
+        super().on_admit(group, st)
+        self.peak_lumps_in_flight = max(self.peak_lumps_in_flight, self._lumps_in_flight)
+
+
+def _req_group(group_id: int) -> list[Request]:
+    return [Request(rid=group_id, prompt_len=1, target_len=1, v_traj=0, group_id=group_id)]
+
+
+class TestOpenRLHFPermitPool:
+    def test_quota_closes_once_a_lump_is_fully_admitted(self) -> None:
+        policy = OpenRLHFPolicy(async_queue_size=1)
+        st = SimState(batch_size=4, group_size=1)
+        group = _req_group(0)
+
+        assert policy.admit_quota(st) == 4
+        for _ in range(4):
+            policy.on_admit(group, st)
+        assert policy.admit_quota(st) == 0
+
+    def test_block_releases_only_after_the_publish_that_follows(self) -> None:
+        policy = OpenRLHFPolicy(async_queue_size=1, partial_rollout_enable=False)
+        ready = [_req_group(gid) for gid in range(4)]
+        st = SimState(batch_size=4, group_size=1, ready_groups=ready)
+        for _ in range(4):
+            policy.on_admit(ready[0], st)
+
+        assert policy.take_batch(st) is not None
+        assert policy.admit_quota(st) == 0, "block holds the permit through training."
+
+        policy.on_train_version_advance(1, st)
+        assert policy.admit_quota(st) == 4, "the permit releases once the publish completes."
+
+    def test_in_place_releases_at_consumption_not_publish(self) -> None:
+        policy = OpenRLHFPolicy(async_queue_size=1, partial_rollout_enable=True)
+        ready = [_req_group(gid) for gid in range(4)]
+        st = SimState(batch_size=4, group_size=1, ready_groups=ready)
+        for _ in range(4):
+            policy.on_admit(ready[0], st)
+
+        assert policy.take_batch(st) is not None
+        assert policy.admit_quota(st) == 4, "partial rollout releases the permit immediately."
+
+
+class TestOpenRLHFIntegration:
+    def test_at_most_one_lump_is_ever_in_flight(self) -> None:
+        workload = GroupedWorkload.from_lengths([150], uniform(32, 50, 150, seed=5))
+        cfg = SimConfig(batch_size=4, n_versions=8, workload=workload, ingress_window_groups=8)
+        policy = _PeakTrackingPolicy(async_queue_size=1)
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.5), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+        result = sim.run()
+
+        assert not result.livelocked
+        assert result.versions_done == 8
+        assert policy.peak_lumps_in_flight <= 1
+
+    def test_partial_rollout_runs_to_completion(self) -> None:
+        workload = GroupedWorkload.from_lengths([150], uniform(32, 50, 150, seed=5))
+        cfg = SimConfig(batch_size=4, n_versions=8, workload=workload, ingress_window_groups=8)
+        policy = OpenRLHFPolicy(async_queue_size=1, partial_rollout_enable=True)
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.5), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+        result = sim.run()
+
+        assert not result.livelocked
+        assert result.versions_done == 8

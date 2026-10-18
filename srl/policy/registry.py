@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .areal import ArealPolicy
+from .openrlhf import OpenRLHFPolicy
 from .psrl import PSRLPolicy
 from .roll import RollPolicy
 from .skyrl import SkyRLPolicy
@@ -18,4 +19,5 @@ POLICY_REGISTRY: dict[str, type] = {
     "verl": VerlPolicy,
     "verl_v1": VerlV1Policy,
     "skyrl": SkyRLPolicy,
+    "openrlhf": OpenRLHFPolicy,
 }
