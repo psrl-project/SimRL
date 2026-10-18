@@ -7,7 +7,8 @@ import pytest
 from srl.component.rollout.engine import Request
 from srl.cost.rollout import UnifiedRoofline
 from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
-from srl.policy.base import Cancel, CancelAction, PolicyContext, SimState
+from srl.policy.base import Cancel, CancelAction, CompleteAction, PolicyContext, SimState
+from srl.policy.dressage import DressagePolicy
 from srl.policy.ledger import GroupView
 from srl.policy.openrlhf import OpenRLHFPolicy
 from srl.policy.rules import WarnOnly
@@ -316,3 +317,91 @@ class TestOpenRLHFIntegration:
         assert not result.livelocked
         assert policy.overlapping_publishes > 0, "queue_size=2 must let a second lump overlap a publish."
         assert all(r.num_aborts == 0 for r in result.consumed), "in_place must never abort overlapping work."
+
+
+def _dressage_group(group_id: int, version: int) -> list[Request]:
+    return [Request(rid=group_id, prompt_len=1, target_len=1, v_traj=version, group_id=group_id)]
+
+
+class TestDressageDistinctVersionWindow:
+    """State-level proof that the window keys on observation order, not version value."""
+
+    def test_a_stamped_old_version_is_dropped_once_newer_versions_were_observed_first(self) -> None:
+        policy = DressagePolicy(keep_versions=1)
+        st = SimState(batch_size=4)
+        for group_id, version in [(10, 0), (11, 1), (12, 2)]:
+            group = _dressage_group(group_id, version)
+            policy.on_admit(group, st)
+            assert policy.on_group_complete(group, st) == CompleteAction.KEEP
+
+        straggler = _dressage_group(99, 0)
+        policy.on_admit(straggler, st)
+        action = policy.on_group_complete(straggler, st)
+
+        assert action == CompleteAction.DROP, "v0 was already observed and is no longer the kept version."
+        assert policy.gc_dropped == 1
+
+    def test_zero_keep_versions_never_drops(self) -> None:
+        policy = DressagePolicy(keep_versions=0)
+        st = SimState(batch_size=4)
+        for group_id, version in [(0, 0), (1, 5), (2, 0)]:
+            group = _dressage_group(group_id, version)
+            policy.on_admit(group, st)
+            assert policy.on_group_complete(group, st) == CompleteAction.KEEP
+        assert policy.gc_dropped == 0
+
+
+class TestDressageWatermarks:
+    def test_admit_quota_closes_at_the_active_cap(self) -> None:
+        policy = DressagePolicy(max_active_groups=2)
+        st = SimState(batch_size=4, group_size=1)
+        assert policy.admit_quota(st) == 2
+        policy.on_admit(_dressage_group(0, 0), st)
+        policy.on_admit(_dressage_group(1, 0), st)
+        assert policy.admit_quota(st) == 0
+
+    def test_admit_quota_closes_at_the_queue_watermark(self) -> None:
+        policy = DressagePolicy(max_active_groups=10, output_queue_size=10)
+        st = SimState(
+            batch_size=4, group_size=1, ready_groups=[_dressage_group(i, 0) for i in range(8)]
+        )
+        assert policy.admit_quota(st) == 0, "high_watermark = 0.8 * 10 = 8, already reached."
+
+
+class TestDressageVersionSpanCap:
+    def test_cancels_a_trajectory_spanning_too_many_versions(self) -> None:
+        policy = DressagePolicy(max_partial_rollout_preempts=1)
+        req = Request(rid=0, prompt_len=1, target_len=10, v_traj=0, group_id=0)
+        req.add_tokens(0, 2)
+        req.add_tokens(1, 2)
+        st = SimState(inflight=[req])
+
+        cancels = policy.on_publish(2, st)
+
+        assert cancels == [Cancel(0, CancelAction.RETRY_FROM_SCRATCH)]
+
+    def test_disabled_cap_never_cancels(self) -> None:
+        policy = DressagePolicy(max_partial_rollout_preempts=None)
+        req = Request(rid=0, prompt_len=1, target_len=10, v_traj=0, group_id=0)
+        req.add_tokens(0, 2)
+        req.add_tokens(1, 2)
+        st = SimState(inflight=[req])
+
+        assert policy.on_publish(5, st) == []
+
+
+class TestDressageIntegration:
+    def test_runs_to_completion(self) -> None:
+        workload = GroupedWorkload.from_lengths([150], uniform(32, 50, 150, seed=5))
+        cfg = SimConfig(batch_size=4, n_versions=8, workload=workload, ingress_window_groups=16)
+        policy = DressagePolicy(keep_versions=2, max_active_groups=4)
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.5), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+        result = sim.run()
+
+        assert not result.livelocked
+        assert result.versions_done == 8

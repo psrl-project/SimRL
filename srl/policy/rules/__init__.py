@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from .admission import LegacyOverage, ProgressQuota, WatermarkGate
-from .runtime import CancelBelowVersion
-from .sampling import FIFO, OffPolicySpan, WarnOnly
+from .runtime import CancelBelowVersion, VersionSpanCap
+from .sampling import FIFO, DistinctVersionWindow, OffPolicySpan, WarnOnly
 
 __all__ = [
     "CancelBelowVersion",
+    "DistinctVersionWindow",
     "FIFO",
     "LegacyOverage",
     "OffPolicySpan",
     "ProgressQuota",
+    "VersionSpanCap",
     "WarnOnly",
     "WatermarkGate",
 ]

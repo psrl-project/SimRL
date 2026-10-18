@@ -1,0 +1,19 @@
+# Staleness policy name.
+name: dressage
+
+# Keep the last N distinct observed versions, keyed on each group's last
+# trainable token version. 0 disables the window.
+keep_versions: 0
+
+# Concurrently-generating group cap. null falls back to job.batch_size.
+max_active_groups: null
+
+# Completed-but-unconsumed queue capacity. The admit watermark is 80% of this.
+output_queue_size: 1000
+
+# Distinct versions one partial-rollout trajectory may span before it is
+# retried from scratch. null disables the cap.
+max_partial_rollout_preempts: null
+
+# What a weight push does to in-flight generation.
+pause_mode: in_place

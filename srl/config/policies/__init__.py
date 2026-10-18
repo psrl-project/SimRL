@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import fields
 
 from .areal import ArealPolicyConfig
+from .dressage import DressagePolicyConfig
 from .openrlhf import OpenRLHFPolicyConfig
 from .psrl import PsrlPolicyConfig
 from .roll import RollPolicyConfig
@@ -22,6 +23,7 @@ PRESETS: dict[str, type] = {
     "verl_v1": VerlV1PolicyConfig,
     "skyrl": SkyRLPolicyConfig,
     "openrlhf": OpenRLHFPolicyConfig,
+    "dressage": DressagePolicyConfig,
 }
 
 
@@ -42,6 +44,7 @@ def preset_config(cfg) -> object:
 __all__ = [
     "PRESETS",
     "ArealPolicyConfig",
+    "DressagePolicyConfig",
     "OpenRLHFPolicyConfig",
     "PsrlPolicyConfig",
     "RollPolicyConfig",

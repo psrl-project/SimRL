@@ -74,3 +74,22 @@ class WarnOnly:
             if ctx.state.train_version - admit_version.get(group_id, ctx.state.train_version)
             > self.threshold
         )
+
+
+@dataclass
+class DistinctVersionWindow:
+    """Dressage's L3: keep the last `keep` distinct observed versions, in arrival order.
+
+    `observed_versions` is deduplicated in the order each version was first
+    seen, not sorted by value, since the window counts how long ago a
+    version was last novel rather than how far behind it is numerically.
+    `keep <= 0` means off.
+    """
+
+    keep: int
+
+    def is_stale(self, version: int, observed_versions: list[int]) -> bool:
+        if self.keep <= 0:
+            return False
+        cutoff = max(0, len(observed_versions) - self.keep)
+        return observed_versions.index(version) < cutoff

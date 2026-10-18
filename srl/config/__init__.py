@@ -8,6 +8,7 @@ from omegaconf import OmegaConf
 from .policies import (
     PRESETS,
     ArealPolicyConfig,
+    DressagePolicyConfig,
     OpenRLHFPolicyConfig,
     PsrlPolicyConfig,
     RollPolicyConfig,
@@ -35,6 +36,7 @@ __all__ = [
     "AdmissionControlConfig",
     "ArealPolicyConfig",
     "DistributionConfig",
+    "DressagePolicyConfig",
     "JobConfig",
     "JointTraceConfig",
     "OpenRLHFPolicyConfig",
