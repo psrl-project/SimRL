@@ -217,9 +217,10 @@ closed-form helpers in C++, and mirrors CPython's semantics for the arithmetic i
 
 The two engines are selected per run:
 
-- `SIMRL_BACKEND=cpp` uses `CppInstance` and `CppRequest`.
+- `SIMRL_BACKEND=cpp`, the default, uses `CppInstance` and `CppRequest`.
 - `native` uses `NativeInstance` and `Request`.
-- `auto`, the default, uses C++ when the module imports and Python otherwise.
+- `auto` uses C++ when the module imports and no configured component is `python_engine_only`,
+  otherwise Python.
 
 The simulator wraps whatever rollout cost model was selected in `PyWrappedCostModel`, so the C++
 engine calls the same Python `predict` and `decode_coeffs`. A model that publishes `cpp_term_spec`

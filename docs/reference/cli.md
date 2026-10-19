@@ -64,18 +64,20 @@ key, so it takes the `+` form shown above.
 
 | Variable | Read by | Meaning |
 |---|---|---|
-| `SIMRL_BACKEND` | `srl` | Rollout engine backend: `auto` (default), `cpp`, or `native` |
+| `SIMRL_BACKEND` | `srl` | Rollout engine backend: `cpp` (default), `auto`, or `native` |
 | `SIMRL_UNDOABLE_EVENTS` | `srl` | Comma-separated engine event kinds that are executed speculatively and can be undone. Default `request_complete,preempt,iteration_done`. `request_complete` must be present |
 | `SIMRL_LOG_LEVEL` | `setup_logging` | Log level used when a caller passes none. `srl` itself passes `log_level` from the config, so this matters for the other scripts |
 | `SIMRL_KV_CACHE` | `srl`, `srl-profile kv-probe` | Path of the on-disk KV capacity cache. Default `~/.cache/srl/kv_capacity.json` |
 
 `SIMRL_BACKEND` selects between two implementations of the same instance engine:
 
-`auto`
-: Use the C++ engine when `srl._engine_cpp` imports, otherwise the Python engine.
+`cpp` (default)
+: Require the C++ engine. A missing module raises `ImportError`; a router strategy or eviction
+  policy marked `python_engine_only` (`inventory_deadline`, `latest_deadline`) raises `ValueError`.
 
-`cpp`
-: Require the C++ engine. A missing module raises `ImportError`.
+`auto`
+: Use the C++ engine when `srl._engine_cpp` imports and no configured component is
+  `python_engine_only`, otherwise the Python engine. Never raises on its own account.
 
 `native`
 : Use the Python engine (`NativeInstance`).

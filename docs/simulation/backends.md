@@ -21,26 +21,29 @@ choice of how `NativeInstance` and `Request` are implemented, not a different si
 
 | `SIMRL_BACKEND` | Behaviour |
 |---|---|
-| `auto` (default) | use the C++ engine if `from srl._engine_cpp import CppInstance` succeeds, otherwise the Python engine |
-| `cpp` | require the C++ engine; an `ImportError` is raised if the extension is not built |
+| `cpp` (default) | require the C++ engine; an `ImportError` is raised if the extension is not built, a `ValueError` if a configured strategy or eviction is `python_engine_only` |
+| `auto` | use the C++ engine if it imports and nothing configured is `python_engine_only`, otherwise the Python engine; never raises on its own account |
 | `native` | the Python engine |
 
-Any other value raises `ValueError`. The `Simulator` constructor itself defaults to `native`; only the CLI
-defaults to `auto`.
+Any other value raises `ValueError`. The `Simulator` constructor itself defaults to `native`,
+since it is the reference implementation used directly by tests and scripts; the CLI defaults
+to `cpp`.
 
 The run log does not print which engine was chosen. To check, run
-`python -c "import srl._engine_cpp"`, or read `Simulator._backend`, which `auto` resolves to
-`cpp` or `native` at construction.
+`python -c "import srl._engine_cpp"`, or read `Simulator._backend` after construction, which
+`auto` resolves to `cpp` or `native`.
 
 ```bash
+srl policy=psrl ...                        # cpp by default
 SIMRL_BACKEND=native srl policy=psrl ...   # the reference engine
-SIMRL_BACKEND=cpp    srl policy=verl ...   # fail loudly if the extension is missing
+SIMRL_BACKEND=auto   srl policy=verl ...   # degrade to native if the extension is missing
 ```
 
 `inventory_deadline` and the `latest_deadline` eviction strategy stamp `deadline_buffer` on
 requests, which a `CppRequest` cannot carry. Components marked `python_engine_only` make `auto`
-resolve to the Python engine, and `SIMRL_BACKEND=cpp` raise `ValueError`. Use the Python engine
-also when you want to step through engine code, or when the extension is stale.
+resolve to the Python engine, and the default `cpp` raise `ValueError` rather than silently
+degrade. Use the Python engine also when you want to step through engine code, or when the
+extension is stale.
 
 ## Building the extension
 

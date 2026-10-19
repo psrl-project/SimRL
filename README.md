@@ -22,8 +22,9 @@ Three concerns, three components, one documented seam between each pair:
 | Model | `srl/cost/` | Fits coefficients plus a validity domain from that JSONL: rollout cost (roofline, composed, distserve, psrl), training cost (fixed, analytical, linear, hydraulis, FSDP latency/memory), and a kernel database behind both. Models interpolate; they never measure. |
 | Simulate | `srl/simulator/`, `srl/policy/`, `srl/component/` | Drives the rollout/training loop under one of twelve typed system presets, asking the cost models for latency and peak memory as it goes. |
 
-The rollout engine has two interchangeable backends — a Python reference engine and a C++ engine selected
-via `SIMRL_BACKEND` — documented in [`docs/simulation/backends.md`](docs/simulation/backends.md).
+The rollout engine has two interchangeable backends. The C++ engine runs by default; set
+`SIMRL_BACKEND=native` for the Python reference engine. See
+[`docs/simulation/backends.md`](docs/simulation/backends.md).
 
 ## Install
 

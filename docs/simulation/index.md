@@ -113,8 +113,9 @@ and the workload sources in {doc}`../workload/index`.
    never charges. See `clip_total_length` in `srl/simulator/config.py`.
 5. **A cost model refuses out-of-domain queries** instead of extrapolating. This is the
    most common first-run failure. See {doc}`domain-gates`.
-6. **`SIMRL_BACKEND=auto` picks the C++ engine when it is built.** Some features only work
-   on the Python engine. See {doc}`backends`.
+6. **The C++ engine runs by default (`SIMRL_BACKEND=cpp`).** Some features only work on the
+   Python engine; those are marked `python_engine_only` and raise under `cpp` rather than
+   silently switching. See {doc}`backends`.
 
 ## Sync and recompute costs
 
@@ -141,7 +142,7 @@ Two small cost models are added to every training step.
 
 | Variable | Read in | Meaning |
 |---|---|---|
-| `SIMRL_BACKEND` | `srl/cli/main.py` | `auto` (default), `native`, `cpp`. See {doc}`backends` |
+| `SIMRL_BACKEND` | `srl/cli/main.py` | `cpp` (default), `auto`, `native`. See {doc}`backends` |
 | `SIMRL_UNDOABLE_EVENTS` | `srl/cli/main.py` | comma list of engine events that get speculative undo, default `request_complete,preempt,iteration_done`. See {doc}`backends` |
 
 Hydra's `+log_exclude='instance,rollout_step'` drops telemetry streams at the source, see

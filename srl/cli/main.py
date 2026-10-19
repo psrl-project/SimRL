@@ -613,7 +613,7 @@ def run_simulate(cfg: DictConfig) -> None:
     if log_exclude:
         srl_logger.info(f"Telemetry streams suppressed: {', '.join(log_exclude)}.")
 
-    backend = os.environ.get("SIMRL_BACKEND", "auto")
+    backend = os.environ.get("SIMRL_BACKEND", "cpp")
 
     sim = Simulator(
         rollout_cost=rollout_cost,

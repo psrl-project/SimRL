@@ -250,9 +250,10 @@ at a tree swept at the same degree ({doc}`02-kernels`).
 
 ## Choosing the rollout engine
 
-`srl` runs the compiled C++ rollout engine when it is available and the Python engine
-otherwise. `SIMRL_BACKEND=native` forces the Python engine and `SIMRL_BACKEND=cpp` requires
-the C++ one; the default is `auto`. {doc}`../../simulation/backends` covers how the two relate.
+`srl` runs the compiled C++ rollout engine by default (`SIMRL_BACKEND=cpp`).
+`SIMRL_BACKEND=native` forces the Python engine, and `SIMRL_BACKEND=auto` falls back to it only
+when the extension cannot be imported or the configuration needs Python-only request state.
+{doc}`../../simulation/backends` covers how the two relate.
 
 ## How to tell it worked
 

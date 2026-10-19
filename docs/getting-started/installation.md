@@ -138,12 +138,13 @@ not resolve. Variables the code reads:
 | Variable | Read by | Meaning |
 |---|---|---|
 | `MODEL_PATH` | `examples/profile/**/*.yaml` | Checkpoint directory for profiling configs |
-| `SIMRL_BACKEND` | `srl` | Rollout engine: `auto` (default), `native`, or `cpp` |
+| `SIMRL_BACKEND` | `srl` | Rollout engine: `cpp` (default), `auto`, or `native` |
 | `SIMRL_KV_CACHE` | `srl`, `srl-profile kv-probe` | KV-capacity cache file; default `~/.cache/srl/kv_capacity.json` |
 | `SIMRL_LOG_LEVEL` | all CLIs | Level of the `srl` logger; default `INFO` |
 
-`SIMRL_BACKEND=auto` uses the compiled C++ engine when `srl._engine_cpp` imports and falls back
-to the Python engine otherwise. {doc}`../simulation/backends` explains the two engines.
+The C++ engine runs by default. `SIMRL_BACKEND=auto` uses it when `srl._engine_cpp` imports and
+falls back to the Python engine otherwise; `SIMRL_BACKEND=native` forces the Python engine.
+{doc}`../simulation/backends` explains the two engines.
 
 ---
 
