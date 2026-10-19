@@ -440,7 +440,7 @@ TRL（`huggingface/trl`，`trl/experimental/async_grpo/`）使用
 `max_staleness: int = 4`。帮助文本为：“一个 rollout 样本最多可以落后当前模型版本
 多少个权重更新 step，超过后将被丢弃。”
 
-该参数在消费时执行（`async_grpo_trainer.py:362-367`）：
+该参数在消费时执行（`async_grpo_trainer.py:368-372`）：
 
 ```python
 staleness = version - sample.model_version
@@ -457,8 +457,9 @@ model_version=self.model_version, ...)`，由 `if group_id not in pending_groups
 不是它最终落地时的版本。
 
 值得注意的是，它的容量参数由年龄参数*推导*而来：`max_inflight_tasks` 默认为
-`max_staleness * samples_per_step`。其明确理由是：如果生成更多样本，多出来的部分
-最终会因陈旧而被丢弃，从而浪费计算。这个推理方向与租约类系统相反。
+`max(max_staleness, 1) * samples_per_step`（这个下限是为了防止 `max_staleness=0`
+把 rollout 直接归零，源码旁边有对应注释）。其明确理由是：如果生成更多样本，多出来
+的部分最终会因陈旧而被丢弃，从而浪费计算。这个推理方向与租约类系统相反。
 
 ### 5.4 生成过程中执行：prime-rl
 
@@ -606,10 +607,15 @@ SimRL 的价值恰好体现在这里。响应式取消仍要支付取消点之�
 
 ## 9. 对 SimRL 的启示
 
-上文调研的十二个系统，现在在 `srl/policy/` 下都有对应的 `StalenessPolicy`；所有
-会在运行时取消任务的策略共用的分层 `Cancel`/`on_publish` 机制，已经完全取代了早期
-更狭窄的 `expire()` hook，因此不再存在“某个系统还缺一个尚未实现的 hook”这类逐系统
-空缺。
+上文调研的十二个系统中，有十一个现在在 `srl/policy/` 下都有对应的
+`StalenessPolicy`（`srl/policy/registry.py` 的 `POLICY_REGISTRY` 恰好列出十二项，
+但其中一项是 `psrl`——SimRL 自己的基线策略，并非被调研的外部系统，所以是
+“十二项注册，十一个调研系统”，不是“十二个调研系统都有”）。唯一的例外是
+Trinity-RFT：它在 synchroniser 层跟踪 `model_version`，却从不把版本附加到单条
+experience 上，因此没有逐样本的量可供策略挂钩（参见上文对它的“结构性”分类）。
+所有会在运行时取消任务的策略共用的分层 `Cancel`/`on_publish` 机制，已经完全取代了
+早期更狭窄的 `expire()` hook，因此在已实现的这十一个系统中，不再存在“某个系统还缺
+一个尚未实现的 hook”这类逐系统空缺。
 
 - `ArealPolicy`（`srl/policy/areal.py`）精确复现了 AReaL 的公式，包括
   `accepted + running` 项，并声明不存在 L2。策略文档称它“不限制单个样本的年龄”是

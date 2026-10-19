@@ -461,7 +461,7 @@ generation time versus queue time (`off_policy/in_flight/*` versus
 **TRL** (`huggingface/trl`, `trl/experimental/async_grpo/`) uses
 `max_staleness: int = 4`, help text *"Maximum number of weight update steps a rollout
 sample can lag behind the current model version before being discarded."* Enforced at
-consume time (`async_grpo_trainer.py:362-367`): `staleness = version - sample.model_version`,
+consume time (`async_grpo_trainer.py:368-372`): `staleness = version - sample.model_version`,
 then `continue` to drop. `sample.model_version` is stamped once, when a `RolloutGroup` is
 first created (`async_rollout_worker.py`, `pending_groups[group_id] = RolloutGroup(...,
 model_version=self.model_version, ...)` guarded by `if group_id not in pending_groups`)
@@ -470,9 +470,10 @@ and only ever propagated from the group to its individual samples afterward
 generation completion. A group that takes several weight syncs to finish generating is
 staled against the version it started under, not the version current when it finally
 lands. Notably, its capacity knob is *derived from* the age knob — `max_inflight_tasks`
-defaults to `max_staleness * samples_per_step`, on the stated rationale that generating
-more would be wasteful since the surplus would be discarded as stale. This is the inverse
-of the lease family's reasoning.
+defaults to `max(max_staleness, 1) * samples_per_step` (the floor keeps `max_staleness=0`
+from zeroing out the rollout entirely, per the source comment next to it), on the stated
+rationale that generating more would be wasteful since the surplus would be discarded as
+stale. This is the inverse of the lease family's reasoning.
 
 **NeMo-RL** (`NVIDIA-NeMo/RL`) exposes staleness as a pluggable policy — a discriminated
 union of `windowed`, `ready_first`, `weight_fifo` and `in_order` samplers, each with
@@ -552,10 +553,15 @@ same waste; they disagree about which quantity to fix.
 
 ## Implications for SimRL
 
-All twelve systems surveyed above now have a corresponding `StalenessPolicy` under
-`srl/policy/`; the layered `Cancel`/`on_publish` mechanism that every runtime-cancelling
-policy shares replaced an earlier, narrower `expire()` hook entirely, so there is no
-longer a per-system "this one needs a hook that does not exist yet" gap.
+Eleven of the twelve systems surveyed above now have a corresponding `StalenessPolicy`
+under `srl/policy/` (`POLICY_REGISTRY` in `srl/policy/registry.py` lists eleven, plus
+`psrl` for SimRL's own baseline — twelve entries total, not twelve-of-the-survey).
+Trinity-RFT is the one exception: it tracks `model_version` at the synchroniser level
+but never attaches a version to an individual experience, so there is no per-sample
+quantity to key a policy on (see its "structural" classification above). The layered
+`Cancel`/`on_publish` mechanism that every runtime-cancelling policy shares replaced an
+earlier, narrower `expire()` hook entirely, so there is no longer a per-system "this one
+needs a hook that does not exist yet" gap among the eleven that are implemented.
 
 - `ArealPolicy` (`srl/policy/areal.py`) reproduces AReaL's formula exactly, including the
   `accepted + running` term, and declares no L2. The policy documentation's claim that it
