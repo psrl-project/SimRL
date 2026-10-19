@@ -2,7 +2,7 @@
   "areal": {
     "backends_agree": true,
     "livelocked": false,
-    "n_consumed": 512,
+    "n_consumed": 1280,
     "n_dropped": 0,
     "staleness_report": {
       "configured_horizon": 0,
@@ -10,41 +10,41 @@
       "max_reported": 0,
       "mean": 0.0,
       "mean_reported": 0.0,
-      "n_requests": 512,
-      "n_tokens": 5081046,
+      "n_requests": 1280,
+      "n_tokens": 12030859,
       "p50": 0.0,
       "p95": 0.0,
       "p99": 0.0,
       "strict": true,
       "wasted_tokens": {}
     },
-    "versions_done": 8
+    "versions_done": 20
   },
   "dressage": {
     "backends_agree": true,
     "livelocked": false,
-    "n_consumed": 512,
+    "n_consumed": 1280,
     "n_dropped": 0,
     "staleness_report": {
       "configured_horizon": null,
-      "max": 1,
+      "max": 2,
       "max_reported": 1,
-      "mean": 0.880112480776596,
-      "mean_reported": 0.004993656817907179,
-      "n_requests": 512,
-      "n_tokens": 5081046,
+      "mean": 0.9943396394222557,
+      "mean_reported": 0.04433432392483363,
+      "n_requests": 1280,
+      "n_tokens": 12030859,
       "p50": 1.0,
-      "p95": 1.0,
-      "p99": 1.0,
+      "p95": 2.0,
+      "p99": 2.0,
       "strict": null,
       "wasted_tokens": {}
     },
-    "versions_done": 8
+    "versions_done": 20
   },
   "nemo_rl": {
     "backends_agree": true,
     "livelocked": false,
-    "n_consumed": 512,
+    "n_consumed": 1280,
     "n_dropped": 0,
     "staleness_report": {
       "configured_horizon": 1,
@@ -52,20 +52,20 @@
       "max_reported": 0,
       "mean": 0.0,
       "mean_reported": 0.0,
-      "n_requests": 512,
-      "n_tokens": 5081046,
+      "n_requests": 1280,
+      "n_tokens": 12030859,
       "p50": 0.0,
       "p95": 0.0,
       "p99": 0.0,
       "strict": true,
       "wasted_tokens": {}
     },
-    "versions_done": 8
+    "versions_done": 20
   },
   "openrlhf": {
     "backends_agree": true,
     "livelocked": false,
-    "n_consumed": 512,
+    "n_consumed": 1280,
     "n_dropped": 0,
     "staleness_report": {
       "configured_horizon": null,
@@ -73,20 +73,20 @@
       "max_reported": 0,
       "mean": 0.0,
       "mean_reported": 0.0,
-      "n_requests": 512,
-      "n_tokens": 5081046,
+      "n_requests": 1280,
+      "n_tokens": 12030859,
       "p50": 0.0,
       "p95": 0.0,
       "p99": 0.0,
       "strict": null,
       "wasted_tokens": {}
     },
-    "versions_done": 8
+    "versions_done": 20
   },
   "prime_rl": {
     "backends_agree": true,
     "livelocked": false,
-    "n_consumed": 512,
+    "n_consumed": 1280,
     "n_dropped": 0,
     "staleness_report": {
       "configured_horizon": 8,
@@ -94,150 +94,150 @@
       "max_reported": 0,
       "mean": 0.0,
       "mean_reported": 0.0,
-      "n_requests": 512,
-      "n_tokens": 5081046,
+      "n_requests": 1280,
+      "n_tokens": 12030859,
       "p50": 0.0,
       "p95": 0.0,
       "p99": 0.0,
       "strict": true,
       "wasted_tokens": {}
     },
-    "versions_done": 8
+    "versions_done": 20
   },
   "psrl": {
     "backends_agree": true,
     "livelocked": false,
-    "n_consumed": 512,
+    "n_consumed": 1280,
     "n_dropped": 0,
     "staleness_report": {
       "configured_horizon": 2,
       "max": 2,
       "max_reported": 2,
-      "mean": 1.547559892195426,
-      "mean_reported": 0.4978289903299439,
-      "n_requests": 512,
-      "n_tokens": 5081046,
+      "mean": 1.615579818531661,
+      "mean_reported": 0.5351857253085586,
+      "n_requests": 1280,
+      "n_tokens": 12030859,
       "p50": 2.0,
       "p95": 2.0,
       "p99": 2.0,
       "strict": true,
       "wasted_tokens": {}
     },
-    "versions_done": 8
+    "versions_done": 20
   },
   "roll": {
     "backends_agree": true,
     "livelocked": false,
-    "n_consumed": 512,
-    "n_dropped": 8,
+    "n_consumed": 1280,
+    "n_dropped": 112,
     "staleness_report": {
       "configured_horizon": 1,
       "max": 1,
       "max_reported": 1,
-      "mean": 0.8638908561667699,
-      "mean_reported": 0.13551745138417848,
-      "n_requests": 512,
-      "n_tokens": 5080342,
+      "mean": 0.834298049837823,
+      "mean_reported": 0.13520858001169195,
+      "n_requests": 1280,
+      "n_tokens": 11910753,
       "p50": 1.0,
       "p95": 1.0,
       "p99": 1.0,
       "strict": true,
       "wasted_tokens": {
-        "l2_cancel": 89232
+        "l2_cancel": 1158258
       }
     },
-    "versions_done": 8
+    "versions_done": 20
   },
   "skyrl": {
     "backends_agree": true,
     "livelocked": false,
-    "n_consumed": 512,
+    "n_consumed": 1280,
     "n_dropped": 0,
     "staleness_report": {
       "configured_horizon": 4,
       "max": 5,
       "max_reported": 4,
-      "mean": 2.7176390451887267,
-      "mean_reported": 0.3601726888518624,
-      "n_requests": 512,
-      "n_tokens": 5081046,
-      "p50": 3.0,
+      "mean": 3.5712668912947776,
+      "mean_reported": 0.32077450097856725,
+      "n_requests": 1280,
+      "n_tokens": 11909759,
+      "p50": 4.0,
       "p95": 5.0,
       "p99": 5.0,
       "strict": false,
       "wasted_tokens": {}
     },
-    "versions_done": 8
+    "versions_done": 20
   },
   "slime": {
     "backends_agree": true,
     "livelocked": false,
-    "n_consumed": 512,
+    "n_consumed": 1280,
     "n_dropped": 0,
     "staleness_report": {
       "configured_horizon": null,
       "max": 1,
       "max_reported": 0,
-      "mean": 0.880112480776596,
+      "mean": 0.9493673726871872,
       "mean_reported": 0.0,
-      "n_requests": 512,
-      "n_tokens": 5081046,
+      "n_requests": 1280,
+      "n_tokens": 12030859,
       "p50": 1.0,
       "p95": 1.0,
       "p99": 1.0,
       "strict": null,
       "wasted_tokens": {}
     },
-    "versions_done": 8
+    "versions_done": 20
   },
   "trl": {
     "backends_agree": true,
     "livelocked": false,
-    "n_consumed": 512,
-    "n_dropped": 8,
+    "n_consumed": 1280,
+    "n_dropped": 32,
     "staleness_report": {
       "configured_horizon": 4,
       "max": 5,
       "max_reported": 3,
-      "mean": 2.6655593229074266,
-      "mean_reported": 0.289004034843765,
-      "n_requests": 512,
-      "n_tokens": 5044805,
-      "p50": 3.0,
-      "p95": 4.0,
+      "mean": 3.3999018844120665,
+      "mean_reported": 0.2600958889336194,
+      "n_requests": 1280,
+      "n_tokens": 12044977,
+      "p50": 4.0,
+      "p95": 5.0,
       "p99": 5.0,
       "strict": false,
       "wasted_tokens": {
-        "l3_stale": 77237
+        "l3_stale": 313114
       }
     },
-    "versions_done": 8
+    "versions_done": 20
   },
   "verl": {
     "backends_agree": true,
     "livelocked": false,
-    "n_consumed": 512,
+    "n_consumed": 1280,
     "n_dropped": 0,
     "staleness_report": {
       "configured_horizon": 2,
       "max": 3,
       "max_reported": 2,
-      "mean": 1.6943610723253855,
-      "mean_reported": 0.31926998631663556,
-      "n_requests": 512,
-      "n_tokens": 5009002,
+      "mean": 1.906750507158425,
+      "mean_reported": 0.30164537857138257,
+      "n_requests": 1280,
+      "n_tokens": 11957309,
       "p50": 2.0,
       "p95": 3.0,
       "p99": 3.0,
       "strict": false,
       "wasted_tokens": {}
     },
-    "versions_done": 8
+    "versions_done": 20
   },
   "verl_v1": {
     "backends_agree": true,
     "livelocked": false,
-    "n_consumed": 512,
+    "n_consumed": 1280,
     "n_dropped": 0,
     "staleness_report": {
       "configured_horizon": 8,
@@ -245,14 +245,14 @@
       "max_reported": 0,
       "mean": 0.0,
       "mean_reported": 0.0,
-      "n_requests": 512,
-      "n_tokens": 5081046,
+      "n_requests": 1280,
+      "n_tokens": 12030859,
       "p50": 0.0,
       "p95": 0.0,
       "p99": 0.0,
       "strict": true,
       "wasted_tokens": {}
     },
-    "versions_done": 8
+    "versions_done": 20
   }
 }

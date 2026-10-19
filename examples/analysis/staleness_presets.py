@@ -28,9 +28,12 @@ from srl.simulator import SimConfig, Simulator  # noqa: E402
 from srl.workload.grouped import GroupedWorkload  # noqa: E402
 
 TRACE_PATH = REPO / "outputs" / "workload" / "psrl_aligned" / "joint.jsonl"
-TRACE_N_GROUPS = 32
+TRACE_N_GROUPS = 0  # 0 reads every group in the trace (160, as of this trace file).
 BATCH_SIZE = 8
-N_VERSIONS = 8
+# 160 groups / batch_size 8 = 20 training steps for exactly one pass with no
+# wraparound, so every preset's report reflects the trace's full diversity
+# rather than two cycles of a narrow slice.
+N_VERSIONS = 20
 OUT_PATH = REPO / "outputs" / "analysis" / "staleness_presets.json"
 
 
