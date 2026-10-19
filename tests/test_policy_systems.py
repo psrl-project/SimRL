@@ -42,7 +42,10 @@ def _verl_v1_sim(
     policy_cls: type[VerlV1Policy] = VerlV1Policy,
 ) -> Simulator:
     workload = GroupedWorkload.from_lengths([150], uniform(16, 50, 150, seed=3))
-    cfg = SimConfig(batch_size=4, n_versions=n_versions, workload=workload, ingress_window_groups=16)
+    cfg = SimConfig(
+        batch_size=4, n_versions=n_versions, workload=workload, ingress_window_groups=16,
+        staleness_horizon=threshold,
+    )
     policy = policy_cls(
         num_warmup_batches=warmup, max_off_policy_threshold=threshold, max_off_policy_strategy=strategy
     )
@@ -122,6 +125,7 @@ class TestVerlV1Integration:
         result = _verl_v1_sim("drop", threshold=2, n_versions=6).run()
         assert not result.livelocked
         assert result.versions_done == 6
+        assert result.staleness_report().strict is True, "drop evicts anything the horizon would violate."
 
     def test_wait_runs_to_completion_and_never_evicts(self) -> None:
         result = _verl_v1_sim("wait", threshold=2, n_versions=6).run()
@@ -184,7 +188,7 @@ class TestSkyRLWarnOnly:
 class TestSkyRLIntegration:
     def test_a_straggler_is_consumed_and_counted_as_a_violation(self) -> None:
         workload = GroupedWorkload.from_lengths([150], [2000, 50, 50, 50, 50, 50, 50, 50])
-        cfg = SimConfig(batch_size=4, n_versions=10, workload=workload, ingress_window_groups=16)
+        cfg = SimConfig(batch_size=4, n_versions=10, workload=workload, ingress_window_groups=16, staleness_horizon=1)
         policy = SkyRLPolicy(max_staleness_steps=1)
         sim = Simulator(
             rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
@@ -198,6 +202,7 @@ class TestSkyRLIntegration:
         assert result.dropped == [], "SkyRL never drops for staleness."
         assert 0 in {r.group_id for r in result.consumed}, "the straggler is still trained."
         assert policy.staleness_violations > 0, "the straggler must be flagged, not silently ignored."
+        assert result.staleness_report().strict is False, "warn-only never enforces the declared horizon."
 
 
 class _PeakTrackingPolicy(OpenRLHFPolicy):
@@ -321,6 +326,29 @@ class TestOpenRLHFIntegration:
         assert policy.overlapping_publishes > 0, "queue_size=2 must let a second lump overlap a publish."
         assert all(r.num_aborts == 0 for r in result.consumed), "in_place must never abort overlapping work."
 
+    def test_a_straggler_is_not_bounded_by_the_permit_pool(self) -> None:
+        """The permit pool caps batches in flight, not how long one takes to finish:
+
+        a straggler can hold the single permit for as long as it needs, and
+        nothing here checks its generation version against the training
+        version once it is finally released.
+        """
+        workload = GroupedWorkload.from_lengths([150], [10000] + [50] * 11)
+        cfg = SimConfig(batch_size=2, staleness_horizon=0, n_versions=30, workload=workload, ingress_window_groups=24)
+        policy = OpenRLHFPolicy(async_queue_size=1, partial_rollout_enable=True)
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.5), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+        result = sim.run()
+
+        assert not result.livelocked
+        report = result.staleness_report()
+        assert report.max > cfg.staleness_horizon
+        assert report.strict is False
+
 
 def _dressage_group(group_id: int, version: int) -> list[Request]:
     return [Request(rid=group_id, prompt_len=1, target_len=1, v_traj=version, group_id=group_id)]
@@ -396,7 +424,9 @@ class TestDressageVersionSpanCap:
 class TestDressageIntegration:
     def test_runs_to_completion(self) -> None:
         workload = GroupedWorkload.from_lengths([150], uniform(32, 50, 150, seed=5))
-        cfg = SimConfig(batch_size=4, n_versions=8, workload=workload, ingress_window_groups=16)
+        cfg = SimConfig(
+            batch_size=4, n_versions=8, workload=workload, ingress_window_groups=16, staleness_horizon=2
+        )
         policy = DressagePolicy(keep_versions=2, max_active_groups=4)
         sim = Simulator(
             rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
@@ -408,6 +438,10 @@ class TestDressageIntegration:
 
         assert not result.livelocked
         assert result.versions_done == 8
+        report = result.staleness_report()
+        assert report.max_reported <= cfg.staleness_horizon, (
+            "keep_versions bounds the last-trainable-token (reported) version, not v_min."
+        )
 
     def test_span_cap_cancellations_release_the_active_slot(self) -> None:
         """A group discarded by VersionSpanCap must free its L1 slot, not leak it.
@@ -490,6 +524,24 @@ class TestNeMoRLWindowed:
         assert not result.livelocked
         assert result.versions_done == 8
 
+    def test_a_straggler_never_trains_past_the_window(self) -> None:
+        workload = GroupedWorkload.from_lengths([150], [3000] + [50] * 11)
+        cfg = SimConfig(
+            batch_size=2, n_versions=20, workload=workload, ingress_window_groups=24, staleness_horizon=2
+        )
+        policy = NeMoRLPolicy(sampler="windowed", max_staleness_versions=2, max_inflight_prompts=24, max_buffered_rollouts=24)
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.1), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+        result = sim.run()
+
+        assert not result.livelocked
+        assert policy.gc_dropped > 0, "the straggler must go stale under the window."
+        assert result.staleness_report().strict is True
+
 
 class TestNeMoRLWeightFifo:
     def test_filters_to_the_window_but_never_cancels(self) -> None:
@@ -523,6 +575,32 @@ class TestNeMoRLReadyFirst:
         result = _nemo_rl_sim("ready_first").run()
         assert not result.livelocked
         assert result.versions_done == 8
+
+    def test_a_straggler_is_not_bounded_by_fifo_selection(self) -> None:
+        """No lower bound means a straggler can sit arbitrarily far behind:
+
+        later, faster cohorts are free to train around it, so nothing here
+        checks its generation version against the training version.
+        """
+        workload = GroupedWorkload.from_lengths([150], [10000] + [50] * 11)
+        cfg = SimConfig(
+            batch_size=2, n_versions=40, workload=workload, ingress_window_groups=24, staleness_horizon=2
+        )
+        policy = NeMoRLPolicy(
+            sampler="ready_first", max_staleness_versions=100, max_inflight_prompts=24, max_buffered_rollouts=24
+        )
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.1), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+        result = sim.run()
+
+        assert not result.livelocked
+        report = result.staleness_report()
+        assert report.max > cfg.staleness_horizon, "the straggler must outrun the declared horizon."
+        assert report.strict is False
 
 
 class TestNeMoRLInOrder:
@@ -608,7 +686,9 @@ class TestTRLVersionWindow:
 class TestTRLIntegration:
     def test_a_straggler_is_dropped_and_refilled_once_it_goes_stale(self) -> None:
         workload = GroupedWorkload.from_lengths([150], [3000] + [50] * 11)
-        cfg = SimConfig(batch_size=2, n_versions=20, workload=workload, ingress_window_groups=24)
+        cfg = SimConfig(
+            batch_size=2, n_versions=20, workload=workload, ingress_window_groups=24, staleness_horizon=0
+        )
         policy = TRLPolicy(max_staleness=0, max_inflight_tasks=24)
         sim = Simulator(
             rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
@@ -624,6 +704,7 @@ class TestTRLIntegration:
         consumed_ids = {r.group_id for r in result.consumed}
         assert len(dropped_ids) == policy.gc_dropped
         assert dropped_ids.isdisjoint(consumed_ids), "a dropped group is never also trained on."
+        assert result.staleness_report().strict is True
 
 
 class TestPrimeRLAdmission:
@@ -716,7 +797,9 @@ class _FirstCancelObservingPolicy(PrimeRLPolicy):
 class TestPrimeRLIntegration:
     def test_a_straggler_is_cancelled_at_v1_and_nothing_stale_is_ever_trained(self) -> None:
         workload = GroupedWorkload.from_lengths([150], [3000] + [50] * 15)
-        cfg = SimConfig(batch_size=2, n_versions=20, workload=workload, ingress_window_groups=20)
+        cfg = SimConfig(
+            batch_size=2, n_versions=20, workload=workload, ingress_window_groups=20, staleness_horizon=0
+        )
         policy = _FirstCancelObservingPolicy(max_off_policy_steps=0, max_inflight=20, target_lag=100)
         sim = Simulator(
             rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
@@ -732,3 +815,4 @@ class TestPrimeRLIntegration:
         assert all(req.staleness_true() <= 0 for req in result.consumed), (
             "S=0 tolerates zero lag: every trained request's earliest token is at the version it was trained under."
         )
+        assert result.staleness_report().strict is True

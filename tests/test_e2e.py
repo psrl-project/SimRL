@@ -180,6 +180,22 @@ class TestArealTokenBucket:
         assert not result.livelocked
         assert result.versions_done == 10
 
+    def test_a_straggler_is_consumed_unbounded_and_the_report_is_not_strict(self):
+        """AReaL's bucket counts running prompts, not their age: a straggler holds
+
+        one `running` slot for as long as it takes while the bucket keeps growing
+        with `train_version`, so nothing stops its eventual staleness from
+        exceeding the declared horizon.
+        """
+        workload = GroupedWorkload.from_lengths([150], [10000] + [50] * 11)
+        cfg = SimConfig(batch_size=2, staleness_horizon=2, n_versions=40, workload=workload)
+        result = _run_sim(ArealPolicy(), None, cfg)
+
+        assert not result.livelocked
+        report = result.staleness_report()
+        assert report.max > cfg.staleness_horizon, "the straggler must outrun the declared horizon."
+        assert report.strict is False
+
 
 class TestRollBound:
     def test_bound_holds_uniform(self):
@@ -189,6 +205,7 @@ class TestRollBound:
         assert not result.livelocked
         for r in result.consumed:
             assert r.staleness_true() <= cfg.staleness_horizon
+        assert result.staleness_report().strict is True
 
 
 def _roll_sim(group_size: int, store=None, n_versions: int = 10):
@@ -308,6 +325,26 @@ class TestSlimeBarrier:
         assert not result.livelocked
         for r in result.consumed:
             assert r.staleness_true() <= 2
+
+    def test_a_straggler_under_admission_alone_is_not_bounded(self):
+        """A wide ingress window lets several cohorts stage ahead, so one can be
+
+        admitted at an earlier version and still be mid-generation once a
+        later cohort's own consumption has pushed the version forward.
+        Nothing here checks a group's generation version at training time,
+        so admission concurrency alone does not bound its eventual staleness.
+        """
+        workload = GroupedWorkload.from_lengths([150], [10000] + [50] * 11)
+        cfg = SimConfig(
+            batch_size=2, staleness_horizon=0, n_versions=40, ingress_window_groups=24, workload=workload
+        )
+        policy = SlimePolicy(update_weights_interval=1, over_sampling_ratio=4.0, pause_mode="in_place")
+        result = _run_sim(policy, None, cfg)
+
+        assert not result.livelocked
+        report = result.staleness_report()
+        assert report.max > cfg.staleness_horizon, "some cohort must train with a nonzero version gap."
+        assert report.strict is False
 
 
 class TestVerlAsync:
