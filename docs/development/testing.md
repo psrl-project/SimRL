@@ -1,121 +1,166 @@
 # Testing
 
-The suite mixes two kinds of test, and telling them apart matters: some are gates that must
-pass anywhere, and some are instruments that only work on a machine holding measured data or a
-local checkpoint. The second kind **skips** rather than fails on a fresh clone.
+The suite under `tests/` is flat. File names carry the grouping, and the grouping decides what a
+test needs to run:
+
+| Prefix | Covers |
+|---|---|
+| `test_kernel_*` | Kernel ops, sweeps, grids, perf tables, SOL, floors, holdout, the composed validation, and the import boundary |
+| `test_engine_cpp_*` | The C++ engine and its agreement with the Python engine |
+| `test_rollout_*`, `test_advance.py`, `test_composed_term_memo.py` | Rollout cost models, segment integration and the closed form |
+| `test_training_*`, `test_fsdp_*` | Training cost models, the shared latency form, FSDP inventory and the FSDP profiler |
+| `test_megatron_launch.py`, `test_profile_adapters.py`, `test_profiling_cli.py`, `test_hf_model.py` | Profiler adapters and the profiling CLI |
+| `test_forecast_*`, `test_staleness_report.py` | The drain and pipeline forecasts, and the staleness report |
+| `test_kv_*`, `test_eviction_strategies.py`, `test_router*.py`, `test_length_aware.py`, `test_inventory_deadline_strategy.py` | The engine's KV pool and the router |
+| `test_policy_*`, `test_scg.py`, `test_simulator_runtime.py`, `test_dynamic_parallel_fleet.py` | Policies, the simulator driver and the runtime facade |
+| `test_workload_*`, `test_prefix_probe.py` | Distribution sampling, group traces, sharding and collection |
+| `test_telemetry.py`, `test_jsonl_store.py`, `test_psrl_log.py`, `test_plots.py` | Telemetry streams, the store, PSRL conversion and plotting |
+| `test_e2e.py`, `test_config.py`, `test_logging_setup.py`, `test_undo.py` | End-to-end runs, the Hydra config, logging and the undo log |
+
+Tests live in one directory because the package's layers are importable independently: a kernel
+test does not need the simulator, and a policy test does not need a GPU.
 
 ---
 
 ## Commands
 
 ```bash
-# Run the full test suite.
+# Everything. Needs no GPU and no checkpoint for the majority of the suite.
 pytest
 
-# Check style and import hygiene (6 pre-existing findings, see below).
+# The same, in parallel, using the dev extra's pytest-xdist.
+pytest -n auto
+
+# One group.
+pytest tests -k kernel
+pytest tests/test_engine_cpp_undo.py -q
+
+# Style and import hygiene.
 ruff check .
 
-# Syntax-check all example shell scripts without executing them.
-bash -n examples/profile/vllm/profile_qwen3_8b.sh
-bash -n examples/profile/megatron/profile_qwen3_8b.sh
-bash -n examples/simulate/simulate.sh
-
-# Smoke-test every CLI entry point.
-srl --help
-srl-profile --help
-srl-regress --help
+# A file's tests without collecting the rest of the suite.
+pytest tests/test_forecast_plan.py -q
 ```
 
-The suite collects 946 tests. With `MODEL_PATH` set to a local checkpoint, all 946 pass. Without
-it, 944 pass and 2 skip. The 6 `ruff` findings are pre-existing (5 import-ordering, 1 unused
-variable in `tests/test_training_cost.py`) and are not introduced by any recent changes.
+`pyproject.toml` sets `testpaths = ["tests"]`. The dev extra installs `pytest`,
+`pytest-xdist` and `ruff`, with ruff configured for `E`, `F`, `W` and `I` at a line length of 119.
 
-Some tests additionally need measured tables on disk and skip cleanly without them.
-`test_rollout_composed_tp2.py` and the `tp=2` cases in `test_rollout_composed_config.py` need the
-`tp=2` collective sweep, which `outputs/` being gitignored means a fresh clone does not have.
-
----
-
-## CI gates vs local instruments
-
-Not every test is a CI gate. The measured performance tables live in `outputs/`, which is
-gitignored. On a fresh clone, `outputs/` is empty. Tests that depend on those tables, or on a
-local model checkpoint, skip rather than fail. A skip is not a pass and it is not a failure. It
-means the test cannot be evaluated in the current environment.
-
-The distinction matters because some tests are *local instruments*: they are useful to the person
-running a sweep on real hardware, but they cannot be part of a CI check on a machine that has no
-GPU and no profiling output.
-
-### Tests that skip without `MODEL_PATH`
-
-Two tests require `MODEL_PATH` to point at a real HuggingFace checkpoint with a `config.json`:
-
-- **`tests/test_kernel_ops_base.py`**: the `test_the_config_serves_a_sweep_per_op_name` test
-  loads the example kernel config, which reads the checkpoint path from `${oc.env:MODEL_PATH,...}`.
-  Without a local checkpoint the config loader raises before the assertions under test can run,
-  so the test skips rather than passing vacuously.
-
-- **`tests/test_kernel_validate.py`**: the `test_a_phase_dropped_by_min_samples_is_reported_not_silent`
-  test calls `cmd_kernels_validate`, which also resolves the checkpoint before it reaches the
-  coverage-warning logic under test. Same skip condition.
-
-Both tests call `pytest.skip("MODEL_PATH is not set to a local checkpoint")` after checking
-`os.environ.get("MODEL_PATH", "")` and verifying that `config.json` exists at that path.
-
-### `tests/test_kernel_baseline_regression.py`
-
-This test pins ten accuracy numbers from a completed kernel sweep. It is a local instrument: it
-skips on a fresh clone because `outputs/` is empty. Its purpose is to catch unintentional changes
-to the interpolation pipeline on a machine where the sweep has already been run.
-
----
-
-## Re-running a sweep invalidates pinned numbers
-
-`latency_s` is a wall-clock measurement. Two runs of identical code moved the GEMM holdout MRE
-from 3.896% to 3.828%, and six repeats of a single GEMM kernel span 0.351% of their median. This
-is expected: GPU kernel timing is not bit-reproducible.
-
-The consequence for `tests/test_kernel_baseline_regression.py` is that its pinned figures shift
-between identical runs for reasons entirely unrelated to code changes. Only `latency_s` fails to
-reproduce, while every other parquet column (shapes, derived utility, slice keys) reproduces
-bit-identically. A sweep-level comparison must therefore exclude `latency_s`.
-
-**Re-pinning procedure.** Before re-measuring, back up the current parquet files if the old
-accuracy numbers are needed for reference. After the new sweep completes, run:
+Each of the seven console scripts can be smoke-tested with `--help`, which builds its parser
+without running a workflow:
 
 ```bash
-pytest tests/test_kernel_baseline_regression.py --update-snapshots 2>/dev/null || \
-    python tests/test_kernel_baseline_regression.py --regenerate
+srl --help
+srl-profile --help
+srl-profile kernels --help
+srl-regress --help
+srl-plot --help
+srl-psrl-plot --help
+srl-compare --help
+srl-workload --help
 ```
 
-Check which flag the test accepts by reading its source, since the mechanism varies. Alternatively,
-re-run `srl-profile kernels holdout --fraction 1.0` and copy the resulting MRE values into the
-test's expected-values table manually. Whatever the mechanism, the numbers in the test and the
-numbers in `holdout_report.json` must come from the same sweep.
+`bash -n` syntax-checks the example shell scripts without executing them:
+
+```bash
+for script in examples/*/*.sh; do bash -n "$script" || echo "FAILED: $script"; done
+```
 
 ---
 
-## Import hygiene tests
+## What a skip means
 
-Two tests exist specifically to ensure that the cost path and shape-derivation path never pull in
-the GPU stack at import time:
+Some tests need data that is not in the repository. They skip rather than fail, and a skip is
+reported separately from a pass.
 
-**`tests/test_kernel_shapes_import.py`** runs a subprocess probe that imports
-`srl.profiler.kernels.shapes` in a fresh interpreter and asserts that neither `torch` nor
-`vllm` appear in `sys.modules` afterward. A 4.2-second GPU-stack import has no place on the cost
-path that reads parquet and prices kernels.
+**`MODEL_PATH`.** The example profiling configs read the checkpoint from
+`${oc.env:MODEL_PATH,...}`, so a test that loads one skips unless `MODEL_PATH` names a directory
+holding a `config.json`. The cases are in `tests/test_kernel_ops_base.py` and
+`tests/test_kernel_validate.py`: without the checkpoint the loader fails before the assertions
+under test can run.
 
-**`tests/test_kernel_package_imports.py`** tests four related isolation properties:
-`srl.profiler.kernels.config` imports without loading torch.
-`srl.profiler.kernels.attention` imports without loading torch.
-`srl.profiler.kernels.profile_gemm` is callable and *does* load torch (confirming the lazy-load
-mechanism works in both directions).
-`srl.profiler.kernels.PerfTableWriter` is accessible without torch.
+```bash
+export MODEL_PATH=/path/to/Qwen3-8B
+```
 
-What these tests protect: if any torch-importing module is pulled into a package `__init__` at the
-wrong level, the cost path starts paying the GPU import cost on every simulator invocation. Because
-that cost is paid silently (no exception, just slow start), it could go unnoticed for a long time.
-The subprocess probe ensures the check runs in a genuinely fresh interpreter rather than in the
-same process where torch is already loaded.
+**Machine-local checkpoints and tables.** Most composed-model and baseline tests check for a
+specific local checkpoint or a directory under `outputs/` and skip with a reason such as
+"Measured perf tables are machine-local." when it is absent. `outputs/` is gitignored, so a fresh
+clone has none of it. Typical gates:
+
+| Gate | Representative test files |
+|---|---|
+| `outputs/profile/<model>/kernel_tp1/kernel` | `test_kernel_baseline_regression.py`, `test_kernel_op_coverage.py`, `test_rollout_composed.py` |
+| `outputs/profile/<model>/kernel_tp2/kernel` and the TP=2 baseline | `test_collective_baseline_regression.py`, `test_rollout_composed_tp2.py`, `test_training_composed_accuracy.py` |
+| `outputs/profile/<model>/vllm_tp1/profiles/vllm.jsonl` | `test_kernel_baseline_regression.py` |
+| A local HuggingFace checkpoint | `test_rollout_composed.py`, `test_hf_model.py`, `test_training_composed_accuracy.py` |
+| `srl._engine_cpp` | every `test_engine_cpp_*` and the C++ cases in `test_forecast_drain.py` |
+| CUDA available | `test_kernel_attention_vllm.py`, `test_kernel_timing.py`, and the CUDA-marked cases in `test_kernel_gemm.py` |
+| FlashInfer installed | `test_kernel_attention_flashinfer.py` |
+
+These tests are local instruments. They are useful precisely where the data exists, and on a
+fresh clone they say so instead of passing vacuously or failing for a missing file.
+
+---
+
+## Pinned figures
+
+`tests/test_kernel_baseline_regression.py`, `tests/test_collective_baseline_regression.py`,
+`test_training_composed_accuracy.py` and `test_rollout_composed_tp2.py` pin accuracy figures with
+explicit tolerances. They exist to catch a change to the pricing pipeline, not to measure accuracy
+again. The figures and their counts are on {doc}`../reference/validation`.
+
+A re-sweep invalidates them. `latency_s` is wall-clock time, so two runs of identical code move a
+holdout MRE in the third decimal and can exceed a tight tolerance with no code change. After
+re-running `srl-profile kernels run`:
+
+1. Back up the old tables if the old figures are still wanted for comparison.
+2. Re-run `srl-profile kernels holdout --fraction 1.0` and, where a baseline exists,
+   `srl-profile kernels validate`.
+3. Update the expected values in the test that pins them. The comments in those tests record why
+   each value is what it is, so read them before overwriting a number.
+
+A tolerance that has to widen is a signal. The baseline tests use a tight band for compute
+families and a wider one for tables that legitimately moved after a corrected re-sweep, and the
+comments say which is which.
+
+---
+
+## Import-boundary tests
+
+Two tests protect the cost path from the GPU stack. Both work by importing a module in a fresh
+subprocess, because in-process `sys.modules` already holds `torch` from whichever test ran first.
+
+`tests/test_kernel_package_imports.py`
+: Discovers every module under `srl/profiler/kernel/sweep/` and `grid/`, plus `config.py`,
+  `utils/model_dims.py` and `utils/validators.py`, and imports each without `torch` or vLLM
+  appearing in `sys.modules`. It also imports the package root, which must stay cheap because it
+  re-exports `KernelProfileConfig`. A new grid or sweep is covered the moment it is added to the
+  directory.
+
+`tests/test_kernel_ops_base.py`
+: Probes `srl.cost.kernel.ops.base` and the registry in a fresh interpreter, and checks that
+  importing only `ops.base` populates `OP_REGISTRY`.
+
+`tests/test_kernel_op_coverage.py`
+: Compares `OP_REGISTRY` against the modules under `ops/`, in a fresh interpreter and in process. A
+  module that exists but is missing from `ops/__init__.py` fails here instead of failing at runtime
+  in a fresh process.
+
+These tests exist because a torch import on the cost path does not produce a wrong number. It
+produces a slow start, which nobody notices until they profile the simulator.
+
+---
+
+## Test doubles
+
+`tests/fixtures/` holds small records used instead of a real run:
+
+- `hf/` holds two `config.json` and safetensors index pairs, for the model descriptor and shape
+  tests.
+- `vllm/` holds two scheduler run files, for the vLLM log parser.
+- `megatron_bridge/` holds a `ConfigContainer`, a metrics sidecar, and success and failure status
+  documents, including an OOM marker.
+- `fsdp/` holds one metrics sidecar.
+
+A test that can use a fixture uses one. A test whose subject is the fitted accuracy of real data
+cannot, and skips when that data is absent.

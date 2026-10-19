@@ -16,7 +16,9 @@ from tqdm import tqdm
 from ..component.recompute.cost import FixedRecomputeCost, RecomputeCostModel
 from ..component.rollout.engine import EngineEvent, NativeInstance, ReqStatus, Request
 from ..component.rollout.engine.eviction import build_eviction
+from ..component.rollout.engine.eviction.strategy import EVICTION_REGISTRY
 from ..component.rollout.router import AdmissionGate, Router, SortKey, build_strategy
+from ..component.rollout.router.strategy import STRATEGY_REGISTRY
 from ..component.sync.cost import FixedSyncCost, SyncCostModel
 from ..cost.rollout import RolloutCostModel
 from ..cost.training import (
@@ -79,11 +81,19 @@ class Simulator:
         # loop always has one, so an aligned run must pass one explicitly.
         self.recompute_cost = recompute_cost or FixedRecomputeCost(0.0)
 
+        if self._backend not in _BACKENDS:
+            raise ValueError(f"Unknown backend {self._backend!r}. Available: {list(_BACKENDS)}.")
+        python_only = _python_engine_only_components(cfg)
+        if self._backend == "cpp" and python_only:
+            raise ValueError(
+                f"{', '.join(python_only)} need Python request state the C++ engine does not "
+                "carry. Use backend 'native' or 'auto'."
+            )
         if self._backend == "auto":
             try:
                 from srl._engine_cpp import CppInstance  # noqa: F401
 
-                self._backend = "cpp"
+                self._backend = "native" if python_only else "cpp"
             except ImportError:
                 self._backend = "native"
 
@@ -928,7 +938,7 @@ class Simulator:
             self.training_parallelism,
         )
         weight_sync = self.policy.will_sync_after_train(self._state())
-        sync_time = self.sync_cost.sync_time(0, self.cfg.n_instances, 0) if weight_sync else 0.0
+        sync_time = self.sync_cost.sync_time(self.cfg.n_instances) if weight_sync else 0.0
         recompute_time = self.recompute_cost.recompute_time(
             training_workload,
             self.training_parallelism,
@@ -1028,6 +1038,22 @@ class Simulator:
 
 
 # --- C++ backend helpers ---
+
+_BACKENDS = ("auto", "native", "cpp")
+
+
+def _python_engine_only_components(cfg: SimConfig) -> list[str]:
+    """Names of the configured router strategy and eviction that need the Python engine."""
+    registered = (
+        (STRATEGY_REGISTRY, cfg.routing_strategy),
+        (EVICTION_REGISTRY, cfg.eviction_strategy),
+    )
+    return [
+        name
+        for registry, name in registered
+        if getattr(registry.get(name), "python_engine_only", False)
+    ]
+
 
 
 def _cpp_request_class() -> type:

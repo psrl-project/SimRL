@@ -1,187 +1,187 @@
 # Adapters and cost models
 
-These two extension points are documented together because an adapter without a matching cost model
-is useless, and a cost model without profiling data to fit it is untestable. The interface between
-them is the `ProfileRecord` JSONL stream, whose schema is documented in {doc}`../reference/schemas`.
+An adapter turns one backend's measurements into `ProfileRecord`. A cost model turns
+`ProfileRecord`, or kernel parquet, into predictions. The seam is the versioned record schema in
+{doc}`../reference/schemas`.
 
 ---
 
 ## The adapter contract
 
-A profiler adapter drives one backend (vLLM, Megatron-Bridge, FSDP) and produces `ProfileRecord`
-JSONL. Every adapter exposes three operations:
+`srl/profiler/adapters/` holds three backends:
 
-**`generate`** builds the sweep grid: candidates (vLLM workload points, training topology
-candidates) are written to disk as JSON or YAML manifests. No training process is started. The step
-can be re-run to add candidates to an existing sweep, though the same topology is never repeated.
+| Backend | Directory | Drives |
+|---|---|---|
+| `vllm` | `adapters/vllm/` | A vLLM server through `vllm bench sweep serve`, parsing its scheduler logs |
+| `megatron` | `adapters/megatron/` | Megatron-Bridge training recipes through SimRL's own launcher |
+| `fsdp` | `adapters/fsdp/` | An FSDP2 or HSDP model through SimRL's own launcher |
 
-**`run`** executes one or more prepared candidates in subprocesses and records status. Each
-candidate runs in an independent process. For training backends this means one `torchrun` child per
-candidate. Each child writes a `status.json` and, if it caught a `torch.OutOfMemoryError`, one
-`oom_rank{N}.json` marker per rank. `run` does not read or interpret those files.
+`adapters/base/` is shared infrastructure, not a backend. `run.py` executes a prepared candidate in
+a subprocess and writes `status.json`. `sidecar.py` reads the `srl_metrics.json` a launcher writes
+and applies the warmup policy.
 
-**`collect`** reads the files written by `run`, validates them, and emits `ProfileRecord` JSONL.
-Collect never re-executes anything. If a candidate directory is missing or its `status.json` is
-absent, the record is emitted with `status = "failed"` rather than crashing the collection pass.
+Every training adapter exposes three verbs, wired in `srl/cli/profile.py`:
 
-### Writer invariants
+`generate`
+: Enumerate candidates under the search space's constraints and write a manifest. No process is
+  started. `search_space.py` derives training candidates from a model's shape and an
+  interconnect budget. `fsdp_search_space.py` enumerates FSDP meshes.
 
-Every adapter that writes a `ProfileRecord` enforces two invariants at write time:
+`run`
+: Execute candidates, one independent process each, a `torchrun` child for the training backends.
+  Each child writes `status.json`, and one `oom_rank<N>.json` per rank that caught a
+  `torch.OutOfMemoryError`. `run` does not interpret them.
 
-- `world_size == tp * pp * dp * cp`. Any topology that does not satisfy this is rejected rather
-  than normalised.
-- For training records: `global_batch_size == micro_batch_size * dp * num_microbatches`. A training
-  run that does not satisfy this is not a well-formed training step.
+`collect`
+: Read what `run` wrote, validate it, and emit `ProfileRecord` JSONL. Collection never executes
+  anything.
 
-These are checked in `srl/profiler/schema.py` before the record is serialised.
+The `vllm` backend nominally has the same three verbs but works differently. `generate` writes one
+job per sweep point and phase, `run` starts servers and replays the benchmark, and `collect` parses
+the scheduler logs into iteration payloads. Its input is `vllm bench sweep serve` output, not a
+training sidecar.
 
-### Raw artifacts are preserved untouched
+### Invariants
 
-The official benchmark output (vLLM timing JSON, TensorBoard scalars, Megatron sidecar files) is
-never modified. The adapter reads it and derives the normalised JSONL from it. If the raw artifact
-is later needed for debugging or re-collection under a changed schema, it is still there. The JSONL
-is the sole regression input, and it is never back-projected into the raw artifact.
+The `ProfileRecord` constructors enforce the two writer invariants:
 
-### OOM is classified from marker files
+- `world_size == tp * pp * dp * cp`.
+- For training records, `global_batch_size == micro_batch_size * dp * num_microbatches`.
 
-OOM status is determined by reading `oom_rank{N}.json` files written by the launcher on a caught
-`torch.OutOfMemoryError`, never by scanning a log for the phrase "out of memory". A log can contain
-that phrase for reasons unrelated to an actual OOM (a warning, an error message copied from another
-rank, a comment in a script). A false-positive OOM classification adds an inequality constraint that
-can only raise the fitted memory floor, making the model silently more conservative. The marker-file
-approach avoids this: only a caught allocation failure writes the marker.
+A record that violates either is rejected before it reaches disk. `write_records` replaces the
+destination file atomically, so an interrupted collection cannot leave a truncated JSONL that a
+fitter would read as a short but valid file.
 
-A candidate that crashes before writing any marker, whether from a pre-training setup error, a
-network issue, or a signal, is classified as `failed` rather than `oom`, and drops out of the
-memory fit rather than contributing a misleading bound. This is acknowledged in
-{doc}`../reference/limitations`.
+### Raw artifacts are preserved
 
-### `--resume` semantics
+Each adapter keeps the backend's own output under the candidate directory: vLLM timing JSON,
+the Megatron sidecar, the FSDP sidecar. The JSONL is derived from it and never written back into it,
+so a raw artifact can be re-collected under a new schema version without re-running the job.
 
-`--resume` skips candidates whose `status.json` records `"success"`, and runs everything else.
-This means that an `oom` candidate is re-run on resume, not skipped. The intent is that a sweep
-expanded with more memory headroom (a smaller TP degree, a smaller batch) should naturally revisit
-former OOM points without requiring a manual workaround. The implementation is in
-`srl/profiler/adapters/training/run.py`.
+### OOM is read from marker files, never from logs
+
+`read_status` in `adapters/base/run.py` classifies a finished run as `success`, `oom` or `failed`.
+A non-zero exit code is `oom` only when the launcher wrote at least one `oom_rank<N>.json`. A log
+that merely contains the phrase "out of memory" stays `failed`, because an OOM record adds an
+inequality constraint to the memory fit that can only raise the predicted floor, and a false
+positive would make the model silently more conservative.
+
+A process that dies before writing a marker, for example from a setup error or a NCCL allocation
+failure, is `failed` and contributes no bound. See {doc}`../reference/limitations`.
+
+### `--resume`
+
+`run_candidate` returns without executing when the candidate's `status.json` already says
+`success`. Everything else, `oom` and `failed` included, is executed again. So a sweep re-run with
+more memory headroom retries its OOM points without a manual step.
 
 ---
 
-## Import isolation for training adapters
+## Import isolation
 
-Training adapters, meaning Megatron and FSDP, must import `torch`, megatron, and their respective model
-libraries. Those imports take several seconds and require a GPU stack to be installed. The simulator
-and the regression path should never pay that cost.
+The training adapters need `torch` and the training framework. The simulator and the regression path
+must not pay that import.
 
-The rule: `launch.py` and `measure.py` import torch and the training framework, and they are
-deliberately absent from the adapter package's `__init__` namespace. Only the `torchrun` child
-process imports them. The `srl/profiler/adapters/megatron/__init__.py` docstring states this
-explicitly:
+Only the `torchrun` child imports `launch.py` and `measure.py`, and neither is exported from the
+adapter package's `__init__`. The Megatron package docstring states the rule, and the FSDP package
+follows it. Everything else on the adapter import path, configuration, preparation, execution and
+collection, is safe to import on a CPU-only machine.
 
-> `launch` and `measure` import torch and megatron, so they are deliberately absent from this
-> namespace. Only the torchrun child imports them.
-
-`srl/profiler/adapters/__init__.py` re-exports only collection, preparation, and execution
-entry points from each backend. None of the heavy training imports surface at the package level.
-
-### The shared `training/` module
-
-`srl/profiler/adapters/training/` holds the backend-agnostic pieces that Megatron and FSDP both
-use: subprocess execution (`run.py`) and sidecar file access (`sidecar.py`). The backends differ in
-how they build a model and a launch command, but they agree on how a candidate is run, how its
-result is classified, and how step-time and memory measurements are extracted. Only that shared
-logic lives here. Resolved-config validation stays backend-specific because Megatron reads a
-serialised `ConfigContainer` while FSDP inspects a device mesh, so a shared signature for those two
-would be a parameter bag neither backend actually fills.
+This mirrors the kernel profiler's split: `profiler/kernel/grid` and `profiler/kernel/sweep` are
+torch-free, and the GPU work lives in `profiler/kernel/runner`.
 
 ---
 
 ## The cost model contract
 
-A cost model reads `ProfileRecord` JSONL, fits a predictive formula, and exposes a prediction
-interface. The two registries are:
+Two registries select a model:
 
-- **`ROLLOUT_MODEL_REGISTRY`** in `srl/cost/rollout/__init__.py`: maps `"roofline"`,
-  `"psrl"`, `"distserve"`, `"composed"` to their classes.
-- **`TRAINING_MODEL_REGISTRY`** in `srl/cost/training/__init__.py`: maps `"hydraulis"`,
-  `"fsdp"` to their classes.
+- `ROLLOUT_MODEL_REGISTRY` (`srl/cost/rollout/__init__.py`): `roofline`, `psrl`, `distserve`,
+  `composed`.
+- `TRAINING_MODEL_REGISTRY` (`srl/cost/training/__init__.py`): `hydraulis`, `fsdp`.
 
-Each model class owns its fitting formula entirely. `srl-regress` dispatches to the right class
-based on `--model`, and the fitter inside the class decides which features to build, how to regularise,
-and what to store in the artifact.
+`srl-regress` dispatches on `--model` or `--latency-model`, and each class owns its fitting
+formula and the artifact it writes. `srl` dispatches on `rollout_cost.name` and
+`training_cost.name`.
 
-### `decode_coeffs()` is mandatory on every rollout model
+### The rollout model interface
 
-Every class in `ROLLOUT_MODEL_REGISTRY` must implement `decode_coeffs(n_d, ctxsum) -> tuple`. This
-returns `(floor, alpha, beta)`, the three parameters of a closed-form pure-decode segment
-integrator. The simulator's composed rollout advance path uses these coefficients to compute how
-long `k` decode steps take without iterating over each one individually. If `decode_coeffs` is
-absent or returns wrong values, the closed-form advance path produces incorrect timing and the
-simulator silently produces wrong schedules. This is a non-obvious hard requirement: the
-`RolloutCostModel` abstract base class in `srl/cost/rollout/base.py` declares it `@abstractmethod`
-precisely to prevent omitting it.
+`RolloutCostModel` (`srl/cost/rollout/base.py`) has two abstract methods:
 
-### The `CostArtifact` and `ArtifactEntry` contract
+- `predict(workload) -> float` returns a strictly positive latency for one engine iteration.
+- `decode_coeffs(n_d, ctxsum) -> (floor, alpha, beta)` is the closed form for a pure-decode
+  segment. The simulator's decode advance, and any strategy that prices a segment, depend on it.
+  Making it abstract is what prevents a new model from omitting it.
 
-`CostArtifact` is the JSON envelope that persists a fitted model between the regression step and the
-simulation step. Its structure is documented in {doc}`../getting-started/concepts` and the field
-schema is in {doc}`../reference/schemas`. The key points for an implementor:
+`RolloutWorkload` describes one iteration with `phase`, `n_tokens`, `sum_l2`, `ctxsum`,
+`request_count` and an optional `prefill_ctx`. A fitted model stores the feature ranges it was
+fitted over, and a query outside them is a configuration or workload error even where the code does
+not raise.
 
-- `entry_for(parallelism, *, selector)` returns an exact match and raises `KeyError` if none is
-  found. There is no nearest-neighbour fallback.
-- `selector` is the set of discrete keys that distinguish cells at the same parallelism. For FSDP,
-  the selector includes `shard_size`, `replicate_size`, `activation_recompute`, `optimizer`,
-  `optimizer_offload`, and `reshard_after_forward`. Pass selectors as keyword arguments to
-  `FsdpTrainingCost.from_artifact`. Unknown keyword arguments raise `ValueError` at construction
-  rather than silently being ignored.
-- `feature_ranges` stores the `(min, max)` domain each continuous feature was fitted over. Queries
-  outside this range raise `TrainingOutOfDomainError` unless the feature is listed in
-  `training_cost.extrapolate` in the simulation config. When extrapolation is permitted, the
-  exceedance is recorded in `TrainingCostEstimate.diagnostics`.
+### The training model interface
 
-### Training models separate latency from memory
+`TrainingCostModel` bundles a `TrainingLatencyModel` and a `TrainingMemoryModel` and returns a
+`TrainingCostEstimate` with `latency_s`, `peak_memory_bytes` and diagnostics. The two are fitted
+separately because their features, their noise and their domains differ, and because the memory fit
+uses OOM candidates as inequality constraints that the latency fit cannot use.
 
-Every training cost model is composed of two separately fitted sub-models:
+The shared four-term latency form lives once, in `srl/cost/training/latency.py`:
 
-- A **latency model** predicts step wall-clock time from batch shape features.
-- A **memory model** predicts peak allocated GPU memory and classifies whether the candidate would
-  OOM on a given device.
-
-The two are fitted independently because their features, their measurement uncertainty, and their
-interpolation domains are different. For the Hydraulis model the latency fitter uses OLS on a
-physical-form design matrix, and the memory fitter uses inequality-constrained regression to incorporate
-OOM bounds. For FSDP the latency form includes `num_microbatches` explicitly because memory does
-not depend on it (FSDP allocates by microbatch count rather than token count, see
-{doc}`../reference/limitations`).
-
-Keeping them separate means that a sweep that produces abundant memory data but sparse latency data
-can fit the memory model well while reporting that the latency fit is underdetermined. A combined
-model would average over both measurement qualities and obscure the underdetermination.
-
-### The latency form has one implementation, and the fit loops deliberately do not
-
-Both backends carry the same four-term latency row, so the arithmetic lives once in
-`srl/cost/training/latency.py`:
-
-| helper | responsibility |
+| Helper | Responsibility |
 |---|---|
-| `latency_from_coefficients` | the formula, raising on a non-positive result |
-| `latency_coefficients` | names the fitted parameters in design-row order |
-| `check_latency_rank` | the rank-4 guard and its message |
-| `latency_feature_ranges` | the profiled span that becomes a prediction-time gate |
-| `LATENCY_TERM_COUNT` | the single place to change if a fifth term is ever added |
+| `latency_from_coefficients` | The formula, raising on a non-positive result |
+| `latency_coefficients` | Name the fitted parameters in design-row order |
+| `check_latency_rank` | Raise unless the design reached `LATENCY_TERM_COUNT` |
+| `latency_feature_ranges` | Turn the profiled span into the prediction-time gate |
+| `LATENCY_TERM_COUNT` | The one place to change if a term is added |
 
-Sharing the formula is not a tidiness preference. Before the extraction the prediction
-arithmetic was byte-identical in two files, and a formula written twice can drift. This
-codebase has already had a fit and its predictor disagree on the same input. Each backend's
-`predict_with_notes` now ends in one shared call, and the extraction was verified neutral by
-refitting both models from the same profiles and checking that every coefficient came out
-bit-identical.
+Both backends end their prediction in the shared call. The backends differ in what they call the
+slots axis (`pipeline_slots` for Megatron, `num_microbatches` for FSDP), in whether they divide by
+a pipeline degree, and in their diagnostics, so the assembly around the shared call stays
+per-backend on purpose.
 
-What is **not** shared is the rest of `_fit_latency_entry`, which remains about 72% similar
-between the two backends. The residual overlap is `ArtifactEntry` assembly around values that
-genuinely differ: Hydraulis threads `pp` and calls its axes `pipeline_slots` and
-`micro_batch_size`, FSDP has no pipeline and calls them `num_microbatches` and
-`sequences_per_microbatch`, and their `diagnostics` strings describe different formulas.
-Folding that into one function would take five parameters whose only purpose is to reproduce
-those differences, which costs more clarity than the duplication does. Treat the similarity as
-a known and accepted cost rather than a cleanup waiting to happen.
+### Artifacts
+
+`CostArtifact` (`srl/cost/artifact.py`) persists a fit. Two properties matter to a new model:
+
+- `entry_for` returns an exact match on parallelism and selector, or raises `KeyError`. There is no
+  nearest cell and no silent fallback. A model whose topology can be derived instead of looked up
+  asks for `ignore_pp=True` and gets an exact match on `tp`, `cp` and `ep`.
+- `feature_ranges` travels with the coefficients and is what the domain gate reads. An
+  out-of-range query raises unless the feature is listed in `training_cost.extrapolate`, and every
+  permitted exceedance is recorded.
+
+### Composed models
+
+`ComposedRollout` and `ComposedTraining` sum measured kernels from `KernelDatabase` instead of
+fitting end-to-end times. Their inputs are kernel op tables and a per-model op list from
+`ModelOps` or `TrainingOps`, both built from a checkpoint's architecture. `ComposedRollout` prices
+GEMMs, attention and collectives. It does not read the elementwise table, which belongs to the
+training path. Its decode segment is integrated with `LatticeIntegrator` or the closed form
+described in {doc}`architecture`.
+
+`ComposedTraining` is only reachable from Python. It is not in `TRAINING_MODEL_REGISTRY` and is
+not selectable from the `training_cost` group.
+
+---
+
+## Adding a rollout cost model
+
+1. Subclass `RolloutCostModel` in `srl/cost/rollout/` and implement `predict` and
+   `decode_coeffs`. Keep both free of `torch`.
+2. Add a YAML file under `srl/config/defaults/rollout_cost/` with the constants it needs, and add a
+   field block to `RolloutCostConfig` in `srl/config/schema.py` if the loader must read them.
+3. Add a branch to `build_rollout_cost` in `srl/cli/main.py` and an entry to
+   `ROLLOUT_MODEL_REGISTRY`.
+
+## Adding a training cost model
+
+1. Build a `TrainingLatencyModel` and a `TrainingMemoryModel`. Use `latency_from_coefficients`,
+   `check_latency_rank` and `latency_feature_ranges` rather than re-deriving the form.
+2. Implement `fit(records, ...) -> CostArtifact` and `from_artifact(path, ...)`. Pass discrete
+   selectors into `entry_for`, and store `feature_ranges`.
+3. Register the class in `TRAINING_MODEL_REGISTRY` and add the matching YAML option, the config
+   fields and the `build_training_cost` branch.
+
+`tests/test_training_shared.py` and `tests/test_training_cost.py` exercise the shared form and the
+per-backend assembly.

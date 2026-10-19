@@ -189,7 +189,6 @@ class SimConfig:
     max_output_length: int | None = None
     n_instances: int = 1
     livelock_rounds: int = 50
-    max_engine_iters: int = 10_000
     undoable_events: frozenset[str] = frozenset(
         {"request_complete", "preempt", "iteration_done"}
     )

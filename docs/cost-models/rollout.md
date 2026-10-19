@@ -1,188 +1,186 @@
 # Rollout cost models
 
-Three fitted rollout models are provided: `roofline`, `psrl`, and `distserve`. All three are
-trained on vLLM profiling data (see {doc}`../profiling/vllm`), stored as a `CostArtifact` JSON,
-and loaded by the simulator without a code change. This page covers the formulas, the regression
-command, and the accuracy of the fitted models. The CostArtifact schema in full is in
-{doc}`../reference/schemas`. The in-sample caveat that applies to all three models is discussed
-in {doc}`../reference/validation`.
+Three fitted rollout models are provided: `roofline`, `psrl` and `distserve`. All three are fitted
+from vLLM profiling data ({doc}`../profiling/vllm`), stored as a `CostArtifact` JSON, and loaded
+by the simulator without a code change. This page covers their formulas, the regression command,
+and how each model's pure-decode terms are derived.
+
+{doc}`composed-rollout` covers the fourth rollout model, which sums measured kernels instead of
+fitting.
 
 ## Fitting
-
-All three models are fitted with a single command:
 
 ```bash
 srl-regress rollout --model roofline \
     --input  outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl \
     --output outputs/cost/qwen3_8b/rollout_roofline.json
 # --model accepts: roofline | psrl | distserve
-# --validation-fraction 0.0  disables held-out scoring (reports in-sample only)
-# --block-size 16            KV block size used in A_p denominator
+# --validation-fraction 0.0  default; set a fraction to reserve whole runs for validation
+# --block-size 16            KV block size used in the prefill attention term
+# --hidden-size / --intermediate-size   distserve only; default to the checkpoint's values
 ```
 
-The command reads the vLLM JSONL produced by `srl-profile vllm collect`, groups records by
-parallelism topology, fits one entry per topology, and writes a `CostArtifact` JSON. A compact
-example of the artifact format:
+The command reads the JSONL, keeps successful rollout records, groups them by `parallelism`,
+fits one entry per topology, and writes the artifact. A run split, when requested, is by
+`run_id`, so one benchmark launch cannot straddle train and validation. When the records all come
+from the vLLM backend it also writes diagnostic plots under `{output stem}_plots/`.
 
-```javascript
-{
-  "kind": "rollout", "model_type": "roofline", "artifact_version": "1.0",
-  "profile_digest": "sha256:9b7f45b7...",   // links this artifact to the measured data
-  "entries": [{
-    "parallelism": {"tp": 1, "pp": 1, "dp": 1, "cp": 1, "world_size": 1},
-    "coefficients": {"F": 0.00624718, "W": 0.00595378, "G": 0.00010058,
-                     "A_p": 3.40461e-08, "A_d": 7.62594e-08, "b": 16.0},
-    "feature_ranges": {"n_tokens": [1.0, 65536.0], "sum_l2": [0.0, 5.37e8],
-                       "ctxsum": [0.0, 466089.0], "request_count": [1.0, 64.0]},
-    "train_metrics": {"n_samples": 49208, "design_rank": 4,
-                      "mre_percent": 5.25, "r_squared": 0.99989},
-    "diagnostics": {"fit_method": "nonnegative-soft-l1"}
-  }]
-}
-```
+Every entry records `train_metrics`, `validation_metrics`, `feature_ranges` (the measured
+minimum and maximum of `n_tokens`, `sum_l2`, `ctxsum` and `request_count`) and `diagnostics`
+naming the fit method. The feature ranges are what the simulator gates queries on.
 
-## Measured accuracy
+All three fits use non-negative least squares with a soft-L1 loss, then one MAD-based refit that
+drops rows beyond 4.5 robust standard deviations when enough rows remain. Coefficients are
+constrained non-negative, so a coefficient pinned at zero is a statement about identifiability,
+not a measurement.
 
-Fitted on the Qwen3-8B / H20 / TP=1 vLLM JSONL (49,208 scheduler-iteration records,
-2026-08-31). Both models were fitted with `--validation-fraction 0.0`, so the figures are
-in-sample fit quality, not generalisation evidence.
+## Shared feature vocabulary
 
-| Model | MRE | r² | Notes |
-|-------|-----|-----|-------|
-| `roofline` | 5.25% | 0.9999 | in-sample, 49,208 points |
-| `psrl` | 5.16% | 0.9999 | in-sample, 49,208 points |
-| `distserve` | fitted, not scored | | identifiability limit (see below) |
+| feature | symbol | phase |
+|---|---|---|
+| tokens in the step | `n_tokens` | all |
+| sum of squared prefill extents | `sum_l2` | prefill, mixed |
+| sum of decode context depths | `ctxsum` | decode, mixed |
+| requests in the step | `request_count` | decode (PSRL), and `ComposedRollout`'s logits shape |
 
-## The three models
+These are filled by the vLLM adapter from the scheduler iteration log, as described on
+{doc}`../profiling/vllm`. A pure prefill step has `ctxsum = 0`, a pure decode step has
+`sum_l2 = 0`, and a mixed step has both. The models that distinguish phases zero the term that
+does not belong.
 
-### Unified roofline (`roofline`)
+## Unified roofline (`roofline`)
 
 ```text
-latency = max(F, W + G*n_tokens + A_p * sum_l2 / b + A_d * ctxsum)
+latency = max(F, W + G * n_tokens + A_p * sum_l2 / b + A_d * ctxsum)
 ```
 
-`F` is the low-load floor: a constant GPU overhead that dominates when the arithmetic workload is
-small. The linear branch `W + G*n_tokens + ...` takes over once the step is large enough to be
-compute- or memory-bound. The fit keeps all coefficients non-negative via soft-L1 regression,
-then refits with MAD-based outlier rejection so that a small number of anomalous scheduler
-iterations do not skew the floor estimate.
+- `F` is a low-load floor: a fixed GPU overhead that dominates when the arithmetic workload is
+  small.
+- `W` is the linear branch's intercept, `G` the per-token cost, `A_p` the prefill-attention
+  coefficient over `sum_l2 / b`, and `A_d` the decode-attention coefficient over `ctxsum`.
+- `b` is the KV block size, recorded in the coefficients and in the entry selector.
 
-Features:
-- `n_tokens`: total tokens in the scheduler iteration (prefill or decode).
-- `sum_l2 / b` ($\sum L_i^2 / b$): the prefill attention term, where $L_i$ is the sequence
-  length of request $i$ and $b$ is the KV block size. This term appears only in prefill and
-  mixed steps.
-- `ctxsum` ($\sum (L_i + k)$ over decode requests at KV depth $k$): the decode attention term.
-  This term appears only in decode and mixed steps.
+The floor enters as a `max`, not as an additive term, so it cannot double-count in the
+compute-bound regime. The fit is nonlinear only through the `max`; it initialises from a scan over
+candidate floors, each solved as a non-negative linear least-squares problem, and keeps the
+combination with the lowest squared error before the robust refit.
 
-A mixed step simply includes both attention features, so the model sees both `sum_l2` and
-`ctxsum` simultaneously.
+`LinearLPS` subclasses the roofline with `F = 1/r1`, `G = 1/(r1*K)` and zero attention terms. It
+is a limited-processor-sharing model used to validate the simulator's closed-form advance against
+a known answer, not a fitted model.
 
-### PSRL fitted (`psrl`)
+## PSRL fitted (`psrl`)
 
-PSRL separates each phase into an attention term and a non-attention term, and fits them
+PSRL separates each phase into an attention term and a non-attention term and fits the phases
 independently:
 
 ```text
-prefill = (p_attn_b + p_attn_k * sum_l2)
-        + max(p_other_floor, p_other_b + p_other_k * n_tokens)
-
-decode  = (d_attn_b + d_attn_k * ctxsum)
-        + max(d_other_floor, d_other_b + d_other_k * n_requests)
+prefill = (p_attn_b + p_attn_k * sum_l2) + max(p_other_floor, p_other_b + p_other_k * n_tokens)
+decode  = (d_attn_b + d_attn_k * ctxsum) + max(d_other_floor, d_other_b + d_other_k * requests)
 ```
 
-For a mixed step the two attention terms are summed and the non-attention term takes the maximum
-of the two phases' contributions. The maximum avoids charging the shared scheduler overhead twice:
-the GPU runs one scheduler iteration, not two.
+For a mixed step the two attention terms are summed and the non-attention term takes the
+**maximum** of the two phases' contributions, since one scheduler iteration runs once. Decode's
+non-attention feature is the request count rather than the token count, because decode throughput
+is limited by the number of KV-cache lookups.
 
-The per-phase floor (`p_other_floor`, `d_other_floor`) models the same physical effect as the
-unified roofline's `F`, but independently for each phase. This can capture a different low-load
-regime for decode (where the batch is small and dispatch cost dominates) versus prefill (where the
-batch typically fills the arithmetic pipelines).
+The fit needs at least five prefill and five decode observations per topology and raises
+otherwise. Mixed observations are not fitted directly: they are scored by the mixed rule above.
+Each entry records the prefill and decode design ranks separately, and its `train_metrics` rank
+is the smaller of the two.
 
-Decode uses `n_requests` as the non-attention feature rather than `n_tokens`, because decode
-throughput is limited by the number of KV cache lookups, which scales with requests rather than
-with output token count.
+`psrl` has no `artifact_path` default. It must be fitted before use, and
+`build_rollout_cost` raises if the path is missing.
 
-### DistServe (`distserve`)
+## DistServe (`distserve`)
 
-DistServe maps the roofline form into architecture constants from DistServe Appendix A. Instead
-of treating the coefficients as free parameters, it derives them from hidden size `h`,
-intermediate size `m`, and five hardware constants:
+DistServe maps the roofline form onto architecture constants from DistServe Appendix A. Rather
+than free per-model coefficients it derives them from hidden size `h`, intermediate size `m` and
+five effective hardware constants:
 
 ```text
 gemm = 4*h*h + 2*h*m
 
-latency = max(F, (C3 + C4*gemm)
-             + C1 * gemm * n_tokens
-             + C2 * 3*h * sum_l2 / b
-             + C5 * 3*h * ctxsum)
+W   = C3 + C4 * gemm
+G   = C1 * gemm
+A_p = C2 * 3*h
+A_d = C5 * 3*h
+
+latency = max(F, W + G*n_tokens + A_p*sum_l2/b + A_d*ctxsum)
 ```
 
-The intent is that `C1` through `C5` are hardware properties rather than per-model properties, enabling
-cross-model transfer: calibrate on one model, predict on another. In practice a single-model fit
-can only identify the combined overhead term `C3 + C4 * gemm`, not `C3` and `C4` independently
-(they are linearly dependent on a single architecture). The artifact records the minimum-norm
-canonical solution and includes a `c3_c4_identifiability` diagnostic. Cross-model joint
-calibration that resolves the ambiguity is listed as a deferred stage in the design document.
+`fit` first performs the roofline fit and then inverts it into `C1..C5`. A single-model fit can
+identify the combined overhead `C3 + C4 * gemm` but not `C3` and `C4` separately, because the two
+columns are linearly dependent for one architecture. The artifact records the minimum-norm
+canonical solution (`C3 = W / (1 + gemm^2)`, `C4 = W * gemm / (1 + gemm^2)`), the effective
+overhead, and a `c3_c4_identifiability: single-model-canonical-minimum-norm` diagnostic. Its
+`from_artifact` reads `h`, `m` and the five constants back.
 
-DistServe does not produce a held-out accuracy score from a single-model fit because the
-underlying coefficients are not uniquely identified. The fit result is the same as roofline with
-renamed parameters. Score the roofline artifact instead if a number is needed.
+Because the constants are not separately identified from one model, a single-model DistServe
+artifact predicts what the corresponding roofline artifact predicts. Its value would come from
+calibrating several architectures jointly, which is not implemented.
 
-## Sharing the feature vocabulary
+## The pure-decode closed form
 
-All three models operate on the same four input features:
+Every rollout model implements
 
-| Feature | Symbol | Phase |
-|---------|--------|-------|
-| Total tokens in step | `n_tokens` | all |
-| Sum of squared sequence lengths | `sum_l2` | prefill, mixed |
-| Sum of context depths | `ctxsum` | decode, mixed |
-| Request count | `request_count` | decode (PSRL only) |
+```text
+decode_coeffs(n_d, ctxsum) -> (F, alpha, beta)
+```
 
-These features are extracted by the vLLM profiler adapter from the scheduler iteration log and
-stored verbatim in each `ProfileRecord`. The feature ranges in the artifact record the observed
-minimum and maximum, and the simulator refuses to query outside that range unless extrapolation
-is explicitly permitted. See {doc}`../reference/schemas` for the extrapolation flag.
+which expresses one decode step at a fixed batch of `n_d` requests with total context `ctxsum`
+as
 
-## `decode_coeffs()` and the simulator's closed-form advance
+```text
+tau(k) = max(F, alpha + beta * k)
+```
 
-Every rollout model must implement `decode_coeffs(n_d, ctxsum) -> (F, alpha, beta)`, which
-expresses one decode step as:
+where `k` counts steps within a pure-decode segment. `srl/cost/rollout/advance.py` sums this
+exactly. The cumulative cost splits at the crossing step `k0 = ceil((F - alpha) / beta)`:
 
-$$\tau(k) = \max\bigl(F,\ \alpha + \beta \cdot k\bigr)$$
+```text
+Delta(k) = k0 * F + (k - k0) * (alpha + beta * k0) + beta * (k - k0) * (k - k0 - 1) / 2
+```
 
-where $k$ is the step index within a pure-decode segment and $n_d$ is the fixed batch size.
-The simulator uses this to integrate a run of $k$ steps in closed form, summing the arithmetic
-series exactly rather than iterating over every token, which is what makes long rollouts fast
-to simulate.
+`crossing_step`, `elapsed` and `steps_within` all implement this. `steps_within` inverts the sum
+for a time budget; every branch corrects its integer division by stepping forward while the
+result fits and back if it overshoots, because `budget // tau` can land one step short of an exact
+quotient. Functions are exact under `Fraction` inputs.
 
-For the unified roofline:
+The coefficients per model:
 
-$$F = F,\quad \alpha = W + G \cdot n_d + A_d \cdot \text{ctxsum},\quad \beta = A_d \cdot n_d$$
+| model | `F` | `alpha` | `beta` |
+|---|---|---|---|
+| `roofline` | `F` | `W + G*n_d + A_d*ctxsum` | `A_d*n_d` |
+| `distserve` | `F` | `W + G*n_d + A_d*ctxsum` | `A_d*n_d` |
+| `psrl` | `0` | `d_attn_b + d_attn_k*ctxsum + max(d_other_floor, d_other_b + d_other_k*n_d)` | `d_attn_k*n_d` |
+| `composed` | `0` | step cost at the segment start | secant slope over one stride |
 
-For PSRL, $F = 0$, since there is no separate floor at the advance level and it is absorbed into
-$\alpha$. And
-the attention slope drives $\beta = \text{d\_attn\_k} \cdot n_d$.
+PSRL returns `F = 0` because its floor is already inside the non-attention term; returning both
+would count it twice.
 
-`ComposedRollout` does not use this interface because a composed step cost cannot be written
-as `max(F, alpha + beta*k)`, because the kernel sum is a more complex function of KV depth. It uses a
-numerical `LatticeIntegrator` instead. See {doc}`../development/adapters-and-cost-models` for
-the protocol that all cost models must satisfy.
+`saturated(n_tokens, sum_l2, ctxsum, n_reqs)` reports whether the step's non-floor branch is
+active. For the roofline and DistServe it compares the raw linear expression against `F`. PSRL
+compares the non-attention branch against its per-phase floor, and for a mixed step requires both
+phases to be saturated. The simulator reads it to know whether a step is above the low-load
+regime.
+
+`ComposedRollout` does not use `advance.py`, because a kernel sum is not `max(F, alpha + beta*k)`.
+Its `decode_coeffs` returns a floor of zero and a secant slope, which keeps the interface usable,
+but its segments are integrated numerically on a lattice ({doc}`composed-rollout`).
 
 ## Choosing a model
 
-All three models are close in accuracy on the Qwen3-8B / H20 sweep. The practical differences:
+- `roofline` is one five-parameter fit that covers all three phases at once. It is the default
+  rollout model and the one with no artifact requirement.
+- `psrl` fits the phases separately, which gives more parameters and a better-conditioned
+  per-phase regression when the data are large and the phase balance is uneven. It needs at least
+  five observations per pure phase.
+- `distserve` is numerically the roofline on a single-model fit; use it when the artifact's
+  architecture-constant form is what a downstream tool expects.
+- `composed` needs no fit at all and generalises across models, GPUs and degrees without a
+  server sweep, provided the kernel tables exist for that GPU and that TP degree.
 
-- `roofline` is a single five-parameter fit that works in all three phases simultaneously.
-  It is the default choice and the fastest to fit.
-- `psrl` fits phases independently, which means more parameters but also a better-conditioned
-  per-phase regression when the dataset is large and the phase balance is uneven. Its 5.16% MRE
-  is marginally better than `roofline`'s 5.25% on the Qwen3-8B dataset.
-- `distserve` is the same as `roofline` numerically on a single-model fit. Its value emerges
-  only when cross-architecture calibration is implemented. Until then, use `roofline` or `psrl`.
-
-To use a fitted artifact in a simulation, set `rollout_cost.name` in the YAML and point it at the
-JSON file. The simulator loads the entry matching the requested parallelism and calls `predict()`
-or the closed-form advance, and no regression code runs at simulation time.
+To use a fitted artifact, point `rollout_cost.artifact_path` at it. The simulator loads the entry
+matching the requested `parallelism` and calls `predict()` or the closed-form advance; no
+regression code runs at simulation time.

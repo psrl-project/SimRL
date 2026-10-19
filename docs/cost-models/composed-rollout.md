@@ -1,35 +1,27 @@
 # ComposedRollout
 
-Every other rollout cost model in this project (`roofline`, `psrl`, `distserve`) is fitted to
-end-to-end vLLM server measurements. That means running the vLLM profiling sweep and the
-`srl-regress rollout` step before any simulation. `ComposedRollout` takes a different
-approach: it predicts one inference engine iteration by **summing the measured latencies of the
-individual GPU kernels** the engine runs. The kernel tables are measured once per GPU and are
-parameterised by hardware speed-of-light (SOL), so a GPU change requires only a new calibrated
-utility surface, not a new end-to-end vLLM sweep. There is no `srl-regress` step before
-using it.
+Every fitted rollout model ({doc}`rollout`) is regressed from end-to-end vLLM server
+measurements, so it must be refitted for a new model, GPU or parallelism degree.
+`ComposedRollout` instead predicts one inference engine iteration by **summing the measured
+latencies of the individual kernels** the engine runs. Its input is the kernel perf tables of
+{doc}`../profiling/kernels`, so there is no `srl-regress` step and no fitted artifact.
 
-Per-kernel holdout accuracy, the performance table layout, dispatch floor fitting, and the
-`kernels validate` and `kernels holdout` command mechanics are all covered in
-{doc}`../profiling/kernels`, which owns those topics. This page covers the end-to-end model
-accuracy, the segment integrator, the configuration fields, and the elementwise design decision.
+The kernel tables are stored per GPU, and every query is normalised by the target GPU's
+speed-of-light roofline, so changing GPU requires a new utility surface, not a new end-to-end vLLM
+sweep. Changing the model or the TP degree does require new tables, because kernel shapes are
+sharded and looked up at measurement time.
 
 ## Prerequisites
-
-The kernel tables must exist before the simulation. Run the kernel profiling sweep once per GPU
-and model combination:
 
 ```bash
 bash examples/profile/kernel/profile_qwen3_8b.sh all
 ```
 
-That writes parquet tables under `outputs/profile/qwen3_8b/kernel_tp1/` and prints the holdout
-accuracy gate. Check that the vLLM-backend families pass before running a simulation. See
-{doc}`../profiling/kernels` for the gate results and what each family's MRE means.
+That writes parquet tables under `outputs/profile/qwen3_8b/kernel_tp1/kernel/` and runs the
+interpolation gate. Per-kernel accuracy, the table layout, floor fitting, and the holdout and
+validate mechanics are covered on {doc}`../profiling/kernels`.
 
 ## Configuration
-
-Select `ComposedRollout` with `rollout_cost=composed` and fill in the required fields:
 
 ```yaml
 defaults:
@@ -37,227 +29,184 @@ defaults:
 
 rollout_cost:
   name: composed
-
   parallelism:
-    tp: 1          # TP=2 is validated above batch 32; see Limitations for the caveats
-
+    tp: 1
   kernel_table_root: outputs/profile/qwen3_8b/kernel_tp1
   gpu: H20
   model_path: $MODEL_PATH
-  attention_backend: ""          # empty = vLLM-selected backend (recommended)
-  utility_surface: pchip         # pchip (default) or shepard
+  attention_backend: ""       # empty = the backend vLLM's selector picks
+  utility_surface: pchip
   decode_integration_stride: 1024
+  saturation_step_threshold: 4611686018427387904
 ```
 
-Field descriptions:
+| field | meaning |
+|---|---|
+| `parallelism.tp` | Tensor-parallel degree of the simulated engine. `ComposedRollout` raises if it disagrees with the degree its `ModelOps` was built for, because `ModelOps` decides both the sharded GEMM shapes and whether a communication term is emitted. `pp`, `dp` and `cp` are accepted and unused. |
+| `kernel_table_root` | The directory that **contains** `kernel/`; tables resolve at `{kernel_table_root}/kernel/{gpu}/`. |
+| `gpu` | GPU slug selecting the subdirectory. It must match the recorded device. |
+| `model_path` | HuggingFace checkpoint. The architecture is read here to derive each step's GEMM shapes, head counts and, for a hybrid model, its layer kinds. |
+| `attention_backend` | `vllm`, `flashinfer`, or empty. Empty uses the database default, the backend vLLM's own selector picks, which is what a server ran. Overriding it compares against kernels that never ran. |
+| `utility_surface` | `pchip` (default) or `shepard`. |
+| `decode_integration_stride` | Steps between lattice nodes in the decode segment integrator. |
+| `saturation_step_threshold` | Per-request KV depth at which the closed-form decode advance is enabled. The default disables it; see below. |
 
-- `parallelism.tp`: Tensor-parallel degree of the engine being simulated. Above 1 the step gains
-  two all-reduces per layer, and `kernel_table_root` **must** point at a tree swept at the same
-  degree: GEMM shapes and attention head counts are sharded at measurement time, so the `tp=1`
-  tree prices every projection at twice its real width. `ComposedRollout` raises if this disagrees
-  with the degree its `ModelOps` was built for. `pp`, `dp` and `cp` are accepted here and ignored.
-  Via `simulate.sh` this is `ROLLOUT_TP`, which also checks the `KERNEL_ROOT` path names the
-  degree. See {doc}`../profiling/tensor-parallel`.
-- `kernel_table_root`: Root of the kernel profiling output tree. `ComposedRollout` resolves
-  tables at `{kernel_table_root}/kernel/{gpu}/`. Use the repo-relative path produced by the
-  profiling sweep. Do not hard-code an absolute path.
-- `gpu`: GPU name that selects which subdirectory to load. Must match what the profiling run
-  recorded (for example `H20` if the tree contains `kernel/h20/`).
-- `model_path`: Path to the HuggingFace checkpoint directory. The model reads the architecture
-  (hidden size, number of heads, GQA groups, intermediate size, number of layers) to derive the
-  correct GEMM shapes for each step. Use `$MODEL_PATH` in scripts so the path is not hard-coded.
-- `attention_backend`: Override the attention backend (`vllm` or `flashinfer`). Leave empty to
-  use the backend vLLM's own selector picks. On H20 that resolves to `FLASH_ATTN` / FA3. Any
-  end-to-end comparison against a real vLLM server must use the same backend the server used.
-  overriding it compares against kernels that never ran.
-- `utility_surface`: Interpolation strategy. `pchip` (monotone-preserving cubic Hermite splines,
-  hand-rolled) is more accurate than `shepard` on every measured family at this grid density and
-  is the default. `shepard` is the log2-space modified Shepard blend and remains available as a
-  fallback when the `pchip` grid is sparse.
-- `decode_integration_stride`: Steps between lattice nodes in the segment integrator (described
-  below). `1024` uses at most six cost evaluations to integrate a 4096-step segment and costs at
-  most ~1.3% accuracy versus a step-by-step reference at batch 16. Set to `1` for an exact sum
-  at the cost of one kernel query per decode step.
+`kernel_table_root`, `gpu` and `model_path` are required. The example script wires this from
+`ROLLOUT_MODEL=composed`, `KERNEL_ROOT`, `GPU` and `MODEL_PATH`.
 
-## End-to-end accuracy
+## What one step costs
 
-Measured on 2026-08-25, H20, Qwen3-8B, TP=1, `pchip` surface. The baseline is the vLLM JSONL
-from `outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl`. The tool is `kernels validate`
-run with `--min-samples 1 --gate 100` to include all three phases.
+`predict` sums, in this order:
 
-| Phase | Buckets | MRE (pchip) | MRE (shepard) | Note |
-|-------|---------|-------------|---------------|------|
-| prefill | 29 | 3.72% | 3.72% | 58 real iterations |
-| decode | 216 | **4.84%** | 4.95% | |
-| mixed | 5 | 0.48% | 0.43% | 6 real iterations, see Limitations |
+```text
+step = sum over projections   (layers * gemm latency)              # plus the logits GEMM once
+     + sum over collectives   (multiplier * comm latency)          # empty at tp = 1
+     + attention_layers * per-layer attention latency
+     + gdn_layers       * per-layer gated-delta-net latency        # 0 for a dense model
+     + expert weight-read excess                                  # 0 for a dense model
+```
 
-The baseline is almost entirely decode. Prefill has 58 real iterations spread across 29 buckets.
-The five mixed buckets collapse from six raw iterations total, so the 0.48% mixed figure is
-indicative rather than a validated claim. See the mixed-step limitation below.
+- **GEMMs.** Each projection is queried at `(m = tokens, n, k)` with the layer count as its
+  multiplier. The logits projection runs once per step over `request_count` tokens, because an
+  engine computes logits only for each sequence's last token. A mixture-of-experts block issues
+  one grouped GEMM per layer rather than one per activated expert: decomposing it per expert
+  charges launch floor per tiny GEMM and is badly wrong in the other direction.
+- **Attention.** `context_attention` and `generation_attention` are queried per layer, and each
+  is multiplied by its **own** layer count. A dense model has `attention_layers = num_layers` and
+  `gdn_layers = 0`; a hybrid model such as Qwen3.5-35B-A3B runs softmax attention on 10 of its 40
+  layers and a gated delta net on the other 30, and charging all 40 as one kind is a fourfold
+  error either way. The per-layer cost is
+  - for prefill: `batch_size = prefill_ctx^2 / sum_l2`, `seq_len = sum_l2 / prefill_ctx`;
+  - for decode: `batch_size = request_count`, `step = ctxsum / request_count`;
+  - for a mixed step: both terms, summed.
+- **Mean-extent rule.** `sum_l2` is the sum of squared attention extents and `prefill_ctx` their
+  plain sum, so the prefilling set's weighted mean extent is `sum_l2 / prefill_ctx` and its count
+  is `prefill_ctx^2 / sum_l2`. When `prefill_ctx` is zero the caller did not separate the two and
+  `n_tokens` stands in. Dividing `n_tokens` by `request_count` instead would count decoders as
+  prompt requests and price one long chunk as many tiny prompts.
+- **Collectives.** At `tp > 1`, `ModelOps.comm_queries` adds two all-reduces per layer, after the
+  attention output projection and after the MLP down projection, with the message sized
+  `tokens * hidden * dtype bytes`. They are priced from the `vllm` table, which times vLLM's own
+  dispatcher; `nccl` is the control. At `tp = 1` the query list is empty. See
+  {doc}`../profiling/tensor-parallel`.
+- **GDN.** Priced separately from softmax attention because its cost function is different: the
+  chunked prefill is varlen and linear in the packed token total, and the recurrent decode has no
+  history-depth axis at all.
+- **Expert weight read.** A grouped expert GEMM reads every activated expert's weights whatever
+  its token share, while an `m = tokens` GEMM query charges only the selected copies.
+  `_expert_weight_seconds` adds the excess, priced at the device's memory bandwidth rather than
+  through a table, because no measured GEMM row carries more than one weight copy. It is charged
+  in full rather than amortised per expert's token share: dividing by tokens per expert is
+  physically defensible for prefill but raised decode error, and decode is where the term is
+  load-bearing.
 
-### TP=2
+**Elementwise is measured but not summed.** Rope, norms, activations and `tensor_plumbing` have a
+perf table, and `ComposedRollout` deliberately does not add them. The measured GEMM and attention
+latencies were collected from a real server whose elementwise kernels ran between them, so that
+wall-clock time is already absorbed into the fitted utility values; adding a separate term would
+double-count it. The table exists for `ComposedTraining`, which runs without CUDA graphs and
+therefore pays the cost genuinely. A test pins the omission, and the fuzzier argument for it is
+that adding the term has been observed to move every phase's error and every median ratio away
+from 1 rather than toward it. Re-measure before wiring it in.
 
-Measured 2026-09-03 against `outputs/profile/qwen3_8b/vllm_tp2_serial/profiles/vllm.jsonl` --
-49,211 iterations, `max_parallel: 1`, on a grid byte-identical to the TP=1 one so the two compare
-bucket for bucket.
+## Decode segments and the lattice integrator
 
-| Selection | Buckets | MRE (pchip) | Note |
-|---|---|---|---|
-| prefill, whole grid | 29 | **3.60%** | no exclusion needed |
-| decode, `requests >= 5` | 137 | **2.96%** | the validated figure |
-| mixed | 7 | 3.64% | 7 real iterations |
-| decode, whole grid | 204 | 9.51% | includes the small-batch gap |
+A decode segment is a run of `k` steps at a fixed batch with no prefill mixed in and no request
+entering or leaving. Fitted models integrate it in closed form ({doc}`rollout`); a kernel sum is
+not `max(F, alpha + beta * k)`, so `ComposedRollout` integrates numerically.
 
-This is the first score of the communication path at all. At TP=1 `comm_queries` returns empty,
-so none of the figures above it exercised a collective. The collective contributes 13.2% of a TP=2
-decode step (max 21.0%), and pricing it as zero moves median decode error from 3.07% to 10.70%, so
-modelling it is load-bearing.
+The obvious integrator, one query per step, is exact but costly. Sampling at a stride and
+trapezoid-summing per query is **not monotone** in `k`: on a spiked cost curve it can produce `k`
+where `total(k) < total(k - 1)`. A non-monotone total has no unique inverse, and the simulator
+compares the returned step count against a budget by integer identity, so an inexact inverse
+silently changes which branch it takes.
 
-Prefill's original 12.50% was a **baseline artifact**, since fixed. Its six `requests = 1` points
-used `num-prompts: 1`, making each recorded iteration a single cold request that carried ~78 ms of
-server-side work. Re-measured with `num-prompts: 8` at the same shape they went from 46.98% to 3.98%
-MRE with the prediction unchanged. Decode's remaining gap is a **real model error**: `requests 1-4`
-over-predicts at median ratio 1.31. Note the direction: it predicts *too much*, so it is not a
-missing cost term. A composed step sums 253 isolated kernel latencies each carrying its own fitted
-per-call floor, and the excess at `reqs=1` is 6.5 µs per launch, essentially the 6.0 µs all-reduce
-floor that CUDA graph replay removes on the real server. See {doc}`../reference/limitations`.
+`LatticeIntegrator` (`srl/cost/rollout/segment.py`) is monotone by construction. Lattice nodes at
+`0, s, 2s, ...` are sampled once. Node `i` carries a fixed rate, the trapezoid average of the
+per-step cost at nodes `i` and `i+1`, and a cumulative total, and a query interpolates linearly
+inside one interval:
 
-Note the direction of the residual. Every phase's signed error is **negative** (-2.31% decode,
--2.63% prefill, -2.23% mixed), so the model slightly *under*-predicts. This was expected to go the
-other way: the collective is timed in isolation, so an unmodelled compute/communication overlap
-should have produced over-prediction by roughly the collective's 13.2% share. It did not. Overlap
-is therefore not the dominant term at this degree, though it remains unquantified.
+```text
+total(k) = cumulative[i] + rates[i] * (k - i*s),   i = k // s
+```
 
-::{warning}
-An earlier baseline collected with `max_parallel: auto` put decode at 16.39%. One of its four
-concurrent servers degraded mid-run: at per-request depth 8,960, `reqs=16` measured 35.76 ms
-against `reqs=32`'s 19.24 ms, which is half the batch at half the total KV taking nearly double
-the time.
-The serial re-measurement confirmed it, moving `reqs=16` from median ratio 0.513 to 0.993 while
-every other batch stayed put. Use `max_parallel: 1` for any baseline whose figures will be quoted.
-::
+Since `rates[i]` does not depend on `k`, the total grows at a fixed positive slope inside every
+interval and is continuous across them, so it is strictly increasing and bisection inverts it
+exactly. `stride = 1` makes each interval one step and the sum exact. Above one, the trapezoid
+average is what earns the accuracy, and the integrator samples lazily: only the nodes a query
+reaches are evaluated.
 
-Full analysis: `examples/profile/kernel/TP2_VALIDATION.md`.
+The error this introduces is largest for a **cold** segment, one starting right after prefill with
+little KV behind it, because that is where the per-step cost is steepest across a stride.
+{doc}`../reference/validation` carries the measured figures against a step-by-step reference.
 
-`pchip` beats `shepard` on every phase: the utility surfaces in this sweep are well enough
-behaved that monotone-preserving cubic splines outperform the distance-weighted blend.
+### The closed-form fast path is off
 
-### Relation to prior baselines
+`decode_coeffs` can return `(0, intercept, secant slope)` sampled at offsets zero and `stride`, and
+`saturation_step_threshold` decides when a segment uses it instead of the lattice. The default is
+`1 << 62`, so no segment can reach it and every decode segment integrates on the lattice.
 
-Before the pchip utility surface was introduced, a hand-composed decode baseline measured 5.00%
-MRE. The current pchip result of 4.84% improves on that prior baseline. The 5.00% figure is
-superseded and should not be quoted as a current result.
+It is disabled on purpose. Within one segment the GEMM utilities are constant and the
+generation-attention utility is nearly flat at deep KV, which is exactly when a secant is a good
+approximation. But a real workload spends most of its predictions on prefill, which segment
+integration never touches, so the saved decode predictions are a small share of all predictions.
+The measured deviation of the approximation is of the same order as the model's own error against
+a real server, which makes it a first-order contaminant rather than a saving. A per-request KV
+depth is also a crude proxy: the bad region is where the generation-attention utility is
+non-monotone in depth, not a depth threshold. Set a finite threshold only for a workload genuinely
+dominated by long deep-KV decode runs, and re-measure end to end before trusting it.
 
-Note: `outputs/profile/qwen3_8b/kernel_tp1/kernel/validate_report.json` currently holds a
-single degenerate decode bucket at 68.73% MRE and should be regenerated with the `kernels
-validate` command above before quoting any number from it. The figures in the table above come
-from a clean re-run.
+## Prediction memoisation
 
-## Segment integrator
+A composed prediction costs several table lookups against interpolated surfaces, orders of
+magnitude more than evaluating a fitted formula, so each model memoises:
 
-A composed step cost is not `max(F, alpha + beta*k)`, so the closed-form pure-decode advance
-used by the fitted rollout models does not apply. The latency of a decode segment, a run of `k`
-steps at a fixed batch size over a growing KV history, must be integrated numerically.
+- `step_time` memoises the whole `RolloutWorkload` in a bounded cache. Two call sites in the
+  advance path resolve the same batch state in sequence, and two integrators built for the same
+  `(n_d, ctxsum)` would otherwise evaluate identical offsets twice.
+- GEMM plus communication terms are memoised on `(token_count, request_count)`, and the attention
+  term on the integers it reads: `(context extent pair, generation depth, request_count)`. These
+  keys repeat far more often than whole workloads do.
 
-### Why naive trapezoid fails
+Both caches evict an arbitrary entry when full and are **bit-exact**: entries are exact values, so
+eviction costs recomputation, never a different answer. The attention key is derived identically
+in the C++ engine, so a change to it must be mirrored there.
 
-Naive trapezoid summation (one kernel query per step) is not monotone in `k`. On a spiked cost
-curve, it produces values of `k` where `total(k) < total(k-1)`. A non-monotone total has no
-unique inverse, which causes the simulator's `instance.py` to take the wrong branch when
-comparing a step count against its time budget.
-
-### LatticeIntegrator
-
-`LatticeIntegrator` (`srl/cost/rollout/segment.py`) is monotone by construction. Lattice
-nodes at offsets $0, s, 2s, \ldots$ (where $s$ is `decode_integration_stride`) are sampled once.
-Each node carries a fixed per-step rate (the trapezoid average of the cost at that node and the
-next) and a cumulative total:
-
-$$\text{total}(k) = \text{cumulative}[i] + \text{rates}[i] \cdot (k - i \cdot s),
-\quad \text{where}\ i = \lfloor k / s \rfloor$$
-
-Because `rates[i]` is constant within an interval, the total grows at a fixed positive slope
-inside every interval and is continuous and strictly increasing across them. Bisection therefore
-inverts it exactly. The same property that makes it invertible also makes it safe to use in the
-simulator: the step-count-within-budget query always has a unique answer.
-
-### Accuracy vs cost trade-off
-
-Measured against a step-by-step reference over 4096 steps on real Qwen3-8B kernel tables (H20,
-TP=1). The starting KV context matters as much as the batch size, because a cold segment
-(starting right after prefill, KV depth 0) has the steepest per-step cost increase:
-
-| Starting context | Batch 16 | Batch 64 |
-|---|---|---|
-| 0 (cold, just after prefill) | 0.46% | 0.42% |
-| 2048 | 0.07% | 0.01% |
-| 16384 and beyond | ≤0.01% | ≤0.01% |
-
-Over a shorter 2048-step segment the cold case reaches **1.31%** (batch 16) and 1.11% (batch
-64). A cold segment is the common case immediately after prefill, so treat ~1.3% as the
-conservative bound rather than the sub-0.1% a warm segment shows.
-
-At `stride=1`, the integrator evaluates one kernel query per decode step and produces an exact
-sum. At `stride=1024` (the default), it uses at most 5 queries for a 4096-step segment, a 1024x
-reduction in kernel evaluations for a ~1.3% worst-case accuracy cost.
-
-A single-tangent approximation (the degenerate case of `stride >= max_steps`) measures 7.08%
-error at batch 16 and 13.68% at batch 64, which is why it is not a supported mode.
-
-## Elementwise ops: measured, deliberately not summed
-
-Rope, rmsnorm, activation, and Qwen3's `qk_norm` each have a perf table (op `elementwise`,
-holdout MRE 5.01% over 52 points, fitted floor 2 us, H20 / TP=1 / 2026-08-25). They are
-**not** added to `ComposedRollout.predict()`. This is a measurement-backed design decision, not
-unfinished work.
-
-Adding the elementwise term makes every phase worse:
-
-| Phase | MRE (current) | MRE (with elementwise) | Median ratio (current) | Median ratio (with it) |
-|-------|---------------|------------------------|------------------------|------------------------|
-| decode | 4.84% | 11.18% | 1.0119 | 1.0639 |
-| prefill | 3.72% | 5.84% | 1.0069 | 1.0305 |
-| mixed | 0.48% | 1.89% | 0.9994 | 1.0143 |
-
-Every phase degrades and every median ratio moves *away* from 1.0. A genuinely missing term
-would improve at least one regime. The cause is the SOL/utility factorisation: the measured GEMM
-and attention latencies were collected from a real server whose elementwise kernels were running
-between them. That wall-clock time is already absorbed into the fitted utility values. Adding a
-separate elementwise term double-counts it.
-
-`tests/test_kernel_ops_elementwise.py:test_the_composed_model_does_not_add_an_elementwise_term`
-pins this behaviour so a future change that wires the term in has to confront the reasoning
-rather than silently double-count.
-
-The table exists for two other consumers: the FSDP training backend, which runs without CUDA
-graphs and will need an explicit elementwise term, and as the third op family that validates the
-`KernelOp` abstraction beyond the two families that originally shaped it.
-
-## Known limitations
-
-The known limitations (mixed steps, the unusable TP=2 decode buckets below batch 32, decode
-over-predicted by 13% at small batch, no CPU overhead term, cross-node TP being unmeasured,
-cross-hardware transfer unvalidated, and
-`context_attention/flashinfer` above the 5% holdout gate) are described with their measured
-magnitudes and proposed fixes in {doc}`../reference/limitations`.
-
-## Running validation
-
-To score `ComposedRollout` against a real vLLM profiling baseline:
+## Scoring it against a real server
 
 ```bash
 srl-profile kernels validate \
     --config examples/profile/kernel/qwen3_8b_h20_tp1.yaml \
     --baseline outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl \
     --model-path $MODEL_PATH \
-    --surface pchip \
-    --min-samples 1 \
-    --gate 100 \
+    --surface pchip --min-samples 1 --gate 100 \
     --output /tmp/validate-pchip.json
 ```
 
-Pass `--min-samples 1` to score all three phases. At the default `--min-samples 20`, only
-decode accumulates enough identical iterations from a typical vLLM run, so prefill and mixed are
-dropped with an explicit warning. Score against the `vllm` rows, which are the kernels the server
-actually ran. The FlashInfer rows exist to answer what a backend switch would buy, so scoring
-against them on a vLLM server compares against a backend that never ran.
+Pass `--min-samples 1` to score prefill and mixed as well as decode; at the default of 20 a
+typically decode-dominated baseline has no bucket that deep for the other two phases, and the tool
+warns about each phase it dropped. Score against the `vllm` tables, which are the kernels the
+server ran. The bucketing rules and the report fields are on {doc}`../profiling/kernels`.
+
+Accuracy figures by phase and by degree are in {doc}`../reference/validation`, along with what kind
+of evidence each number is. The known limitations of the composition, including the mixed-step
+approximation, small-batch over-prediction from per-call floors, and the TP degrees without an
+end-to-end baseline, are in {doc}`../reference/limitations`.
+
+## Known approximations
+
+- **Mixed steps.** Only the two pure attention phases are measured. A mixed step is priced as
+  context attention plus generation attention at the step's batch size, which is accurate for the
+  near-uniform batches a profiling baseline contains. A chunked-prefill step is not that shape, and
+  because attention is quadratic in sequence length, spreading one request's long chunk across the
+  batch understates its context term severalfold. Measuring mixed batches directly is the fix and
+  is not implemented.
+- **Per-call floors.** A composed step sums one isolated latency per kernel, each with its own
+  fitted floor, while a server replays the step inside a CUDA graph where much of that dispatch cost
+  disappears. The excess is a fixed absolute amount, largest as a share of a small-batch step.
+- **Overlap.** Collectives are timed in isolation, so compute/communication overlap is not
+  represented. The sign of the residual is the diagnostic to read.
+- **Hybrid models.** Gated-delta-net layers carry a much larger per-call floor than softmax
+  attention, and charging it once per layer overstates prefill, whose real step runs the layers
+  back to back on one stream. Decode, which is the dominant share of engine time, is the phase this
+  model gets right.

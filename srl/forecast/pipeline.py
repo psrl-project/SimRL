@@ -11,7 +11,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from psrl.workers.ps.inventory_forecast import InventorySnapshot, forecast_ready_times
+from psrl.workers.ps.staleness import InventorySnapshot, forecast_ready_times
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,12 +43,7 @@ class Pipeline:
     """`E_k`, each buffer's predicted training-finish time."""
     publish_times: tuple[float, ...]
     """When each buffer's training publishes and aborts rollout, before its weight load."""
-    flow: float = 0.0
-    """Sum of every in-flight request's predicted finish time under this option, in request-seconds.
 
-    Zero when the producer did not price it. Not part of `compare`: it is the tie-break between
-    options whose `train_end` vectors the buffer forecast cannot separate.
-    """
 
 
 def group_etas(

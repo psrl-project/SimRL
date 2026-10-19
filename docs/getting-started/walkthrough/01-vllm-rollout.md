@@ -1,11 +1,11 @@
 # Stage 1: vLLM rollout
 
-The first real measurement. A vLLM server is started, benchmarked across a grid of
-prompt lengths and concurrencies, and every scheduler iteration it logs becomes one
-record. A regression then reduces those records to five coefficients.
+The first real measurement. A vLLM server is started, benchmarked across a grid of prompt
+lengths and concurrencies, and every scheduler iteration it logs becomes one record. A
+regression then reduces those records to a handful of coefficients.
 
-This is the cheapest profiling stage, about six minutes, and it is the one that makes
-simulated rollout latency reflect your hardware rather than a default.
+This is the cheapest profiling stage that touches a real engine, and it is what makes
+simulated rollout latency reflect your hardware instead of a default.
 
 ## What it needs
 
@@ -15,8 +15,8 @@ A checkpoint and at least one GPU:
 export MODEL_PATH=/path/to/Qwen3-8B
 ```
 
-The sweep grid lives in `examples/profile/vllm/qwen3_8b_tp1.yaml`: 24 prefill points
-crossing six prompt lengths with four concurrencies, plus six decode points.
+The sweep grid is `examples/profile/vllm/qwen3_8b_tp1.yaml`. Under `phases:` it lists 24
+prefill points (six prompt lengths crossed with four concurrencies) and six decode points:
 
 ```{literalinclude} ../../../examples/profile/vllm/qwen3_8b_tp1.yaml
 :language: yaml
@@ -24,64 +24,73 @@ crossing six prompt lengths with four concurrencies, plus six decode points.
 :end-before: "  decode:"
 ```
 
-Two details in that grid matter. Every point sets `num-prompts` equal to
-`max-concurrency`, so one point costs a single scheduler step in prefill rather than
-several request waves. And decode uses one long output per `(input, concurrency)` pair,
-because decode walks context forward across steps and a single request therefore
-sweeps the whole KV range for free.
+Two details matter. Every point sets `num-prompts` equal to `max-concurrency`, so a prefill
+point costs one scheduler step instead of several request waves. And decode uses one long
+output per `(input, concurrency)` pair, because decode walks the context forward across
+steps, so a single request sweeps the whole KV range.
 
-## The command
+Servers always start with `--no-async-scheduling`: with async scheduling an iteration's
+elapsed time stops measuring its own forward pass. `serve.args` and `serve.parameters` in the
+config become the `vllm serve` flags, and `bench.args` the `vllm bench serve` flags.
+
+## The commands
 
 ```bash
 bash examples/profile/vllm/profile_qwen3_8b.sh all
 ```
 
-That runs the three verbs every profiling backend exposes, in order:
+`profile_qwen3_8b.sh` takes `generate`, `run`, `collect`, or `all`, and reads `TP` (default 1,
+selecting `qwen3_8b_tp${TP}.yaml`), `CONFIG`, `PHASE` (`all`, `prefill`, or `decode`), and
+`MAX_PARALLEL`. `all` runs the three verbs every profiling backend exposes, in order:
 
 ```bash
-srl-profile vllm generate --config CFG   # enumerate sweep points, no GPU touched
-srl-profile vllm run      --config CFG   # start servers, benchmark
+srl-profile vllm generate --config CFG   # enumerate the sweep, no GPU touched
+srl-profile vllm run      --config CFG   # start servers and benchmark
 srl-profile vllm collect  --config CFG   # normalise into JSONL
 ```
 
-`generate` is free and writes a job manifest, so it is the cheapest way to see what a
-sweep will attempt before committing GPU hours. `collect` re-reads whatever the run left
-behind, so post-processing choices like the warmup window can change without
+`generate` is free. It writes a job manifest and logs the exact `vllm bench sweep serve`
+command for each shard, so it is the cheapest way to see what a sweep will attempt. `run`
+accepts `--phase`, `--dry-run`, `--resume`, and `--max-parallel auto|N`. `collect` re-reads
+whatever `run` left behind and accepts `--output`, so a post-processing change does not need
 re-measuring.
 
-## How long it takes
-
-About 6 minutes for 30 sweep points on 8x H20, measured 2026-08-31. The eight GPUs run
-eight servers concurrently. `max_concurrent_startups: 8` throttles boot rather than
-benchmarking, because parallel imports of torch plus a checkpoint read from network
-storage are slow enough to trip `server_ready_timeout`.
+With several GPUs visible, TP=1 points are sharded across them and benchmarked concurrently,
+each shard with its own port, experiment directory, and scheduler log. The shards benchmark in
+parallel but boot at most `run.max_concurrent_startups` at a time (the example config sets 8;
+the code default is 1), because simultaneous imports of torch, vLLM, and a checkpoint from
+shared storage can exceed `server_ready_timeout`.
 
 ## What lands on disk
 
 ```text
 outputs/profile/qwen3_8b/vllm_tp1/
-├── control/vllm/{prefill,decode}/     job manifest, per-shard serve and bench params, logs
-├── raw/vllm_timing/                   what `vllm bench sweep serve` wrote
-└── profiles/vllm.jsonl                49,208 normalised records
+├── control/vllm/{prefill,decode}/   job manifest, per-shard serve and bench params
+├── raw/vllm_timing/                 what `vllm bench sweep serve` wrote
+└── profiles/vllm.jsonl              normalised records
 ```
 
-**30 sweep points produce 49,208 records** because one record is one *scheduler
-iteration*, not one sweep point and not one request. A decode point generating 8192
-tokens logs 8192 iterations. The split is 49,144 decode, 58 prefill, and 6 mixed. All
-49,208 carry `status: success`.
+`output_dir` in the config is relative to the config file, which is why the example YAML
+spells it `../../../outputs/...`.
 
-That ratio is the point of the design. A single benchmark run yields tens of thousands of
-independent (batch shape, latency) observations, which is why a six-minute sweep can fit
-a five-coefficient model well.
+**One record is one scheduler iteration**, not one sweep point and not one request. A decode
+point that generates 8192 tokens logs 8192 iterations, so a 30-point sweep yields tens of
+thousands of independent (batch shape, latency) observations. That is why a short sweep can
+fit a few coefficients well.
 
-One record, the first line of `profiles/vllm.jsonl`:
+Collection truncates a run at its first preemption. Once the KV cache fills, vLLM evicts a
+request and later re-prefills its prompt plus the tokens it had generated; from then on the
+running requests no longer share one age, so `ctxsum` describes no later step. Keep
+`max-concurrency * (input + output)` inside the KV cache or the tail of that point is lost.
+
+One record, abridged:
 
 ```javascript
 {
   "record_type": "rollout",
   "schema_version": "1.0",
   "payload": {
-    "phase": "prefill",
+    "phase": "prefill",         // prefill | decode | mixed
     "latency_s": 0.02506,       // this scheduler iteration's elapsed time
     "n_tokens": 256,            // tokens processed in the iteration
     "request_count": 1,
@@ -89,40 +98,23 @@ One record, the first line of `profiles/vllm.jsonl`:
     "output_tokens": 0,
     "sum_l": 256.0,             // sum of prefill lengths
     "sum_l2": 65536.0,          // sum of squared prefill lengths, the attention term
-    "ctxsum": 0.0,              // summed KV context of decoding requests, zero here
+    "ctxsum": 0.0,              // summed KV context of decoding requests
     "batch_step_index": 0
   },
-  "run": {
-    "run_id": "vllm-097f7b34d69c83cee6e0",
-    "status": "success",        // success | oom | failed | skipped
-    "duration_s": 0.2908,
-    "repeat": 0,
-    "started_at": "2026-08-18T16:37:15.855992+00:00",
-    "raw_artifact": "raw/vllm_timing/qwen3-8b-prefill-timing-s000/..."
-  },
-  "model": {
-    "name": "/path/to/Qwen3-8B",
-    "architecture": "Qwen3ForCausalLM",
-    "parameter_count": 8190735360,
-    "num_layers": 36, "hidden_size": 4096,
-    "num_attention_heads": 32, "num_query_groups": 8,
-    "extra": {"head_dim": 128, "intermediate_size": 12288, "vocab_size": 151936}
-  },
+  "run": {"run_id": "vllm-...", "status": "success", "repeat": 0, "duration_s": 0.29, ...},
+  "model": {"name": "/path/to/Qwen3-8B", "architecture": "Qwen3ForCausalLM",
+            "parameter_count": 8190735360, "num_layers": 36, "hidden_size": 4096, ...},
   "hardware": {"gpu_name": "H20", "gpu_count": 1, "gpu_memory_mib": 97871, ...},
-  "software": {"backend": "vllm", "backend_version": "0.26.0", "source_commit": "568afb3a1...", ...},
+  "software": {"backend": "vllm", "backend_version": "0.26.0", "source_commit": "568afb3a...", ...},
   "parallelism": {"tp": 1, "pp": 1, "dp": 1, "cp": 1, "world_size": 1},
-  "tags": {"source": "vllm-scheduler-iteration-log", "scheduler_iteration": {...}, ...}
+  "tags": {"source": "vllm-scheduler-iteration-log", "feature_source": "equal-length-formula", ...}
 }
 ```
 
-Five metadata groups accompany every payload: `run`, `model`, `hardware`, `software`,
-`parallelism`. They are what make a record self-describing, so a JSONL file from one
-machine can be told apart from another without external bookkeeping. `world_size` is
-validated to equal `tp * pp * dp * cp`.
-
-The same shape with `phase: decode` carries the complementary features, `ctxsum: 1025.0`
-and `sum_l2: 0.0`, since a pure decode iteration has no prefill work. {doc}`../concepts`
-covers `ProfileRecord` as a schema, {doc}`../../reference/schemas` has every field.
+`sum_l2` and `ctxsum` are filled from equal-length formulas, since every request in a point
+has the same length. A pure decode record has `sum_l2: 0.0` and a non-zero `ctxsum`.
+{doc}`../concepts` covers `ProfileRecord` as a schema and {doc}`../../reference/schemas` has
+every field.
 
 ## Fitting the cost model
 
@@ -132,13 +124,17 @@ srl-regress rollout --model roofline \
     --output outputs/cost/qwen3_8b/rollout_roofline.json
 ```
 
-Seconds, no GPU. The result is a `CostArtifact` with one entry:
+This takes seconds and needs no GPU. Besides the artifact it writes diagnostic plots to
+`<output stem>_plots/` (here `outputs/cost/qwen3_8b/rollout_roofline_plots/`) when every
+record came from vLLM. The artifact is a `CostArtifact` with one entry per profiled
+topology. Fitting an earlier Qwen3-8B/H20 sweep gave:
 
 ```javascript
 {
   "kind": "rollout",
   "model_type": "roofline",
-  "profile_digest": "sha256:9b7f45b7d83d...",   // changes if the input changes
+  "artifact_version": "1.0",
+  "profile_digest": "sha256:...",     // changes if the input changes
   "entries": [{
     "coefficients": {
       "F": 0.006247,        // per-iteration floor, seconds
@@ -154,33 +150,26 @@ Seconds, no GPU. The result is a `CostArtifact` with one entry:
       "sum_l2":        [0.0, 536870912.0],
       "ctxsum":        [0.0, 466089.0]
     },
-    "train_metrics": {
-      "n_samples": 49208, "design_rank": 4,
-      "r_squared": 0.99989, "mre_percent": 5.252,
-      "rmse": 0.001543, "max_error": 0.08408, "n_outliers": 53
-    },
-    "validation_metrics": {"n_samples": 0, ...},   // nothing held out
-    "parallelism": {"tp": 1, "pp": 1, "dp": 1, "cp": 1},
+    "train_metrics": {"n_samples": 49208, "design_rank": 4, "r_squared": 0.99989,
+                      "mre_percent": 5.252, "rmse": 0.001543, "max_error": 0.08408, "n_outliers": 53},
+    "validation_metrics": {"n_samples": 0, ...},    // nothing held out by default
+    "parallelism": {"tp": 1, "pp": 1, "dp": 1, "cp": 1, "ep": 1, "world_size": 1},
     "selector": {"block_size": 16}
   }],
   ...
 }
 ```
 
-Predicted latency is
-`max(F, W + G*n_tokens + A_p*sum_l2/b + A_d*ctxsum)`.
+Predicted latency is `max(F, W + G*n_tokens + A_p*sum_l2/b + A_d*ctxsum)`, with the prefill
+attention term applied to `prefill` and `mixed` steps and the decode term to `decode` and
+`mixed` ones.
 
-Two fields deserve attention:
-
-**`feature_ranges` is a hard gate, not documentation.** A query with `n_tokens` above
-65536 raises rather than returning a number, because the fit says nothing about that
-region. {doc}`../../simulation/domain-gates` covers how to permit extrapolation when you
-mean to.
-
-**`validation_metrics.n_samples: 0` means nothing was held out.** The 5.252% MRE is
-in-sample. That is the honest reading, and the code encodes it as a zero sample count
-rather than by omitting the field. {doc}`../../reference/validation` lists which models on
-this project have a genuine split and which do not.
+`--validation-fraction` defaults to 0.0 for rollout fits, so `validation_metrics.n_samples:
+0` means nothing was held out and the MRE above is in-sample. Pass for example
+`--validation-fraction 0.2` for a split that is grouped by run, so repeats of one point
+cannot leak across it; on the same data that gave a held-out MRE of 1.958% over 8202 samples
+(the training MRE moves to 6.076% because the split changes what is trained on).
+{doc}`../../reference/validation` lists which models on this project have a genuine split.
 
 Two other rollout models fit from the same JSONL:
 
@@ -189,13 +178,13 @@ bash examples/regress/regress_rollout_psrl.sh
 bash examples/regress/regress_rollout_distserve.sh
 ```
 
-`psrl` reaches 5.164% MRE at design rank 3. `distserve` produces figures identical to
-`roofline` because it re-expresses the same fit through architecture constants rather
-than fitting independently. {doc}`../../cost-models/rollout` has all three formulas.
+`psrl` fits ten coefficients in separate prefill and decode forms (design rank 3 on the sweep
+above). `distserve` re-expresses the roofline fit through the architecture constants `h` and
+`m`, so its fitted error equals the roofline's. All three scripts read `INPUT` and write
+`OUTPUT`, both overridable, and their defaults are the paths on this page.
+{doc}`../../cost-models/rollout` has the formulas.
 
 ## How to tell it worked
-
-Read `train_metrics` out of the artifact:
 
 ```bash
 python -c "
@@ -206,24 +195,29 @@ print(e['feature_ranges'])
 "
 ```
 
-`design_rank: 4` against four fitted terms means every coefficient is separately
-identified. A rank below the term count means two features moved together across the
-whole sweep and the solver cannot tell their contributions apart. `n_samples` in the tens
-of thousands confirms `collect` read the iteration log rather than only per-request
-summaries.
-
-An MRE in the 5% range on this grid is normal. An MRE above 15% usually means the sweep
-hit preemption: a decode point whose `max-concurrency * (input + output)` exceeds the KV
-cache gets truncated at its first preemption, and the truncated tail pollutes the fit.
+`design_rank: 4` against four fitted linear terms means every coefficient is separately
+identified. A smaller rank means two features moved together across the whole sweep and the
+solver cannot split their contributions. An `n_samples` in the tens of thousands confirms
+`collect` read the iteration log, not just per-request summaries. An MRE far above the 5% of
+the sweep above usually means a decode point hit preemption and the truncated tail polluted
+the fit.
 
 ## Use it
 
+Pass the artifact to the cost model:
+
 ```bash
-ROLLOUT_MODEL=roofline bash examples/simulate/simulate.sh
+srl rollout_cost=roofline rollout_cost.artifact_path=outputs/cost/qwen3_8b/rollout_roofline.json \
+    workload=bimodal job.n_versions=3 job.batch_size=16 rollout.n_instances=2
 ```
+
+When `artifact_path` is set the artifact replaces the `F`, `W`, `G`, `A_p`, `A_d`, `b`
+overrides, and the lookup is exact on `rollout_cost.parallelism` (`tp`, `pp`, `dp`, `cp`),
+so a TP=2 simulation needs a TP=2 cell in the artifact. {doc}`06-simulate` combines this with
+a fitted training model and a workload trace.
 
 ## Next
 
-{doc}`02-kernels` measures the same engine from underneath, one CUDA kernel at a time.
-That path costs an hour instead of six minutes and needs no regression at all, and it is
-what lets you price a configuration the end-to-end sweep never ran.
+{doc}`02-kernels` measures the same engine from underneath, one CUDA kernel at a time. It
+needs no regression at all, and it is what lets you price a configuration the end-to-end
+sweep never ran.

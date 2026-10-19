@@ -56,7 +56,6 @@
 #   BATCH_SIZE           prompt groups per step (default: 256)
 #   GROUP_SIZE           responses per prompt; empty reads from workload
 #   N_INSTANCES          rollout engine count (default: 4)
-#   MAX_STALENESS        (default: 2)
 #   MAX_PROMPT_LENGTH    (default: 2048)
 #   MAX_OUTPUT_LENGTH    (default: 16384)
 #   TOKEN_BUDGET         per-instance token budget (default: 65536)
@@ -90,7 +89,6 @@ N_VERSIONS="${N_VERSIONS:-20}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 GROUP_SIZE="${GROUP_SIZE:-}"
 N_INSTANCES="${N_INSTANCES:-4}"
-MAX_STALENESS="${MAX_STALENESS:-2}"
 MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-2048}"
 MAX_OUTPUT_LENGTH="${MAX_OUTPUT_LENGTH:-16384}"
 TOKEN_BUDGET="${TOKEN_BUDGET:-65536}"
@@ -131,7 +129,6 @@ python -m srl.cli.main \
     job.n_versions="${N_VERSIONS}" \
     job.batch_size="${BATCH_SIZE}" \
     ${GROUP_SIZE:+job.group_size="${GROUP_SIZE}"} \
-    job.max_staleness="${MAX_STALENESS}" \
     job.max_prompt_length="${MAX_PROMPT_LENGTH}" \
     job.max_output_length="${MAX_OUTPUT_LENGTH}" \
     rollout.n_instances="${N_INSTANCES}" \

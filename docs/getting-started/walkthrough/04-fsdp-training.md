@@ -1,17 +1,16 @@
 # Stage 4: FSDP2 training
 
-The same measurement as {doc}`03-megatron-training`, under a different backend. FSDP2
-shards parameters, gradients, and optimizer state. Megatron's distributed optimizer shards
-optimizer state only and keeps a full-size fp32 gradient buffer. Their memory footprints
-differ by roughly twofold at the same model size, which is why this is a separate model
-rather than a reused one.
+The same measurement as {doc}`03-megatron-training`, under a different backend. FSDP2 shards
+parameters, gradients, and optimizer state alike. Megatron's distributed optimizer shards the
+optimizer state only and keeps a full-size gradient buffer. The static memory footprints
+differ accordingly, which is why this is a separate model and not a reused one.
 
-This is the longest sweep on the project, about seven hours, and it is the only model with
-a genuine held-out split on every cell.
+It is also the sweep with the most candidates, and the one whose memory model is fitted with
+out-of-memory results as inequality constraints.
 
 ## What it needs
 
-A checkpoint and eight GPUs. The grid is in `examples/profile/fsdp/qwen3_8b.yaml`:
+A checkpoint and eight GPUs. The grid is `examples/profile/fsdp/qwen3_8b.yaml`:
 
 ```yaml
 search_space:
@@ -30,21 +29,22 @@ training:
   warmup_steps: 4
 ```
 
-108 candidates. `replicate_size` is derived, so `shard_sizes: [2, 4, 8]` gives the meshes
-2x4, 4x2, and 8x1.
+`srl-profile fsdp generate` produces **108 candidates**: three shard sizes, three microbatch
+counts, three sequences per rank, and four sequence lengths. `replicate_size` is derived as
+`world_size / shard_size`, so `shard_sizes: [2, 4, 8]` gives the meshes 2x4, 4x2, and 8x1.
 
-Two pinned axes are worth knowing about. `optimizer_offload` is fixed to `false` because
-offloading is a first-order effect on both latency and memory and deserves its own cells,
-but sweeping it would double a seven-hour run, and one complete surface beats two
-half-covered ones. `gradient_checkpointing` is fixed to `true` because that is what the
-production trainer runs, so the profiled cell matches what will actually execute.
+Two axes are pinned on purpose. `optimizer_offload: [false]` is a first-order effect on both
+latency and memory that deserves its own cells, and sweeping it would double the run.
+`gradient_checkpointing: [true]` matches what a production trainer runs, so the profiled cell is
+the one that will execute. A cell is selected by exactly these discrete values at simulation
+time (see below), so profile `true` separately if you need it.
 
 ## The commands
 
 ```bash
 CFG=examples/profile/fsdp/qwen3_8b.yaml
 srl-profile fsdp generate --config $CFG
-srl-profile fsdp run      --config $CFG            # --resume, or --candidate-id ID
+srl-profile fsdp run      --config $CFG --index 0           # one candidate; see the wrapper below
 srl-profile fsdp collect  --config $CFG
 
 srl-regress training --latency-model fsdp --memory-model fsdp \
@@ -52,40 +52,45 @@ srl-regress training --latency-model fsdp --memory-model fsdp \
     --output outputs/cost/qwen3_8b/training_fsdp.json
 ```
 
-**Smoke-test first.** `examples/profile/fsdp/qwen3_8b_smoke.yaml` builds a two-layer model
-and finishes in minutes. Seven hours is a long time to discover a path typo.
+The wrapper script is the practical entry point:
 
-## How long it takes
+```bash
+bash examples/profile/fsdp/profile_qwen3_8b.sh generate
+CANDIDATE_INDEX=all bash examples/profile/fsdp/profile_qwen3_8b.sh run
+CANDIDATE_INDEX=all bash examples/profile/fsdp/profile_qwen3_8b.sh collect
+```
 
-Measured 2026-08-31 on 8x H20, from `run.duration_s`:
+It takes `generate`, `run`, or `collect`, reads `CONFIG` (default `examples/profile/fsdp/qwen3_8b.yaml`),
+and **defaults `CANDIDATE_INDEX` to 0**, so a bare `run` launches one candidate. The
+underlying flags are `--candidates PATH`, `--candidate-id ID | --index N`, `--dry-run`, and
+`--resume`. `--dry-run` logs the `torchrun ... -m srl.profiler.adapters.fsdp.launch --spec
+<launch_spec.json>` command per candidate without starting it. `--resume` skips candidates
+already marked `success`, so it **re-runs OOM and failed ones**.
 
-| | |
-|---|---|
-| candidates | 108 |
-| median per candidate | 183.0 s |
-| total | 6.87 h |
-| median training step | 4.64 s |
-
-About 136 s of each 183 s is process startup, the same fixed cost as Megatron's 143 s. The
-sweep is longer than Megatron's because it has 108 candidates against 40 and a wider grid,
-not because FSDP is slower per candidate.
+**Smoke-test first.** `examples/profile/fsdp/qwen3_8b_smoke.yaml` builds a small model and
+finishes quickly; a long sweep is an expensive way to discover a path typo. A candidate's
+`run.duration_s` is dominated by process startup (spawning eight ranks, importing torch,
+building the model, forming the NCCL group) and not by the retained steps, so reducing
+`max_steps` barely shortens a sweep. Compare `run.duration_s` with `sum(step_times_s)` in
+`fsdp.jsonl` to see the ratio on your machine.
 
 ## What lands on disk
 
 ```text
 outputs/profile/qwen3_8b/fsdp/
-├── control/fsdp/                 candidate list, per-candidate status, OOM markers
-├── raw/fsdp/                     per-candidate step logs
-└── profiles/fsdp.jsonl           108 records
+├── control/fsdp/candidates.json      the candidate list
+├── raw/fsdp/<candidate_id>/          launch_spec.json, srl_metrics.json, run.log, status.json,
+│                                     and oom_rank<N>.json on a caught out-of-memory
+└── profiles/fsdp.jsonl               one normalised record per candidate
 ```
 
-The outcome: **73 `success`, 34 `oom`, 1 `failed`.**
+A sweep produces a mix of statuses. The record set fitted on this page held 108 records:
+**73 `success`, 34 `oom`, 1 `failed`.**
 
-The 34 OOM records are wanted data, not waste. An OOM is not a missing measurement, it is
-an inequality: whatever the true peak was, it exceeded device capacity. The memory fitter
-records those as inequality constraints alongside the equalities from successful runs, and
-they are what bounds the model's valid domain from above. **A sweep that never OOMs has not
-found the ceiling.**
+The OOM records are wanted data, not waste. An OOM is not a missing measurement, it is an
+inequality: whatever the true peak was, it exceeded device capacity. The memory fitter keeps
+those as inequality constraints beside the equalities from successful runs, and they bound the
+valid domain from above. **A sweep that never runs out of memory has not found the ceiling.**
 
 An OOM record carries the full configuration and a reason, with no usable timings:
 
@@ -94,21 +99,19 @@ An OOM record carries the full configuration and a reason, with no usable timing
   "run": {
     "status": "oom",
     "error": "CUDA out of memory on rank(s) 0, 1, 2, 3, 4, 5, 6, 7.",
-    "duration_s": 182.166
+    "raw_artifact": "raw/fsdp/<candidate_id>",
+    ...
   },
   "payload": { ... }   // configuration present, step_times_s empty
 }
 ```
 
-That status must come from a marker file the launcher writes on a caught allocation
-failure, never from grepping a log for "out of memory". A log can contain that phrase for
-unrelated reasons, and a false positive can only *raise* the fitted memory floor, making
-the model quietly more conservative in a way no metric reports.
-
-One further trap: with `shard=2` the static state alone occupies 64% of device capacity,
-and running out of memory there surfaced as an **NCCL allocation failure** rather than
-`torch.OutOfMemoryError`. Those candidates were initially classified `failed`, which threw
-away the lower-bound data. {doc}`../../profiling/fsdp` has the classification rules.
+Status is decided by the marker files and nothing else. A rank that catches
+`torch.OutOfMemoryError` writes `oom_rank<N>.json`; if the process exits non-zero with no
+marker the candidate is `failed`, and a log that mentions "out of memory" does not change
+that. A false OOM could only raise the fitted memory floor, so the classification is
+deliberately strict. A candidate whose memory exhaustion surfaced some other way is `failed`
+and its lower bound is lost; {doc}`../../profiling/fsdp` has the classification rules.
 
 A successful record's payload has the same shape as Megatron's, with one difference that
 matters:
@@ -126,7 +129,7 @@ matters:
     },
     ...
   ],
-  "step_times_s": [...],                      // 8 retained of 12
+  "step_times_s": [...],
   "warmup_steps": 4,
   "peak_allocated_bytes": ...,
   "peak_reserved_bytes": ...,
@@ -134,102 +137,106 @@ matters:
 }
 ```
 
-**This sweep genuinely packs**, unlike the Megatron one: of the successful records, 74
-microbatches hold one sequence, 54 hold two, and 38 hold four. That is exactly where
-`sum_squared_tokens` differs from `sum_tokens` squared, by a factor of the sequence count.
-Four 2048-token sequences give 1.68e7 against 6.71e7, a 4x difference in the attention
-term. Getting this wrong was a live bug, not a hypothetical one.
+**This sweep genuinely packs**: among the successful records, microbatches hold 1, 2, or 4
+sequences (`n_seqs_per_rank`). That is where `sum_squared_tokens` differs from `sum_tokens`
+squared, by a factor of the sequence count. Four 2048-token sequences give 1.68e7 against
+6.71e7, a 4x difference in the attention term. The FSDP record's `tags` carry the mesh:
+`shard_size`, `replicate_size`, `optimizer_offload`, `reshard_after_forward`,
+`attn_implementation`.
 
 ## The fitted artifact
 
-Six entries, one latency and one memory per shard degree.
+`model_type: fsdp`, six entries: one latency and one memory per shard degree. Fitting the
+record set above gave:
 
-Latency, `shard=2`:
+| component | mesh (shard x replicate) | design rank | train MRE | held-out MRE (samples) |
+|---|---|---|---|---|
+| latency | 2 x 4 | 4 | 3.9% | 7.8% (4) |
+| latency | 4 x 2 | 4 | 0.85% | 1.05% (5) |
+| latency | 8 x 1 | 4 | 0.76% | 1.18% (5) |
+| memory | 2 x 4 | 3 | 5.2% | 5.1% (4) |
+| memory | 4 x 2 | 3 | 3.7% | 5.0% (5) |
+| memory | 8 x 1 | 3 | 5.7% | 4.7% (5) |
+
+Latency for the 8x1 mesh:
 
 ```javascript
 {
   "coefficients": {
-    "per_step_overhead":    0.07527,
-    "token_cost":           0.0004589,     // seconds per token
-    "token_quadratic_cost": 1.609e-08,
-    "microbatch_overhead":  0.4181
+    "per_step_overhead":    0.03209,
+    "token_cost":           0.0004646,     // seconds per token
+    "token_quadratic_cost": 1.516e-08,
+    "microbatch_overhead":  0.219
   },
   "feature_ranges": {
     "tokens":                   [512.0, 16384.0],
+    "sum_squared_tokens":       [262144.0, 1073741824.0],
     "num_microbatches":         [1.0, 4.0],
     "sequences_per_microbatch": [1.0, 4.0]
   },
   "selector": {
     "component": "latency", "schedule": "fsdp",
-    "shard_size": 2, "replicate_size": 4,
+    "shard_size": 8, "replicate_size": 1,
     "recompute": "full", "optimizer": "adam",
     "optimizer_offload": false, "reshard_after_forward": true,
     "parameter_dtype": "bf16", "gradient_dtype": "fp32", "optimizer_state_dtype": "fp32"
   },
-  "train_metrics":      {"n_samples": 15, "design_rank": 4, "r_squared": 0.99877, "mre_percent": 4.236},
-  "validation_metrics": {"n_samples": 4,  "design_rank": 4, "r_squared": 0.99633, "mre_percent": 6.519},
   "diagnostics": {
-    "formula": "per_step_overhead + num_microbatches * (token_cost * max_microbatch_tokens + token_quadratic_cost * max_microbatch_sum_squared_tokens + microbatch_overhead)",
+    "formula": "per_step_overhead + token_cost * sum_over_microbatches(sum_tokens) + token_quadratic_cost * sum_over_microbatches(sum_squared_tokens) + microbatch_overhead * num_microbatches",
     "slots": "num_microbatches",
-    "validation_fraction": 0.2,
-    "validation_is_in_sample": false
+    "validation_is_in_sample": false,
+    ...
   }
 }
 ```
 
-The formula is the same four-term shape as Megatron's, with `slots = num_microbatches`
-rather than `num_microbatches + PP - 1`, because there is no pipeline to drain.
+The form is the same four-term shape as Megatron's, with `slots = num_microbatches` since
+there is no pipeline to drain, and the token terms summed over the rank's real microbatches.
 
-Memory is structurally different, and the interesting part is its target selection:
+Memory is structurally different:
 
 ```javascript
 {
   "coefficients": {
-    "parameter_count":     8190735360.0,
-    "world_size":          8.0,
-    "microbatch_slope":    993942060.1,      // bytes per microbatch
-    "activation_slope":    181751.1,         // bytes per activation token
-    "residual_constant":   84505316328.1
+    "parameter_count":   8190735360.0,
+    "world_size":        8.0,
+    "microbatch_slope":  1115412488.7,      // bytes per microbatch
+    "activation_slope":  183843.5,          // bytes per activation token
+    "residual_constant": 84375275674.7
   },
-  "feature_ranges": {
-    "num_microbatches":  [1.0, 4.0],
-    "activation_tokens": [512.0, 65536.0]
-  },
+  "feature_ranges": {"num_microbatches": [1.0, 4.0], "activation_tokens": [512.0, 65536.0]},
   "diagnostics": {
-    "memory_metric": "peak_reserved_bytes",         // per-cell choice, see below
+    "memory_metric": "peak_reserved_bytes",            // chosen per cell, see below
     "reserved_over_allocated": 1.148,
     "oom_constraints": 16,
-    "oom_intercept_increase": 5109677791.8,         // bytes the OOM evidence added
-    "static_inventory": "fsdp2-sharded-parameters-gradients-and-optimizer",
-    "candidate_r_squared": {"peak_allocated_bytes": 0.301, "peak_reserved_bytes": 0.615}
+    "oom_intercept_increase": 5.14e9,                  // bytes the OOM evidence added
+    "candidate_r_squared": {"peak_allocated_bytes": 0.534, "peak_reserved_bytes": 0.648},
+    "static_inventory": "fsdp2-sharded-parameters-gradients-and-optimizer"
   },
-  "train_metrics": {"n_samples": 15, "r_squared": -8.189, "mre_percent": 5.053}
+  "train_metrics": {"n_samples": 15, "r_squared": -8.653, "mre_percent": 5.184}
 }
 ```
 
-Three things in there look wrong and are not.
+(The entry above is the 2 x 4 mesh.) Three things there look wrong and are not.
 
-**Memory scales with microbatch count, not tokens.** Under gradient checkpointing,
-activations are recomputed on the backward pass rather than kept resident. What accumulates
-instead is one autograd graph per microbatch. Measured directly, allocated memory was flat
-to four decimal places across a 4x token range while `num_microbatches` moved it. A feature
-set built on `max(sum_tokens)` fits nothing here, and a negative $r^2$ was the diagnostic
-doing its job.
+**Memory scales with microbatch count, not tokens.** Under gradient checkpointing, activations
+are recomputed on the backward pass instead of kept resident, and what accumulates is one
+autograd graph per microbatch. A feature set built only on the largest token count fits a flat
+target and degenerates, so the residual carries both `microbatch_slope * num_microbatches` and
+`activation_slope * max_tokens`, both non-negative.
 
-**The memory target is chosen per cell.** Megatron fits `peak_allocated_bytes`, while here
-`shard=2` selected `peak_reserved_bytes` because its allocated $r^2$ was only 0.30 against
-0.61 for reserved. Both targets are fitted and the better one wins, with the measured
-`reserved_over_allocated` ratio stored so an allocated-target prediction can still be
-compared against device capacity. Predicting allocated directly would under-report OOM,
-since the failure is triggered by reserved bytes.
+**The memory target is chosen per cell.** Both `peak_allocated_bytes` and `peak_reserved_bytes`
+are fitted and the better validation score wins; the stored `reserved_over_allocated` ratio
+lets an allocated-target prediction still be compared with device capacity, since an OOM is
+triggered by reserved bytes. In the fit above the 2 x 4 and 4 x 2 meshes selected reserved and
+the 8 x 1 mesh selected allocated.
 
-**The `shard=2` memory $r^2$ of $-8.19$ is the OOM constraints working.** That cell has 16
-inequality constraints against 15 successes. The inequalities lift the intercept about
-5.1e9 bytes above what the successes alone support, and the raised intercept then
-over-predicts those successes by that margin. The model is deliberately conservative: it
-will not predict that a workload fits when the OOM evidence says otherwise. The 5.05% MRE
+**A negative $r^2$ on a cell with OOM constraints is those constraints working.** The 2 x 4
+cell has 16 inequality constraints against 15 successes; they lift the intercept by about
+5.1e9 bytes above what the successes alone support, so the model over-predicts those successes
+by design and will not claim a workload fits when the OOM evidence says otherwise. The MRE
 describes the slope, which is what varies in real queries.
-{doc}`../../cost-models/training-fsdp` has the full derivation.
+{doc}`../../cost-models/training-fsdp` has the derivation.
 
 ## How to tell it worked
 
@@ -247,33 +254,49 @@ for e in a['entries']:
 ```
 
 Check three things. **`design_rank: 4`** on every latency cell, since a pinned
-`num_microbatches` would cap it at 3 and make the whole seven-hour sweep unfittable.
-**`validation_is_in_sample: false`** with a non-zero `validation_metrics.n_samples`,
-confirming a real split. And **`oom_constraints`** above zero on the memory entries, which
-says the sweep found the ceiling.
+`num_microbatches` would cap it and make the whole sweep unfittable (the fitter refuses it
+without `--allow-rank-deficient`). **`validation_is_in_sample: false`** with a non-zero
+`validation_metrics.n_samples`, confirming a real split. And **`oom_constraints`** above zero
+on memory entries that sit near the capacity edge, which says the sweep found the ceiling.
 
-The `token_cost` coefficient is the strongest single piece of evidence. Fitted
-independently per cell, it came out at 458.9, 467.0, and 466.7 µs per token across three
-meshes that never saw each other's data. Agreement to 2% across independent fits means the
-regression recovered a physical quantity rather than a curve. `token_quadratic_cost` agrees
-too, at 1.609e-8, 1.473e-8, and 1.482e-8. {doc}`../../cost-models/training-fsdp` owns
-those tables.
+Fitted independently per mesh, `token_cost` should come out near the same value on meshes that
+never saw each other's data. When it does, the regression recovered a physical quantity; when
+one cell drifts well away from the others, look at its sample count first.
 
 ## Use it
 
+An FSDP artifact holds one cell per mesh, and a cell answers only for the mesh it measured, so
+the config names it:
+
 ```bash
-TRAINING_BACKEND=fsdp BATCHING_MODE=pad_to_max \
-TRAINING_ARTIFACT=outputs/cost/qwen3_8b/training_fsdp.json \
-bash examples/simulate/simulate.sh
+srl rollout_cost=roofline rollout_cost.artifact_path=outputs/cost/qwen3_8b/rollout_roofline.json \
+    training_cost=fsdp \
+    training_cost.artifact_path=outputs/cost/qwen3_8b/training_fsdp.json \
+    training_cost.shard_size=8 training_cost.replicate_size=1 \
+    workload=dapo_trace workload.trace.path=outputs/workload/qwen3_8b_dapo_tp1/joint.jsonl \
+    job.n_versions=3 job.batch_size=4 \
+    job.max_prompt_length=1024 job.max_output_length=10240
 ```
 
-`BATCHING_MODE` has no counterpart in the Megatron path. Profiling measured uniform
-shapes, so how real trajectory lengths become microbatches is a simulate-time choice:
-`pad_to_max` charges for pad tokens, `token_budget` reproduces verl's dynamic batching, and
-`packed_no_pad` charges real tokens only. Be aware that all three can legitimately return
-identical results, and must at `micro_batch_size=1`. Balanced grouping puts similar lengths
-together, which flattens the padding difference a second time.
-{doc}`../../simulation/domain-gates` explains when they diverge.
+Omitting `shard_size` on a multi-mesh artifact raises `Artifact has multiple shard_size values;
+select one explicitly.` `training_cost.parallelism.dp` (default 8 in `fsdp.yaml`) must equal
+`shard_size * replicate_size`; `dp=4` against the 8x1 cell raises `This FSDP cell was measured
+on a 8x1 shard-by-replicate mesh, which is dp=8, so it cannot answer for dp=4`.
+`optimizer_offload`, `reshard_after_forward`, `activation_recompute`, `optimizer`, and the
+three dtypes must match a profiled cell too.
+
+`training_cost.batching_mode` has no counterpart in the Megatron path. Profiling measured
+uniform shapes, so how real trajectory lengths become microbatches is a simulate-time choice:
+
+- `pad_to_max` (default) pads each microbatch to its longest sequence and charges the pad tokens;
+- `token_budget` groups to `training_cost.max_tokens_per_rank` (verl's default is 10240), still
+  padded within a microbatch;
+- `packed_no_pad` concatenates with no pad tokens and charges the true token counts.
+
+All three can return identical results, and must at `micro_batch_size=1`, so agreement is not
+evidence that the wiring is wrong: balanced grouping puts similar lengths together, which flattens
+the padding difference a second time. {doc}`../../simulation/domain-gates` explains where the
+modes diverge, and {doc}`06-simulate` shows the full simulation.
 
 ## Next
 

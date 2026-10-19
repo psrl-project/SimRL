@@ -247,7 +247,16 @@ def cmd_kernels_run(args: argparse.Namespace) -> None:
     config = _kernel_config(args.config)
     device = torch.cuda.get_device_name(0)
     table_root = config.table_root()
-    selected = families() if args.family == "all" else (args.family,)
+    if args.family == "all":
+        selected = tuple(
+            family
+            for family in families()
+            if any(op.name in config.sweeps for op in ops_for_family(family))
+        )
+        for family in sorted(set(families()) - set(selected)):
+            srl_logger.info(f"Skipping family {family!r}: the config sweeps none of its ops.")
+    else:
+        selected = (args.family,)
 
     def writer_factory(framework: str, version: str, kernel_source: str) -> PerfTableWriter:
         return PerfTableWriter(

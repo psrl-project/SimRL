@@ -1,59 +1,59 @@
 # Development
 
-SimRL has six extension points. Each is a small protocol with a registry, so adding one
-does not require touching the simulator or the CLI.
+SimRL has six extension points. Each is a small protocol with one registry, so adding one does not
+require touching the simulator or the CLI.
 
-## The extension points
+| Extension point | Protocol | Registry | Page |
+|---|---|---|---|
+| Kernel op | `KernelOp` | `OP_REGISTRY` in `cost/kernel/ops/base.py` | {doc}`kernel-ops` |
+| Model family | `ModelFamily` | `FAMILY_REGISTRY` in `profiler/kernel/grid/families.py` | {doc}`model-families` |
+| Profiler adapter | `generate`, `run`, `collect` | none, selected by CLI backend name | {doc}`adapters-and-cost-models` |
+| Rollout cost model | `RolloutCostModel` | `ROLLOUT_MODEL_REGISTRY` | {doc}`adapters-and-cost-models` |
+| Training cost model | `TrainingCostModel` | `TRAINING_MODEL_REGISTRY` | {doc}`adapters-and-cost-models` |
+| Staleness policy | `StalenessPolicy` | `POLICY_REGISTRY` in `policy/registry.py` | {doc}`../simulation/policies` |
 
-Kernel op
-: A kernel family that can be measured and priced: GEMM, attention, elementwise,
-  collective. An op owns its table schema, its speed-of-light formula, its dispatch floor,
-  and its sweep. See {doc}`kernel-ops`.
+There is also a routing strategy protocol (`RoutingStrategy`, `STRATEGY_REGISTRY`) described in
+{doc}`../simulation/routing`.
 
-Model family
-: The mapping from a model architecture to the kernels one of its layers runs. Ops say *how
-  to price a shape*, families say *which shapes a layer produces*. See
-  {doc}`model-families`.
+{doc}`architecture` describes how the packages fit together: the three layers, the package tree,
+the dependency direction, the event loop and the two engine backends.
 
-Profiler adapter
-: A backend that can be driven and measured, exposing `generate`, `run` and `collect`. See
-  {doc}`adapters-and-cost-models`.
+---
 
-Rollout cost model
-: Predicts one inference step's latency. It must also expose `decode_coeffs()`, which is not
-  optional, because the simulator's closed-form pure-decode advance depends on it. See
-  {doc}`adapters-and-cost-models`.
+## Before writing code
 
-Training cost model
-: Predicts one training step's latency and peak memory, as a separable latency model and
-  memory model. See {doc}`adapters-and-cost-models`.
+Read `.claude/coding-style.md`. Two of its rules prevent silent bugs rather than style complaints:
 
-Staleness policy
-: Decides which requests to admit and what to do with a completed request whose model
-  version has moved on. The smallest extension point, roughly thirty lines. Documented at
-  the end of {doc}`../simulation/policies`, where the five existing policies serve as worked
-  examples.
+- **Identifier strings never gain a period or a case change.** A log message ends with `.`, a dict
+  key, a status value or a registry name does not. Appending a period to an identifier changes what
+  the program looks up.
+- **A comment says what the code cannot.** No history, no measurements that justified a choice, no
+  restatement of the line below it. Those belong in a commit message.
 
-{doc}`architecture` describes how the three layers fit together, the event loop, and the
-package map.
+Two structural rules recur in this codebase:
 
-## Before you write code
+- **The cost path stays free of `torch`.** A simulation prices kernels from parquet. The modules on
+  that path are gated by tests that import them in fresh subprocesses.
+- **A registry has one population path.** `ops/__init__.py`, the tail of `families.py` and the
+  router's package `__init__` each import every implementation for its side effect. Registration
+  order must not decide what is registered.
 
-Read `.claude/coding-style.md` in the repository root. Two rules in it cause silent bugs
-rather than style complaints, so they are worth repeating here:
+---
 
-- **Identifier strings never get a trailing period or a case change.** A log message ends
-  with `.`, but a dictionary key, a status value, or a candidate ID does not. Adding one
-  changes what the string *is*.
-- **Comments explain why, not what.** A comment restating the code goes stale silently. A
-  comment recording a rejected alternative saves the next person the experiment.
+## What to run
 
-{doc}`testing` covers what the test suite gates versus what is a local instrument. That
-distinction matters here because the measured perf tables are gitignored, so some tests skip
-on a fresh clone rather than fail.
+{doc}`testing` covers the commands, the tests that skip without local data, the pinned accuracy
+figures, and why a re-sweep invalidates them. In short:
 
-{doc}`docs` is the maintainer guide for this site, including the rule that keeps measured
-numbers from drifting apart across pages.
+```bash
+source /path/to/env/simrl.sh      # the environment that holds the dependencies
+pytest -q
+ruff check .
+make -C docs strict
+```
+
+{doc}`docs` covers this site: how to build it, where each fact lives, and the conventions the
+strict build enforces.
 
 ```{toctree}
 :maxdepth: 2

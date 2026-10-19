@@ -1,201 +1,174 @@
 # FSDP2 / HSDP profiling
 
-This page covers the FSDP2 / HSDP pipeline: how to configure and run a sweep, what axes
-to vary and, critically, which axis must vary or the fit will refuse the data, and where
-the output lands. Read {doc}`index` first for the three-verb contract and the cost table,
-and {doc}`methodology` before committing to a full sweep.
-
----
+This page covers the FSDP2 / HSDP pipeline: how to configure and run a sweep, which axes must
+vary or the fit will refuse the data, and what lands on disk. The formulas are in
+{doc}`../cost-models/training-fsdp`; general measurement rules are in {doc}`methodology`.
 
 ## Commands
 
 ```bash
-# Set MODEL_PATH to your Qwen3-8B (or other HuggingFace) checkpoint directory.
 export MODEL_PATH=/path/to/Qwen3-8B
+CFG=examples/profile/fsdp/qwen3_8b.yaml
 
-srl-profile fsdp generate --config examples/profile/fsdp/qwen3_8b.yaml
-srl-profile fsdp run      --config examples/profile/fsdp/qwen3_8b.yaml [--resume]
-srl-profile fsdp collect  --config examples/profile/fsdp/qwen3_8b.yaml [--output PATH]
+srl-profile fsdp generate --config $CFG
+srl-profile fsdp run      --config $CFG [--resume] [--dry-run] [--index N | --candidate-id ID]
+srl-profile fsdp collect  --config $CFG [--index N | --candidate-id ID] [--output PATH]
 ```
 
-A smoke run uses the two-layer override config, which keeps candidates under a minute and
-verifies mesh construction and sidecar writing before investing the full sweep's time:
+`generate` writes the candidate list to `{output_dir}/control/fsdp/candidates.json`. `run` walks
+the list, launches one `torchrun` child per candidate and records a status for each; a failing
+candidate is logged and skipped. `collect` normalises every candidate directory into
+`{output_dir}/profiles/fsdp.jsonl` by default. `--candidates PATH` overrides the manifest path on
+all three.
 
-```bash
-srl-profile fsdp generate --config examples/profile/fsdp/qwen3_8b_smoke.yaml
-srl-profile fsdp run      --config examples/profile/fsdp/qwen3_8b_smoke.yaml
-srl-profile fsdp collect  --config examples/profile/fsdp/qwen3_8b_smoke.yaml
-```
+`collect` raises when a candidate marked `success` carries no step times, no rank memory, or no
+`observed_mesh`, so a launcher that failed to write its sidecar cannot become a record with no
+measurement or an unverified topology. `profiling.allow_incomplete: true` turns those cases into
+skips and also lets `collect` skip a candidate that was never prepared.
 
-Records from the smoke run carry a different `parameter_count` (two layers, not
-thirty-six), so the cost-model cell key separates them automatically and they can never
-contaminate a production fit.
+`examples/profile/fsdp/qwen3_8b_smoke.yaml` uses a two-layer override, so smoke records carry a
+different `parameter_count` and the cell key keeps them out of a production fit.
 
----
-
-## Running a single candidate
-
-`--resume` skips candidates already marked `success`, but it **re-runs every OOM
-candidate** because the status file says `oom` rather than `success`. On a sweep with many
-high-memory candidates this re-executes tens of runs you already have complete information
-about. Use `--index` or `--candidate-id` to re-run one specific candidate instead:
-
-```bash
-# By position in the generated list (0-indexed).
-srl-profile fsdp run --config examples/profile/fsdp/qwen3_8b.yaml --index 42
-
-# By the 16-character SHA-256 prefix written into candidates.json.
-srl-profile fsdp run --config examples/profile/fsdp/qwen3_8b.yaml --candidate-id a3f7c12d9e8b4501
-```
-
-Both flags run exactly one candidate, write its output, and exit. After collecting a
-partial sweep you can inspect which candidates are still missing and target them
-individually rather than re-launching the whole grid.
-
----
+`--resume` skips a candidate whose `status.json` says `success`, which means it **re-runs every
+OOM candidate**. On a high-memory grid that repeats runs you already have complete information
+about. Use `--index` or `--candidate-id` to run one candidate instead.
 
 ## Sweep axes
 
-The full config lives at `examples/profile/fsdp/qwen3_8b.yaml`. The `search_space` block
-controls what `generate` enumerates:
+`generate` reads `search_space:`:
 
-| axis | values in full sweep | notes |
-|---|---|---|
-| `shard_sizes` | `[2, 4, 8]` | The HSDP shard degree. `replicate = world_size / shard`. |
-| `num_microbatches` | `[1, 2, 4]` | **Must vary. See below.** |
-| `n_seqs_per_rank` | `[1, 2, 4]` | Sequences per rank per microbatch (micro-batch size). |
-| `sequence_lengths` | `[512, 2048, 8192, 16384]` | Tokens per sequence. |
-| `gradient_checkpointing` | `[true]` | Pinned true, matching the DAPO training recipe. |
-| `optimizer_offload` | `[false]` | Pinned false. See {doc}`../reference/limitations`. |
-| `reshard_after_forward` | `[true]` | Controls whether parameters are freed after each block's forward. |
+| axis | meaning |
+|---|---|
+| `world_size` | the fixed mesh size; defaults to `hardware.gpu_count` |
+| `shard_sizes` | the HSDP shard degree. `replicate = world_size / shard`, and a shard degree that does not divide the world is skipped |
+| `num_microbatches` | gradient-accumulation depth. **Must vary. See below.** |
+| `n_seqs_per_rank` | sequences per rank per microbatch, i.e. the micro-batch size |
+| `sequence_lengths` | tokens per sequence; every microbatch a rank runs is this shape |
+| `gradient_checkpointing` | pinned `true` in the example, matching the RL recipe |
+| `optimizer_offload` | pinned `false` in the example; see {doc}`../reference/limitations` |
+| `reshard_after_forward` | whether parameters are freed after each block's forward |
 
-`shard_size` and `replicate_size` together describe a two-dimensional HSDP mesh:
-parameters are sharded within each row of `shard_size` ranks and replicated across the
-`replicate_size` rows. A shard degree that does not divide `world_size` describes no
-runnable topology and is silently skipped during `generate`. With `world_size: 8` the
-three values `[2, 4, 8]` produce `replicate` degrees of 4, 2, and 1 respectively, and `shard=8`
-is pure FSDP (one mesh dimension, replicate=1).
+`shard_size` and `replicate_size` are a two-dimensional HSDP mesh: parameters are sharded within
+each row and replicated across rows. `shard == world` is pure FSDP. Sharding and replication are
+configuration rather than data partitioning, so every rank still consumes a distinct microbatch
+and the profile topology is pure DP; the mesh travels into the artifact as selectors.
 
-### Why `num_microbatches` must vary
+`sequence_parallel` is not implemented at present. Any value other than 1 is rejected rather than
+silently ignored.
 
-The latency model has three terms: a per-step overhead, a per-token cost, and a
-per-microbatch overhead. Its design-matrix row for one candidate is
-`[1, nmb * tokens, nmb]`. When `nmb` is fixed across all candidates, the third column is a
-scalar multiple of the first column, and the design caps at rank two. The fit then cannot
-separate `per_step_overhead` from `per_microbatch_overhead` and refuses the data.
+### Why the microbatch count must vary
 
-Sweeping `sequence_lengths` alone does not fix this, because it varies the second column but
-leaves the third degenerate against the first. **You must include at least two distinct
-values for `num_microbatches` in every sweep you intend to fit.** The smoke config uses
-`[1, 2]`, and the full sweep uses `[1, 2, 4]`. The same constraint applies to the memory
-model: its design row is `[num_microbatches, tokens, 1]`, and a single `nmb` value leaves
-the first column collinear with the intercept.
+The latency design row is `(1, weighted_tokens, weighted_slots, weighted_sum_squared_tokens)`
+with `slots = num_microbatches` for FSDP, and must reach rank 4. With `nmb` fixed, the slot column
+is a scalar multiple of the intercept and the design caps below that. The memory design is
+`[num_microbatches, max_tokens, 1]` and needs rank 3, so a single `nmb` value leaves its first
+column collinear with the intercept as well. `check_latency_rank` and the memory rank check raise
+rather than returning coefficients they cannot separate.
 
-Running `nmb` identically-shaped microbatches with gradient accumulation is exactly what
-real FSDP training does, so the axis costs no measurement fidelity.
+Sweeping sequence lengths alone does not fix this: it moves the token columns and leaves the slot
+column degenerate. Use at least two, ideally three, widely spaced microbatch counts. The example
+uses `[1, 2, 4]`. Running `nmb` identically shaped microbatches under gradient accumulation is
+what real FSDP training does, so the axis costs no measurement fidelity.
 
----
+## The launcher
 
-## Timing (measured, Qwen3-8B / 8x H20 / 2026-08-31)
+Each candidate is one `torchrun` child (`srl.profiler.adapters.fsdp.launch`) driven by a
+`launch_spec.json` written by `prepare`. The child:
 
-108 candidates total (73 `success` / 34 `oom` / 1 `failed`, counted from the collected
-JSONL), median **183 s per candidate**, total **6.9 h**. Of each candidate's 183 s,
-roughly 60 s (31%) is actual training, and the remaining 123 s is process startup:
-spawning eight ranks, importing torch and transformers, building a 36-layer model, and
-forming the NCCL group.
+1. Joins the process group, sets the device from `LOCAL_RANK` (not the global rank modulo the
+   device count, which breaks on an unequal share per node).
+2. Builds the model from `AutoConfig` alone, with no weights: timing and memory are governed by
+   architecture, so no trained checkpoint is needed beyond `config.json`.
+3. Builds the module in the **master dtype** (`optimizer_state_dtype`), because AdamW's moments
+   inherit the dtype of the parameters it is handed, and the static inventory is sized from the
+   declared dtype. A mismatch is raised after the first optimizer step by
+   `check_optimizer_state_dtype`.
+4. Enables non-reentrant gradient checkpointing and pins `model.train()`. HuggingFace gates
+   recompute on `self.training`, so a model left in eval silently turns checkpointing into a
+   no-op while the candidate still claims it.
+5. Shards each transformer block with `fully_shard`, then the root. `reshard_after_forward` is
+   applied to the blocks; the root always uses `False`, because its parameters are needed
+   immediately when backward begins and resharding it adds a fixed cost to one side of the very
+   comparison the axis is meant to isolate. `MixedPrecisionPolicy` uses `compute_dtype` for the
+   all-gathered parameters and `gradient_dtype` for the reduction.
+6. Runs `max_steps` accumulated steps. The timing bracket spans the whole step, accumulation
+   included, because the per-step overhead term is defined as the cost paid once per step. No
+   barrier is taken.
+7. After the first step, records the live static allocation. It must be read after that step,
+   because AdamW allocates its moments lazily.
+8. After the timed loop, runs one extra step under `torch.profiler` and records collective kernel
+   occupancy. Profiling inside the loop would inflate a retained sample; outside it, it can
+   contaminate none.
+9. Gathers each rank's peak and has rank 0 write `srl_metrics.json`.
 
-Cutting `max_steps` is not the lever it appears to be: reducing from 12 to 8 saves about
-2 s out of 196 s (1%) while halving the retained samples the median and outlier rejection
-depend on. See {doc}`index` for the full startup-cost analysis.
+The synthetic batch is one uniform padded microbatch, repeated `num_microbatches` times.
+Profiling measures uniform shapes only; forming ragged microbatches from real trajectory lengths
+is the simulate-side planner's job (`MicrobatchPlanner`).
 
-::{warning}
-That single `failed` candidate is an artefact of an interrupted re-run, not a distinct
-failure mode, and it is worth understanding because it costs you data silently.
-
-`run` deletes any stale OOM marker files before launching a candidate, and `collect`
-decides OOM **from those markers** rather than by scanning the log. That is deliberate, since a
-false OOM adds an inequality that can only raise the fitted memory floor. If a re-run is
-killed (`SIGTERM`) after the markers are cleared but before the child writes new ones, the
-candidate's own `status.json` still reads `oom` while `collect` sees no markers and reports
-`failed`. The memory lower bound that candidate contributed is then dropped from the fit.
-
-Its `status.json` and its collected record disagreeing is the signature. If you see it,
-re-run that candidate to completion with `--candidate-id` rather than accepting the
-`failed` classification.
-::
-
----
-
-## Token ceiling
-
-Beyond 16384 tokens/rank the hardware cannot run the profiled configuration:
-
-| sequence_length | successes | OOMs |
-|---|---|---|
-| ≤ 16384 | 73 | 35 |
-| 32768 | 0 | 18 |
-| 65536 | 0 | 9 |
-
-There is no ground truth at 32768 or above, so neither interpolation nor extrapolation
-toward those values is meaningful. The `sequence_lengths` axis is capped at 16384 in the
-production config for this reason.
-
-OOM rate does not grow with `num_microbatches`. Across the 108 candidates, the success
-counts at `nmb = 1`, `nmb = 2`, and `nmb = 4` were 26, 24, and 23 respectively. Gradient
-accumulation repeats identical work and does not raise the activation peak, so adding
-microbatches does not push the device closer to exhaustion.
-
-For `num_microbatches` extrapolation semantics see {doc}`../simulation/domain-gates`.
-
----
+`prepare` also records the effective mesh the child built as `observed_mesh`, and `collect`
+compares it with the candidate. A record whose observed mesh disagrees is rejected with a hard
+error, because the cell key is the topology.
 
 ## Output layout
 
+```text
+{output_dir}/
+├── control/fsdp/candidates.json
+├── raw/fsdp[/{experiment_name}]/{candidate_id}/
+│   ├── launch_spec.json
+│   ├── manifest.json
+│   ├── srl_metrics.json
+│   ├── oom_rank{N}.json
+│   ├── status.json
+│   └── run.log
+└── profiles/fsdp.jsonl
 ```
-outputs/profile/qwen3_8b/fsdp/
-├── candidates.json               ← generated candidate list with candidate_id per row
-├── profiles/
-│   └── fsdp.jsonl                ← collected ProfileRecord stream
-└── raw/fsdp/
-    └── <candidate_id>/
-        ├── manifest.json         ← spec echoed back by the launcher
-        ├── srl_metrics.json   ← timings, memory peaks, mesh (written by rank 0)
-        ├── status.json           ← "success" / "oom" / "failed"
-        └── run.log               ← torchrun stdout/stderr
-```
 
-There is no `ConfigContainer.yaml`. Instead each candidate's raw directory carries
-`srl_metrics.json`, which includes an `observed_mesh` field that `collect` cross-checks
-before accepting the record. A record whose `observed_mesh` disagrees with its candidate
-spec is rejected with a hard error rather than silently entering the fit attributed to the
-wrong topology.
-
-### The `srl_metrics.json` sidecar
-
-Rank zero writes this file after the timed loop completes:
+There is no `ConfigContainer`. `srl_metrics.json` carries:
 
 ```javascript
 {
-  "step_times_s": [4.95, 0.083, 0.077, ...],        // all 12 steps, warmup included
+  "step_times_s": [/* every step, warmup included */],
   "timers_s": {"all_gather": [...], "reduce_scatter": [...]},
-  "rank_memory": [{"rank": 0, "allocated_bytes": ..., "reserved_bytes": ...}, ...],
-  "microbatch_sequence_lengths": [[512], [512]],     // one entry per microbatch
-  "parameter_count": 1630601216,
+  "rank_memory": [{"rank": 0, "allocated_bytes": 0, "reserved_bytes": 0}, ...],
+  "microbatch_sequence_lengths": [[L, ...], ...],     // one entry per microbatch
+  "parameter_count": 0,
   "observed_mesh": {"replicate_size": 1, "shard_size": 8},
-  "static_allocated_bytes_at_train_start": 3329769472
+  "static_allocated_bytes_at_train_start": 0
 }
 ```
 
-`step_times_s` retains **all** steps including warmup. The **collector** slices them off
-at `collect` time using `config.warmup_steps`, so the retained window can be changed
-without re-profiling. The `timers_s` entries record NCCL kernel occupancy (summed
-`self_device_time_total` per kind) from a separate profiled step run after the timed
-loop. They are not used by the regression but are preserved as ground truth for a
-future kernel-summation model.
+`timers_s` holds summed `self_device_time_total` per collective kind from the profiled step. That
+is kernel *occupancy*, not exposed wall time: with `reshard_after_forward=True` most of the
+all-gather overlaps compute on another stream, so the sum is an upper bound on what the step pays.
+It is not read by the regression; it is ground truth for a future kernel-summation model.
 
-For the full `ProfileRecord` schema see {doc}`../reference/schemas`.
+`static_allocated_bytes_at_train_start` is a diagnostic despite its name: it is captured after the
+first optimizer step, not at train start, because the moments are allocated lazily. It is
+parameters plus gradients plus moments at whatever dtype the optimizer actually produced, which
+follows configuration, so compare it against the analytic inventory rather than expecting it to
+predict one.
 
----
+## OOM classification
+
+OOM candidates are wanted data: they bound the memory model from below, and an OOM at a
+high-memory point is how the upper end of the token and microbatch axes is established.
+
+Most OOMs raise `torch.OutOfMemoryError` and are caught by exact type. Memory exhaustion can also
+surface as a NCCL buffer allocation failure: a step completes, then a collective tries to
+allocate its buffers and the device is full. The child catches `DistBackendError` and classifies
+it as OOM only when the message contains `failed to cuda calloc` or `out of memory`, recording
+`oom_source: nccl_alloc` in the marker. Any other `DistBackendError`, such as a timeout or a
+rendezvous failure, stays `failed`: widening the match would turn genuine network faults into
+memory bounds.
+
+`collect` decides OOM from the marker files, never from log text, for the reason
+{doc}`methodology` gives: a false OOM can only raise the fitted memory floor.
+
+Stale markers are deleted before a launch. If a re-run is killed after that deletion but before
+new markers are written, `status.json` still reads `oom` while `collect` reports `failed`. The
+two disagreeing is the signature; re-run that candidate with `--candidate-id` rather than
+accepting the classification.
 
 ## Fitting
 
@@ -205,43 +178,10 @@ srl-regress training --latency-model fsdp --memory-model fsdp \
     --output outputs/cost/qwen3_8b/training_fsdp.json
 ```
 
-The fitter partitions records by `shard_size` tag and fits each cell independently, which
-is why the accuracy table in {doc}`../cost-models/training-fsdp` reports three latency rows
-and three memory rows. Records from different shard degrees are not mixed.
-
-For the model coefficients, fitted accuracy, the shard=2 `r²=-8.19` story, and the
-`reserved`/`allocated` target selection see {doc}`../cost-models/training-fsdp`.
-
----
-
-## OOM classification and the NCCL calloc trap
-
-OOM candidates are wanted data, providing lower bounds that constrain the memory
-model's intercept. Treating them as failures to skip would discard precisely the
-high-memory end of the sweep that the model relies on as a floor.
-
-Most OOM candidates raise `torch.OutOfMemoryError` directly. However, memory exhaustion
-can also surface as a NCCL buffer allocation failure: training completes successfully,
-then the collective inside `on_train_end` tries to allocate a 10 MiB NCCL buffer and
-fails because the device is full. In the live sweep this produced five `DistBackendError`
-records at `shard_size=2, replicate_size=4`, all dying with `Failed to CUDA calloc
-10485760 bytes`.
-
-The launcher handles this by text-matching the error message against known allocation
-phrases (`failed to cuda calloc`, `out of memory`). When the message matches, the
-candidate is classified as OOM and `oom_source` is set to `nccl_alloc` in the per-rank
-marker file. A `DistBackendError` whose message does not match, such as a timeout, a rendezvous
-failure, or a real network fault, stays classified as `failed` and is not treated as a
-memory bound. The `oom_source` field makes the classification route auditable in the raw
-artifacts.
-
----
-
-## What the launcher does not depend on
-
-The profiler constructs a HuggingFace model from `AutoConfig` without loading weights:
-timing and memory are governed by architecture, not by trained values. Verl is absent from
-the profiling environment. The relevant FSDP2 semantics (mesh, per-block wrapping,
-mixed-precision policy, offload policy) are applied directly through torch APIs. The
-profile therefore does not pin to a verl version and does not require a trained checkpoint
-at `$MODEL_PATH`, since only the architecture `config.json` is read.
+FSDP latency and memory must be fitted together. The fitter groups records by the full discrete
+cell key including `shard_size` and `replicate_size`, refuses a record whose schedule is not
+`fsdp`, whose `sequence_parallel` is not `1`, or whose `tp`/`pp`/`cp` are not 1, and checks that
+`shard_size * replicate_size` agrees with `dp`. `--validation-fraction` defaults to `0.2` and the
+split is by run. Memory fits both peak metrics and selects one per cell; see
+{doc}`../cost-models/training-fsdp` for that rule and for what the selected target means at
+predict time.

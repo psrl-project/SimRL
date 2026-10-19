@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 
 import pytest
-from psrl.workers.ps.inventory_forecast import BufferView, InventorySnapshot
+from psrl.workers.ps.staleness import BufferView, InventorySnapshot
 
 from srl.component.rollout.engine import NativeInstance, Request
 from srl.cost.rollout import UnifiedRoofline
@@ -20,6 +21,7 @@ from srl.forecast import (
     PipelineForecast,
     Resident,
     TrainState,
+    chain_buffers,
     estimate_queued,
     forecast,
     group_etas,
@@ -260,6 +262,33 @@ class TestChainingProperty:
         assert f1.train_end[0] == f0.train_end[0] == f2.train_end[0]
         # The second interrupt does move the late groups, which only feed buffer 1.
         assert f2.ready[1] > f0.ready[1]
+
+    def test_new_groups_fill_every_buffer_not_only_the_nearest(self):
+        """A hypothetical admission that reserves into buffer 1, not buffer 0, must still show there.
+
+        Buffer 0 is already full from a real resident; staleness 0 forces the hypothetical group at
+        version 1 to reserve into buffer 1 and nowhere else. If `chain_buffers` dropped `new_groups`
+        after its first evaluation, this buffer would report `inf` forever despite the one group it
+        needs being fully known up front.
+        """
+        model = cost()
+        filler = resident(0, 2000, 1000, group_id=0)
+        state = bare_state(model, now=0.0, running=(filler,))
+        members = {0: [0]}
+        snap = snapshot({0: ((0, 0),)}, num_entries=1, staleness=0)
+        train = TrainState(None, state.now, 10.0, 1.0)
+        runtime = StubRuntime({0: state}, snap, train)
+
+        fleet = FleetForecast({0: InstanceForecast(state)})
+        eta = group_etas(fleet.finish_times(), members, {})
+        new_groups = [(1, state.now + 5.0)]
+        result = chain_buffers(fleet, snap, train, eta, members, runtime, horizon=2, new_groups=new_groups)
+
+        assert result.buffers == (0, 1)
+        assert math.isfinite(result.ready[0]), "buffer 0 fills from the real resident alone."
+        assert result.ready[1] == pytest.approx(state.now + 5.0), (
+            "buffer 1 needs the hypothetical group, which must still be offered to it."
+        )
 
     def test_forecast_buffer_zero_is_invariant_to_the_horizon(self):
         """`forecast(horizon=1)` and `forecast(horizon=2)` must agree on their first buffer."""

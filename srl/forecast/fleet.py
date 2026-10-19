@@ -17,7 +17,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from psrl.workers.ps.inventory_forecast import InventorySnapshot
+from psrl.workers.ps.staleness import InventorySnapshot
 
 from ..component.rollout.engine import Request, TrajView, traj_view
 from .drain import InstanceForecast
@@ -317,7 +317,11 @@ def chain_buffers(
         members (Mapping[int, Sequence[int]]): Group id to its member request ids.
         runtime (SchedulingRuntime): The live simulator facade, for `runtime.pending` completions.
         horizon (int): How many buffers to project, clamped to the snapshot's own buffers.
-        new_groups (Sequence[tuple[int, float]]): Hypothetical admissions passed to buffer 0 only.
+        new_groups (Sequence[tuple[int, float]]): Hypothetical admissions. `forecast_ready_times`
+            reserves them wherever psrl's own rule would at the snapshot time, which is not always
+            buffer 0, so every re-evaluation below passes the same `new_groups` again rather than
+            just the first: each call replays the whole snapshot from scratch, and dropping them
+            after step 0 would forget a candidate's own reservation on every later buffer.
 
     Returns:
         Pipeline: `F_k` and `E_k` for buffers `k0 .. k0 + horizon - 1`.
@@ -333,7 +337,7 @@ def chain_buffers(
         staged = fleet
         for interrupt in interrupts:
             staged = staged.with_interrupt(interrupt)
-        pipeline = proj.evaluate(group_etas_from_fleet(staged, members, runtime))
+        pipeline = proj.evaluate(group_etas_from_fleet(staged, members, runtime), new_groups)
 
     return Pipeline(
         buffers=pipeline.buffers[:horizon],

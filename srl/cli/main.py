@@ -17,7 +17,7 @@ from ..component.recompute.cost import (
     RecomputeCostModel,
     TrainingForwardRecomputeCost,
 )
-from ..component.sync.cost import BandwidthSyncCost, FixedSyncCost, SyncCostModel
+from ..component.sync.cost import FixedSyncCost, SyncCostModel
 from ..config import register_configs
 from ..config.policies import preset_config
 from ..cost.rollout import (
@@ -277,8 +277,6 @@ def build_sync_cost(cfg: DictConfig) -> SyncCostModel:
     name = cfg.get("name", "fixed")
     if name == "fixed":
         return FixedSyncCost(sync_time=cfg.get("sync_time", 0.0))
-    if name == "bandwidth":
-        return BandwidthSyncCost()
     raise ValueError(f"Unknown sync cost model: {name!r}.")
 
 
@@ -568,7 +566,6 @@ def run_simulate(cfg: DictConfig) -> None:
         max_prompt_length=_length_cap(job.get("max_prompt_length", None)),
         max_output_length=_length_cap(job.get("max_output_length", None)),
         livelock_rounds=rollout.get("livelock_rounds", 50),
-        max_engine_iters=rollout.get("max_engine_iters", 10_000),
         undoable_events=frozenset(
             os.environ.get(
                 "SIMRL_UNDOABLE_EVENTS",

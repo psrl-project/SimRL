@@ -242,8 +242,7 @@ class PlanSession:
         fleet_eval = FleetForecast(touched)
         eta = group_etas_from_fleet(fleet_eval, self.members, self.runtime)
         train = self._price_train(eta)
-        pipeline = chain_buffers(fleet_eval, self.snapshot, train, eta, self.members, self.runtime, self.horizon)
-        return self._with_flow(pipeline, fleet_eval)
+        return chain_buffers(fleet_eval, self.snapshot, train, eta, self.members, self.runtime, self.horizon)
 
     def evaluate_member(self, req: Request) -> dict[Option, Pipeline | None]:
         """
@@ -286,15 +285,37 @@ class PlanSession:
         remaining_of = self.length_predictor.remaining
         return sorted(rest, key=lambda r: -remaining_of(traj_view(r)))
 
-    @staticmethod
-    def _with_flow(pipeline: Pipeline, fleet: FleetForecast) -> Pipeline:
-        flow = sum(t for t in fleet.finish_times().values() if math.isfinite(t))
-        return dataclasses.replace(pipeline, flow=flow)
-
     def _above_watermark(self, fc: InstanceForecast, result) -> bool:
         if self.kv_watermark <= 0.0:
             return False
         return result.peak_blocks > self.kv_watermark * fc.state.kv_blocks
+
+    def throughput_gain(self, instance_id: int, first: Request) -> float:
+        """
+        Return the fractional decode-throughput gain of adding `first` to an instance's batch.
+
+        Throughput is `n_d / decode_segment_time(n_d, ctxsum, 1)` over the instance's running
+        batch plus the arrivals this burst already placed there. Adding a request to a batch that
+        is already past the decode knee barely raises tokens per second yet slows every resident.
+
+        Args:
+            instance_id (int): The instance to price.
+            first (Request): The group's first member, the request being admitted.
+
+        Returns:
+            float: `(after - before) / before`, `inf` when the batch is empty.
+        """
+        forecast = self.fleet.instances[instance_id]
+        state = forecast.state
+        residents = [*(r.ctx for r in state.running), *(a.ctx for a in forecast.arrivals)]
+        n_d, ctxsum = len(residents), float(sum(residents))
+        if n_d == 0:
+            return math.inf
+        cost = state.cost
+        added = arrival_of(first, self.now, self.length_predictor.remaining).ctx
+        before = n_d / cost.decode_segment_time(n_d, ctxsum, 1)
+        after = (n_d + 1) / cost.decode_segment_time(n_d + 1, ctxsum + added, 1)
+        return (after - before) / before
 
     def _fleet_at_defer(self) -> FleetForecast | None:
         """Return a fleet with all arrivals predicted to finish before `defer_until` removed.
@@ -390,7 +411,7 @@ class PlanSession:
             group_eta = max(group_eta, finish)
         eta = group_etas_from_fleet(fleet_eval, self.members, self.runtime)
         train = self._price_train(eta)
-        pipeline = chain_buffers(
+        return chain_buffers(
             fleet_eval,
             self.snapshot,
             train,
@@ -400,26 +421,6 @@ class PlanSession:
             self.horizon,
             new_groups=[(self.rollout_version, group_eta)],
         )
-        return self._with_flow(pipeline, fleet_eval)
-
-    def _defer_flow(self, f: Request, rest_sorted: Sequence[Request]) -> float:
-        """Flow of the fleet in which the whole group arrives at `defer_until` on its best instance."""
-        if not self.defer_valid or self.defer_until is None:
-            return math.inf
-        remaining_of = self.length_predictor.remaining
-        best = math.inf
-        for instance_id in self.fleet.instances:
-            arrival = dataclasses.replace(arrival_of(f, self.now, remaining_of), arrive_time=self.defer_until)
-            fleet_eval = self.fleet.with_placement(instance_id, arrival)
-            if fleet_eval.instances[instance_id].finish_times().kv_overflow:
-                continue
-            for member in rest_sorted:
-                fleet_eval, chosen, _ = fold_member(fleet_eval, member, remaining_of, now=self.defer_until)
-                if chosen is None:
-                    break
-            else:
-                best = min(best, sum(t for t in fleet_eval.finish_times().values() if math.isfinite(t)))
-        return best
 
     def evaluate_admission(self, group_requests: Sequence[Request]) -> dict[Option, Pipeline | None]:
         """
@@ -442,7 +443,6 @@ class PlanSession:
             out[None] = self._lookahead_defer_pipeline(f, rest_sorted) or self._baseline_pipeline()
         else:
             out[None] = self._baseline_pipeline()
-        out[None] = dataclasses.replace(out[None], flow=self._defer_flow(f, rest_sorted))
         return out
 
     def _commit_admission(self, group: list[Request], option: Option) -> None:

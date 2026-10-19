@@ -153,6 +153,7 @@ def build_env(job: Job) -> dict[str, str]:
     r, a = job.regime, job.arm
     trace = ensure_trace(r)
     overrides = [
+        f"policy.staleness={r.staleness}",
         f"workload.trace.path={trace}",
         "rollout.max_concurrency=1024",
         f"rollout.router.max_concurrent_seqs_per_instance={a.active_cap}",
@@ -190,7 +191,6 @@ def build_env(job: Job) -> dict[str, str]:
         BATCH_SIZE=str(r.batch),
         N_INSTANCES=str(r.instances),
         N_VERSIONS=str(r.versions),
-        MAX_STALENESS=str(r.staleness),
         MAX_PROMPT_LENGTH="1024",
         MAX_OUTPUT_LENGTH=str(r.cap),
         TOKEN_BUDGET="12800",

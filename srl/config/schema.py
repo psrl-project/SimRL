@@ -62,11 +62,6 @@ class DistributionConfig:
     name: str = "uniform"
     n: int = 200
     seed: int = 42
-    # Kept because srl/config/defaults/workload/from_trace.yaml still sets them and
-    # build_distribution still reads them. Retiring the from_trace workload is a separate
-    # change that must drop the YAML group, the CLI branch, and these together.
-    trace_path: str = ""
-    trace_column: str = "length"
     lo: int = 50
     hi: int = 200
     short_len: int = 50
@@ -248,7 +243,7 @@ class RouterConfig:
     """
 
     eviction: str = "vllm_lru"
-    """vllm_lru | longest_ctx.
+    """vllm_lru | longest_ctx | latest_deadline.
 
     Which resident the engine evicts when the KV pool cannot fund a decode
     step. Separate from `strategy` because the engine makes this call, not the
@@ -256,7 +251,7 @@ class RouterConfig:
     """
     strategy: str = "request_num_balance"
     """request_num_balance | round_robin | random | kv_cache_aware |
-    prefix_aware | throughput_balance | length_aware.
+    prefix_aware | throughput_balance | length_aware | inventory_deadline.
 
     The default reproduces the former least-active selection exactly, so it is
     behaviour-preserving as well as what the matched PSRL run uses.
@@ -331,7 +326,6 @@ class RolloutConfig:
     admission_control: AdmissionControlConfig = field(default_factory=AdmissionControlConfig)
     router: RouterConfig = field(default_factory=RouterConfig)
     livelock_rounds: int = 50
-    max_engine_iters: int = 10_000
     kv_cache_sizing: KvCacheSizingConfig = field(default_factory=KvCacheSizingConfig)
 
 

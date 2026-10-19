@@ -1,50 +1,53 @@
 # Walkthrough
 
 This section walks the whole path on one model and one machine: **Qwen3-8B on 8x H20**.
-It starts with a simulation that needs no GPU at all, then measures the real system one
-piece at a time, fits a cost model from each measurement, and ends with a simulated
-training job driven entirely by fitted numbers.
+It starts with a simulation that needs no GPU, then measures the real system one piece at a
+time, fits a cost model from each measurement, and ends with a simulated training job driven
+entirely by fitted numbers.
 
-Every command here was executed, and every number quoted was read off disk rather than
-recalled. Where a figure appears, the file it came from is named.
+Every command on these pages can be previewed without a GPU: `srl --cfg job ...` prints a
+resolved simulation config, and `srl-profile <backend> generate` lists what a sweep will
+attempt.
 
 ## The stages
 
-| Stage | What it measures | Wall clock | Produces |
+| Stage | What it measures | Command | Produces |
 |---|---|---|---|
-| {doc}`00-first-simulation` | nothing, analytic defaults | seconds | telemetry JSONL and plots |
-| {doc}`01-vllm-rollout` | vLLM scheduler iterations | ~6 min | `rollout_roofline.json` |
-| {doc}`02-kernels` | individual CUDA kernels | ~1 h | perf tables (parquet) |
-| {doc}`03-megatron-training` | training steps under Megatron-Bridge | 2.2 h | `training_hydraulis.json` |
-| {doc}`04-fsdp-training` | training steps under FSDP2 | 6.9 h | `training_fsdp.json` |
-| {doc}`05-workload-trace` | real prompt and response lengths | ~49 min on 16 GPUs | `joint.jsonl` |
-| {doc}`06-simulate` | nothing, reads the above | seconds | telemetry JSONL and plots |
+| {doc}`00-first-simulation` | nothing, analytic defaults | `srl` | telemetry JSONL and plots |
+| {doc}`01-vllm-rollout` | vLLM scheduler iterations | `srl-profile vllm`, `srl-regress rollout` | `rollout_roofline.json` |
+| {doc}`02-kernels` | individual CUDA kernels | `srl-profile kernels` | parquet perf tables |
+| {doc}`03-megatron-training` | training steps under Megatron-Bridge | `srl-profile megatron`, `srl-regress training` | `training_hydraulis.json` |
+| {doc}`04-fsdp-training` | training steps under FSDP2 | `srl-profile fsdp`, `srl-regress training` | `training_fsdp.json` |
+| {doc}`05-workload-trace` | real prompt and response lengths | `srl-workload` | `joint.jsonl` |
+| {doc}`06-simulate` | nothing, reads the above | `srl` | telemetry JSONL and plots |
 
-The stages are independent apart from the last one. Stage 6 needs at least one rollout
-cost source (stage 1 or 2) and one training cost source (stage 3 or 4). Stage 5 is
-optional: a parametric workload works without it, but group-relative advantage does not.
+The stages are independent apart from the last one. Stage 6 needs one rollout cost source
+(stage 1 or 2) and one training cost source (stage 3 or 4). Stage 5 is optional: a parametric
+workload runs without it, but it cannot represent GRPO or DAPO groups.
 
 ## Every page answers the same four questions
 
 1. **What it needs.** The command, the config file, and any artifact from an earlier stage.
-2. **How long it takes.** Measured, with the date and the machine.
+2. **What it costs.** What dominates the runtime, and what is cheap to preview.
 3. **What lands on disk.** Paths, and what one real record looks like.
 4. **How to tell it worked.** Which number to read, and what a wrong one looks like.
+
+Wall-clock figures are left out because they depend on the node, the checkpoint storage, and
+what else is running. {doc}`../../profiling/index` explains what dominates each sweep.
 
 ## Before you start
 
 ```bash
 conda activate simrl
 export MODEL_PATH=/path/to/Qwen3-8B
-export DATASET_PATH=/path/to/dapo-math-17k.parquet
 ```
 
-Every path below is relative to the repository root, and every profiling config reads
-the checkpoint from `$MODEL_PATH` through OmegaConf interpolation, so no config file
-needs editing. {doc}`../installation` covers the environment itself.
+Every path below is relative to the repository root. The profiling configs read the
+checkpoint from `$MODEL_PATH` through OmegaConf interpolation, so no config file needs
+editing. {doc}`../installation` covers the environment itself.
 
-The pages explain *how*. For *why* a pipeline is built the way it is, follow the links
-into {doc}`../../profiling/index` and {doc}`../../cost-models/index`.
+The pages explain *how*. For *why* a pipeline is built the way it is, follow the links into
+{doc}`../../profiling/index` and {doc}`../../cost-models/index`.
 
 ```{toctree}
 :maxdepth: 1

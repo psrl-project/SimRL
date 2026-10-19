@@ -1,6 +1,6 @@
 """PSRL Reserve/Occupy/Consume staleness policy.
 
-Delegates buffer management to `psrl.workers.ps.staleness_controller.StalenessInventory`
+Delegates buffer management to `psrl.workers.ps.staleness.StalenessInventory`
 so that the simulation faithfully reproduces the real system's reserve-at-worst-case,
 occupy-greedy-earliest, and cross-buffer entry-movement logic.
 
@@ -9,11 +9,11 @@ The psrl package must be installed: `pip install --no-deps -e /path/to/psrl --co
 
 from __future__ import annotations
 
-from psrl.workers.ps.inventory_forecast import InventorySnapshot
-from psrl.workers.ps.staleness_controller import (
+from psrl.workers.ps.staleness import (
     BufferStatus,
     EntryCategory,
     EntryInfo,
+    InventorySnapshot,
     StalenessInventory,
 )
 
@@ -25,7 +25,7 @@ class PSRLPolicy(StalenessPolicy):
     """
     PSRL Reserve/Occupy/Consume policy.
 
-    Wraps `psrl.workers.ps.staleness_controller.StalenessInventory` to reproduce
+    Wraps `psrl.workers.ps.staleness.StalenessInventory` to reproduce
     the real system's buffer management:
 
     - Reserve (on_admit): pessimistic placement in the highest pending buffer,

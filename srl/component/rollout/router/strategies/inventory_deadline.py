@@ -33,6 +33,7 @@ class InventoryDeadline:
     """Admit and route by minimizing the forecast delay to every pending training buffer."""
 
     name = "inventory_deadline"
+    python_engine_only = True
 
     def __init__(
         self,
@@ -44,7 +45,7 @@ class InventoryDeadline:
         window_groups: int = 32,
         kv_watermark: float = 0.0,
         lookahead_defer: bool = False,
-        flow_tiebreak: bool = False,
+        throughput_margin_frac: float = 0.0,
     ) -> None:
         """
         Args:
@@ -66,6 +67,11 @@ class InventoryDeadline:
                 design's own "admission candidates = instances whose forecast future KV peak fits"
                 limb, applied only to admitting a new group, never to routing an already-admitted
                 member (which already holds a buffer reservation and must still go somewhere).
+            throughput_margin_frac (float): Smallest fractional decode-throughput gain the winning
+                instance must gain from taking a staged group's first member; below it the
+                admission becomes DEFER even though it won the comparison. Zero disables the gate.
+                Admission only, for the same reason as `kv_watermark`, and ignored when `defer` is
+                False since there is then nothing to fall back to.
         """
         self.predictor = build_length_predictor(length_model, **(length_model_args or {}))
         if horizon_buffers < 1:
@@ -82,7 +88,9 @@ class InventoryDeadline:
             raise ValueError(f"kv_watermark must be in [0, 1], got {kv_watermark!r}.")
         self.kv_watermark = float(kv_watermark)
         self.lookahead_defer = bool(lookahead_defer)
-        self.flow_tiebreak = bool(flow_tiebreak)
+        if throughput_margin_frac < 0.0:
+            raise ValueError(f"throughput_margin_frac must be >= 0, got {throughput_margin_frac!r}.")
+        self.throughput_margin_frac = float(throughput_margin_frac)
         self._runtime = None
         self._session: PlanSession | None = None
         self._arrival: dict[int, int] = {}
@@ -144,7 +152,12 @@ class InventoryDeadline:
             group = session.staged_groups[req.group_id]
             if req.rid != group[0].rid:
                 return None
-            options = session.evaluate_admission(group)
+            # The throughput gate decides whether to admit; the comparison only decides where.
+            options = {
+                option: pipeline
+                for option, pipeline in session.evaluate_admission(group).items()
+                if option is not None
+            }
         else:
             return None
         if not self.defer:
@@ -163,10 +176,9 @@ class InventoryDeadline:
                 best_option, best_pipeline = option, pipeline
         if best_pipeline is None:
             return None
-        if self.flow_tiebreak and req.group_id not in session.members:
-            best_option = self._min_flow(best_pipeline, options, candidates, candidate_ids, eps)
-        else:
-            best_option = self._break_tie(best_option, best_pipeline, options, candidates, candidate_ids, eps)
+        best_option = self._break_tie(best_option, best_pipeline, options, candidates, candidate_ids, eps)
+        if self._below_throughput_margin(session, req, best_option):
+            best_option = None
 
         session.commit(req, best_option)
         if best_option is None:
@@ -207,34 +219,16 @@ class InventoryDeadline:
         load = {view.instance_id: view.n_active for view in candidates}
         return min(tied, key=lambda option: (load[option], option))
 
-    def _min_flow(
-        self,
-        best_pipeline,
-        options: dict,
-        candidates: list[InstanceView],
-        candidate_ids: set[int],
-        eps: float,
-    ) -> int | None:
-        """Among options the buffer forecast cannot tell apart, take the least total flow time.
-
-        Flow is the sum of every in-flight request's predicted finish time, so admitting a group
-        that slows the whole fleet costs request-seconds against the earlier start it buys, and
-        DEFER is priced as the same group arriving at `defer_until`. Load breaks remaining ties.
-        Used for admission only: an admitted member that DEFER leaves queued has no wake-up event,
-        and flow differences between near-tied placements are noise that would pick it.
-        """
-        load = {view.instance_id: view.n_active for view in candidates}
-        tied = [
-            option
-            for option, pipeline in options.items()
-            if pipeline is not None
-            and (option is None or option in candidate_ids)
-            and compare(pipeline, best_pipeline, eps) == 0
-        ]
-        return min(
-            tied,
-            key=lambda option: (options[option].flow, -1 if option is None else load[option], -1 if option is None else option),
-        )
+    def _below_throughput_margin(self, session: PlanSession, req: Request, option: int | None) -> bool:
+        """Whether admitting `req`'s staged group on `option` adds too little decode throughput."""
+        if (
+            self.throughput_margin_frac <= 0.0
+            or not self.defer
+            or option is None
+            or req.group_id not in session.staged_groups
+        ):
+            return False
+        return session.throughput_gain(option, req) < self.throughput_margin_frac
 
     def _deadline(self, session: PlanSession, group_id: int) -> int:
         """A group admitted earlier this burst has no snapshot reservation yet.

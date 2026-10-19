@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
-from psrl.workers.ps.inventory_forecast import InventorySnapshot
+from psrl.workers.ps.staleness import InventorySnapshot
 
 from ..component.rollout.engine import NativeInstance, Request, TrajView
 from ..forecast import InstanceState, TrainState

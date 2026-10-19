@@ -1,20 +1,19 @@
 # Stage 2: kernels
 
-Stage 1 measured the inference engine from the outside: one number per scheduler
-iteration. This stage measures it from underneath, timing each CUDA kernel a layer runs,
-and then prices a step by summing them.
+Stage 1 measured the inference engine from the outside: one number per scheduler iteration.
+This stage measures it from underneath, timing the CUDA kernels a layer runs, and then prices
+a step by summing them.
 
-It costs about an hour instead of six minutes. What it buys is the ability to price a
-shape the end-to-end sweep never ran, because the kernels a step is made of are the same
-kernels at any batch shape.
+What it buys is the ability to price a shape the end-to-end sweep never ran, because the
+kernels a step is made of are the same kernels at any batch shape.
 
 **This is the one path with no regression step.** `ComposedRollout` reads the measured
-tables directly.
+tables directly, so there is no `CostArtifact`.
 
 ## What it needs
 
-A checkpoint and one GPU. The grid lives in
-`examples/profile/kernel/qwen3_8b_h20_tp1.yaml`:
+A checkpoint and one GPU for the compute families. The grid is
+`examples/profile/kernel/qwen3_8b_h20_tp1.yaml`; its main blocks are:
 
 ```yaml
 gemm:
@@ -31,85 +30,109 @@ measurement:
   active_iterations: 20
 ```
 
-## The commands, in this order
+It also declares `elementwise:` and `collective:` blocks. The collective block sweeps
+`message_bytes` from 4 KiB to 512 MiB over `topologies: [[2, 1], [4, 1], [8, 1]]`
+(`[world_size, nodes]`), so it needs as many GPUs on the host as its largest world size.
+
+## The commands
 
 ```bash
 CFG=examples/profile/kernel/qwen3_8b_h20_tp1.yaml
-srl-profile kernels run       --config $CFG
+for fam in gemm attention elementwise; do
+    srl-profile kernels run --config $CFG --family $fam
+done
 srl-profile kernels fit-floor --config $CFG
-srl-profile kernels holdout   --config $CFG --fraction 1.0
+srl-profile kernels holdout   --config $CFG
 srl-profile kernels validate  --config $CFG \
     --baseline outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl --min-samples 1
 ```
 
-Or `bash examples/profile/kernel/profile_qwen3_8b.sh all`.
+`--family` accepts `all`, `attention`, `attention_training`, `collective`, `elementwise`,
+`gdn`, `gemm`, and `optimizer`, the families registered in `srl/cost/kernel/ops/`.
+`--family all` visits the families the config declares and logs the rest as skipped. This config
+has no `attention_training`, `gdn`, or `optimizer` block: those serve training-side pricing and
+hybrid models. Naming a family the config does not declare raises `No sweep configured for op ...`.
 
-**The order is not optional.** `fit-floor` must precede `holdout`, because the attention
-families would otherwise be scored against a zero dispatch floor and read far worse than
-they are.
+`bash examples/profile/kernel/profile_qwen3_8b.sh all` wraps `run`, `fit-floor`, and `holdout`
+with `TP=1|2|4|8` selecting `qwen3_8b_h20_tp${TP}.yaml` and `FAMILY=<name>` restricting `run`.
+Its default is `FAMILY=all`, so apply the same caution about the config's blocks.
 
-`--fraction 1.0` on the holdout matters too. A smaller fraction flatters the result: at
-`--fraction 0.2` GEMM scored 3.38% where the full grid gives 8.48% on the same tables,
-because holding out fewer points leaves the interpolator more neighbours to lean on.
-Report the full fraction.
+**The order is not optional.** `fit-floor` reads the tables `run` writes, and `holdout` scores
+the surface using the floors it fits. Without `fit-floor`, queries use the fallback constants
+in `srl/cost/kernel/sol.py` and a warning says so.
 
-## How long it takes
+`holdout` and `validate` exit non-zero when a family exceeds `--gate` (defaults 5.0 and 6.0
+percent), after writing their report. A failed gate is a finding, not a crash.
 
-About 1 hour for 338 shapes on 8x H20, measured 2026-08-31. `run` dominates. The three
-scoring commands take seconds.
+`holdout --fraction` defaults to 1.0. A smaller fraction scores a random subset and can
+flatter the surface, so the command warns that its MRE understates the real error. Report the
+full fraction.
+
+`verify-shapes` needs no profiling at all. It compares the GEMM shapes the model family
+declares against the checkpoint's real module graph:
+
+```bash
+srl-profile kernels verify-shapes --config $CFG
+```
+
+```text
+Qwen3ForCausalLM -> family 'dense_llama', 36 layers.
+  down_proj: declared (4096, 12288), observed (4096, 12288) OK.
+  gate_up_proj: declared (24576, 4096), observed (24576, 4096) OK.
+  lm_head: declared (151936, 4096), observed (151936, 4096) OK.
+  o_proj: declared (4096, 4096), observed (4096, 4096) OK.
+  qkv_proj: declared (6144, 4096), observed (6144, 4096) OK.
+Declared shapes match the module graph.
+```
 
 ## What lands on disk
 
-Parquet tables, not JSON, laid out by GPU, kernel family, backend, and backend version:
+Parquet tables, not JSON, laid out by GPU, kernel family, backend, and backend version, under
+`<output_dir>/kernel/`:
 
 ```text
 outputs/profile/qwen3_8b/kernel_tp1/kernel/
 ├── holdout_report.json
 ├── validate_report.json
 └── h20/
-    ├── gemm/vllm/2.11.0+cu128/
-    │   └── gemm_perf.parquet                       134 rows
-    ├── attention/vllm/0.26.1.dev0+g568afb3a1/
-    │   ├── context_attention_perf.parquet          59 rows
-    │   ├── generation_attention_perf.parquet       80 rows
+    ├── gemm/vllm/2.11.0+cu128/gemm_perf.parquet
+    ├── attention/vllm/<vllm version>/
+    │   ├── context_attention_perf.parquet
+    │   ├── generation_attention_perf.parquet
     │   └── floors.json
     ├── attention/flashinfer/0.6.14/
-    │   ├── context_attention_perf.parquet          59 rows
-    │   ├── generation_attention_perf.parquet       80 rows
+    │   ├── context_attention_perf.parquet
+    │   ├── generation_attention_perf.parquet
     │   └── floors.json
-    └── elementwise/vllm/0.26.1.dev0+g568afb3a1/
-        ├── elementwise_perf.parquet                60 rows
+    └── elementwise/vllm/<vllm version>/
+        ├── elementwise_perf.parquet
         └── floors.json
 ```
 
-472 rows in total. The version in the path is deliberate: a kernel measured against
-vLLM 0.26 is not evidence about vLLM 0.27, and putting the version in the path means the
-two cannot be silently mixed.
+The version in the path is deliberate: a kernel measured against one vLLM build is not
+evidence about another, and the path keeps the two from mixing. When a backend directory holds
+more than one version, `KernelDatabase` refuses to pick one.
 
 The GEMM table has ten columns:
 
 ```text
-framework  version       device      op_name  kernel_source                m     n      k  gemm_dtype  latency_s
-vllm       2.11.0+cu128  NVIDIA H20  gemm     torch.nn.functional.linear   1  4096   4096  bfloat16    0.000012
-vllm       2.11.0+cu128  NVIDIA H20  gemm     torch.nn.functional.linear   1  4096  12288  bfloat16    0.000039
-vllm       2.11.0+cu128  NVIDIA H20  gemm     torch.nn.functional.linear   1  6144   4096  bfloat16    0.000020
+framework  version       device      op_name  kernel_source               m  n     k     gemm_dtype  latency_s
+vllm       2.11.0+cu128  NVIDIA H20  gemm     torch.nn.functional.linear  1  4096  4096  bfloat16    1.15e-05
+vllm       2.11.0+cu128  NVIDIA H20  gemm     torch.nn.functional.linear  1  4096  12288 bfloat16    3.94e-05
+vllm       2.11.0+cu128  NVIDIA H20  gemm     torch.nn.functional.linear  1  6144  4096  bfloat16    2.00e-05
 ```
 
 `m` is the token count and is interpolated along. `n`, `k`, and `gemm_dtype` are matched
-exactly, never interpolated across, because a `(4096, 4096)` GEMM and a `(151936, 4096)`
-GEMM can select entirely different tile sizes. {doc}`../concepts` covers the slice-versus-
-axis distinction, and it is the same reason `all_reduce` slices on `world_size`.
+exactly. The attention tables add `num_key_value_heads`, `head_dim`, `attn_dtype`,
+`kv_cache_dtype`, `block_size`, and `window_size` as the slice, with `num_heads`,
+`batch_size`, and `isl` (context) or `step` (generation) as the axes. Elementwise has `dtype`,
+`op_kind`, and `n_elements`. {doc}`../concepts` covers the slice-versus-axis distinction.
 
-Attention tables carry sixteen columns, including `batch_size`, `num_heads`,
-`num_key_value_heads`, `head_dim`, `isl`, `step`, `block_size`, and `window_size`.
+### Where the swept shapes come from
 
-### Where the swept shapes come from, and what that costs you
-
-Worth understanding before you spend the hour, because it decides when the sweep has to be
-repeated.
-
-`(n, k)` is **not** something you choose. It is computed from `config.json` by the model
-family. For Qwen3-8B at TP=1 there are exactly five pairs:
+`(n, k)` is not something you choose. It is computed from `config.json` by the model family
+(`srl/profiler/kernel/grid/families_dense.py` for `dense_llama`, which covers
+`Qwen3ForCausalLM`). For Qwen3-8B at TP=1 the forward projections are five pairs:
 
 | shape | n | k |
 |---|---|---|
@@ -119,67 +142,62 @@ family. For Qwen3-8B at TP=1 there are exactly five pairs:
 | `down_proj` | 4096 | 12288 |
 | `lm_head` | 151936 | 4096 |
 
-The sweep crosses those with the `token_counts` from the config, adds the backward (wgrad)
-axis permutations and the logits row counts, and deduplicates. That is the 134 rows in 35
-slices. At simulation time `ModelOps` builds its queries from the *same* function, so a
-slice always hits.
+The sweep crosses these with the configured `token_counts`, adds the backward-pass
+permutations (dgrad and wgrad), and deduplicates. At simulation time `ModelOps` builds its
+queries from the same function, so a slice always hits. The asymmetry between the two kinds
+of column is what you feel in practice:
 
-The asymmetry between the two kinds of column is what you feel in practice:
+- an `m` between measured points interpolates utility;
+- an `m` past the measured top holds the boundary utility and reconstructs latency as
+  `SOL(query) / utility`;
+- an `(n, k)` that was never measured raises `KernelCoverageError`.
 
-```text
-slice (4096, 4096) measured, m=1500 never measured  -> 3.724e-04 s, utility 0.9131
-slice (5000, 4096) never measured, any m            -> KernelCoverageError
-slice (4096, 4096), m=99999 past the measured 24576  -> 2.419e-02 s, utility 0.9372
-```
+So `m` is the cheap axis. **A different model changes every `(n, k)`, and so does a different
+TP degree**, since shapes are sharded at profiling time. {doc}`../../development/model-families`
+covers adding a family.
 
-An unmeasured `(n, k)` **raises**. An `m` past the top of the sweep holds the boundary
-utility and reconstructs latency as `SOL(query)/utility`, because extrapolating an
-efficiency is defensible where extrapolating a latency is not.
-
-So `m` is the only cheap axis. A dozen token counts per slice cover any batch shape on that
-projection. Everything else means re-sweeping: **a different model changes every `(n, k)`,
-and so does a different TP degree**, since the shapes are sharded at profiling time. That is
-what the per-degree trees and the guards in `simulate.sh` are for.
-
-`floors.json` holds the fitted per-call dispatch cost:
+`floors.json` holds the fitted per-call dispatch cost for each floor-taking op:
 
 ```json
 {
   "context_attention": 3.2e-05,
-  "generation_attention": 2.2e-05,
-  "fitted_mre_percent": {
-    "context_attention": 5.7432,
-    "generation_attention": 6.6293
-  },
+  "generation_attention": 6e-06,
+  "fitted_mre_percent": {"context_attention": 6.4592, "generation_attention": 11.5547},
   "candidates_us": [0, 2, 4, 6, 8, 12, 16, 22, 32, 45, 60, 80],
   "gpu": "h20",
   "backend": "vllm"
 }
 ```
 
-A floor exists because at small batch sizes a decode attention kernel is dispatch-limited:
-its latency barely moves across a 64x increase in KV length. The floor goes *inside*
-`max(compute, memory, floor)` rather than being added, so it binds only in that regime.
-GEMM needs no floor.
+A floor exists because a small attention call is dispatch-limited: its latency barely moves
+as the KV length grows. It goes inside `max(compute, memory, floor)` rather than being added,
+so it binds only in that regime. GEMM declares no floor. The values are per backend and
+version; in the tables above the vLLM generation floor came out at 6 us.
 
 ## What the tables are used for
 
-`ComposedRollout` reads them straight, with no regression and no `CostArtifact`:
+`ComposedRollout` reads them directly, with no regression and no `CostArtifact`. Select it
+with `rollout_cost=composed` and name the tables, the GPU slug, and the checkpoint:
 
 ```bash
-ROLLOUT_MODEL=composed \
-KERNEL_ROOT=outputs/profile/qwen3_8b/kernel_tp1/kernel \
-MODEL_PATH=$MODEL_PATH \
-GPU=h20 \
-bash examples/simulate/simulate.sh
+srl rollout_cost=composed \
+    rollout_cost.kernel_table_root=outputs/profile/qwen3_8b/kernel_tp1/kernel \
+    rollout_cost.gpu=h20 \
+    rollout_cost.model_path=$MODEL_PATH \
+    workload=bimodal job.n_versions=3 job.batch_size=16 rollout.n_instances=2
 ```
 
+`kernel_table_root`, `gpu`, and `model_path` are all required; omitting one raises
+`rollout_cost.<field> is required for the composed model`. Other keys in
+`srl/config/defaults/rollout_cost/composed.yaml` are `attention_backend` (empty selects the
+vLLM-selected backend), `utility_surface` (`pchip` or `shepard`), `decode_integration_stride`,
+and `saturation_step_threshold`.
+
 What it interpolates is not latency but **utility**, the dimensionless ratio
-`SOL / measured_latency`, where SOL is the analytic roofline. On this GEMM table latency spans
-2268x while utility spans 4.65x, and inside the `(n=4096, k=4096)` slice it is 566x against
-1.69x. Interpolating the narrow quantity and letting the analytic formula carry the orders of
-magnitude is what makes this generalise. {doc}`../../cost-models/composed-rollout` has the segment
-integrator and its limits.
+`SOL / measured_latency`, where SOL is the analytic roofline. Interpolating the narrow
+quantity and letting the analytic formula carry the orders of magnitude is what makes it
+generalise. {doc}`../../cost-models/composed-rollout` has the segment integrator and its
+limits.
 
 ## How to tell it worked
 
@@ -193,64 +211,55 @@ for r in json.load(open('outputs/profile/qwen3_8b/kernel_tp1/kernel/holdout_repo
 "
 ```
 
-For the tables above:
+Each row reports `mre_percent`, `p90_percent`, `max_percent` with `worst_coords`,
+`point_count`, `skipped_slices`, and `utility_min`/`utility_max`. A `point_count` of 0 is a
+coverage problem (a grid too sparse or degenerate to hold a point out), not an accuracy
+problem. On the tables above, `gemm [vllm]` scored 3.91% MRE over 64 held-out points and the
+attention families 6% to 12%. {doc}`../../profiling/kernels` owns the full table.
 
-| Op | Backend | MRE | p90 | Points |
-|---|---|---|---|---|
-| `gemm` | vllm | 3.91% | 7.70% | 64 |
-| `context_attention` | vllm | 5.74% | 17.27% | 59 |
-| `generation_attention` | flashinfer | 6.01% | 14.61% | 72 |
-| `generation_attention` | vllm | 6.63% | 17.57% | 72 |
-| `context_attention` | flashinfer | 9.87% | 32.69% | 59 |
+Utility above roughly 1.2 means the SOL formula is missing work the kernel does, not that the
+GPU beat its spec; generation attention staying below 0.5 says that kernel never approaches
+its roofline.
 
-`utility_min` and `utility_max` in the same report are worth a glance. GEMM spans 0.473 to
-0.949 over the holdout points, so the interpolator is working over a narrow range. Generation
-attention tops out at 0.50, which says that kernel never approaches its roofline, and that is
-expected for a memory-bound decode kernel. {doc}`../../profiling/kernels` owns the full table.
+The end-to-end score is `validate`, which sums kernels per vLLM scheduler iteration and
+compares against the stage 1 baseline, bucketed by phase:
 
-Then the end-to-end score, `validate`, which compares summed kernels against the real
-vLLM baseline from stage 1. At TP=1 that reads 3.72% prefill over 29 buckets and 4.84%
-decode over 216. {doc}`../../reference/validation` owns those figures.
+```text
+decode:  216 buckets, MRE 3.02%
+mixed:     5 buckets, MRE 0.56%
+prefill:  29 buckets, MRE 3.84%
+```
+
+`--min-samples` (default 20) drops buckets with few iterations, and a phase that holds no
+bucket at that size is not scored at all; the command warns when that happens, and
+`--min-samples 1` scores everything. {doc}`../../reference/validation` owns the project's
+accuracy figures.
 
 ## Tensor parallel needs its own tree
 
-A `tp>1` step pays two all-reduces per layer, 72 of them for Qwen3-8B, which is 13.2% of
-a decode step. Pricing them at zero degrades median decode error from 3.07% to 10.70%, so
-the collective table is not optional.
+A `tp>1` step pays two all-reduces per layer, so the collective table is not optional, and
+GEMM shapes and attention head counts are sharded at sweep time. Keep one kernel tree per TP
+degree and simulate against the matching one:
 
 ```bash
-TP=2 bash examples/profile/kernel/profile_qwen3_8b.sh all      # ~1 h, compute plus collective
-for TP in 4 8; do                                              # seconds each, collective only
-    TP=$TP FAMILY=collective bash examples/profile/kernel/profile_qwen3_8b.sh all
+# GPU kernels at tp=2, in qwen3_8b_h20_tp2.yaml (output_dir .../kernel_tp2)
+for fam in gemm attention elementwise collective; do
+    srl-profile kernels run --config examples/profile/kernel/qwen3_8b_h20_tp2.yaml --family $fam
 done
+
+srl rollout_cost=composed rollout_cost.parallelism.tp=2 \
+    rollout_cost.kernel_table_root=outputs/profile/qwen3_8b/kernel_tp2/kernel \
+    rollout_cost.gpu=h20 rollout_cost.model_path=$MODEL_PATH ...
 ```
 
-Kernel trees are **per degree** by convention (`kernel_tp1`, `kernel_tp2`, ...). GEMM
-shapes and attention head counts are sharded at sweep time, so a tree swept at one degree
-prices the wrong shapes at another. `simulate.sh` checks for this and refuses, because the
-resulting error looks like a model defect rather than a wiring mistake.
+The collective sweep writes world sizes 2, 4, and 8 into one table per backend (`vllm`,
+which times vLLM's own dispatcher, and `nccl` as a control), so one run covers every TP degree
+up to 8. The shipped compute configs are `qwen3_8b_h20_tp1.yaml` and `qwen3_8b_h20_tp2.yaml`;
+the `tp4` and `tp8` configs declare only the collective block.
 
-Simulate at that degree:
-
-```bash
-ROLLOUT_MODEL=composed ROLLOUT_TP=2 \
-KERNEL_ROOT=outputs/profile/qwen3_8b/kernel_tp2/kernel \
-MODEL_PATH=$MODEL_PATH GPU=h20 bash examples/simulate/simulate.sh
-```
-
-Two things about the TP=2 baseline are worth knowing before you spend the hour.
-
-**Run the baseline servers serially.** With `max_parallel: auto`, four concurrent vLLM
-servers contaminate each other: one degraded mid-run and decode scored 16.39% instead of
-9.51%. The tell was self-contradiction rather than an outlier, since the `requests = 16`
-bucket read *faster* than it should have (median ratio 0.513, which then moved to 0.993 on
-re-measurement). Use `examples/profile/vllm/qwen3_8b_tp2_serial.yaml`.
-
-**Never benchmark a point with `num-prompts: 1`.** It records exactly one cold iteration
-carrying about 78 ms of one-time server work that no steady-state step pays. Six prefill
-points collected that way scored 46.98%. Re-measured with `num-prompts: 8` at the same shape
-they scored 3.98%, with the prediction unchanged.
-
+A tree swept at another degree does not price the wrong shapes silently: pointing a TP=2
+simulation at the TP=1 tree raises `KernelCoverageError: No gemm rows for slice
+('bfloat16', 3072, 4096)` followed by the slices that were measured.
 {doc}`../../profiling/tensor-parallel` has the full account.
 
 ## Next

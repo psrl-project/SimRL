@@ -1,303 +1,368 @@
 # Staleness policies
 
-The simulator never moves time forward on its own. The staleness policy decides when a
-request may be dispatched and when a training batch may be consumed. Every policy is a
-plugin: it receives a `SimState` snapshot and returns a quota or a batch. There are five
-built-in policies, each modelling a different real system. Choosing the wrong one, or
-misconfiguring `job.max_staleness`, is the most common source of a simulation that
-produces plausible-looking numbers for the wrong setup.
+A staleness policy is the part of an asynchronous RL system that decides what may be
+admitted, what may be trained on, and what is thrown away when weights move on. The
+simulator owns the clock, the queues and the group bookkeeping. A policy owns only its
+counters and answers a fixed set of hooks. There is one typed preset per modelled system,
+and each preset is a faithful, small reimplementation of that system's control logic.
 
-## The `max_staleness` confusion
+This page first describes the contract between the simulator and a policy, then lists
+every preset with what it sets, derived from `srl/config/policies/` and `srl/policy/`.
 
-Before reading the individual policies, understand this table. The same configuration key
-means a different thing depending on which policy is selected, and one policy ignores it
-entirely.
+## From preset to policy
 
-| Policy | What `job.max_staleness` controls |
-|--------|-----------------------------------|
-| `areal` | Version bound: the token bucket ceiling is `(max_staleness + train_version + 1) * B` |
-| `psrl` | Version bound: buffer IDs extend to `rollout_version + max_staleness` |
-| `roll` | Version bound: the GC window is `train_version - max_staleness` to `train_version` |
-| `verl` | Fallback ratio: used as `staleness_threshold` when `policy.staleness_threshold` is null |
-| `slime` | **Ignored.** The staleness bound is `policy.update_weights_interval`, always |
-
-A simulation that switches from `policy=areal` to `policy=slime` with `max_staleness=4`
-will not run `slime` with a version bound of four. It will run `slime` with a bound of
-one (the default `update_weights_interval`) and silently ignore the four. Set
-`policy.update_weights_interval` explicitly when using `slime`.
-
----
-
-## `psrl`: Reserve / Occupy / Consume (default)
-
-**`policy=psrl` is the default.** It delegates buffer management to
-`psrl.workers.ps.staleness_controller.StalenessInventory`, so the simulation
-faithfully reproduces the real PSRL system's three-phase lifecycle rather than
-approximating it.
-
-### Mechanism
-
-Each request passes through three states inside the inventory:
-
-1. **Reserve** (`on_admit`): a slot is pessimistically claimed in the highest pending
-   buffer that the request's trajectory version could still fill, working backwards from
-   the last available entry (`get_last_non_reserved`). This is conservative by design:
-   it prevents the inventory from over-committing to requests that may complete too late.
-2. **Occupy** (`on_complete`): when the rollout engine finishes a request, it is moved
-   to the earliest buffer that has room, with cross-buffer entry movement to avoid
-   spurious STUCK states. Greedy earliest-first ensures batches are assembled as quickly
-   as possible.
-3. **Consume** (`peek_batch` / `take_batch`): the policy waits until the buffer for
-   `train_version` is in a READY or READY\_WITH\_CAPACITY state. The buffer is deleted
-   only when the batch is formally taken, not when it is merely peeked.
-
-The inventory also tracks STUCK states, meaning buffers that cannot reach READY because too
-many reserved entries have become stragglers. The optional `proactive_filter` knob lets
-the policy evict reserved entries proactively when only `proactive_threshold` or fewer
-remain, unblocking a stuck buffer at the cost of dropping those requests.
-
-### Configurable knobs (`srl/config/defaults/policy/psrl.yaml`)
-
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `proactive_filter` | `false` | Enable proactive eviction of near-stuck buffers |
-| `proactive_threshold` | `0` | Evict only when this many or fewer reserved entries remain |
-
-### Known rough edge: external dependency
-
-**`psrl` requires the `psrl` package to be importable.** The module contains a
-hard-coded absolute path in `srl/policy/psrl.py` and falls back to inserting it on
-`sys.path` when the package is not already importable. On any machine where that path
-does not exist, constructing the default policy raises `ImportError` before the
-simulation begins.
-
-The fix is to install the package from its source tree:
-
-```bash
-pip install --no-deps -e /path/to/psrl
+```{mermaid}
+flowchart LR
+    Y["policy=verl (Hydra group)"] --> P["preset_config -> VerlPolicyConfig"]
+    P -->|build| S["VerlPolicy"]
+    P -->|horizon| H["SimConfig.staleness_horizon"]
+    P -->|ingress_window_groups| I["initial ingress credits"]
+    O["rollout.max_inflight"] -->|build argument| S
 ```
 
-After that one-time install, the import succeeds on any machine. If the source is
-unavailable, select a different policy with `policy=areal` or `policy=roll`. Do not
-add the source directory to `PYTHONPATH` manually unless you understand the version
-the path points to, since the path is machine-specific and may not match the version of
-PSRL the simulation was validated against.
+`srl/cli/main.py` calls `preset_config(cfg.policy)`, which maps the composed Hydra node
+onto the dataclass registered in `PRESETS` (`srl/config/policies/__init__.py`). The preset
+then provides three things:
 
----
+`build(max_inflight)`
+: constructs the policy object and stamps `policy.name` with the preset name.
+  `rollout.max_inflight` is the argument. Only some presets use it, see the table below.
 
-## `areal`: Cumulative token bucket
+`horizon`
+: the version bound the system declares, or `None` for a system without one. It is copied
+  to `SimConfig.staleness_horizon` and from there to `SimState.max_staleness` (0 when
+  `None`), to the `StalenessReport.strict` check, and to the `<- policy.horizon` marker in
+  the SCG table the CLI prints. Several policies read `st.max_staleness` as their bound, so
+  the horizon is not only a label.
 
-`areal` reproduces the admission control from the AReaL framework. It imposes a ceiling
-on *total unconsumed work* across the whole loop, but it does not bound individual
-sample age.
+`ingress_window_groups(batch_size)`
+: how many prompt groups the dataset may stage before the first publish. It is a flow
+  limit on dataset ingress, not a staleness bound, and it is deliberately independent of
+  the policy's admission quota so that the candidate set the router orders does not change
+  with the policy. Each publish then adds `batch_size` credits, and policies that replace
+  dropped groups add more.
 
-### Mechanism
+There is no `job.max_staleness`. Change the bound through the preset's own field, for
+example `policy.staleness=1` for `psrl`.
 
-At every admission decision, the quota is:
+## The policy contract
 
-```
-quota = (max_staleness + train_version + 1) * B - (accepted + running)
-```
+`StalenessPolicy` (`srl/policy/base.py`) has two abstract methods, `admit_quota` and
+`peek_batch`. Everything else has a do-nothing default.
 
-where `B` is `batch_size`, `accepted` is the cumulative number of completed requests
-that have been handed to the training queue, and `running` is the number of requests
-currently in flight. The ceiling grows by one batch after each training step
-(`train_version` advances), so it does not stall as training makes progress.
+| Hook | Called | Default |
+|---|---|---|
+| `admit_quota(st)` | when the router offers a group that is not yet admitted. Counted in responses; the simulator requires at least `group_size` | abstract |
+| `on_admit(group, st)` | once per group, right after its first response is placed | no-op |
+| `on_route(req, instance_id, st)` | after every placement, including re-placements | no-op |
+| `on_group_complete(group, st)` | when the last response of a group finishes. `CompleteAction.KEEP` moves it to `ready_groups`, `DROP` discards the whole group | `KEEP` |
+| `can_sample(st)` | before each batch request; `False` keeps generating | `True` |
+| `peek_batch(st)` / `take_batch(st)` | peek is also used by the engine loop's stop check; take consumes. A batch is `batch_size` whole groups | abstract / `peek_batch` |
+| `on_batch_unavailable(st)` | each time no batch can be formed | no-op |
+| `will_sync_after_train(st)` | when pricing a step; `False` skips `sync_time` | `True` |
+| `on_publish(new_version, st)` | after `train_version` advances, before weights reach the engines. Returns `Cancel` entries | `[]` |
+| `on_train_version_advance(v, st)` | after the cancels are applied | no-op |
+| `rollout_version_after_train(st)` | picks the version the engines serve after publish | `st.train_version` |
+| `pause_mode(st)` | `"abort"` or `"in_place"`, see below | `"abort"` |
+| `on_interrupt(reqs, st)` | after an abort-mode publish re-enqueued the in-flight work | no-op |
+| `on_discard(reqs, st)` | when committed requests are permanently removed | no-op |
+| `replacement_groups_on_drop(groups, st)` | after a `DROP` from `on_group_complete`; returns extra ingress credits | `0` |
+| `check_invariants(st)` | after every training step | no-op |
 
-Because the bound is on *total unconsumed work*, a slow request that was dispatched
-many versions ago is not proactively evicted. It simply occupies part of the ceiling
-until it completes. This means a single very slow request can hold the ceiling high and
-let many fresh requests in, which is why `areal` does not bound individual staleness.
+`SimState` is the whole visible surface: time, `train_version`, `rollout_version`,
+`batch_size` and `group_size`, `max_staleness`, `inflight`, `ready`, `ready_groups`,
+`n_admitted`, `n_consumed`, `n_instances` and `groups`.
 
-The optional `max_inflight` cap adds a hard upper bound on simultaneously in-flight
-requests, independent of the bucket. It is not exposed in the default YAML and must be
-passed as a Python override if needed.
+### The group ledger
 
-### Configurable knobs
+The simulator keeps a `GroupLedger` (`srl/policy/ledger.py`) so a policy never scans
+request lists. `SimState.groups` is a tuple of immutable `GroupView`s, one per live group:
 
-`areal.yaml` exposes no additional knobs. The only parameter is `job.max_staleness`,
-which sets `ofp` in the formula above.
+| Field | Meaning |
+|---|---|
+| `group_id` | monotonic key, not the workload's own id |
+| `admit_version` | rollout version stamped when the first response was placed; never rewritten |
+| `start_version` | earliest weight version among completed members, `admit_version` before any completes |
+| `status` | `running`, `partial` (some members done) or `done` |
+| `admit_time`, `complete_time` | `complete_time` is the latest member's completion once `done` |
+| `members` | request ids in admission order |
 
----
+The ledger is updated from committed completions only, so it never reflects a segment that
+a speculative event may still undo. Groups leave the ledger when consumed or dropped.
 
-## `roll`: Token bucket with GC discard
+### Publish hook and cancels
 
-`roll` uses the same admission formula as `areal` but adds two enforcement mechanisms
-that `areal` lacks: a consumption floor that prevents batches from being drawn from
-too-old groups, and a garbage-collection pass that evicts stragglers before they age out
-of the window.
+`on_publish` replaces any notion of "expiry": at the moment a training step publishes, the
+policy returns `Cancel(group_id, action, reason=None)` for live groups, running or done,
+that the new version makes worthless.
 
-### Mechanism
+| `CancelAction` | Effect |
+|---|---|
+| `DROP` | the group is discarded and no replacement is credited |
+| `REPLACE` | the group is discarded and one fresh dataset group is credited |
+| `RETRY_FROM_SCRATCH` | credited like `REPLACE`; the drop is logged with `retry: true` |
 
-Requests are grouped by the training version at which they were dispatched. The budget
-grows by one `batch_size` after each training step, exactly as in `areal`.
+A cancelled group is always removed whole, siblings included, because a group that lost
+one response can never be consumed. Drop reasons in `request.jsonl` are `l2_cancel` for a
+cancel of a group still generating, `l3_stale` for a finished group (also the default for
+`on_group_complete` drops), the cancel's own `reason` when set (`span_cap`), and
+`queue_overflow` for verl.
 
-The consumption floor (`min_step = train_version - max_staleness`) prevents batches
-from being built out of requests dispatched before the window. At each call to
-`peek_batch`, only groups whose step is within `[min_step, train_version]` are eligible.
+### Pause mode
 
-Enforcement is *proactive* rather than reactive: the `on_publish` hook, called when a
-training step publishes, garbage-collects any group whose step is below
-`new_version - 1 - max_staleness`, the point where ROLL runs `gc()` before the model
-update. Each GC'd group is cancelled with `REPLACE`, so a fresh prompt takes its place.
-Groups that expire keep generating through the training step and are discarded at
-publish. This keeps the window tight across training steps and avoids allowing a burst of
-completions from an old group to invalidate the staleness contract.
+`pause_mode` belongs to the policy. After a publish that changed the served version:
 
-The `gc_dropped` counter records how many groups were evicted by GC, which is useful
-for diagnosing a configuration where the staleness window is too tight for the workload.
+`abort`
+: every instance aborts all its requests. The requests keep their generated tokens but
+  lose their KV, and the prefix-cache hash map is cleared. They return to the router, may
+  land on a different instance, and re-prefill their whole context. `on_interrupt` fires.
 
-### Configurable knobs
+`in_place`
+: nothing is interrupted. Requests continue under the new weights with their KV retained;
+  their segment list records which version produced which tokens, so `v_min` and `v_max`
+  differ for such requests.
 
-`roll.yaml` exposes no additional knobs beyond `job.max_staleness`.
+If the served version did not change (slime between pushes) nothing is paused either way.
 
----
+## The rule library
 
-## `slime`: Loop barrier
+`srl/policy/rules/` holds the reusable primitives, named after the three control layers.
+L1 is admission, L2 is the runtime cancel at publish, L3 is sampling.
 
-`slime` takes a fundamentally different approach: instead of a token bucket or buffer
-inventory, it relies on the training loop's barrier structure to bound staleness. The
-bound is structural, not parametric.
+| Layer | Primitive | What it does | Used by |
+|---|---|---|---|
+| L1 | `ProgressQuota(ofp)` | `(ofp + train_version + 1) * batch_size - (accepted + running)` groups | areal, skyrl |
+| L1 | `WatermarkGate(over_sampling_ratio)` | 0 while `remaining >= batch_size`, else `max(1, round(ratio * batch_size))` | slime |
+| L1 | `LegacyOverage(threshold, require_batches)` | bounded hand-off queue plus a sample-overage counter | verl |
+| L2 | `CancelBelowVersion(horizon, action)` | cancel live groups with `admit_version < new_version - horizon` | nemo_rl, prime_rl |
+| L2 | `VersionSpanCap(max_preempts, action)` | cancel groups whose members span more than `max_preempts + 1` distinct versions, counting the version being published | dressage |
+| L3 | `FIFO` | oldest first by `(dispatch_time, group_id)` of the first member | areal, skyrl, openrlhf, dressage, trl, prime_rl, nemo_rl |
+| L3 | `OffPolicySpan(threshold, strategy)` | `span = train_version - admit_version + 1`; `drop` replaces finished groups past the threshold at publish, `wait` blocks sampling while a running group has reached it | verl_v1 |
+| L3 | `WarnOnly(threshold)` | counts taken groups past the threshold, never drops | skyrl |
+| L3 | `VersionWindow(threshold, refill)` | at publish, finished groups with `new_version - admit_version > threshold` are cancelled, `REPLACE` when `refill` else `DROP` | trl, prime_rl |
+| L3 | `DistinctVersionWindow(keep)` | keep the last `keep` distinct observed versions in arrival order; `keep <= 0` is off | dressage |
 
-### Mechanism
+## Presets at a glance
 
-The loop structure is: dispatch generation, then (after `update_weights_interval`
-training steps) push new weights, then collect the generation results, then dispatch
-again. Because generation is dispatched *before* the weight push and consumed *after*,
-the maximum staleness any request can have when consumed is exactly
-`update_weights_interval`, determined by timing rather than by a threshold parameter.
+Defaults are those of the dataclasses in `srl/config/policies/`. `B` is `job.batch_size`.
 
-There is **no staleness parameter** in `slime`. The `job.max_staleness` key is ignored.
+| Preset | Version bound (`horizon`) | Initial ingress groups | Default pause | Honours `rollout.max_inflight` |
+|---|---|---|---|---|
+| `psrl` | `staleness` (2) | `(staleness + 1) * B` | abort | no |
+| `areal` | `max_head_offpolicyness` (0) | `(2 * ofp + 1) * B` | abort | yes |
+| `roll` | `ceil(async_generation_ratio)` (1) | `(ceil(ratio) + 2) * B` | abort | yes |
+| `slime` | none | `(ceil(over_sampling_ratio) + 2) * B` | abort | yes |
+| `verl` | `ceil(staleness_threshold)` (2) | `(ceil(threshold) + 1) * B` | abort | yes |
+| `verl_v1` | `max_off_policy_threshold` (8, or none) | `(max(h, ceil(warmup)) + 2) * B`, `h` = threshold or 1 | abort | no |
+| `skyrl` | `max_staleness_steps` (4) | `(steps + 2) * B` | in place | yes |
+| `openrlhf` | none | `(async_queue_size + 1) * B` | abort, in place with `partial_rollout_enable` | yes |
+| `dressage` | `keep_versions`, or none when 0 | `cap + 2 * B`, `cap` = `max_active_groups` or `B` | in place | yes |
+| `nemo_rl` | by sampler: window, lookahead, or none | `max_buffered_rollouts + B` | abort | no |
+| `trl` | `max_staleness` (4) | `cap + B`, `cap` = `max_inflight_tasks` or `max(max_staleness, 1) * B` | in place | no |
+| `prime_rl` | `max_off_policy_steps` (8) | `min(max_inflight, max((lag + 1) * B, (steps + 2) * B))` | in place, fixed | no (own `max_inflight`) |
 
-At each admission decision, `slime` dispatches up to
-`round(over_sampling_ratio * batch_size)` requests at once, then waits for that cohort
-to complete before admitting the next wave. Over-sampling (ratio > 1.0) lets the policy
-dispatch more requests than one batch requires, so it can select the best `batch_size`
-responses from a slightly larger pool, matching the behaviour of real slime deployments
-that intentionally generate redundant samples.
+Where `rollout.max_inflight` is honoured it caps concurrently generating prompt groups at
+that value. Presets that ignore it have their own caps, listed below.
 
-The `pause_mode` constructor argument decides what a weight push does to in-flight
-requests. `abort` (the default) interrupts and re-enqueues them, so their KV is lost and
-they re-prefill. `in_place` leaves them running under the new weights with their KV
-retained. Between pushes `rollout_version_after_train` returns the old version, so no pause
-happens.
+## Per-system presets
 
-The `rollout_version_after_train` hook drives weight-push synchronisation: the rollout
-engine's visible weight version only advances every `update_weights_interval` steps,
-not after every training step.
+Fields are given with their defaults. Every preset also has `name`, which must equal the
+group name.
 
-### Configurable knobs (`srl/config/defaults/policy/slime.yaml`)
+### `psrl`
 
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `update_weights_interval` | `1` | Push weights every N training steps. Sets the staleness bound |
-| `over_sampling_ratio` | `1.0` | Admit this many times `batch_size` per wave (must be ≥ 1.0) |
+`staleness: 2`, `proactive_filter: false`, `proactive_threshold: 0`.
 
----
+Delegates all buffer logic to `psrl.workers.ps.staleness.StalenessInventory`, created
+lazily with `num_entries = ready_num_entries = batch_size`, `staleness`, and
+`rollout_n = group_size`. An inventory entry is one prompt group.
 
-## `verl`: Window-based admission with bounded queue
+- **Reserve (`on_admit`).** Every response of the group reserves a slot with
+  `max_bid = v_traj + staleness`, pessimistically in the highest buffer it could still fill.
+- **Admission.** `admit_quota` is the number of empty entries up to buffer
+  `rollout_version + staleness`, times `group_size`.
+- **Occupy (`on_group_complete`).** `occupy_data_with_reserve` re-places the finished group
+  in the earliest buffer with room, moving reserved entries across buffers to avoid false
+  stuck states. A group with no inventory entry, or no buffer, is dropped.
+- **Consume.** The batch is the entries of buffer `train_version` once its status is
+  `READY` or `READY_WITH_CAPACITY` and `batch_size` of them are in `ready_groups`.
+  `take_batch` deletes the buffer.
+- **Stuck time.** `on_batch_unavailable` records when a buffer is `STUCK` and
+  `take_batch` accumulates `stuck_time`. With `proactive_filter`, reserved entries of a
+  stuck buffer are cleared when `0 < reserved <= proactive_threshold` (`filtered` counts
+  them).
+- **Interrupts keep reservations.** An aborted group keeps the reservation made from its
+  original `v_traj`.
+- `check_invariants` asserts every placement satisfies `buffer_id - generated_version <= staleness`.
 
-`verl` models the fully asynchronous mode of the verl framework. Admission is governed
-by a sample-overage ratio rather than a version count, and completed requests are held
-in a bounded hand-off queue that drops the oldest entry on overflow.
+`inventory_snapshot` exposes the inventory read-only; the `inventory_deadline` router
+strategy needs it (see {doc}`routing`).
 
-### Mechanism
+### `areal`
 
-The key quantity is `staleness_threshold`, which is a **float sample-overage ratio, not
-a version count**. A value of `0.1` means the policy will admit up to
-`round(batch_size * (1 + 0.1)) = round(1.1 * B)` requests per version window. The
-ceiling is the number of samples that may be "stale" relative to the current weight
-version.
+`max_head_offpolicyness: 0`.
 
-At construction, the policy derives:
+A cumulative token bucket. `admit_quota = (ofp + train_version + 1) * B - (accepted +
+running)` groups, with `ofp = st.max_staleness`. `running` increments at admission,
+and at completion `running` falls and `accepted` rises. Selection is FIFO. Nothing is
+dropped and nothing is cancelled, so the bucket bounds total unconsumed work but not the
+age of any one sample. `check_invariants` asserts unconsumed responses never exceed
+`(ofp + 1) * batch_size * group_size`.
 
-```
-max_required = int(batch_size * require_batches * (staleness_threshold + 1))
-max_queue_size = max_required
-```
+### `roll`
 
-`require_batches` controls how many complete batches must be ready before training
-may begin. At its default of 1, a single full batch is sufficient.
+`async_generation_ratio: 1.0`.
 
-After each training step, `staleness_samples` is reset to the number of currently
-in-flight and queued requests, so the window tracks the live system state rather than
-an absolute counter.
+Only `ceil(ratio)` matters: the policy reads `st.max_staleness` as its window. The budget
+starts at `window * B + B` groups (just `B` when the window is 0) and grows by `B` per
+training step; admission is `budget - (running + completed)` groups.
 
-The hand-off queue (`collections.deque`) enforces `maxlen=max_queue_size`. When a
-request completes and the queue is full, the oldest entry is evicted (`CompleteAction.DROP`),
-and the `dropped` counter increments. This matches verl's behaviour of discarding
-overproduced samples rather than blocking the rollout engine.
+- Groups are bucketed in cohorts by admission version (`v_traj`).
+- Consumption draws oldest cohort first from cohorts in `[train_version - window,
+  train_version]`.
+- At publish, every cohort with step `<= (new_version - 1) - window` is garbage-collected:
+  its finished groups and its running groups are cancelled with `REPLACE`, and `gc_dropped`
+  counts them. A late completion from a collected cohort is dropped.
+- Dropped groups are replaced one for one.
 
-### Configurable knobs (`srl/config/defaults/policy/verl.yaml`)
+### `slime`
 
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `staleness_threshold` | `null` | Overage ratio. Null falls back to `job.max_staleness` |
-| `require_batches` | `1` | Training batches that must be queued before a step starts |
+`update_weights_interval: 1`, `over_sampling_ratio: 1.0`, `pause_mode: abort`.
 
-When `staleness_threshold` is null, the simulator uses `job.max_staleness` as the
-ratio. Because `job.max_staleness` is typically an integer version count for other
-policies, make sure its value makes sense as an overage ratio before relying on the
-fallback.
+No staleness parameter; the bound comes from the loop structure. `admit_quota` is 0 while
+`remaining >= B`, else `max(1, round(over_sampling_ratio * B))` groups, where `remaining`
+counts groups admitted since the last take and resets to 0 on take. Surplus groups beyond a
+full batch are dropped whole at completion. The batch is the first `B` ready groups.
 
----
+`rollout_version_after_train` advances the served version only every
+`update_weights_interval` steps, and `will_sync_after_train` is true only at that push, so
+sync and weight-load costs are charged only then. `check_invariants` asserts
+`train_version - served_version <= interval`. `stall_time` accumulates time spent with
+work in flight but no batch.
 
-## Choosing a policy
+### `verl`
 
-The choice of policy should reflect the real system you are evaluating, not just the
-staleness bound you want to impose. Each policy is a simulation of a real system's
-protocol:
+`staleness_threshold: 2.0`, `require_batches: 1`.
 
-- Use `psrl` to model a PSRL deployment. It requires the `psrl` package, as described above.
-- Use `areal` to model AReaL's cumulative token bucket.
-- Use `roll` to model ROLL's async admission with GC enforcement.
-- Use `slime` to model slime's loop-barrier approach. Set
-  `policy.update_weights_interval` to match the real system's push interval.
-- Use `verl` to model verl's fully async mode. Set `policy.staleness_threshold`
-  explicitly rather than relying on the `job.max_staleness` fallback.
+The threshold is a float sample-overage ratio, not a version count (the `horizon` is its
+ceiling, used only for reporting and the ingress window). `LegacyOverage` derives
+`max_required = int(B * require_batches * (threshold + 1))` and a hand-off queue of the same
+length, in groups.
 
-For exploratory runs where the goal is to compare scheduling strategies, `areal` and
-`roll` are the most transparent: their admission formulas are short and their knobs are
-minimal. `psrl` is the most faithful to a production system but requires the external
-dependency.
+- **Admission.** 0 when the queue is full or `staleness_samples >= max_required`, else
+  `max_required - staleness_samples` groups. `staleness_samples` increments at admission and
+  is reset at every publish to the in-flight groups plus the queue length.
+- **Completion.** A finished group enters the queue; if the queue is full the new group is
+  dropped with reason `queue_overflow`.
+- **Consumption.** FIFO from the queue. The step starts once the queue holds
+  `B * require_batches` groups and consumes exactly that many.
 
----
+### `verl_v1`
 
-## Writing your own policy
+`num_warmup_batches: 1.0`, `max_off_policy_threshold: 8` (`null` disables L3),
+`max_off_policy_strategy: drop`, `pause_mode: abort`.
 
-The `StalenessPolicy` ABC in `srl/policy/base.py` defines the full interface. Only
-two methods are abstract and must be implemented:
+Admission is a step-clocked feed and is not staleness-gated: `floor(warmup * B)` groups
+are credited once and `B` more at every publish. The only staleness-aware control is
+`OffPolicySpan`, keyed on `admit_version`. With `drop`, finished groups whose span exceeds
+the threshold are `REPLACE`d at publish; running groups are never cancelled. With `wait`,
+`can_sample` stays false while any unfinished group has span `>= threshold`, and nothing is
+evicted. Selection takes the oldest admission versions first.
 
-- `admit_quota(st: SimState) -> int`: how many staged responses may commit their
-  first placement at this instant. Return 0 to leave them in the router.
-- `peek_batch(st: SimState) -> list[Request] | None`: return the next training batch
-  without consuming policy state. Return `None` if no batch is ready.
+### `skyrl`
 
-The remaining hooks have do-nothing defaults and can be overridden selectively:
+`max_staleness_steps: 4`, `pause_mode: in_place`.
 
-| Method | When called |
-|--------|-------------|
-| `on_admit` | Once per group, after its first response is successfully placed |
-| `on_route` | After every placement, including reroutes of admitted requests |
-| `on_group_complete` | After every response in a group finishes. Return `KEEP` or `DROP` |
-| `take_batch` | When training actually consumes a batch. Defaults to `peek_batch` |
-| `on_batch_unavailable` | Each iteration that no batch could be assembled |
-| `on_train_version_advance` | After a training step publishes a new version |
-| `will_sync_after_train` | Whether this step ends with a weight push (default: always) |
-| `on_interrupt` | When in-flight requests are interrupted by a weight push |
-| `on_discard` | When requests are permanently removed |
-| `on_publish` | At weight publication, before the weights reach the engines. Returns `Cancel` entries for live groups the new version makes worthless |
-| `can_sample` | Wait gate checked before every batch request. False keeps generating (default: always open) |
-| `pause_mode` | What a publication does to in-flight work: `abort` (re-enqueue, KV lost, re-prefill) or `in_place` (keep running with KV retained) |
-| `rollout_version_after_train` | What version the rollout engine should serve after publish |
-| `check_invariants` | Assert the policy's own contract (called in debug mode) |
+Admission uses the same bucket as AReaL with `ofp = max_staleness_steps`. Selection is
+FIFO. The threshold is warn-only: `take_batch` adds the number of taken groups with
+`train_version - admit_version > threshold` to `staleness_violations`, and drops nothing.
 
-`SimState` is the entire visible surface: it carries the current simulation time, the
-current training and rollout weight versions, lists of in-flight and ready requests, and
-admission counters. The policy may not mutate `SimState` directly.
+### `openrlhf`
 
-A minimal policy that simply caps admission at a fixed count and batches greedily is
-roughly thirty lines, following the same pattern as `ArealPolicy`. Register it by adding
-a case in the policy factory and a corresponding YAML under
-`srl/config/defaults/policy/`. For the development workflow, see
-{doc}`../development/index`.
+`async_queue_size: 1`, `partial_rollout_enable: false`.
+
+A generation permit pool. Each permit is one `B`-group lump, admitted only in full.
+Admission is 0 while `async_queue_size` lumps are outstanding, else the remainder of the
+current lump. `partial_rollout_enable` selects when a permit is released: at `take_batch`
+(the next lump can generate while this one trains), or after the publish that follows
+(admission stays closed for the whole training step, so nothing is in flight at a sync).
+The pause mode follows: `in_place` with partial rollout, `abort` without. The constructor
+rejects `async_queue_size > 1` without `partial_rollout_enable`, because the weight-broadcast
+lock that would prevent overlap is not modelled. Selection is FIFO.
+
+### `dressage`
+
+`keep_versions: 0`, `max_active_groups: null`, `output_queue_size: 1000`,
+`max_partial_rollout_preempts: null`, `pause_mode: in_place`.
+
+- **L1.** Admit up to `max_active_groups` (default `B`) concurrently active groups, and
+  nothing while `len(ready_groups)` has reached 80% of `output_queue_size`.
+- **L2.** `VersionSpanCap` with `RETRY_FROM_SCRATCH`: at publish, a group with in-flight
+  members that span more than `max_partial_rollout_preempts + 1` distinct versions
+  (counting the one being published) is cancelled with reason `span_cap`. `null` disables it.
+- **L3.** `DistinctVersionWindow(keep_versions)` keyed on each group's last token version
+  (`v_max`): when a group completes, its version joins an arrival-ordered list and the group
+  is dropped if its version is no longer among the last `keep_versions` distinct ones.
+  `gc_dropped` counts these; dropped groups are replaced one for one. `0` disables the
+  window and also makes `horizon` `None`.
+
+### `nemo_rl`
+
+`sampler: in_order` (`windowed`, `weight_fifo`, `ready_first`), `max_staleness_versions: 1`,
+`max_lookahead_versions: 1`, `sample_freshest_first: false`, `max_inflight_prompts: 32`,
+`max_buffered_rollouts: 64`, `pause_mode: abort`.
+
+All samplers share one admission gate: fewer than `max_inflight_prompts` active groups,
+fewer than `max_buffered_rollouts` admitted-unconsumed groups, and
+`dispatch_index < train_version + window`, where the window is `max_lookahead_versions` for
+`in_order` and `max_staleness_versions` otherwise. The dispatch index advances by one for
+every `B` groups admitted. They differ in selection:
+
+| Sampler | Eligible groups | Order | Cancels at publish |
+|---|---|---|---|
+| `in_order` | stamped for exactly `train_version` at admission | completion order | none |
+| `ready_first` | all | FIFO by dispatch time | none |
+| `weight_fifo` | `admit_version >= train_version - max_staleness_versions` | oldest admit version | none; a group below the window is never selected |
+| `windowed` | same window | oldest, or newest with `sample_freshest_first` | `CancelBelowVersion(window, DROP)` on running and finished groups |
+
+`horizon` is the staleness window for `windowed` and `weight_fifo`, the lookahead for
+`in_order`, and none for `ready_first`.
+
+### `trl`
+
+`max_staleness: 4`, `max_inflight_tasks: -1`, `pause_mode: in_place`.
+
+One bounded queue of admitted-unconsumed groups, capped at `max_inflight_tasks` (`-1`
+resolves to `max(max_staleness, 1) * B` when the first quota is asked). Selection is FIFO.
+At publish `VersionWindow(max_staleness, refill=True)` replaces finished groups with
+`new_version - admit_version > max_staleness`. Real TRL drops single samples after groups
+are disaggregated; the simulator keeps groups atomic, so the whole group is dropped.
+
+### `prime_rl`
+
+`max_off_policy_steps: 8`, `max_inflight: 1024`, `target_lag: 1`, `action: drop`.
+
+Admission is independent of the staleness window: fewer than `max_inflight` groups
+outstanding, and `dispatch_index < train_version + target_lag` (the dispatch index advances
+every `B` groups). At publish two sweeps run over the same horizon: `CancelBelowVersion`
+over live groups with the configured `action` (`drop`, `replace` or `retry_from_scratch`)
+and `VersionWindow(refill=True)` over finished groups. A finished group matches both, and
+the refilling cancel wins. Generation is never interrupted by a publish except for these
+cancels, so the pause mode is always `in_place`. `gc_dropped` counts the cancels.
+
+## Writing a policy
+
+1. Subclass `StalenessPolicy` in `srl/policy/<name>.py`, implement `admit_quota` and
+   `peek_batch`, and override only the hooks you need. Counters that change when a group is
+   admitted, consumed, completed or cancelled have to be updated in the matching hook.
+2. Register the class in `POLICY_REGISTRY` (`srl/policy/registry.py`).
+3. Add a preset dataclass in `srl/config/policies/<name>.py` with `name`, its fields,
+   `build(max_inflight)`, the `horizon` property, and `ingress_window_groups(batch_size)`,
+   and add it to `PRESETS`. Registration with Hydra's ConfigStore follows from `PRESETS`.
+   Use plain `str` for choice fields: structured configs reject `Literal`.
+4. Add `srl/config/defaults/policy/<name>.yaml` documenting the defaults.
+5. Test the contract the way `tests/` does for the existing presets, including
+   `check_invariants`.
+
+See {doc}`../development/index` for the surrounding workflow, and {doc}`outputs` for the
+staleness report a policy's run produces.

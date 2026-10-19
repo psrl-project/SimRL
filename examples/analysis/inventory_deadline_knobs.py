@@ -76,15 +76,15 @@ When KV pressure forces an eviction, `latest_deadline` picks the admitted group 
 slack rather than the most context, letting urgent groups generate uninterrupted. Tested alone
 and combined with the KV watermark admission gate (the current best admission config)."""
 
-FLOW: dict[str, dict] = {
-    "flow": {"flow_tiebreak": True},
-    "flow_wm06": {"flow_tiebreak": True, "kv_watermark": 0.6},
-    "flow_eps_big": {"flow_tiebreak": True, "eps_frac": 0.10},
-    "flow_h4": {"flow_tiebreak": True, "horizon_buffers": 4},
+TM: dict[str, dict] = {
+    "tm02": {"throughput_margin_frac": 0.02},
+    "tm05": {"throughput_margin_frac": 0.05},
+    "tm02_wm06": {"throughput_margin_frac": 0.02, "kv_watermark": 0.6},
+    "tm05_wm06": {"throughput_margin_frac": 0.05, "kv_watermark": 0.6},
 }
-"""Break buffer-forecast ties by total in-flight flow time (sum of predicted finish times)."""
+"""Defer a winning admission whose instance gains less than this fraction of decode throughput."""
 
-KNOBS.update(FLOW)
+KNOBS.update(TM)
 KNOBS.update(WM06)
 KNOBS.update(LAD)
 KNOBS.update(DE)

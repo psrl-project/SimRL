@@ -4,6 +4,12 @@ sd_hide_title: true
 
 # SimRL Documentation
 
+:::{image} /_static/img/SimRL_logo_merge.png
+:alt: SimRL
+:width: 480px
+:align: center
+:::
+
 ## What SimRL is
 
 SimRL answers questions of the form *"I have Qwen3-8B on eight H20s, rollout and
@@ -31,8 +37,50 @@ The boundary between the first two is a documented JSONL schema. That is what le
 backend be added without touching the simulator, and a new cost model be fitted without
 re-profiling.
 
-{doc}`getting-started/walkthrough/index` walks the whole path on one real model and one
-real machine, from the first profiling command to a simulated run.
+## Choose an entry point
+
+::::{grid} 1 2 2 3
+:gutter: 3
+
+:::{grid-item-card} Getting started
+:link: getting-started/index
+
+Install, learn the vocabulary, then follow the walkthrough from the first profiling
+command to a simulated run.
+:::
+
+:::{grid-item-card} Profiling
+:link: profiling/index
+
+The profiling pipelines, what each sweep costs, and how the domain gates are recorded.
+:::
+
+:::{grid-item-card} Cost models
+:link: cost-models/index
+
+Rollout, training and kernel models: their functional form, fitted range, and how they
+are validated.
+:::
+
+:::{grid-item-card} Simulation
+:link: simulation/index
+
+Policies, routing, prefix cache, backends, and the artifacts a run produces.
+:::
+
+:::{grid-item-card} Reference
+:link: reference/index
+
+CLI, Hydra configuration, JSONL/artifact schemas, validation results, and limitations.
+:::
+
+:::{grid-item-card} Development
+:link: development/index
+
+Package architecture, adding a kernel op or model family, and testing.
+:::
+
+::::
 
 ```{toctree}
 :maxdepth: 2

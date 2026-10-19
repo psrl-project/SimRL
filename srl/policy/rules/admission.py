@@ -36,7 +36,7 @@ class LegacyOverage:
     """verl's sample-overage window: a bounded hand-off queue plus a staleness counter.
 
     `staleness_threshold` is a float sample-overage ratio, not a version count.
-    The window resets at every weight sync; the queue drops oldest on overflow.
+    The window resets at every weight sync; a group completing into a full queue is dropped.
     """
 
     def __init__(self, threshold: float, require_batches: int = 1):

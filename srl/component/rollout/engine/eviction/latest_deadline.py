@@ -24,6 +24,7 @@ class LatestDeadline:
     """
 
     name = "latest_deadline"
+    python_engine_only = True
 
     def select(self, candidates: list[Request], now: float) -> Request | None:
         stamped = [r for r in candidates if r.deadline_buffer > 0]

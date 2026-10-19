@@ -1,12 +1,13 @@
 #!/usr/bin/env python
-"""At admission, does the priced objective see the fleet-wide slowdown a new group causes?
+"""At admission, which buffer does the slowdown land on, and could the trainer absorb it?
 
-`inventory_deadline` compares options by their `E_k` vectors alone. If admitting a group slows many
-in-flight requests without moving the nearest buffers, `E_k` stays flat while total flow time
-(`Pipeline.flow`) jumps, and the strategy over-admits. This records, per admission decision, each
-option's `E_k0`, `E_k1`, flow and the fleet concurrency, plus the externality: the summed finish-time
-increase of requests already in flight if the group is admitted on that instance, then reports for the decisions that
-admitted: how much `E_k` moved against DEFER, how much flow moved, bucketed by concurrency.
+`inventory_deadline` compares options by their `E_k` vectors. Admitting a group slows requests
+already in flight (the externality); that only matters if it pushes some buffer's READY time past
+the moment the trainer is free to take it, because `E_k = max(F_k, E_{k-1}) + tau` absorbs any
+delay up to that slack. This records, per admission decision, each option's `E_k`, `F_k` and
+publish times plus the externality, then reports for the decisions that admitted: the nearest
+buffer's READY shift against DEFER, the trainer's slack at that buffer, and whether the second
+buffer's READY time is even finite (when it is not, `E_k1` carries no information).
 
 Usage:
     python examples/analysis/admission_externality.py cv1.0_tau345 cv0.5_tau345
@@ -75,11 +76,16 @@ def _register() -> None:
                         "n_existing": len(base),
                         "ext": ext,
                         "eps": self._eps(session),
+                        "cycle": next(iter(session.train_cache.values())).cycle if session.train_cache else None,
                         "options": {
                             ("defer" if k is None else str(k)): (
                                 None
                                 if p is None
-                                else {"e": [_finite(x) for x in p.train_end], "flow": _finite(p.flow)}
+                                else {
+                                    "e": [_finite(x) for x in p.train_end],
+                                    "ready": [_finite(x) for x in p.ready],
+                                    "publish": [_finite(x) for x in p.publish_times],
+                                }
                             )
                             for k, p in options.items()
                         },
@@ -100,46 +106,44 @@ def _pct(values: list[float], q: float) -> float:
     return ordered[min(len(ordered) - 1, int(round(q * (len(ordered) - 1))))]
 
 
-def _median_finite(values: list[float]) -> float:
-    finite = [v for v in values if not math.isnan(v)]
-    return statistics.median(finite) if finite else math.nan
-
-
 def _summarise(name: str, rows: list[dict]) -> None:
     admitted = []
     for row in rows:
         chosen, defer = row["options"].get(row["chosen"]), row["options"].get("defer")
-        if row["chosen"] == "defer" or chosen is None or defer is None:
+        if row["chosen"] == "defer" or chosen is None or defer is None or row["cycle"] is None:
             continue
-        if chosen["e"][0] is None or defer["e"][0] is None or chosen["flow"] is None or defer["flow"] is None:
+        if None in (chosen["e"][0], defer["e"][0], chosen["ready"][0], defer["ready"][0], defer["publish"][0]):
             continue
-        both_e1 = len(chosen["e"]) > 1 and len(defer["e"]) > 1 and None not in (chosen["e"][1], defer["e"][1])
+        slack0 = (defer["publish"][0] - row["cycle"]) - defer["ready"][0]
         admitted.append(
             {
                 "conc": row["conc"],
                 "eps": row["eps"],
                 "dE0": chosen["e"][0] - defer["e"][0],
-                "dE1": (chosen["e"][1] - defer["e"][1]) if both_e1 else math.nan,
-                "dFlow": chosen["flow"] - defer["flow"],
-                "ext": row["ext"].get(row["chosen"], math.nan),
+                "dF0": chosen["ready"][0] - defer["ready"][0],
+                "slack0": slack0,
+                "f1_finite": len(defer["ready"]) > 1 and defer["ready"][1] is not None,
                 "per_req": row["ext"].get(row["chosen"], math.nan) / max(1, row["n_existing"]),
             }
         )
-    total = len(rows)
-    print(f"\n{name}: {total} admission decisions, {len(admitted)} admitted with a comparable DEFER")
-    print(f"{'conc band':<12}{'n':>5}{'dE0 p50':>10}{'dE0 p90':>10}{'eps':>7}{'ext p10':>9}{'ext p50':>9}{'ext p90':>9}{'s/req p50':>11}{'tied&s/req>eps':>16}")
+    print(f"\n{name}: {len(rows)} admission decisions, {len(admitted)} admitted with a comparable DEFER")
+    print(
+        f"{'conc band':<12}{'n':>5}{'dF0 p50':>9}{'dF0 p90':>9}{'slack0 p10':>11}{'slack0 p50':>11}"
+        f"{'slack0>0':>10}{'dF0<=slack0':>13}{'F1 finite':>11}{'s/req p50':>11}"
+    )
     for lo, hi in BUCKETS:
         band = [a for a in admitted if lo <= a["conc"] <= hi]
         if not band:
             continue
-        tied = [a for a in band if abs(a["dE0"]) <= a["eps"] and a["per_req"] > a["eps"]]
+        absorbed = [a for a in band if a["dF0"] <= max(a["slack0"], 0.0) + a["eps"]]
         print(
             f"{f'{lo}-{hi}':<12}{len(band):>5}"
-            f"{statistics.median(a['dE0'] for a in band):>10.1f}{_pct([a['dE0'] for a in band], 0.9):>10.1f}"
-            f"{statistics.median(a['eps'] for a in band):>7.1f}"
-            f"{_pct([a['ext'] for a in band], 0.1):>9.0f}{statistics.median(a['ext'] for a in band):>9.0f}"
-            f"{_pct([a['ext'] for a in band], 0.9):>9.0f}{statistics.median(a['per_req'] for a in band):>11.2f}"
-            f"{len(tied):>12}/{len(band):<3}"
+            f"{statistics.median(a['dF0'] for a in band):>9.1f}{_pct([a['dF0'] for a in band], 0.9):>9.1f}"
+            f"{_pct([a['slack0'] for a in band], 0.1):>11.1f}{statistics.median(a['slack0'] for a in band):>11.1f}"
+            f"{sum(a['slack0'] > 0 for a in band):>7}/{len(band):<3}"
+            f"{len(absorbed):>10}/{len(band):<3}"
+            f"{sum(a['f1_finite'] for a in band):>8}/{len(band):<3}"
+            f"{statistics.median(a['per_req'] for a in band):>11.2f}"
         )
 
 

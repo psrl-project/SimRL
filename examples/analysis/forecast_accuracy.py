@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from psrl.workers.ps.staleness_controller import BufferStatus
+from psrl.workers.ps.staleness import BufferStatus
 
 import srl.forecast.drain as drain_mod
 from srl.component.sync.cost import FixedSyncCost

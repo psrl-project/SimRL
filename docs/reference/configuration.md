@@ -1,122 +1,166 @@
 # Configuration reference
 
-`srl` is a [Hydra](https://hydra.cc/) app. Configuration is assembled from *config groups*:
-named directories under `srl/config/defaults/` where each YAML file is one selectable
-option. The top-level `simulate.yaml` sets the default selections and the top-level `job` and
-`rollout` blocks.
+`srl` is a [Hydra](https://hydra.cc/) app. The primary config is
+`srl/config/defaults/simulate.yaml`. Four config groups, each a directory of YAML files under
+`srl/config/defaults/`, supply the pieces that vary: `policy`, `rollout_cost`, `training_cost`
+and `workload`. The remaining blocks (`job`, `rollout`, `sync_cost`, `recompute_cost` and a few
+scalars) live in `simulate.yaml` itself.
 
-Cross-references: {doc}`../simulation/policies` for policy semantics,
-{doc}`../simulation/domain-gates` for `extrapolate` and `batching_mode`,
-{doc}`../workload/index` for workload sources.
+```bash
+srl policy=verl rollout_cost=roofline training_cost=fixed workload=bimodal job.batch_size=32
+```
+
+How the pieces fit:
+
+- The composed config is in Hydra struct mode, so an unknown key is an error. A key that exists
+  in no YAML or schema is appended with a leading plus sign, as `+log_exclude` is.
+- `srl/config/schema.py` holds the typed dataclasses that mirror these blocks, and
+  `register_configs()` stores them in Hydra's ConfigStore. Only the `policy` group is validated
+  against a dataclass of the same name, and that is also where policy keys that have no YAML line
+  come from. The other groups are validated by the YAML alone, so a value of the wrong type is not
+  rejected at composition.
+- `srl --help` lists the options of each group. Entries ending in `_schema` are the ConfigStore
+  nodes and are not meant to be selected.
+
+Behaviour behind these keys is described in {doc}`../simulation/policies`,
+{doc}`../simulation/routing`, {doc}`../simulation/domain-gates` and {doc}`../workload/index`.
 
 ---
 
-## Top-level `simulate.yaml`
-
-The default selections and the `job` / `rollout` blocks live here.
+## `simulate.yaml`
 
 ```{literalinclude} ../../srl/config/defaults/simulate.yaml
 :language: yaml
 ```
 
+Notes that the comments do not carry:
+
+`job.batch_size` and `job.group_size`
+: `batch_size` counts prompt groups per training step, so responses per step is
+  `batch_size * group_size`. `group_size: null` adopts the workload's arity. A synthetic
+  distribution workload has group size 1. An explicit value that disagrees with the workload is an
+  error.
+
+`rollout.kv_blocks` and `rollout.kv_cache_sizing`
+: With `kv_cache_sizing.model_path` set, the block count comes from the model instead of the
+  literal. `probe: true` starts a real vLLM engine on a cache miss and caches the answer (see
+  `srl-profile kv-probe` in {doc}`cli`). `probe: false` computes it from `config.json` and the
+  checkpoint's safetensors index, which is only reliable for dense models. `max_model_len` is
+  taken as `job.max_prompt_length + job.max_output_length` and is 32768 when either cap is null.
+  The engine's dtype is `rollout_cost.dtype` when that key is appended and `bfloat16` otherwise.
+
+`rollout.router.strategy`
+: One of `request_num_balance`, `round_robin`, `random`, `kv_cache_aware`, `prefix_aware`,
+  `throughput_balance`, `length_aware` or `inventory_deadline`. The commented list in
+  `simulate.yaml` omits `inventory_deadline`, which needs `policy=psrl`.
+
+`rollout.router.eviction`
+: One of `vllm_lru`, `longest_ctx` or `latest_deadline`. `latest_deadline` needs the Python engine.
+
+`sync_cost`
+: `name` is `fixed`, the only model.   `weight_load_time` is read from this block whatever the `name`.
+
+`recompute_cost`
+: `name` is `fixed`, `analytical` or `training_forward`. `training_forward` reads the model's
+  hidden size, vocabulary size and parameter count from the training artifact, or from the
+  checkpoint named in `rollout_cost.model_path` or `rollout.kv_cache_sizing.model_path` when the
+  training model has no artifact. The `hidden_size`, `vocab_size` and `parameter_count` keys at the
+  end of the YAML block are not read by any code. The geometry has no configured source by design.
+
+`log_telemetry` and `log_exclude`
+: With `log_telemetry=false` nothing is written under `logs/` and no plots are drawn.
+  `log_exclude` takes a comma-separated string of stream names or prefixes to skip, for example
+  `+log_exclude='instance,rollout_step'`.
+
 ---
 
 ## `rollout_cost` group
 
-Selects the rollout cost model. Default: `roofline`.
+Selects the rollout latency model. The default is `roofline`. Every option carries the
+`parallelism` block (`tp`, `pp`, `dp`, `cp`, all 1 by default). The loader passes it to
+`from_artifact`, and `composed` reads `tp`.
 
-Available options: `roofline`, `psrl`, `distserve`, `composed`.
+When `artifact_path` is set, `roofline`, `psrl` and `distserve` load the fitted coefficients from
+that `CostArtifact` and ignore the constants in the YAML. `psrl` has no constants and requires an
+artifact.
 
 ### `roofline`
-
-Parametric roofline model fitted from vLLM profiling JSONL. No profiling needed when
-using the default hand-set constants. Replace them with a fitted artifact from
-`srl-regress rollout --model roofline` for a calibrated result.
 
 ```{literalinclude} ../../srl/config/defaults/rollout_cost/roofline.yaml
 :language: yaml
 ```
 
-Key fields:
-
-`F`
-: Fixed floor latency in seconds. The `max(F, …)` ensures the model never predicts
-  zero for an empty batch.
-
-`W`, `G`
-: Per-step and per-token weights in the memory-bandwidth term.
-
-`A_p`, `A_d`
-: Prefill (sum-of-squared-lengths) and decode (context-sum) attention coefficients.
-
-`b`
-: KV block size used when deriving `ctxsum` from the attention features.
+`F`, `W` and `G` are the floor, per-step and per-token terms. `A_p` and `A_d` are the prefill and
+decode attention coefficients, and `b` is the KV block size used for the attention features. Fit
+them with `srl-regress rollout --model roofline`.
 
 ### `psrl`
 
-Same roofline formula, but the artifact is loaded from a file fitted against PSRL-specific
-profiling records. The YAML is identical to `roofline` except `name: psrl`.
+```{literalinclude} ../../srl/config/defaults/rollout_cost/psrl.yaml
+:language: yaml
+```
+
+The two-stage fitted model from `srl-regress rollout --model psrl`. It always needs an artifact.
 
 ### `distserve`
-
-DistServe C3/C4 formula. Re-expresses the same roofline fit through architecture constants
-(`h`, `m`, `C1` through `C5`). Default constants are placeholders. Replace with fitted values.
 
 ```{literalinclude} ../../srl/config/defaults/rollout_cost/distserve.yaml
 :language: yaml
 ```
 
-### `composed`
+The DistServe form with architecture constants `h` and `m` and coefficients `C1` to `C5`. The YAML
+values are placeholders. Fit real ones with `srl-regress rollout --model distserve`.
 
-`ComposedRollout`: sums measured per-kernel latencies rather than evaluating a parametric
-formula. No `srl-regress` step. Requires the kernel profiling sweep to have been run first.
-See {doc}`../cost-models/composed-rollout` for the full accuracy discussion.
+### `composed`
 
 ```{literalinclude} ../../srl/config/defaults/rollout_cost/composed.yaml
 :language: yaml
 ```
 
-Key fields beyond the parallelism block:
+Sums measured per-kernel latencies and needs no regression step. `kernel_table_root`, `gpu` and
+`model_path` are required and an empty one raises.
 
 `kernel_table_root`
-: Root of the kernel profiling output tree. Tables are resolved at
-  `{kernel_table_root}/kernel/{gpu}/`.
+: The directory that contains `<gpu>/<family>/<backend>/<version>/*_perf.parquet`, which is the
+  `kernel` directory a `srl-profile kernels run` writes.
 
 `gpu`
-: GPU name that selects which subdirectory to load (e.g. `H20`).
+: GPU name or slug that selects the subdirectory, and the bundled hardware spec.
 
 `model_path`
-: Path to the HuggingFace checkpoint. Used to derive GEMM shapes from the architecture.
-  Use `$MODEL_PATH` rather than a hard-coded path.
+: Checkpoint used to derive the per-layer kernel shapes at `parallelism.tp`.
 
 `attention_backend`
-: Override the attention backend (`vllm` or `flashinfer`). Leave empty to use the
-  vLLM-selected backend (recommended for comparisons against a real server).
+: Force a backend such as `vllm` or `flashinfer`. Empty uses the backend vLLM's own selector would
+  pick.
 
 `utility_surface`
-: Interpolation strategy: `pchip` (default, more accurate on H20) or `shepard`.
+: `pchip` or `shepard`.
 
 `decode_integration_stride`
-: Lattice stride for the segment integrator. `1024` costs at most ~1.3% accuracy
-  versus a step-by-step reference. Set to `1` for an exact sum.
+: Lattice stride of the decode segment integrator. 1 is an exact step-by-step sum.
 
 `saturation_step_threshold`
-: Disabled by default (set to max int64). A finite value enables the closed-form
-  fast path for deep-KV decode segments. The measured trade-off is 1.2x speedup
-  for 4.6% additional deviation on the real DAPO trace.
+: Per-request KV depth above which a decode segment uses the closed form instead of the lattice.
+  The default is the largest int64, which disables it.
 
 ---
 
 ## `training_cost` group
 
-Selects the training cost model. Default: `fixed`.
+Selects the training latency and memory model. The default is `fixed`. Every option carries the
+`parallelism` block, `micro_batch_size`, `schedule`, `activation_recompute`, `optimizer` and
+`gpu_memory_mib`. A non-null `gpu_memory_mib` makes the simulator raise when the predicted peak
+memory exceeds it.
 
-Available options: `fixed`, `analytical`, `linear`, `hydraulis`, `fsdp`.
+`fixed`, `analytical` and `linear` need nothing but their constants. `hydraulis` and `fsdp` load a
+`CostArtifact` from `artifact_path` and refuse queries outside the profiled feature ranges unless
+the feature is listed in `extrapolate`. An unknown name in `extrapolate` raises at construction,
+and every permitted exceedance is recorded in the `train` stream's `extrapolation_notes`.
+
+`ComposedTraining` is not selectable through this group. See {doc}`limitations`.
 
 ### `fixed`
-
-Constant step time and peak memory. No profiling needed. The simplest option for
-getting-started runs.
 
 ```{literalinclude} ../../srl/config/defaults/training_cost/fixed.yaml
 :language: yaml
@@ -124,16 +168,11 @@ getting-started runs.
 
 ### `analytical`
 
-Roofline training cost: `max(compute_time, memory_time) * overhead_factor`. Useful for
-rough estimates without profiling data.
-
 ```{literalinclude} ../../srl/config/defaults/training_cost/analytical.yaml
 :language: yaml
 ```
 
 ### `linear`
-
-`latency = time_per_token * total_tokens`, `peak_memory = base_memory_bytes / world_size`.
 
 ```{literalinclude} ../../srl/config/defaults/training_cost/linear.yaml
 :language: yaml
@@ -141,106 +180,98 @@ rough estimates without profiling data.
 
 ### `hydraulis`
 
-Fitted Megatron / Hydraulis V1 training cost. Requires a `CostArtifact` from
-`srl-regress training --latency-model hydraulis`. See {doc}`../cost-models/training-megatron`.
+The Megatron model. `max_tokens_per_microbatch` switches microbatching from a fixed sequence
+count to a token budget and is the already-multiplied value (`ppo_max_token_len_per_gpu` times the
+sequence-parallel size).
 
 ```{literalinclude} ../../srl/config/defaults/training_cost/hydraulis.yaml
 :language: yaml
 ```
 
-`extrapolate`
-: List of feature names for which out-of-domain queries are permitted. An unknown name
-  raises at construction. See {doc}`../simulation/domain-gates` for which features are
-  defensible to extrapolate. Selectable names: `micro_batch_size`, `pipeline_slots`,
-  `tokens`, `activation_bytes`, `profiled_dp`.
-
 ### `fsdp`
 
-Fitted FSDP2/HSDP training cost. Requires a `CostArtifact` from
-`srl-regress training --latency-model fsdp`. See {doc}`../cost-models/training-fsdp`.
+The FSDP2 and HSDP model. `shard_size` and `replicate_size` pick which profiled mesh to answer for,
+and `parallelism.dp` must equal their product. `optimizer_offload` and `reshard_after_forward`
+must match a profiled cell.
+
+`batching_mode`
+: `pad_to_max` charges padding, `token_budget` reproduces dynamic batching with
+  `max_tokens_per_rank`, and `packed_no_pad` charges only real tokens.
 
 ```{literalinclude} ../../srl/config/defaults/training_cost/fsdp.yaml
 :language: yaml
 ```
 
-`shard_size`, `replicate_size`
-: Required. Identify the HSDP mesh cell to load from the artifact. Must satisfy
-  `parallelism.dp == shard_size * replicate_size`.
-
-`batching_mode`
-: How real trajectory lengths become microbatches. `pad_to_max` (default) pads to the
-  longest sequence in each microbatch. `token_budget` reproduces verl's dynamic batching with
-  `max_tokens_per_rank`, and `packed_no_pad` charges only true token counts.
-  See {doc}`../simulation/domain-gates` for the measured spread and when the modes differ.
-
-`extrapolate`
-: As for `hydraulis`. Selectable names: `num_microbatches`, `sequences_per_microbatch`,
-  `tokens`, `activation_tokens`. Only `num_microbatches` is defensible for upward
-  extrapolation without additional profiling.
-
 ---
 
 ## `policy` group
 
-Selects the staleness / scheduling policy. Default: `psrl`.
+Selects the system preset. The default is `psrl`. Each option is a typed dataclass under
+`srl/config/policies/` plus a YAML file of the same name. The code path from a selection to a
+running policy is:
 
-Available options: `psrl`, `areal`, `roll`, `slime`, `verl`.
-See {doc}`../simulation/policies` for the full behavioural description of each.
+1. Hydra composes the dataclass defaults with the YAML into a plain node.
+2. `preset_config` rebuilds the dataclass from that node, which restores the methods Hydra drops.
+3. `preset.build(max_inflight=rollout.max_inflight)` constructs the `StalenessPolicy`.
+4. `preset.horizon` becomes `SimConfig.staleness_horizon`, the bound policies read as
+   `SimState.max_staleness`. `None` means the system declares no bound.
+5. `preset.ingress_window_groups(batch_size)` becomes the number of prompt groups the dataset may
+   feed into the router before any training step publishes. It is a flow limit and not a
+   staleness bound.
 
-### `psrl`
+| Preset | Keys (defaults) | `horizon` | Ingress window, in groups |
+|---|---|---|---|
+| `psrl` | `staleness` (2), `proactive_filter` (false), `proactive_threshold` (0) | `staleness` | `(staleness + 1) * batch_size` |
+| `areal` | `max_head_offpolicyness` (0) | the same key | `(2 * max_head_offpolicyness + 1) * batch_size` |
+| `roll` | `async_generation_ratio` (1.0) | `ceil(ratio)` | `(ceil(ratio) + 2) * batch_size` |
+| `slime` | `update_weights_interval` (1), `over_sampling_ratio` (1.0), `pause_mode` (abort) | none | `(ceil(over_sampling_ratio) + 2) * batch_size` |
+| `verl` | `staleness_threshold` (2.0), `require_batches` (1) | `ceil(threshold)` | `(ceil(threshold) + 1) * batch_size` |
+| `verl_v1` | `num_warmup_batches` (1.0), `max_off_policy_threshold` (8), `max_off_policy_strategy` (drop), `pause_mode` (abort) | `max_off_policy_threshold` | `(max(h, ceil(num_warmup_batches)) + 2) * batch_size`, with `h` the threshold or 1 |
+| `skyrl` | `max_staleness_steps` (4), `pause_mode` (in_place) | `max_staleness_steps` | `(max_staleness_steps + 2) * batch_size` |
+| `openrlhf` | `async_queue_size` (1), `partial_rollout_enable` (false) | none | `(async_queue_size + 1) * batch_size` |
+| `dressage` | `keep_versions` (0), `max_active_groups` (null), `output_queue_size` (1000), `max_partial_rollout_preempts` (null), `pause_mode` (in_place) | `keep_versions`, none when 0 | `cap + 2 * batch_size`, with `cap` as `max_active_groups` or `batch_size` |
+| `nemo_rl` | `sampler` (in_order), `max_staleness_versions` (1), `max_lookahead_versions` (1), `sample_freshest_first` (false), `max_inflight_prompts` (32), `max_buffered_rollouts` (64), `pause_mode` (abort) | `max_staleness_versions` for `windowed` and `weight_fifo`, `max_lookahead_versions` for `in_order`, none for `ready_first` | `max_buffered_rollouts + batch_size` |
+| `trl` | `max_staleness` (4), `max_inflight_tasks` (-1), `pause_mode` (in_place) | `max_staleness` | `cap + batch_size`, with `cap` as `max_inflight_tasks` or `max(max_staleness, 1) * batch_size` when negative |
+| `prime_rl` | `max_off_policy_steps` (8), `max_inflight` (1024), `target_lag` (1), `action` (drop) | `max_off_policy_steps` | `min(max_inflight, max((target_lag + 1) * batch_size, (max_off_policy_steps + 2) * batch_size))` |
 
-Reserve/Occupy/Consume staleness inventory. Requires the external `psrl` package. When the
-package is unavailable, constructing this policy raises `ImportError`. See
-{doc}`../reference/limitations` for the dependency note.
+`rollout.max_inflight` is forwarded to the presets whose policy takes a cap on concurrently
+generating groups. `prime_rl` has its own `policy.max_inflight` instead. `pause_mode` is `abort`
+(a weight publish interrupts and re-enqueues every request, losing its KV) or `in_place`
+(requests keep running under the new weights).
 
-```{literalinclude} ../../srl/config/defaults/policy/psrl.yaml
-:language: yaml
-```
-
-### `areal`, `roll`
-
-Simpler staleness policies with no additional configuration fields beyond `name`.
-
-### `slime`
-
-Loop-barrier policy: push new weights every `update_weights_interval` training steps.
-
-```{literalinclude} ../../srl/config/defaults/policy/slime.yaml
-:language: yaml
-```
-
-### `verl`
-
-Overage-ratio policy. `staleness_threshold: null` falls back to `job.max_staleness`.
-
-```{literalinclude} ../../srl/config/defaults/policy/verl.yaml
-:language: yaml
-```
+`psrl` is built on the external `psrl` package's staleness inventory. The `inventory_deadline`
+router strategy and the forecast modules also require `policy=psrl`. Defaults for each preset are
+the YAML files in `srl/config/defaults/policy/`.
 
 ---
 
 ## `workload` group
 
-Selects the workload source. Default: `uniform`.
+Selects where request lengths come from. The default is `uniform`.
 
-Available options: `uniform`, `bimodal`, `lognormal`, `normal`, `powerlaw`, `dapo_trace`.
+| Option | `source` | Content |
+|---|---|---|
+| `uniform`, `bimodal`, `lognormal`, `normal`, `powerlaw` | `distributions` | Prompt and output lengths sampled independently from a named distribution |
+| `dapo_trace` | `trace` | Joint `(prompt, n responses)` groups read from a trace file |
 
-### `uniform` (and other parametric distributions)
+With `source: distributions` the `output` and `prompt` blocks each take `name` (`uniform`,
+`bimodal`, `lognormal`, `normal`, `powerlaw` or `fixed`), `n` and `seed`, plus the parameters of
+that distribution. The prompt block defaults to a fixed length of 512.
 
 ```{literalinclude} ../../srl/config/defaults/workload/uniform.yaml
 :language: yaml
 ```
 
-`source: distributions` means lengths are sampled from the named distribution at run time.
-`bimodal`, `lognormal`, `normal`, and `powerlaw` follow the same structure with
-distribution-specific parameters in the `output` block. See {doc}`../workload/index`.
+`bimodal` takes `short_len`, `long_len` and `long_frac`. `lognormal` takes `mu` and `sigma` of the
+underlying normal. `normal` takes `mu`, `sigma` and a lower bound `lo`. `powerlaw` takes `alpha`,
+`lo` and `hi`. Per-request caps are `job.max_prompt_length` and `job.max_output_length`, not
+part of the distribution.
 
-### `dapo_trace`
+With `source: trace` the run reads groups from a trace written by `srl-workload` (see
+{doc}`../workload/trace-collection`). The group arity comes from the trace.
 
 ```{literalinclude} ../../srl/config/defaults/workload/dapo_trace.yaml
 :language: yaml
 ```
 
-`source: trace` reads pre-collected `(prompt, n responses)` groups from a JSONL artifact.
-`trace.path` is the merged joint trace produced by `examples/workload/collect_joint_trace.sh`.
-`n_groups: 0` reads all groups. Set a positive value to cap the trace.
+`trace.path` is required and `trace.n_groups: 0` reads every group.

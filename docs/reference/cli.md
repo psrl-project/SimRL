@@ -1,282 +1,343 @@
 # CLI reference
 
-Five console scripts are installed into the active environment. Four of them are conventional
-argparse programmes. `srl` is a Hydra app and is documented separately at the end of this
-page. See {doc}`configuration` for every config key and
-{doc}`../getting-started/walkthrough/index` for the end-to-end walkthrough.
+`pyproject.toml` installs seven console scripts. `srl` is a Hydra app and takes `key=value`
+overrides. The other six are argparse programs. Flags below were read from `--help` and from
+`srl/cli/*.py`. See {doc}`configuration` for every `srl` key.
+
+| Script | Entry point | Purpose |
+|---|---|---|
+| `srl` | `srl.cli.main:main` | Run one simulation |
+| `srl-profile` | `srl.cli.profile:main` | Drive real systems and normalise their output |
+| `srl-regress` | `srl.cli.regress:main` | Fit rollout and training cost artifacts from profile JSONL |
+| `srl-plot` | `srl.cli.plot:main` | Re-render plots from a simulation's logs |
+| `srl-psrl-plot` | `srl.cli.psrl_plot:main` | Convert a real PSRL run's logs and plot them |
+| `srl-compare` | `srl.cli.compare:main` | Tabulate where a simulation differs from a converted real run |
+| `srl-workload` | `srl.cli.workload:main` | Collect and validate joint grouped workload traces |
+
+---
+
+## `srl`
+
+```bash
+srl [--help] [--cfg job|hydra|all] [--multirun] [group=option ...] [key=value ...]
+```
+
+`srl` composes `srl/config/defaults/simulate.yaml` with the selected options of four groups
+(`policy`, `rollout_cost`, `training_cost`, `workload`) and runs `run_simulate`.
+`srl --help` prints the groups and the fully resolved default config.
+
+```bash
+# Select group options, then override individual keys.
+srl policy=verl rollout_cost=roofline training_cost=fixed workload=bimodal \
+    job.batch_size=32 job.n_versions=10 rollout.n_instances=2
+
+# Print the resolved config without running.
+srl --cfg job policy=roll training_cost=fsdp
+
+# A key that is not in the composed config needs a leading plus sign.
+srl +log_exclude='instance,rollout_step'
+```
+
+Hydra runs in struct mode, so a misspelt key such as `job.n_version=3` fails at composition
+instead of being accepted. The groups and keys are listed in {doc}`configuration`.
+
+### What a run produces
+
+Hydra writes its own copy of the config under `outputs/<date>/<time>/.hydra/`. The simulator
+writes to `output_dir` (default `outputs`, relative to the launch directory because Hydra does not
+change directory):
+
+| Path | Content |
+|---|---|
+| `run.log` | The `srl` logger's output at `log_level` |
+| `logs/` | Telemetry JSONL streams, only when `log_telemetry=true`. Re-running into the same `output_dir` replaces the directory. See {doc}`schemas` |
+| `plots/` | The plots rendered from `logs/` |
+
+The process prints a summary to stdout: versions done, requests consumed and dropped, throughput,
+the staleness distribution, the SCG(S) curve (tokens per second from trajectories whose
+staleness is at most S), a staleness report, and wasted tokens by reason. It prints a warning when
+the run livelocked. `log_exclude` is a comma-separated list of stream names or prefixes that the
+store skips, which is how a sweep avoids writing the large per-step streams. It is not a schema
+key, so it takes the `+` form shown above.
+
+### Environment variables
+
+| Variable | Read by | Meaning |
+|---|---|---|
+| `SIMRL_BACKEND` | `srl` | Rollout engine backend: `auto` (default), `cpp`, or `native` |
+| `SIMRL_UNDOABLE_EVENTS` | `srl` | Comma-separated engine event kinds that are executed speculatively and can be undone. Default `request_complete,preempt,iteration_done`. `request_complete` must be present |
+| `SIMRL_LOG_LEVEL` | `setup_logging` | Log level used when a caller passes none. `srl` itself passes `log_level` from the config, so this matters for the other scripts |
+| `SIMRL_KV_CACHE` | `srl`, `srl-profile kv-probe` | Path of the on-disk KV capacity cache. Default `~/.cache/srl/kv_capacity.json` |
+
+`SIMRL_BACKEND` selects between two implementations of the same instance engine:
+
+`auto`
+: Use the C++ engine when `srl._engine_cpp` imports, otherwise the Python engine.
+
+`cpp`
+: Require the C++ engine. A missing module raises `ImportError`.
+
+`native`
+: Use the Python engine (`NativeInstance`).
+
+Any other value raises `ValueError`. The C++ module ships as
+`srl/_engine_cpp.cpython-312-x86_64-linux-gnu.so`, so `auto` falls back to Python on any other
+interpreter or platform until the module is rebuilt (see {doc}`../development/architecture`).
+
+`srl` requires the `psrl` Python package at import time. See {doc}`limitations`.
 
 ---
 
 ## `srl-profile`
 
-Profiles a real system and normalises the raw artifacts into
-{doc}`../reference/schemas`-compliant JSONL. Four backends, each with three verbs.
-
-```
-srl-profile {vllm,kernels,megatron,fsdp} ...
+```bash
+srl-profile {kv-probe,vllm,kernels,megatron,fsdp} ...
 ```
 
-### Common pattern
-
-Every backend except `kernels` exposes the same three verbs:
+`vllm`, `megatron` and `fsdp` share three verbs. Each takes `--config` (required), a YAML
+workflow file, and prints its work through the `srl` logger.
 
 ```bash
-srl-profile <backend> generate --config CFG   # enumerate candidates; no GPU needed
+srl-profile <backend> generate --config CFG   # enumerate candidates, no GPU needed
 srl-profile <backend> run      --config CFG   # execute them
-srl-profile <backend> collect  --config CFG   # normalise into JSONL
+srl-profile <backend> collect  --config CFG   # normalise into ProfileRecord JSONL
 ```
 
-`run --resume` skips candidates already marked `success`, but **re-runs every OOM candidate**.
-See {doc}`../profiling/methodology` for why OOM results are data rather than failures to retry.
+`--resume` skips a candidate whose `status.json` says `success` and re-runs every other one,
+including candidates that ended in `oom`. `--dry-run` prepares and prints commands without
+executing.
+
+### `srl-profile kv-probe`
+
+Start a vLLM engine once, read back the number of KV blocks it allocates, and cache it for
+`srl` to use when `rollout.kv_cache_sizing.probe=true`.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--model` | required | Checkpoint path or hub id |
+| `--tp` | `1` | Tensor-parallel degree |
+| `--gpu-memory-utilization` | `0.9` | vLLM memory fraction |
+| `--max-model-len` | `32768` | Longest sequence the engine must hold |
+| `--dtype` | `bfloat16` | Weight dtype |
+| `--max-num-batched-tokens` | `0` | vLLM `max_num_batched_tokens` |
+| `--max-num-seqs` | `0` | vLLM `max_num_seqs` |
+| `--gpu-name` | `unknown` | Cache key component. Two GPU models with equal memory do not share an entry |
+| `--block-size` | `0` | Tokens per KV block |
+| `--refresh` | off | Delete the cache file first, then probe again |
 
 ### `srl-profile vllm`
 
-| Subcommand | Key flags | Notes |
-|---|---|---|
-| `generate` | `--config CFG`, `--phase {all,prefill,decode}` | No GPU required |
-| `run` | `--config CFG`, `--phase`, `--dry-run`, `--resume`, `--max-parallel auto\|N` | Defaults to all GPU slots |
-| `collect` | `--config CFG`, `--phase`, `--output PATH` | Missing scheduler logs fail hard |
+| Verb | Flags |
+|---|---|
+| `generate` | `--config`, `--phase {all,prefill,decode}` (default `all`) |
+| `run` | `--config`, `--phase`, `--dry-run`, `--resume`, `--max-parallel auto\|N` |
+| `collect` | `--config`, `--phase`, `--output PATH` |
+
+`--max-parallel` bounds concurrent vLLM servers and defaults to `run.max_parallel` from the
+config, or all available GPU slots. `collect` writes `<output_dir>/profiles/vllm.jsonl` unless
+`--output` is given.
 
 ### `srl-profile kernels`
 
-The kernel pipeline does not follow the three-verb model. It has five subcommands that must run
-in order:
+The kernel pipeline has five subcommands rather than the three verbs.
 
-| Subcommand | Key flags | Notes |
+```bash
+srl-profile kernels {run,fit-floor,holdout,verify-shapes,validate} ...
+```
+
+| Subcommand | Flags | Behaviour |
 |---|---|---|
-| `run` | `--config CFG`, `--family {all,...,gemm}` | Every family by default |
-| `fit-floor` | `--config CFG`, `--candidates-us US [US ...]` | Default: `[0,2,4,6,8,12,16,22,32,45,60,80]` µs |
-| `holdout` | `--config CFG`, `--fraction F`, `--gate G`, `--output PATH` | Use `--fraction 1.0` |
-| `validate` | `--config CFG`, `--baseline JSONL`, `--model-path PATH`, `--surface S` | See note below |
-| `verify-shapes` | `--config CFG`, `--model-path PATH` | Sanity-checks GEMM shapes |
+| `run` | `--config`, `--family {all,attention,attention_training,collective,elementwise,gdn,gemm,optimizer}` | Measure every registered family, or one, and write parquet tables. Needs a GPU. The family choices come from the op registry |
+| `fit-floor` | `--config`, `--candidates-us US [US ...]` | Scan dispatch-floor candidates and write `floors.json` beside each floor-taking table. Defaults to 0, 2, 4, 6, 8, 12, 16, 22, 32, 45, 60, 80 microseconds |
+| `holdout` | `--config`, `--fraction F` (1.0), `--seed N` (0), `--gate G` (5.0), `--output PATH` | Score leave-one-out interpolation accuracy per `(op, backend)` table |
+| `verify-shapes` | `--config` or `--model-path`, `--model-path PATH` | Compare the declared GEMM shapes with a meta-device module graph. Exits non-zero on a mismatch |
+| `validate` | `--config`, `--baseline JSONL`, `--model-path PATH`, `--surface {pchip,shepard}` (pchip), `--min-samples N` (20), `--gate G` (6.0), `--output PATH` | Score `ComposedRollout` against a vLLM profile JSONL, per phase |
 
-`validate` also accepts `--min-samples N`, `--gate G`, `--output PATH` (omitted above for width).
-`--min-samples 1` is required to score prefill and mixed phases, since the default of `20` drops
-both from a typical vLLM run.
+`holdout` and `validate` write a report JSON (`holdout_report.json` and `validate_report.json`
+under the table root by default) and exit non-zero when any row exceeds `--gate` or a row scored
+no points. `holdout` warns when `--fraction` is below 1.0, because a sampled subset can flatter the
+surface. `validate` warns about a phase that `--min-samples` dropped entirely. Pass
+`--min-samples 1` to score a phase that has few iterations per bucket. The method behind both
+commands is on {doc}`validation`.
 
-`fit-floor` is **not optional**. Skipping it leaves the attention dispatch floor unfitted, which
-measured 20.85% and 34.89% MRE for context and generation attention respectively before the fix.
-See {doc}`../profiling/kernels` for the full accuracy table.
+### `srl-profile megatron` and `srl-profile fsdp`
 
-### `srl-profile megatron`
+| Verb | Flags |
+|---|---|
+| `generate` | `--config`, `--candidates PATH` |
+| `run` | `--config`, `--candidates PATH`, `--candidate-id ID` or `--index N`, `--dry-run`, `--resume` |
+| `collect` | `--config`, `--candidates PATH`, `--candidate-id ID` or `--index N`, `--output PATH` |
 
-| Subcommand | Key flags | Notes |
+`--candidate-id` and `--index` are mutually exclusive, and omitting both selects every candidate.
+`generate` writes a candidate manifest. When `--candidates` is omitted the Megatron manifest goes
+to `<output_dir>/control/megatron_bridge/candidates.json`.
+
+`srl-profile megatron run` adds multi-node launch flags:
+
+| Flag | Default | Meaning |
 |---|---|---|
-| `generate` | `--config CFG`, `--candidates PATH` | Writes candidate manifest |
-| `run` | `--config CFG`, `--candidates PATH`, `--candidate-id ID \| --index N`, `--dry-run`, `--resume` | |
-| `collect` | `--config CFG`, `--candidates PATH`, `--candidate-id ID \| --index N`, `--output PATH` | |
+| `--nnodes` | `1` | Nodes the candidate mesh spans. 1 means single-host `torchrun --standalone` |
+| `--node-rank` | `0` | This host's index in `[0, nnodes)` |
+| `--master-addr` | none | Rendezvous host, required when `--nnodes > 1` |
+| `--master-port` | none | Rendezvous port, required when `--nnodes > 1` |
 
-### `srl-profile fsdp`
-
-| Subcommand | Key flags | Notes |
-|---|---|---|
-| `generate` | `--config CFG`, `--candidates PATH` | Writes candidate manifest |
-| `run` | `--config CFG`, `--candidates PATH`, `--candidate-id ID \| --index N`, `--dry-run`, `--resume` | |
-| `collect` | `--config CFG`, `--candidates PATH`, `--candidate-id ID \| --index N`, `--output PATH` | |
+Every host runs the same command with its own `--node-rank`.
 
 ---
 
 ## `srl-regress`
 
-Fits cost model coefficients from a versioned profiling JSONL and writes a `CostArtifact` JSON.
-
-```
+```bash
 srl-regress {rollout,training} ...
 ```
 
+Fits a model from `ProfileRecord` JSONL and writes a `CostArtifact` JSON.
+
 ### `srl-regress rollout`
 
-```
-srl-regress rollout --model {roofline,psrl,distserve}
-                       --input INPUT
-                       --output OUTPUT
-                       [--block-size BLOCK_SIZE]
-                       [--validation-fraction VALIDATION_FRACTION]
-                       [--hidden-size HIDDEN_SIZE]
-                       [--intermediate-size INTERMEDIATE_SIZE]
-```
-
-| Flag | Default | Notes |
+| Flag | Default | Meaning |
 |---|---|---|
-| `--model` | | Required. Selects the regression formula |
-| `--input` | | Required. Path to the vLLM profiling JSONL |
-| `--output` | | Required. Path to write the `CostArtifact` JSON |
-| `--block-size` | | KV block size used to derive attention features |
-| `--validation-fraction` | | Fraction of records held out for validation metrics |
-| `--hidden-size` | | Architecture override (used by `psrl` and `distserve`) |
-| `--intermediate-size` | | Architecture override |
+| `--model {roofline,psrl,distserve}` | required | Formula to fit |
+| `--input PATH` | required | Rollout profile JSONL |
+| `--output PATH` | required | Artifact path |
+| `--block-size N` | `16` | KV block size used for attention features |
+| `--validation-fraction F` | `0.0` | Fraction of records held out. 0 fits in sample |
+| `--hidden-size N` | none | Architecture constant, used by `distserve` only |
+| `--intermediate-size N` | none | Architecture constant, used by `distserve` only |
+
+When every input record comes from the vLLM backend, the command also writes diagnostic plots to
+`<output stem>_plots/` next to the artifact.
 
 ### `srl-regress training`
 
-```
-srl-regress training [--latency-model {hydraulis,fsdp}]
-                        [--memory-model {hydraulis,fsdp}]
-                        --input INPUT
-                        --output OUTPUT
-                        [--validation-fraction VALIDATION_FRACTION]
-                        [--allow-rank-deficient]
-```
-
-| Flag | Default | Notes |
+| Flag | Default | Meaning |
 |---|---|---|
-| `--latency-model` | | Which latency formula to fit |
-| `--memory-model` | | Which memory formula to fit |
-| `--input` | | Required. Path to the training profiling JSONL |
-| `--output` | | Required. Path to write the `CostArtifact` JSON |
-| `--validation-fraction` | | Fraction held out. `0.2` produces a genuine held-out set on both training models |
-| `--allow-rank-deficient` | | Suppress the rank-deficiency error. Debugging only |
+| `--latency-model {hydraulis,fsdp}` | `hydraulis` | Latency formula |
+| `--memory-model {hydraulis,fsdp}` | `hydraulis` | Memory formula |
+| `--input PATH` | required | Training profile JSONL |
+| `--output PATH` | required | Artifact path |
+| `--validation-fraction F` | `0.2` | Fraction of records held out |
+| `--allow-rank-deficient` | off | Fit even when the latency design matrix lacks full rank |
 
-`--allow-rank-deficient` should never be used in production. A rank-deficient design means the
-fit cannot separate two coefficients, and the resulting artifact is degenerate. See
-{doc}`../getting-started/concepts` for the design-rank discussion.
-
----
-
-## `srl-workload`
-
-Collects and validates joint `(prompt, n responses)` group traces used by the `workload=dapo_trace`
-simulation source.
-
-```
-srl-workload {collect-groups,merge-shards,list-workers,check-shard,verify-collection} ...
-```
-
-### `collect-groups`
-
-Runs one worker's shard: spawns a vLLM server and generates `n` responses per assigned prompt.
-
-```
-srl-workload collect-groups
-    --dataset DATASET          # Parquet dataset path
-    --tokenizer TOKENIZER      # Tokenizer name or path
-    --model MODEL              # Model passed to `vllm serve`
-    --output OUTPUT            # Output shard JSONL path
-    [--worker-index N]         # This worker's index (0-based)
-    [--n-workers N]            # Total worker count
-    [--sample-size N]          # Distinct prompts across all workers
-    [--n N]                    # Responses sampled per prompt
-    [--max-tokens N]           # Max output tokens per response
-    [--temperature T]
-    [--top-p P]
-    [--tp N]                   # Tensor-parallel size for the vLLM server
-    [--concurrency N]          # Max in-flight prompts per worker
-    [--port N]
-    [--seed N]
-    [--gpu GPU]                # GPU to pin this worker to
-    [--server-ready-timeout N]
-    [--serve-arg KEY=VALUE]    # Extra `vllm serve` flag; repeatable
-```
-
-### `merge-shards`
-
-Merges the completed worker shards into a single joint trace, sorted by `group_id`.
-
-```
-srl-workload merge-shards
-    --shard-dir DIR            # Directory of worker-NN.jsonl shards
-    --n-workers N              # Shards expected
-    --output OUTPUT            # Merged joint trace path
-    [--max-output-tokens N]    # If supplied, verified against every shard header
-```
-
-### `list-workers`
-
-Expands a hosts file into `index host gpu port` rows, used to drive parallel collection.
-
-```
-srl-workload list-workers
-    --hosts-file PATH          # Path to host/GPU inventory
-    [--base-port N]
-```
-
-### `check-shard`
-
-Exits successfully only when a worker shard is complete (header `n_groups_requested`
-matched). Used by collection scripts to decide whether to skip re-running a worker.
-
-```
-srl-workload check-shard --path PATH
-```
-
-### `verify-collection`
-
-Verifies the merged group count and diagnoses which worker shards are short.
-
-```
-srl-workload verify-collection
-    --trace PATH               # Merged joint trace path
-    --expected-groups N
-    --shard-dir DIR
-    --n-workers N
-```
+The FSDP model must be selected for both flags together, and mixing `fsdp` with `hydraulis` raises
+an error. `--allow-rank-deficient` produces an artifact whose coefficients are not identified, so
+it exists for debugging a sweep that is too narrow.
 
 ---
 
 ## `srl-plot`
 
-Renders plots from an existing simulation run without re-simulating.
-
-```
-srl-plot run_dir [--logs-subdir NAME] [--plots-subdir NAME]
+```bash
+srl-plot RUN_DIR [--logs-subdir NAME] [--plots-subdir NAME] [--only PLOT] [--time-label TEXT]
 ```
 
-`run_dir` is a **positional** argument: the `--output_dir` from a prior `srl` run.
-`--logs-subdir` selects the subdirectory under `run_dir` that holds the telemetry JSONL streams
-(default `logs`). `--plots-subdir` names the output subdirectory to write under `run_dir`
-(default `plots`).
+Renders plots from an existing run without re-simulating.
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `RUN_DIR` | required | The `output_dir` of a previous run |
+| `--logs-subdir` | `logs` | Directory under `RUN_DIR` that holds the JSONL streams |
+| `--plots-subdir` | `plots` | Directory under `RUN_DIR` to write into |
+| `--only` | all | One of `instance_load`, `rollout_step`, `staleness_distribution`, `request_timeline`, `throughput` |
+| `--time-label` | `Simulation Time (s)` | X-axis label. Match the real run's label for a side-by-side figure |
 
 ---
 
-## `srl`: the Hydra simulator
+## `srl-psrl-plot`
 
-`srl` is not an argparse app. It is powered by
-[Hydra](https://hydra.cc/) and accepts config-group overrides, not flags.
+```bash
+srl-psrl-plot LOG_DIR --output-dir DIR [options]
+```
 
-### Config-group overrides
+Converts a real PSRL run's log directory into the telemetry streams a simulation writes, then
+renders the `instance_load` plot with the same plotter. `LOG_DIR` is read only. The converted
+streams land in `<output-dir>/logs`, so `srl-plot DIR` can re-render them later and
+`srl-compare` can read them.
 
-The full set of config groups is:
+| Flag | Default | Meaning |
+|---|---|---|
+| `--output-dir` | required | Where the converted logs and the plot go |
+| `--role` | layout default | Replica role to plot. Validation replicas write the same stats files as rollout ones |
+| `--instances` | none | Replica indices such as `0,2`. Overrides role selection |
+| `--utc-offset-hours` | inferred | Offset of the text logs. Inferred from the logs when omitted |
+| `--time-label` | `Wall-clock Time (s)` | X-axis label |
+| `--logs-subdir`, `--plots-subdir` | `logs`, `plots` | Subdirectories under `--output-dir` |
 
-| Group | Options |
+A second group of flags retargets the converter at differently named log files. Each defaults to
+the PSRL naming and is printed by `srl-psrl-plot --help`: `--stats-glob`, `--role-log-glob`,
+`--gateway-stats`, `--phase-log`, `--train-worker-glob`, `--recompute-begin-marker`,
+`--train-begin-marker`, `--train-end-marker`, `--sync-end-marker`, `--trajectory-glob` and
+`--route-trace`.
+
+---
+
+## `srl-compare`
+
+```bash
+srl-compare SIMULATED REAL [--logs-subdir NAME]
+```
+
+Reads `<SIMULATED>/logs` and `<REAL>/logs` (a directory produced by `srl-psrl-plot`) and prints
+one table with the simulated value, the real value and the error for: instance count, span,
+training steps, train, recompute and sync seconds per step, peak and busy-mean running requests,
+peak and busy-mean KV utilisation, and idle fraction. Occupancy averages are weighted by how long
+each sample was in effect, so the two sides' different logging cadences do not bias them.
+
+---
+
+## `srl-workload`
+
+```bash
+srl-workload {collect-groups,merge-shards,list-workers,check-shard,verify-collection} ...
+```
+
+Builds the joint `(prompt, n responses)` traces that `workload=dapo_trace` reads. See
+{doc}`../workload/trace-collection` for the procedure.
+
+### `collect-groups`
+
+Starts a vLLM server and generates `n` responses for each prompt assigned to this worker.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dataset` | required | Parquet dataset path |
+| `--tokenizer` | required | Tokenizer name or path |
+| `--model` | required | Model passed to `vllm serve` |
+| `--output` | required | Output shard JSONL path |
+| `--worker-index` | `0` | This worker's index |
+| `--n-workers` | `1` | Total worker count |
+| `--sample-size` | `1024` | Distinct prompts across all workers |
+| `--n` | `8` | Responses sampled per prompt |
+| `--max-tokens` | `10240` | Maximum output tokens per response |
+| `--temperature` | `1.0` | Sampling temperature |
+| `--top-p` | `1.0` | Nucleus threshold |
+| `--tp` | `1` | Tensor-parallel size of the server |
+| `--concurrency` | `16` | In-flight prompts per worker |
+| `--port` | `8700` | Server port |
+| `--seed` | `42` | Sampling seed |
+| `--gpu` | none | GPU to pin this worker to |
+| `--server-ready-timeout` | `1800` | Seconds to wait for the server |
+| `--serve-arg KEY=VALUE` | none | Extra `vllm serve` flag. Repeatable |
+
+### `merge-shards`
+
+| Flag | Meaning |
 |---|---|
-| `rollout_cost` | `roofline` (default), `psrl`, `distserve`, `composed` |
-| `training_cost` | `fixed` (default), `analytical`, `linear`, `hydraulis`, `fsdp` |
-| `policy` | `psrl` (default), `areal`, `roll`, `slime`, `verl` |
-| `workload` | `uniform` (default), `bimodal`, `lognormal`, `normal`, `powerlaw`, `dapo_trace` |
+| `--shard-dir` | Directory of `worker-NN.jsonl` shards |
+| `--n-workers` | Shards expected |
+| `--output` | Merged joint trace path |
+| `--max-output-tokens` | Optional. Verified against every shard header, and the shards are authoritative when omitted |
 
-Override a group on the command line:
+### `list-workers`
 
-```bash
-srl rollout_cost=roofline training_cost=hydraulis policy=verl workload=dapo_trace
-```
+`--hosts-file PATH` (required) and `--base-port N` (default `8700`). Prints one
+`index host gpu port` row per worker.
 
-Override individual keys inside a group:
+### `check-shard`
 
-```bash
-srl job.batch_size=512 job.n_versions=16 rollout.n_instances=4
-```
+`--path PATH` (required). Exits 0 only when the shard holds every group it was asked for.
 
-Point to a cost artifact:
+### `verify-collection`
 
-```bash
-srl rollout_cost=roofline rollout_cost.artifact_path=outputs/cost/qwen3_8b/rollout_roofline.json
-```
-
-### Useful Hydra flags
-
-| Flag | Effect |
-|---|---|
-| `--multirun` | Run a sweep over multiple config combinations |
-| `--cfg job` | Print the resolved config without running the simulation |
-| `hydra.run.dir=PATH` | Override the run directory (default `outputs/`) |
-| `+key=value` | Append a key not present in the schema |
-| `~group` | Delete a config group from the composition |
-
-```bash
-# Print the resolved config without running anything
-srl --cfg job rollout_cost=roofline
-
-# Sweep two batch sizes
-srl --multirun job.batch_size=256,512
-```
-
-See {doc}`configuration` for every config key and its default value.
+`--trace`, `--expected-groups`, `--shard-dir` and `--n-workers`, all required. Prints the group
+count on success and names the short shards on failure, with exit status 1.

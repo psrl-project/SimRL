@@ -1,68 +1,89 @@
 # Profiling
 
-Profiling is the measurement half of SimRL. Its output is never a model. It is
-versioned JSONL describing what a real system did, which
-{doc}`../cost-models/index` then fits.
+Profiling is the measurement half of SimRL. Its output is never a model. It is either a
+versioned JSONL file describing what a real system did, which {doc}`../cost-models/index`
+then fits, or a tree of parquet kernel tables that a cost model reads directly.
+
+All measurement goes through one console script, `srl-profile`.
+
+## Commands
+
+| Subcommand | Purpose | Page |
+|---|---|---|
+| `srl-profile kv-probe` | start a vLLM engine once and cache the KV capacity it allocates | {doc}`vllm` |
+| `srl-profile vllm {generate,run,collect}` | end-to-end scheduler iterations from `vllm bench sweep serve` | {doc}`vllm` |
+| `srl-profile kernels {run,fit-floor,holdout,verify-shapes,validate}` | individual kernels timed on synthetic tensors | {doc}`kernels`, {doc}`tensor-parallel` |
+| `srl-profile megatron {generate,run,collect}` | training steps under Megatron-Bridge | {doc}`megatron` |
+| `srl-profile fsdp {generate,run,collect}` | training steps under the SimRL FSDP2 launcher | {doc}`fsdp` |
+
+## Where each pipeline ends
+
+```{mermaid}
+flowchart LR
+    V["srl-profile vllm"] --> VJ["profiles/vllm.jsonl"]
+    VJ --> RR["srl-regress rollout<br/>roofline / psrl / distserve"]
+    K["srl-profile kernels"] --> KT["kernel/{gpu}/{family}/.../*.parquet"]
+    KT --> CR["ComposedRollout<br/>ComposedTraining"]
+    M["srl-profile megatron"] --> MJ["profiles/megatron_bridge.jsonl"]
+    F["srl-profile fsdp"] --> FJ["profiles/fsdp.jsonl"]
+    MJ --> RT["srl-regress training<br/>hydraulis"]
+    FJ --> RF["srl-regress training<br/>fsdp"]
+```
+
+Only two `srl-regress` subcommands exist, `rollout` and `training`. The kernel pipeline has no
+regression step: its parquet tables are the cost model's input. Tensor-parallel communication is
+not a separate pipeline either. It is the `collective` kernel family, covered on
+{doc}`tensor-parallel`.
 
 ## Three verbs
 
-Every backend exposes the same three subcommands, in this order:
+The vLLM, Megatron and FSDP pipelines expose the same three subcommands, in this order:
 
 ```bash
-srl-profile <backend> generate --config CFG   # enumerate candidates
+srl-profile <backend> generate --config CFG   # enumerate candidates or sweep jobs
 srl-profile <backend> run      --config CFG   # execute them
 srl-profile <backend> collect  --config CFG   # normalise into JSONL
 ```
 
-`generate` writes a candidate list and does not touch a GPU, so it is the cheapest way
-to see what a sweep will attempt. `run` supports `--resume`, which skips candidates
-already marked `success`, which means it **re-runs every out-of-memory candidate**. That is
-usually not what you want on a second pass. `collect` reads the raw artifacts each candidate
-left behind and normalises them, and it never re-executes
-anything, so the warmup window and other post-processing choices can change without
-re-profiling.
+`generate` never touches a GPU, so it is the cheapest way to see what a sweep will attempt.
+For Megatron and FSDP it writes the candidate list to
+`{output_dir}/control/{megatron_bridge,fsdp}/candidates.json`. For vLLM it writes the serve and
+bench parameter files and the job manifests under `{output_dir}/control/vllm/`.
 
-## The four pipelines
+`run` accepts `--resume` and `--dry-run`. What `--resume` skips differs per backend and is
+spelled out on each page, but in every case it **re-runs candidates that ended out of memory**,
+because only a `success` status counts as done. Megatron and FSDP also accept `--index N` or
+`--candidate-id ID` to run exactly one candidate.
 
-| Pipeline | Measures | Produces | Regress? |
-|---|---|---|---|
-| {doc}`vllm` | end-to-end scheduler iterations | `rollout_*.json` | yes |
-| {doc}`kernels` | individual GEMM / attention / elementwise / collective kernels | perf tables (parquet) | **no** |
-| {doc}`tensor-parallel` | the same, sharded, plus the collectives a `tp>1` step pays | perf tables (parquet) | **no** |
-| {doc}`megatron` | training steps under Megatron-Bridge | `training_hydraulis.json` | yes |
-| {doc}`fsdp` | training steps under the SimRL FSDP2 launcher | `training_fsdp.json` | yes |
+`collect` reads the raw artifacts a run left behind and normalises them. It never re-executes
+anything, and the warmup window is applied here rather than in the launcher, so the number of
+discarded steps can change without re-profiling. See {doc}`methodology`.
 
-Read {doc}`methodology` before running a long sweep. It collects the measurement rules
-this project learned the expensive way: how many steps to discard, which dispersion
-statistic to report, and why an out-of-memory result is data you want rather than a
-failure to retry.
+The kernel pipeline has no `generate` or `collect`. It has `run` (measure and write parquet),
+then the accuracy and calibration steps `fit-floor`, `holdout` and `validate`, plus the
+GPU-free `verify-shapes`.
 
-## What a sweep costs
+## Cost of a sweep
 
-Measured for Qwen3-8B on 8x H20. Megatron 2026-09-03, the rest 2026-08-31:
+Every Megatron and FSDP candidate is its own `torchrun` child. Spawning the ranks, importing
+torch and the training stack in each, building the model, forming the NCCL group and tearing
+them down is paid once per candidate and is independent of how many steps are timed. Lowering
+`max_steps` therefore removes only a small share of a candidate's wall clock while shrinking the
+retained sample that the median and the dispersion diagnostics rest on.
 
-| Pipeline | Candidates | Median each | Total | Of which is training |
-|---|---|---|---|---|
-| vLLM | 30 points | | ~6 min | |
-| Kernels | 338 shapes | | ~1 h | |
-| Megatron | 40 | 169.8 s | 2.23 h | 16 s (9%) |
-| FSDP | 108 | 183 s | 6.9 h | 60 s (31%) |
+The structural lever is sharing one process across candidates that have the same topology, by
+building the model once and iterating over batch shapes. That is not implemented. It would also
+let candidates share allocator state, which weakens the independence of the per-candidate memory
+measurement.
 
-**Roughly 70% of a training candidate's wall clock is process startup**, not
-measurement: spawning eight processes, importing torch and transformers in every rank,
-building a 36-layer model, forming the NCCL group, tearing it all down. That cost is
-near-identical for both training backends, at 136 s for FSDP against 154 s for Megatron.
+FSDP's grid is wider than Megatron's by default, so its sweep is longer without any one
+candidate being slower. Kernel and vLLM sweeps pay no per-candidate process cost of this kind:
+the kernel runner times synthetic tensors in-process for one family at a time (collectives launch
+one `torchrun` per topology and time all five ops inside it), and the vLLM adapter keeps one
+server alive across many benchmark points.
 
-The practical consequence is that **cutting `max_steps` is not the lever it appears to
-be.** Going from 12 steps to 8 saves about 2 s out of 196 s, roughly 1%, while halving
-the retained sample count that the median and outlier rejection depend on. The real
-lever would be amortising startup across candidates that share a topology: one
-`torchrun` child, build the model once, iterate over batch shapes. That is not
-implemented, and it is not free to implement, because candidates would then share allocator
-state, which compromises the independence of the memory measurement.
-
-FSDP's sweep is longer than Megatron's because it has 108 candidates against 40 and a
-wider grid, not because FSDP is slower per candidate.
+Read {doc}`methodology` before running a long sweep. It collects the measurement rules the code
+enforces and the traps the design guards against.
 
 ```{toctree}
 :maxdepth: 2

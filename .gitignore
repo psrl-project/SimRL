@@ -270,3 +270,7 @@ dmypy.json
 # .claude/coding-style.md and codebase-map.md ARE tracked; only this file is local.
 .claude/settings.local.json
 deprecated/docs/
+
+# Generated validation experiments
+workflow/validate_performance/experiments/*.py
+!workflow/validate_performance/experiments/smoke.py

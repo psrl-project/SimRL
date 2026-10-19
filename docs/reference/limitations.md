@@ -1,374 +1,160 @@
-# Limitations and deferred work
+# Limitations
 
-This page consolidates every known gap, with the source of each item and what would close it.
-Items are grouped by kind. Acceptance criteria from the design document are quoted in full,
-because they are the valuable part: they define what "done" means for each deferred item.
-
-## What SimRL does not do at all
-
-Three limits are structural rather than gaps to be closed by more profiling.
-
-- It does not simulate correctness or learning dynamics, only time and memory.
-- It does not model network topology. Collective costs come from measured tables at the world
-  sizes that were actually swept.
-- Mixture-of-experts and multi-head latent attention architectures are **refused at
-  configuration time** rather than approximated. A checkpoint carrying `num_experts` or
-  `kv_lora_rank` is rejected with a message naming the key and the kernel that would have been
-  omitted. See {doc}`../development/model-families`.
-
-## Why the domain checks exist
-
-A regression fitted over sequence lengths of 512 to 8192 tokens tells you nothing about 65536
-tokens, and on the hardware this project was developed against, 65536 tokens per rank does not
-run at all: 9 of the FSDP attempts at that shape were out-of-memory failures.
-
-So a `CostArtifact` stores `feature_ranges` alongside its coefficients, and a query outside
-them raises rather than returning a number. Extrapolation is possible but must be requested per
-feature, by name, and every occurrence is recorded in the telemetry. See
-{doc}`../simulation/domain-gates`.
-
-That is also why {doc}`validation` exists as its own page: every accuracy figure on this site
-carries its sample count and whether it was held out.
+What the code does not do today. Each item below was checked against the code, and the file or
+symbol that decides it is named. Items that are accuracy figures live on {doc}`validation`.
 
 ---
 
-## Coverage gaps
+## Scope
 
-These are cases where a configuration or hardware combination is valid but was never profiled,
-so predictions there are either refused or extrapolated without supporting data.
+- SimRL models time and memory. It does not simulate correctness, rewards or learning dynamics.
+- A training batch is whole prompt groups. `take_complete_groups` and every preset select complete
+  groups, so a policy that trains on part of a group (TRL drops individual stale samples in the real
+  system) is approximated by dropping the whole group.
+- The rollout fleet is homogeneous. `Simulator` builds `rollout.n_instances` identical engines
+  against one rollout cost model. `srl/simulator/dynamic_parallel/` (`FleetPlan`,
+  `DynamicParallelFleet`) provides primitives for re-shaping a fleet at a weight update, but
+  nothing in `Simulator` constructs them.
+- There is no network topology model. Collective cost comes from measured tables at the world
+  sizes and node counts that were swept. Weight sync is a configured constant (see below).
+- Only H20 hardware is described. `srl/cost/kernel/data/gpu_specs.yaml` holds one entry, and
+  cross-hardware transfer of the kernel tables (SOL on the target GPU, utility from the measured
+  one) is possible by construction but has never been validated.
 
-**Megatron `tokens` sweep range.**
-The Megatron-Bridge sweep covers `tokens ∈ [512, 8192]` per rank, widened from an earlier
-[512, 2048] specifically because a real batch exceeded it. A DAPO batch's median sequence is
-8828 tokens and its longest is 11133, so the tail still sits about 1.36x outside the domain, and
-the memory model's `activation_bytes` domain is exceeded too. The gap is now bounded rather
-than large, but it is real, and the latency form is linear in tokens while attention is
-quadratic, so a stretched tail is understated. Run with
-`EXTRAPOLATE=[tokens,activation_bytes]`, which records both exceedances in the telemetry. Fix:
-extend `sequence_lengths` to 11264 if the tail needs to be trusted rather than bounded.
+## Dependencies and installation
 
-**FSDP `num_microbatches` range.**
-The FSDP sweep covered `num_microbatches ∈ [1, 4]`. With `batch_size=64, dp=8, mbs=1` the
-simulator needs `nmb=8`. The latency form is exactly linear in `nmb`, and fitting on
-`nmb ∈ {1, 2}` to predict `nmb=4` measured a median absolute error of 7.7%, above the model's
-own in-domain error of 0.65% to 4.24% but still a usable bound. Extrapolation can be enabled
-with `training_cost.extrapolate=[num_microbatches]`. See {doc}`../simulation/domain-gates`.
-Alternative fix: add `nmb=8` as a sweep point and refit.
+**`psrl` is a hard dependency of the whole simulator.** `srl.simulator`, `srl.forecast`,
+`srl.policy.registry` and therefore `srl.cli.main` import `psrl.workers.ps.staleness` at import
+time, whichever policy is selected. It is not listed in `pyproject.toml`. Without it, importing
+`srl.simulator` raises `ModuleNotFoundError`.
 
-**`optimizer_offload=True` never profiled.**
-The 108-candidate FSDP sweep pinned `optimizer_offload=False` throughout. A workload that
-enables CPU optimizer offload (common for very large models or tight GPU memory budgets) will
-match no cell and raise `KeyError` at simulation time. Fix: run a separate sweep with
-`optimizer_offload=True` and add the resulting cells to the artifact.
+**The C++ engine is a prebuilt binary for one interpreter.** `srl/_engine_cpp.cpython-312-x86_64-linux-gnu.so`
+is committed. On another CPython version or platform `SIMRL_BACKEND=auto` falls back to the Python
+engine and `cpp` raises `ImportError`, until the module is rebuilt from
+`srl/component/rollout/engine_cpp/` with CMake and pybind11. `SIMRL_BACKEND` accepts `auto`, `cpp` and
+`native`; any other value raises `ValueError`.
 
-**Kernel sweep: TP=1 `holdout_report.json` is stale.**
-The committed `holdout_report.json` under the TP=1 tree was written before the `elementwise`
-and `all_reduce` families were swept and holds only five of the current six rows. Re-running
-`srl-profile kernels holdout` generates six rows, which disagree with the committed file.
-See {doc}`../profiling/kernels` for the canonical regenerated table.
+**Profiling needs the real stack.** `srl-profile` drives vLLM, Megatron-Bridge or torch and needs
+GPUs. Simulation and `srl-regress` do not.
 
----
+## Configuration
 
-## Model approximations
+- `ComposedTraining` is not selectable. `build_training_cost` in `srl/cli/main.py` builds `fixed`,
+  `analytical`, `linear`, `hydraulis` and `fsdp`. `ComposedTraining` is reachable from Python and
+  from `score_composed_training`.
+- `recompute_cost.hidden_size`, `vocab_size` and `parameter_count` appear in `simulate.yaml` and are
+  never read. The `training_forward` geometry comes from the training artifact or the checkpoint.
+- Only the `policy` group is type-checked against its dataclass. A value of the wrong type in
+  another group is not rejected at composition.
 
-These are cases where the model is built and working but its accuracy on certain inputs is
-known to be limited.
+## Rollout cost models
 
-**`ComposedTraining` is 8.13% against measured steps; one per-token term is unexplained.**
-MRE 8.13%, signed mean -8.13%, on the 22 out-of-sample THD records against the fitted
-polynomial's 2.73% in-sample. The record whose kernels were traced predicts to -0.12%.
+- `ComposedRollout` handles tensor parallelism only. `pp`, `dp` and `cp` in `rollout_cost.parallelism`
+  are not used by it, and `tensor_parallel` must equal the degree the `ModelOps` were sharded for.
+- A mixed step (prefill and decode tokens together) is priced as context attention plus
+  generation attention at the step's batch size, because only the two pure phases are measured. The
+  assumption suits near-uniform batches. A chunked-prefill step that spreads one long chunk across a
+  large decode batch understates the quadratic context term.
+- The model sums per-kernel latencies and has no per-step CPU scheduling or sampling overhead term.
+- Overlap of communication with compute is not modelled. Each collective is timed in isolation.
+- Tensor-parallel degrees above 2 have collective tables but no end-to-end baseline against a real
+  server in the validation set.
+- Collectives are priced by `(world_size, nodes)` slices. Cross-node tables score below the
+  intra-node ones (see {doc}`validation`), because a flat-ring SOL describes a hierarchical
+  collective poorly. Cross-node rows exist for NCCL only, since vLLM's custom all-reduce is disabled
+  across nodes. NUMA placement inside a node is not represented.
+- Hybrid attention models (softmax plus gated delta net layers) and routed mixture-of-experts models
+  are priced for the `Qwen3_5Moe*` architectures. Decode is the phase that is priced well. The
+  prefill path charges the gated-delta-net dispatch floor on every linear-attention layer and
+  over-predicts for these models. The dense path does not have this problem.
+- The closed-form decode fast path (`saturation_step_threshold`) is off by default because it
+  trades accuracy for little end-to-end speed.
+- The FlashInfer decode kernel compiles only some GQA group sizes (1, 2, 3, 4 and 8). A model whose
+  query to KV head ratio is outside that set, such as 40 to 8 heads, gets a FlashInfer context table
+  and no generation table. Tensor parallelism does not change the ratio. The vLLM backend is
+  unaffected.
 
-A CUDA kernel trace of rank 0 at 12288 tokens (`SIMRL_TRACE_STEP=4 srl-profile megatron
-run --config examples/profile/megatron/qwen3_8b_thd.yaml --candidates ... --index 1`, and
-`--index 9` for nmb=4) compares term by term against the composition's per-stage cost:
+## Training cost models
 
-| term | composed | traced | ratio |
-|---|---|---|---|
-| gemm | 0.8162 s | 0.8299 s | 0.98 |
-| attention | 0.3927 s | 0.3936 s | 1.00 |
-| tp_collective | 0.0912 s | 0.0824 s | 1.11 |
-| elementwise (before the fix) | 0.0190 s | 0.0896 s | 0.21 |
+- Pipeline schedules other than `1f1b` are not represented (the only values the payload accepts are
+  `1f1b` and `fsdp`). Interleaved, zero-bubble and virtual pipeline schedules are not modelled.
+- `ComposedTraining` raises `NotImplementedError` for `dp > 1` (`TrainingOps.dp_comm_queries`).
+  Its validation set is `dp=1` only, so a data-parallel gradient collective term could be written
+  but not scored.
+- `ComposedTraining` under-predicts every record of its validation set (see {doc}`validation`), so it
+  is missing at least one additive term. The two residual adds that Megatron fuses into
+  `bias_dropout_add_fused_train` are not charged. A ragged microbatch plan is priced from a mean slot.
+  The count of tensor-staging launches per layer is traced from one framework version and does not
+  transfer to another, so it is a single named constant (`PLUMBING_LAUNCHES_PER_LAYER`).
+- The fitted Megatron and FSDP models answer only for cells that were profiled. A discrete selector
+  without a matching entry (an `optimizer`, `recompute`, dtype, `optimizer_offload` or
+  `reshard_after_forward` that no candidate used) raises `KeyError`. FSDP supports
+  `sequence_parallel=1` only.
+- A fitted feature range is a hard limit unless the feature is listed in `training_cost.extrapolate`.
+  Extrapolation is recorded in the `train` stream and is as accurate as the form is linear in that
+  feature. The latency form is linear in token count plus a quadratic term, so a stretched tail is
+  understated if the sweep did not reach it.
+- Data-parallel scaling is ideal. Both fitted models record `dp_communication: ignored` and
+  `dp_latency: ideal-local-workload-scaling` in their artifacts, so a data-parallel degree that was
+  not profiled divides the workload per rank and adds no gradient reduction cost. For FSDP the
+  profiled mesh cell carries its own sharding communication.
+- Activation recompute is a discrete selector (for example `full`, `none`). Selective, uniform and
+  block-level granularities are not distinguished.
+- Memory predictions are allocated peaks. Allocator fragmentation, CPU offload of optimizer state
+  beyond the profiled `optimizer_offload` cell, and activation offload are not predicted.
 
-What this establishes, which scoring against step times alone cannot: the GEMM and attention
-tables are correct against the kernels that actually ran, and the sequence-parallel collective
-counts derived from TE source are exact (traced 97 all-gathers and 73 reduce-scatters against
-the derived 96 and 72, the extra one each being process-group setup).
+## Profiling
 
-**The elementwise gap was kernel count, not kernel size, and is now closed.** The trace
-issues 158.7 tensor-staging launches per layer per microbatch where the inventory named 7
-model kernels. The population is `aten::copy_`, `aten::cat` (the QKV split), `aten::to`,
-`aten::mul`, `aten::add_` — buffer plumbing around TE's fused modules. At 4096 tokens 85% of
-its cost is launch floor (8.74 us per launch against 2.5 ns per token), so scaling the seven
-existing kernels by 4.6 would have been wrong: that scales with tokens where most of the real
-cost does not. Added as a `tensor_plumbing` elementwise kind; closed 4.50pp of 12.63%.
+- A candidate that dies before it writes its OOM marker file is classified `failed`, not `oom`, and
+  contributes no lower bound to the memory fit. OOM is read from per-rank marker files and never from
+  log text, so an out-of-memory condition that surfaces as another error, such as an NCCL
+  allocation failure, is lost.
+- `verify-shapes` supports `tensor_parallel=1` only, runs by hand, and compares against the
+  HuggingFace module graph with a hard-coded fusion map. It cannot detect that the serving engine
+  stopped fusing a projection.
+- Each model family must be registered. An architecture with no family, and any mixture-of-experts or
+  compressed-KV architecture the dense family does not cover, is refused with a message naming the
+  missing kernel. See {doc}`../development/model-families`.
+- Multi-node Megatron profiling needs a per-host launch with `--node-rank`. The tool does not start
+  the other hosts.
 
-**Remaining: a per-token term the trace has not named.** The gap goes as total tokens at
-r^2 = 0.936, better than microbatch count (0.860) or total predicted time (0.893), and runs
-0.1-18.4% of prediction with every record the same sign. Fix: trace the remaining token
-counts (22528 OOMs under the profiler, so it needs a smaller candidate or a lighter trace)
-and diff the kernel inventory again.
+## Simulation fidelity
 
-**The traced plumbing count is the weakest input in the model.** It is a property of how
-megatron-core and Transformer Engine stage buffers, not of the architecture, so it does not
-transfer to another framework or version and cannot be derived. `PLUMBING_LAUNCHES_PER_LAYER`
-names it as a single constant for that reason. Fix: derive it from the module graph, or
-re-trace per framework version.
+- **Prefix reuse is derived from provenance.** Block identity is `(source_group_id, block_index)`
+  for prompt-interior blocks and `(rid, block_index)` otherwise, because the simulator holds no
+  token ids. Two different prompts that share leading full blocks hit in a real engine and miss
+  here. The error is one-directional and never reports a hit that would not occur. A workload with
+  a shared system prompt would amplify it.
+- **No cross-instance cache reuse.** Each instance owns its block pool. A group's responses share
+  prefix blocks only on the instance that holds them, so `rollout.router.enable_group_sticky`
+  changes the hit rate.
+- **A trace extracted from a PSRL run has fabricated grouping.** `extract_workload_trace` chunks
+  completed requests into groups of `group_size` in request-id order, because the route trace does
+  not record which prompt a response belonged to. The length distribution and group arity are exact.
+  Which responses share a prompt is not, so a prefix hit rate measured on that trace is not
+  meaningful.
+- **`kv_blocks` is a placeholder unless sized.** Without `rollout.kv_cache_sizing.model_path`, the
+  literal `100000` is the denominator of every reported `kv_cache_usage`. The `probe: true` path
+  needs vLLM and a GPU the first time, and `probe: false` is only reliable for dense models because
+  the engine's measured peak activation, non-torch memory and hybrid page alignment cannot be
+  derived from `config.json`. A capacity does not transfer between TP degrees or GPU models.
+- **Length prediction is an oracle.** `inventory_deadline` and the forecast modules require
+  `policy=psrl` and use `oracle` or `noisy_oracle` lengths, which read the trace's `target_len`. No
+  predictor that estimates lengths from prompts is built in.
+- **Livelock detection is a guard.** The run returns `livelocked=True` after `rollout.livelock_rounds`
+  idle rounds. A configuration that the guard ends early produces a result that is not comparable to a completed run.
+- **SCG is a rate.** `SimResult.scg` divides tokens by simulated time, so two runs are comparable
+  only if they consumed the same trajectories. Compare the printed `Consumed:` line first.
 
-Three hypotheses excluded by measurement rather than argument, recorded because all were
-plausible: the GEMM table being cuBLAS where training is TE (`te.Linear` against
-`torch.nn.functional.linear` is **1.001x**), a fixed per-step or per-slot overhead (per-slot
-residual spans 0.039-0.484 s), and the optimizer step (14.1 ms at 81% of HBM peak).
+## Deferred
 
-Note that the trace perturbs the step: traced total was +10.7% against the untraced median at
-nmb=4. Per-term *ratios* within one trace are usable; traced *totals* are not comparable to
-measured step times.
+Not implemented, with the condition that would justify building each:
 
-Two further approximations, each attributable:
-
-- **The two residual adds are not charged.** Megatron fuses each into one
-  `bias_dropout_add_fused_train` kernel, and the measured elementwise table holds only the
-  four kinds vLLM runs. They are omitted rather than priced against `rms_norm`'s curve at
-  the same element count, which would be plausible and unverifiable. Two kernels against the
-  seven charged, so the elementwise term (1.4% of a step) is under-counted by roughly 2/9.
-  Fix: extend the elementwise sweep with the fused bias-dropout-add kernel.
-- **A ragged microbatch plan prices attention from the first microbatch's shape.** The
-  per-sequence lengths are rescaled to the slot's mean token count, so a plan whose
-  microbatches differ in sequence *count* is approximated. Not exercised by any profiled
-  record (all 22 are uniform) and `MicrobatchPlanner` emits uniform plans except under
-  `PACKED_NO_PAD` with ragged input. Fix: price each microbatch separately rather than
-  pricing a mean slot.
-- **Compute/communication overlap is not modelled.** The sum is a plain sum, so overlap
-  would make it over-predict. It under-predicts everywhere, so overlap cannot be the
-  residual above and is if anything masked by it: correcting the residual would make any
-  unmodelled overlap visible as over-prediction. Megatron's `overlap_grad_reduce` and
-  `overlap_param_gather` make this a real question at `dp>1`; at `dp=1` the only
-  overlappable terms are the TP collectives (7.8% of a step) and the pipeline sends. Fix:
-  revisit once the residual is explained.
-
-The dispatch floor for both training attention directions is fitted to the candidate grid's
-top value (80 us) where the measured flat region implies ~195 us, so shapes entirely below
-~3072 tokens are under-predicted. The smallest real training microbatch in the validation
-set is 4096 tokens, already past the flat region. Fix: extend `candidates_us` past 80 us,
-which re-fits every floor-taking op and so requires re-pinning
-`tests/test_collective_baseline_regression.py`.
-
-**`ComposedTraining` at `dp>1` is not implemented.**
-`TrainingOps.dp_comm_queries` raises `NotImplementedError` rather than returning a gradient
-collective cost. Every THD validation record is `dp=1`, so the term could be written but not
-scored, and an implemented-but-unvalidated term is indistinguishable from a validated one at
-the call site. Spec A's tables cover the required collectives in `float32`. Fix: profile a
-`dp>1` training candidate, then implement the term against it.
-
-**`ComposedRollout` mixed steps.**
-A mixed step (prefill and decode tokens in the same batch) is approximated as context
-attention plus generation attention at the step's batch size. Only the two pure phases were
-profiled, and no mixed batches were measured directly. Against the six real mixed iterations in the
-vLLM baseline the error is 0.48%, but six samples is not a validation. A simulator with chunked
-prefill produces mixed steps constantly. Fix: add a mixed-batch profiling sweep that measures
-the combined attention kernel with a realistic split of prefill and decode tokens.
-
-**`ComposedRollout` TP=2 is validated. Prefill is clean and decode's residual is the known
-small-batch gap, not a tensor-parallelism one.** A serial vLLM TP=2 baseline exists
-(`outputs/profile/qwen3_8b/vllm_tp2_serial/`, 49,211 iterations, `max_parallel: 1`, same grid as
-TP=1) and `kernels validate` scores it:
-
-| Selection | Buckets | MRE |
-|---|---|---|
-| prefill, whole grid | 29 | **3.60%** |
-| decode, `requests >= 5` | 137 | **2.96%** |
-| mixed | 7 | 3.64% |
-| decode, whole grid | 204 | 9.51% |
-
-The excluded-region figures beat the 4.84% decode / 3.72% prefill published at TP=1, which is the
-first end-to-end evidence that kernel composition survives tensor parallelism. At TP=1
-`comm_queries` returns empty, so no earlier figure exercised a collective at all.
-
-Prefill needed no model change, only a better baseline. Its six `requests = 1` buckets originally
-scored 12.50% because they used `num-prompts: 1`, so each recorded iteration was a single cold
-request carrying ~78 ms of server-side work that no steady-state step pays. Fitting
-`latency = fixed + per_token * tokens` isolated that offset (+68.2 ms in the serial run against
--1.3 ms in the parallel one, and absent at `requests = 3` on the same server), and it implied a
-256-token prefill running 3.8x *slower* on two GPUs than on one, which is physically impossible. Re-measured
-with `num-prompts: 8` at the same shape (`examples/profile/vllm/qwen3_8b_tp2_reqs1.yaml`),
-`requests = 1` prefill went from 46.98% to 3.98% MRE with the prediction unchanged, and 256 tokens
-now measures 18.26 ms against 25.47 ms at TP=1, a sane 1.4x speedup. **Rule: never quote a figure
-from a `num-prompts: 1` point.**
-
-Decode's remaining gap is a different problem and a **real model error**: `requests 1-4`
-over-predicts (median ratio 1.31, against 1.1312 at TP=1, so it is TP-independent). The mechanism
-is now identified, and it is *not* a missing overhead term. The model predicts too much, so adding a term
-would make it worse.
-
-Decomposing a `reqs=1` step at depth 5120: GEMM 3.123 ms + attention 2.490 ms + comm 1.268 ms =
-6.881 ms predicted, against 5.240 ms measured. GEMM is 3.123 ms at one request and 3.180 ms at
-sixteen, so flat, because a decode GEMM is memory-bound and reads the whole weight matrix either way,
-which the per-shape numbers confirm. So the prediction carries ~4.4 ms of batch-independent
-GEMM+comm while the entire real step is 5.240 ms.
-
-A composed decode step sums **253 kernel latencies** (145 GEMM, 72 all-reduce, 36 attention), each
-timed as an isolated call and each carrying its own fitted floor (`all_reduce` 6.0 µs,
-`generation_attention` 22.0 µs). The excess is 1.641 ms over 253 launches = **6.5 µs per launch**,
-essentially the all-reduce floor. The real server replays the step inside a **CUDA graph**, where
-those per-call costs largely disappear. This is the same trap the elementwise table documents from the
-other side. At `reqs=64` the same absolute excess is under 3% of a 23 ms step, which is why the
-error vanishes with batch.
-
-**Decision (2026-09-03): accepted as-is, not scheduled for a fix.** `requests >= 5` scores 2.96%
-and a real RL rollout runs batched, so the affected region is outside the workload this simulator is
-built for. The two candidate fixes were both judged not worth their risk. Charging each op's floor
-once per step rather than once per kernel would introduce a new fitted graph-replay coefficient,
-and a term added to absorb a residual rather than to represent a mechanism is exactly the failure
-mode {doc}`../profiling/methodology` warns about. Modelling compute and communication overlap
-explicitly is the larger and more principled change, and it remains on the deferred list for when
-topology-aware communication is built.
-
-Should it ever be revisited, one experiment distinguishes the two causes: capture a CUDA graph over
-one layer's kernel sequence at `reqs=1` and compare its replay against the sum of the same kernels
-timed individually. A gap near `n_launches * floor` implicates the per-call floors, while a gap near the
-collective's 1.268 ms implicates overlap.
-
-Two approximations remain unquantified at TP>1. The collective is timed in isolation, so any
-overlap with compute the server achieves is not represented, though this is *not* the dominant
-term at TP=2: every phase under-predicts (signed error -2.31% decode, -2.63% prefill), where an
-unmodelled overlap saving worth the collective's 13.2% share would have produced over-prediction
-near +13%. And TP=4/8 have per-kernel collective tables but no end-to-end baseline.
-
-**Cross-node collectives are measured, at roughly ±15% rather than ±5%.** Resolved
-2026-10-04: `nodes` is a slice column alongside `world_size`, `GpuSpec` carries a separate
-`inter_node_bandwidth_bytes_per_s` (5.0e10, one 400 Gb/s bond per GPU, against NVLink's
-4.5e11), and the sweep launches over real nodes via ssh instead of `127.0.0.1`. Measured at
-`(16, 2)` and `(24, 3)` on 24 H20s.
-
-What remains a limitation is the accuracy, not the coverage. The cross-node tables score
-9.9-17.3% held-out MRE where the intra-node ones score 3.2-10.2%, with utility as low as
-0.004. Non-monotonic step counts are no worse cross-node than intra-node (2-3 of 17 against
-3-4 of 17), which rules out contention and makes this a real property of the surface: the
-flat-ring SOL is a poor description of a hierarchical collective. `nodes` being a slice
-column is what confines that to the cross-node rows. Price cross-node DP reduction at
-roughly ±15% and say so; densifying the grid is the lever if better is needed.
-
-Two further gaps. Cross-node rows carry **no `vllm` column**, because vLLM disables its
-custom all-reduce for a group spanning nodes (`custom_all_reduce.py:90`) and falls through
-to pynccl, which the control table already measures; the column is left absent rather than
-filled with a relabelled NCCL row. And NUMA placement within a node is still unmodelled:
-GPUs 0-3 and 4-7 sit on different NUMA domains with different NIC affinity, which `nodes`
-does not capture, though all-to-all NVLink makes the GPU-to-GPU path uniform regardless.
-
-**`ComposedRollout` decode over-predicted ~13% at small batch.**
-At `requests ∈ [1, 4]` the median decode ratio is 1.1312 against 0.996-1.014 at larger
-batches. Three candidate causes were tested and ruled out: CUDA graph capture, the validity of
-summing per-kernel latencies, and interpolation error at `m=1`. The remaining candidate is
-kernel overlap in the real server, which per-kernel timing cannot observe. No fix is currently
-scoped, and recorded as a known limitation.
-
-**`ComposedRollout` no CPU overhead terms.**
-A per-request scheduler and sampler overhead was fitted at approximately 16 µs per step and
-changed decode MRE by about 0.1 percentage points. It was omitted as negligible for the current
-baseline but will matter for mixed batches (where the scheduler runs more frequently) and for
-pipeline parallelism. Fix: fit a per-step CPU overhead term from real vLLM traces.
-
-**`ComposedRollout` cross-hardware transfer is unvalidated.**
-The SOL/utility factorisation is designed to enable hardware transfer by capturing kernel
-efficiency relative to hardware ceiling. Only one GPU type (H20) was available during
-development, so this property is unvalidated by construction. Do not claim accuracy on an
-unmeasured GPU type. Fix: run the kernel profiling sweep on a second GPU (e.g. A100 or H100)
-and compare end-to-end predictions against a vLLM server on that hardware.
-
-**`context_attention/flashinfer` above the 5% holdout gate.**
-`context_attention/flashinfer` measures 9.87% MRE at `--fraction 1.0`, against 5.74% for
-`context_attention/vllm`. The cause is grid density below `seq_len=1024`, not a floor misfit.
-This matters only when simulating a FlashInfer-first server (Blackwell hardware or explicit
-`--attention-backend flashinfer`). The vLLM-selected backend on H20 is `FLASH_ATTN` (FA3),
-which passes at 5.74%. See {doc}`../profiling/kernels` for the full holdout table. Fix: add
-denser `context_seq_lens` grid points below 1024 to the profiling config.
-
----
-
-## Operational rough edges
-
-These are operational gaps that do not cause wrong predictions but require manual workarounds.
-
-**`policy=psrl` requires a machine-specific path.**
-`psrl` is the **default policy**. The implementation (`srl/policy/psrl.py`) falls back to
-a hard-coded source-tree path when the `psrl` package is not already importable. That path is
-machine-specific and will not resolve on a different machine. If the fallback also fails, the
-constructor raises `ImportError` with an install hint. Install `psrl` into your environment
-with `pip install --no-deps -e /path/to/psrl` to remove the dependency on the hard-coded path.
-Link: {doc}`../simulation/policies`.
-
-**FSDP OOM can surface as a NCCL allocation failure.**
-When static memory occupies a large fraction of device capacity, CUDA OOM manifests as a NCCL
-`calloc` failure rather than a `torch.OutOfMemoryError`. The profiler's OOM classifier reads
-a marker file rather than the log, so correctly-written candidates are classified correctly.
-A candidate that crashes before writing the marker is classified as `failed` rather than `oom`,
-dropping a memory lower bound from the fit. This affects the shard=2 cell in particular, where
-static occupancy is highest. See {doc}`../profiling/fsdp`.
-
-**Prefix reuse is derived from provenance, so it under-reports hits in one direction.**
-Block identity comes from `(source_group_id, block_index)` for prompt-interior blocks and
-`(rid, block_index)` otherwise, rather than from a hash of token ids the simulator never holds.
-Two *different* prompts that happen to share leading full blocks hit in the real engine and miss
-here. On RL workloads distinct problems almost certainly differ at token 0, and every weight
-update clears the hash map anyway, so the effect is second order -- but it is one-directional:
-this never over-reports a hit. A workload with a shared system prompt or shared few-shot prefix
-would amplify it, and the fix at that point is an optional explicit prefix-grouping key on the
-trace, not a change to the hash rule. See {doc}`../simulation/prefix-cache`.
-
-This replaced an earlier and larger inaccuracy, recorded here because the comparison is the
-useful part: prefill used to be charged `n` times for a prompt with `n` sampled responses, once
-per response rather than once per shared prompt. At DAPO's `rollout_n=8` that was 8x the real
-engine's prompt prefill.
-
-**Within-group reuse cannot be judged on the aligned baseline.**
-`extract_workload_trace` chunks completed requests into groups of `group_size` in request-id
-order, because the route trace does not record which prompt each response belonged to
-(`psrl_log.py`, `write_workload_trace`). That reproduces the length distribution and the group
-arity exactly but not the grouping, so a hit rate measured there reflects fabricated groups.
-This is why prefix caching is validated against a purpose-built vLLM experiment instead; see
-{doc}`../simulation/prefix-cache`.
-
-**No cross-instance reuse, and the router scatters groups.**
-The block pool is per-instance, as in the real engine, while `_select_instance` picks the
-least-active one, so a group's siblings land on different instances and within-group reuse is
-diluted. Frontier makes this a hard gate: multi-replica prefix caching requires a sticky
-scheduler or it raises. We do not port that gate, because what PSRL actually does has not been
-verified and copying Frontier's policy would weld in an unverified assumption. Routing is
-tracked separately.
-
----
-
-## Deferred work and acceptance criteria
-
-The following items are from `docs/design/profiling-and-cost-models.md`, section "Deferred
-stages and acceptance criteria". Each item's acceptance criteria are quoted in full because they
-define what a completed implementation looks like.
-
-1. **Topology-aware communication and overlap.** Calibrate TP, PP, and DP collectives per
-   node topology, model exposed overlap explicitly, and pass grouped-topology holdout
-   thresholds before enabling search.
-
-2. **Advanced pipeline schedules.** Add VPP, interleaved 1F1B, zero-bubble schedules, and
-   measured stage imbalance. Validate predicted bubbles against per-stage timers.
-
-3. **CP, SP, EP, and MoE.** Represent dense and expert meshes separately rather than
-   multiplying dimensions blindly. Candidate generation must prove divisibility and rank-mesh
-   constraints before launch. Until this item is complete, MoE and MLA architectures are
-   refused by the cost model rather than approximated. See {doc}`../development/model-families`.
-   Ulysses sequence parallelism (`sp>1`) is rejected at config time as out of scope.
-
-4. **Recompute granularity.** Profile full, selective, uniform, and block-level policies.
-   Memory and latency must share the same resolved recompute descriptor.
-
-5. **Variable-length packing and heterogeneous pipelines.** Record actual packed token
-   layouts and stage assignments. Validate equal-token workloads with different quadratic
-   attention work.
-
-6. **Allocator fragmentation, CPU offload, and activation offload.** Predict reserved as well
-   as allocated memory and bound OOM false negatives on held-out candidates.
-
-7. **Cross-model DistServe calibration.** Fit C3 and C4 jointly across architectures and
-   report condition number and confidence intervals.
-
-8. **Automatic disaggregated GPU allocation.** Enable only after candidate-domain checks and
-   held-out error gates are part of the search objective. Search must reject unsupported cells
-   instead of silently extrapolating.
+1. Topology-aware communication with explicit overlap.
+2. Ulysses sequence parallelism in the training cost (`sequence_parallel > 1` is refused by the FSDP
+   search space and the FSDP fit).
+3. Per-sample, non-group-atomic training batches.
+4. A second GPU type, to test hardware transfer.
+5. Cross-model DistServe calibration of `C3` and `C4`.
+6. Automatic GPU allocation between rollout and training that rejects unsupported cells instead of
+   extrapolating.

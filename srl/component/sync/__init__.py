@@ -1,9 +1,8 @@
 """Sync component: weight synchronization cost models."""
 
-from .cost import BandwidthSyncCost, FixedSyncCost, SyncCostModel
+from .cost import FixedSyncCost, SyncCostModel
 
 __all__ = [
-    "BandwidthSyncCost",
     "FixedSyncCost",
     "SyncCostModel",
 ]

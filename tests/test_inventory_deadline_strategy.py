@@ -5,7 +5,8 @@ from __future__ import annotations
 import types
 from dataclasses import dataclass, field
 
-from psrl.workers.ps.inventory_forecast import BufferView, InventorySnapshot
+import pytest
+from psrl.workers.ps.staleness import BufferView, InventorySnapshot
 
 from srl.component.rollout.engine import InstanceView, Request
 from srl.component.rollout.router.strategies.inventory_deadline import InventoryDeadline
@@ -129,6 +130,10 @@ class _FakeSession:
         self._admission_options: dict[int, dict] = {}
         self.train_cache: dict = {}
         self.committed: list[tuple[int, object]] = []
+        self.gains: dict[int, float] = {}
+
+    def throughput_gain(self, instance_id: int, first) -> float:
+        return self.gains[instance_id]
 
     def set_member_options(self, rid: int, options: dict) -> None:
         self._member_options[rid] = options
@@ -142,7 +147,7 @@ class _FakeSession:
     def evaluate_member(self, req):
         return self._member_options[req.rid]
 
-    def evaluate_admission(self, group, budget=None):
+    def evaluate_admission(self, group):
         return self._admission_options[group[0].group_id]
 
     def commit(self, req, option) -> None:
@@ -186,6 +191,7 @@ class TestBeginDispatch:
         s.bind_runtime(runtime)
         s.begin_dispatch(0.0)
         assert s._session.kv_watermark == 0.3
+
 
 
 class TestPickQueued:
@@ -377,6 +383,67 @@ class TestSelectContext:
 
         assert index == 0
         assert session.committed == [(10, 0)]
+
+    def _staged_session(self, gain: float):
+        group = [member_request(10, 100, 500, group_id=1)]
+        session = _FakeSession(staged_groups={1: group})
+        session.set_admission_options(1, {0: pipeline(100.0), None: pipeline(900.0)})
+        session.gains = {0: gain}
+        return session, group
+
+    def test_a_staged_group_is_placed_even_when_defer_prices_better(self):
+        s = strategy()
+        group = [member_request(10, 100, 500, group_id=1)]
+        session = _FakeSession(staged_groups={1: group})
+        session.set_admission_options(1, {0: pipeline(900.0), None: pipeline(100.0)})
+        s._session = session
+
+        assert s.select_context(group[0], [view(0)], None) == 0
+        assert session.committed == [(10, 0)]
+
+    def test_throughput_gate_defers_a_winner_that_adds_too_little_throughput(self):
+        s = InventoryDeadline(length_model="oracle", throughput_margin_frac=0.05)
+        session, group = self._staged_session(gain=0.01)
+        s._session = session
+
+        assert s.select_context(group[0], [view(0)], None) is None
+        assert session.committed == [(10, None)]
+
+    def test_throughput_gate_admits_a_winner_that_clears_the_margin(self):
+        s = InventoryDeadline(length_model="oracle", throughput_margin_frac=0.05)
+        session, group = self._staged_session(gain=0.05)
+        s._session = session
+
+        assert s.select_context(group[0], [view(0)], None) == 0
+        assert session.committed == [(10, 0)]
+
+    def test_throughput_gate_is_off_by_default(self):
+        s = strategy()
+        session, group = self._staged_session(gain=0.0)
+        s._session = session
+
+        assert s.select_context(group[0], [view(0)], None) == 0
+
+    def test_throughput_gate_is_skipped_when_defer_is_off(self):
+        s = InventoryDeadline(length_model="oracle", defer=False, throughput_margin_frac=0.05)
+        session, group = self._staged_session(gain=0.0)
+        s._session = session
+
+        assert s.select_context(group[0], [view(0)], None) == 0
+
+    def test_throughput_gate_never_defers_an_admitted_member(self):
+        s = InventoryDeadline(length_model="oracle", throughput_margin_frac=0.05)
+        member = member_request(10, 100, 500, group_id=1)
+        session = _FakeSession(members={1})
+        session.set_member_options(10, {0: pipeline(100.0)})
+        session.gains = {0: 0.0}
+        s._session = session
+
+        assert s.select_context(member, [view(0)], None) == 0
+
+    def test_a_negative_throughput_margin_is_rejected(self):
+        with pytest.raises(ValueError, match="throughput_margin_frac"):
+            InventoryDeadline(length_model="oracle", throughput_margin_frac=-0.1)
 
     def test_unrecognized_group_returns_none(self):
         s = strategy()

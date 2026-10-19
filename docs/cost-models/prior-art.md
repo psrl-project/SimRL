@@ -1,242 +1,176 @@
 # Prior art and comparisons
 
-SimRL's kernel cost model was designed by reading two existing simulators, aiconfigurator
-and Frontier, before committing to a design. This page records what was taken from them, what
-is genuinely different, and which papers the other cost models follow.
+SimRL's kernel cost model was designed by reading two existing simulators, aiconfigurator and
+Frontier, before committing to a design. This page records what was taken from them, what is
+genuinely different, and which papers the other cost models follow.
 
-The short version: **on the decision that matters most, SimRL and aiconfigurator made the
-same choice, and Frontier made the opposite one.** The design document
-(`docs/superpowers/specs/2026-08-24-kernel-cost-model-design.md`, decision D2) adopted
-aiconfigurator's approach deliberately rather than arriving at it independently.
-
----
+The short version: **on the decision that matters most, SimRL and aiconfigurator made the same
+choice, and Frontier made the opposite one.** The design decision to interpolate a
+SOL-normalised utility rather than a latency was adopted from aiconfigurator deliberately rather
+than arrived at independently.
 
 ## The decision that splits the three
 
-All three predict one kernel's latency from a table of measurements. They differ in *what the
-table stores* and *what gets interpolated*.
+All three predict one kernel's latency from a table of measurements. They differ in what the table
+stores and what gets interpolated.
 
 | | aiconfigurator | Frontier | SimRL |
 |---|---|---|---|
-| table holds | raw `(shape → latency)` | raw `(shape → latency)` | raw `(shape → latency)` |
-| interpolates | **SOL-normalised utility** | latency, via RandomForest | **SOL-normalised utility** |
-| query math | log2-space kNN, modified-Shepard weights | `RandomForestRegressor` + `GridSearchCV` | log2-space kNN, modified-Shepard weights |
-| past the measured range | hold boundary utility, `latency = SOL/util` | RF extrapolation | hold boundary utility, `latency = SOL/util` |
-| cross-hardware | yes in principle, via the target GPU's SOL | no, retrain per device | untested (H20 only) |
-
-aiconfigurator's own source states this. From
-`aic-core/rust/aiconfigurator-core/src/perf_database/perf_interp.rs`:
-
-```text
-3. beyond the range -> hold a boundary util, latency = SOL(query)/util.
-   Multi-axis grids transfer the util from the nn_leaves nearest collected
-   points in joint log2 space with tapered (modified-Shepard) weights
-```
-
-Utility, log2 spacing, Shepard tapering, and the boundary hold are all shared. SimRL's
-`srl/cost/kernel/interp.py` is the same construction.
+| table holds | measured `(shape -> latency)` | measured `(shape -> latency)` | measured `(shape -> latency)` |
+| interpolates | SOL-normalised utility | latency, via a random forest | SOL-normalised utility |
+| query | log2-space kNN with modified-Shepard weights | random-forest regression with grid-searched hyper-parameters | log2-space interpolation; Shepard by default, monotone cubic splines where the grid allows |
+| past the measured range | hold the boundary utility | forest extrapolation | hold the boundary utility |
+| cross-hardware | in principle, through the target GPU's SOL | retrain per device | in principle, through the target GPU's SOL; not yet validated |
+| source of shapes | analytic from the config | per-model profiling CSVs | analytic from the config, dispatched by an architecture family |
 
 ### Why utility rather than latency
 
-Measured on the Qwen3-8B GEMM table (134 rows, H20), **latency spans 2268x while utility spans
-4.65x**. Within one slice the gap is starker. For `(n=4096, k=4096)`, the attention output
-projection:
+A measured kernel latency spans orders of magnitude across shapes, while its efficiency against
+the roofline spans a small factor. GEMM latency grows by orders of magnitude as `m` goes from one
+token to tens of thousands, yet the fraction of the roofline it achieves moves by a small factor.
+A regressor fitted on latency carries the whole dynamic range; interpolating utility leaves the
+orders of magnitude to the analytic roofline and asks the surface only how efficient the kernel is.
 
-| m | measured | SOL | utility | bound |
-|---|---|---|---|---|
-| 1 | 1.150e-05 | 8.393e-06 | 0.730 | memory |
-| 8 | 1.050e-05 | 8.421e-06 | 0.802 | memory |
-| 32 | 1.345e-05 | 8.520e-06 | 0.633 | memory |
-| 64 | 2.620e-05 | 1.451e-05 | 0.554 | compute |
-| 256 | 6.957e-05 | 5.804e-05 | 0.834 | compute |
-| 2048 | 5.062e-04 | 4.643e-04 | 0.917 | compute |
-| 24576 | 5.940e-03 | 5.572e-03 | 0.938 | compute |
-
-Latency moves 566x across that column and utility moves 1.69x. A regressor fitted on latency
-carries the whole dynamic range. Interpolating utility leaves the orders of magnitude to the
-analytic roofline and asks the surface only *how efficient* the kernel is.
-
-The trade-off is that the SOL formula must be right. An error in the roofline propagates into
-every utility and therefore into every prediction. For GEMM on H20 it is accurate enough. For
-attention at small batch sizes the pure roofline understates cost by more than 10x, which is
-what motivated the fitted dispatch floor.
+The trade-off is that the SOL formula must be right, because an error in the roofline propagates
+into every utility and therefore into every prediction. It is accurate for GEMM on the reference
+hardware. For attention at small batch sizes a pure roofline understates cost by an order of
+magnitude, which is what motivated the fitted dispatch floor below.
 
 ### What Frontier does instead
 
-Frontier has no `(m, n, k)` table. Its profiling data is a wide CSV per `(device, model)` with
-one row per `num_tokens` and one column group per *semantic* operator
-(`time_stats.attn_pre_proj.median`, `time_stats.mlp_up_proj.median`, and so on). The training
-call in `frontier/execution_time_predictor/sklearn_execution_time_predictor.py` is:
-
-```python
-models[model_name] = self._train_model(
-    model_name=model_name,
-    df=compute_df,
-    feature_cols=["num_tokens"],
-    target_col=target_col,
-)
-```
-
-`num_tokens` is the only feature. `n_embd`, `n_head`, and `num_tensor_parallel_workers` are not
-features but the **identity of the dataset**: a different TP degree or model is a different CSV
-and a different forest. The estimator is a `RandomForestRegressor` tuned by `GridSearchCV`, and
-it fits absolute latency. It deliberately keeps no test split:
-
-> we don't create a train/test split, because we want to use all data for training and we don't
-> care about overfitting, because we only want to predict execution time within the same domain
-
-Frontier compensates with per-operator `calibration_scale` constants, and it measures something
-neither of the others does: a CPU-overhead table keyed on
-`(model, batch_size, tp, num_prefill_tokens, num_decode_tokens, scheduling_mode)`.
-
----
+Frontier keeps no `(m, n, k)` table. Its profiling data is a wide CSV per device and model, with
+one row per token count and one column group per semantic operator (attention pre-projection, MLP
+up-projection, and so on). `num_tokens` is the only feature; model size, head count and tensor
+degree identify the dataset rather than the features, and the estimator is a random forest fitted
+on absolute latency. It also measures something neither of the others does: a CPU-overhead table
+keyed on model, batch size, tensor degree, prefill and decode token counts and scheduling mode.
 
 ## What is actually different about SimRL
 
-Three things, none of which is the utility idea.
-
 ### A dispatch floor inside the max
 
-Attention, elementwise, and collective ops carry a per-call cost the roofline does not express.
-SimRL fits one per backend and op and evaluates
-$\text{latency} = \max(\text{compute}, \text{memory}, \text{floor})$.
+Attention, elementwise, collective, gated-delta-net and optimizer kernels carry a per-call cost
+the roofline does not express. SimRL fits one per backend and op and evaluates
 
-The floor goes *inside* the max rather than being added, because adding it would double-count in
-the regime where it binds. The evidence is direct: at batch 1, decode attention latency stays
-near 70 µs across a 64x increase in KV depth. Without the floor, generation attention scores
-34.89% MRE against 6.63% with it.
+```text
+latency = max(compute, memory, floor)
+```
 
-aiconfigurator has launch floors in its communication and MoE tables, but not this mechanism for
+The floor goes *inside* the max rather than being added, because adding it double-counts in the
+regime where it binds. The evidence is direct: decode attention latency is flat across a large
+increase in KV depth at small batch. `kernels fit-floor` fits the value per `(op, backend,
+version)` and stores it in the version directory's `floors.json`; a missing file falls back to a
+packaged map with a warning.
+
+aiconfigurator has launch floors in its communication and MoE tables but not this mechanism for
 attention. Frontier's per-operator calibration scales are a multiplicative correction, which
 cannot reproduce a flat region.
 
-### `kernels verify-shapes`
+### Shape derivation behind an architecture family
 
-All three derive their per-layer operator list analytically from `config.json`. SimRL ships
-an **optional** self-check that the other two do not have: build the model on the meta device,
-enumerate every 2-D weight, apply the engine's fusion rules, and compare against the declared
-shapes. On Qwen3-8B it costs 3.09 s and 0 MiB of VRAM.
+Both reference simulators derive their per-layer operator list analytically from `config.json`.
+SimRL does the same, but through a `ModelFamily` chosen by the checkpoint's `architectures` entry
+(`srl/profiler/kernel/grid/families_dense.py`, `families_moe.py`). An architecture with no
+registered family is **refused**, because pricing an unsupported block with another family's
+arithmetic produces a plausible number for kernels the model never runs.
 
-```text
-Qwen3ForCausalLM -> family 'dense_llama', 36 layers.
-  down_proj:    declared (4096, 12288), observed (4096, 12288) OK.
-  gate_up_proj: declared (24576, 4096), observed (24576, 4096) OK.
-  lm_head:      declared (151936, 4096), observed (151936, 4096) OK.
-  o_proj:       declared (4096, 4096),  observed (4096, 4096)  OK.
-  qkv_proj:     declared (6144, 4096),  observed (6144, 4096)  OK.
-```
+Registered today:
 
-Be precise about what this proves. The two sides are independent: `declared` is arithmetic over
-`config.json`, `observed` is a real tensor's `weight.shape`. So it catches arithmetic that
-disagrees with the checkpoint, and it catches **layer heterogeneity**, which no config key
-reliably reports and which the dense family would otherwise flatten into one shape times
-`num_layers`.
+- **Dense Llama-style blocks** — `families_dense.py`: four fused projections plus the vocabulary
+  projection, matching what an inference engine runs rather than HuggingFace's seven separate
+  weights.
+- **Qwen3.5-MoE** — `families_moe.py`: a router projection, per-token routed expert GEMMs at the
+  MoE width scaled by `num_experts_per_tok`, an optional shared expert, hybrid full-attention and
+  linear-attention layers, and `attn_output_gate`, which doubles the query rows of the fused QKV
+  projection. Each of those changes the measured shape set, which is why the block cannot reuse
+  the dense arithmetic.
 
-What it does not do:
+`kernels verify-shapes` is an optional self-check the other two do not have: it builds the model
+on the meta device, enumerates every 2-D weight, applies the engine's fusion rules, and compares
+against the declared shapes. The two sides are independent — one is arithmetic over the config,
+the other a real tensor's shape — so it catches an arithmetic error and it catches layer
+heterogeneity, which no config key reliably reports. It does not observe the engine: the fusion
+rules are hard-coded, so it confirms that HuggingFace's separate projections sum to the declared
+shapes, not that the engine fuses them. It is not wired into `kernels run`; nothing invokes it
+unless you do, and `kernels run` reads the family arithmetic directly.
 
-- It does not observe the engine. The fusion rules in `_FUSION_RULES` are hard-coded, so the
-  check confirms that HuggingFace's separate projections *sum to* the shapes we declare. If vLLM
-  stopped fusing QKV, this gate would still pass and the pricing would still be wrong.
-- It is not wired into `kernels run`. Nothing invokes it unless you do.
-- It supports `tensor_parallel=1` only, since the module graph is unsharded.
+Families are also why the simulator covers the hybrid-attention and gated-delta-net kernels
+(`gdn`), the fused optimizer step (`optimizer`), and the training-attention family
+(`attention_training`) that prices Transformer Engine's THD layout rather than vLLM's prefill
+kernel.
 
-It is a useful instrument, not an architectural advantage. The pricing path is hard-coded
-arithmetic over `config.json`, exactly as in the other two.
+### Two collective tables
 
-### Refusing MoE and MLA
+Which kernel a real server runs is not NCCL. The collective sweep therefore writes one table
+through vLLM's own dispatcher and one through `torch.distributed` as a control, so the cost of
+having chosen the wrong one is a number rather than an argument. This is covered on
+{doc}`../profiling/tensor-parallel`.
 
-Neither is supported. A checkpoint carrying `num_experts`, `kv_lora_rank`, or a related key is
-rejected at configuration time with a message naming the key and the kernel that would have been
-omitted.
+## What is still refused
 
-**This is a capability gap, not a design win.** aiconfigurator has `ContextMLA`,
-`GenerationMLA`, `MoE`, and `MoEDispatch` operations, and Frontier has a
-`LATENT_MLA_ATTENTION_FAMILY` plus an `is_moe` path. Both cover architectures we cannot price.
+**Compressed-KV / MLA attention.** A checkpoint carrying `kv_lora_rank` or `q_lora_rank` is
+refused by the dense family, because that block has no `(heads + 2 * kv_heads) * head_dim` qkv
+projection and its cache is compressed. Both reference simulators cover MLA and SimRL does not:
+this is a capability gap, not a design win. Closing it needs a checkpoint to validate against, and
+a synthetic implementation would only test itself.
 
-Closing the gap needs a checkpoint to validate against. Without one, an MoE family could only be
-tested against synthetic descriptors, which is how a previous "MoE is four dense GEMMs"
-approximation became an uncharacterised error: it passed every unit test, because the tests
-built their own synthetic shapes. Refusing is honest. Guessing is not.
-
----
+Refusing is honest here. An earlier "MoE is four dense GEMMs" approximation passed every unit
+test because the tests built their own synthetic shapes, and the error stayed invisible until a
+real module graph was compared against the declared one. The registered MoE family is the result
+of doing that comparison rather than of guessing.
 
 ## How the shapes and the sweep relate
 
-Worth stating plainly, because it determines when a sweep has to be repeated.
+`(n, k)` is fully determined by the architecture and is looked up by exact match; only `m` is
+interpolated. The consequences:
 
-`(n, k)` is **fully determined by the architecture**, and it is looked up by exact match. For
-Qwen3-8B at TP=1, `srl/profiler/kernels/families_dense.py` computes five pairs:
+- A query at an unmeasured `(n, k)` raises `KernelCoverageError` rather than clamping to a
+  neighbouring projection's curve. Per-`(n, k)` slicing exists precisely because blending two
+  projections into one slice scored worse.
+- An `m` past the measured frontier holds the boundary utility, because extrapolating an
+  efficiency is defensible and extrapolating a latency is not.
+- A different model changes every `(n, k)`; a different TP degree does too, since shapes are
+  sharded at profiling time. That is what the per-degree kernel trees and the simulation-side
+  guard on `KERNEL_ROOT` exist for.
+- Forward, dgrad, wgrad and logits shapes all land in the one `gemm` table, which is what lets a
+  single surface price both an inference and a training step.
 
-| shape | n | k |
-|---|---|---|
-| `qkv_proj` | `(32 + 2*8) * 128` = 6144 | 4096 |
-| `o_proj` | 4096 | `32 * 128` = 4096 |
-| `gate_up_proj` | `2 * 12288` = 24576 | 4096 |
-| `down_proj` | 4096 | 12288 |
-| `lm_head` | 151936 | 4096 |
-
-The sweep crosses those with the configured `token_counts`, adds the wgrad axis permutations and
-the logits row counts, and deduplicates: 134 triples in 35 slices. At query time `ModelOps` emits
-`GemmQuery(m, n, k)` from the *same* function, so a slice always hits.
-
-Only `m` is interpolated. The consequences, all measured against the shipped table:
-
-```text
-slice (4096, 4096) measured, m=1500 never measured  -> 3.724e-04 s, utility 0.9131
-slice (5000, 4096) never measured, any m            -> KernelCoverageError
-slice (4096, 4096), m=99999 past the measured 24576 -> 2.419e-02 s, utility 0.9372
-```
-
-An unmeasured `(n, k)` raises. An `m` past the frontier holds the boundary utility, because
-extrapolating an efficiency is defensible while extrapolating a latency is not.
-
-So `m` is the only cheap axis. A dozen token counts per slice cover any batch shape on that
-projection. Everything else forces a re-sweep: **a different model changes every `(n, k)`, and a
-different TP degree does too**, since the shapes are sharded at profiling time. That is what the
-per-degree kernel trees (`kernel_tp1`, `kernel_tp2`, ...) and the guards in
-`examples/simulate/simulate.sh` exist for.
-
-This is also why the table is 134 rows where aiconfigurator's GEMM table is about 107,000. Not
-frugality: the table only ever needs this model's five `(n, k)` pairs, while aiconfigurator
-covers many models and quantisation modes.
+A sweep therefore needs only a few dozen token counts per projection, not a cross product over
+everything a reference simulator may cover across many models and quantisation modes.
 
 ### A note on fused shapes
 
-vLLM fuses `q_proj`, `k_proj`, `v_proj` into one `QKVParallelLinear` and `gate_proj` + `up_proj`
-into one `MergedColumnParallelLinear`, so a layer runs four GEMMs where HuggingFace declares
-seven 2-D weights.
-
-The **FLOPs are identical** either way: $\sum 2nk$ comes to 3.8588e+08 per token for both
-groupings, because 4096 + 1024 + 1024 = 6144 rows and 12288 + 12288 = 24576 rows. What changes is
-the **launch count**, 7 against 4, a factor of 1.75. That matters because each call pays its own
-per-call overhead and because a narrower GEMM sits at lower utility, not because the arithmetic
-volume differs. Pricing the unfused shapes would over-count dispatch, not work.
-
----
+vLLM fuses `q_proj`, `k_proj`, `v_proj` into one QKV projection and `gate_proj` with `up_proj`
+into one merged column projection, so a layer runs fewer, wider GEMMs than HuggingFace declares.
+The FLOPs are identical; the launch count is not. Pricing the unfused shapes would over-count
+dispatch and understate each GEMM's efficiency, which is why the declared shapes are the
+engine's.
 
 ## Training cost decomposition: Hydraulis
 
-Neither reference models training at all, so this half of the project has no prior art to copy.
+Neither reference simulator models training, so this half of the project has no prior art to copy.
 
 The training latency model follows Appendix C of Hydraulis
 ([arXiv:2412.07894](https://arxiv.org/abs/2412.07894)), which decomposes a Megatron pipeline step
-into a communication-aware sum over microbatches:
-
-$$\text{latency} = a_Q \cdot Q_\text{eff} + b_T \cdot T_\text{eff}
-    + c_\text{pipeline} \cdot (\text{num\_microbatches} + PP - 1) + \text{update\_overhead}$$
-
-SimRL restructures this into four separately identifiable terms and fits it against
-Megatron-Bridge records. The FSDP model shares the same form with `slots = num_microbatches`.
-See {doc}`training-megatron` and {doc}`training-fsdp`.
+into a communication-aware sum over microbatches. SimRL restructures it into four separately named
+terms — per-step overhead, per-token cost, per-microbatch overhead, and a quadratic attention
+term — with the token terms summed over the microbatches a stage runs plus a pipeline bubble, and
+scaled by the stage share. The FSDP model is the same row with the pipeline degenerating to
+`slots = num_microbatches`. See {doc}`training-megatron` and {doc}`training-fsdp`.
 
 ## Rollout cost structure: DistServe
 
 The DistServe rollout model ([arXiv:2401.09670](https://arxiv.org/abs/2401.09670)) separates
-prefill and decode attention costs explicitly. SimRL's roofline model generalises that
-structure into one formula covering mixed batches by summing a `sum_l2` term (prefill) and a
-`ctxsum` term (decode), while keeping DistServe's approach of fitting effective hardware
-constants from measured profiles rather than using vendor peaks.
-
-`srl/cost/rollout/distserve.py` is the DistServe calibration itself. The `roofline` model is
-the mixed-phase generalisation, which the original formulation does not cover. See
+prefill and decode attention costs explicitly and calibrates effective hardware constants from
+measured profiles rather than using vendor peaks. `srl/cost/rollout/distserve.py` is that
+calibration. The `roofline` model generalises the structure to one formula covering mixed batches,
+by summing a prefill term and a decode term, which the original formulation does not cover. See
 {doc}`rollout`.
+
+## Composed models and the prior art
+
+The composed approach — sum measured kernels rather than fit an end-to-end curve — is the
+alternative to all of the above and is what lets SimRL price a new model or degree without a
+server sweep. Its lineage is the same kernel-table idea as aiconfigurator, with the FP32/utility
+normalisation kept and the whole engine iteration assembled from it. See
+{doc}`composed-rollout` and {doc}`../profiling/kernels`.

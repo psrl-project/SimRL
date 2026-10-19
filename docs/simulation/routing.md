@@ -1,255 +1,350 @@
 # Routing
 
-A request is first **staged in the router**. It becomes admitted only when the router
-successfully places its first group member on an instance. That is where a real gateway puts
-its backlog, and it prevents queue dwell from consuming staleness-policy inventory or fixing
-the trajectory version too early.
+The simulator does not place work directly on engines. Dataset groups are **staged in the
+router**, and a request is placed on an instance only when a routing strategy picks one and
+the engine accepts it. A group becomes admitted, in the policy's sense, at the moment its
+first response is placed. Queue dwell therefore consumes no policy inventory and does not
+fix the trajectory version early, and router queue depth is a real signal rather than a
+constant zero.
 
-Before this existed, instance selection was three lines of `argmin(n_active)` and a group that
-any instance refused was rolled back wholesale. There was nowhere to park a request, so the
-backlog went into the engine: the simulated run had a non-empty instance waiting queue in
-**99.6%** of samples against the real run's 70.0%.
+## The path of a request
+
+```{mermaid}
+flowchart TD
+    S["_stage: credits become whole groups"] --> Q["RouterQueue: one heap per v_traj"]
+    Q -->|"oldest version first"| N["next request: pick_queued, rank_queued or heap head"]
+    N --> A{"group admitted?"}
+    A -->|no| K{"policy.admit_quota >= group_size"}
+    K -->|no| STOP["dispatch stops, request stays staged"]
+    K -->|yes| G
+    A -->|yes| G["AdmissionGate filters instances"]
+    G --> NC["strategy.narrow_candidates"]
+    NC --> ST["sticky pin (soft)"]
+    ST --> SEL["strategy.select_context or select"]
+    SEL --> ADD{"instance.add_request"}
+    ADD -->|refused| STAY["stays queued"]
+    ADD -->|placed| COMMIT["first member: on_admit, ledger, v_traj; every member: on_route"]
+```
+
+Three components are kept separate on purpose.
+
+- `RouterQueue` (`router/request_queue.py`) orders what is waiting.
+- A `RoutingStrategy` (`router/strategy.py`, `router/strategies/`) picks among instances.
+- `Router` (`router/router.py`) owns the queue, applies the `AdmissionGate`, and runs
+  dispatch.
+
+The staleness policy gates the **first** placement of a group: `_can_place_from_router`
+admits it only if `policy.admit_quota(state) >= group_size`, and a successful placement
+admits the entire group atomically. Its siblings may stay in the router, but they bypass
+the quota because the group already owns its slot. The engine's `add_request` stays the
+authority on whether a request actually fits: it raises if the request could never fit even
+on an empty instance, and returns `False` when a configured limit refuses it.
+
+## Queue order
+
+Each weight version owns one min-heap, and dispatch tries versions oldest first. The version
+key is `v_traj`, the rollout version stamped at staging. Unadmitted staged groups are
+re-layered to the new rollout version at every publish that changed it; admitted work keeps
+its history. Inside a version, `rollout.router.sort_key` orders requests:
+
+| `sort_key` | Order |
+|---|---|
+| `small_id` (default) | arrival, by request id |
+| `short_length` | shorter prompt first |
+| `long_length` | longer prompt first |
+
+The length keys use `prompt_len`, not the current context, so a request that came back
+after an abort does not move further back each time it returns. `small_id` is the default
+because a length key makes placement depend on how much of the dataset is staged.
 
 ## Picking a strategy
 
 ```bash
-srl rollout.router.strategy=kv_cache_aware rollout.n_instances=4
+srl rollout.n_instances=4 rollout.router.strategy=kv_cache_aware
+srl rollout.n_instances=4 rollout.router.strategy=length_aware \
+    +rollout.router.strategy_args.order=spt
 ```
 
-| `strategy` | Rule |
-|---|---|
-| `request_num_balance` | Fewest in-flight requests. **The default**, and what the matched PSRL run uses |
-| `round_robin` | Cycle through eligible instances |
-| `random` | Uniform, seeded via `strategy_args.seed` |
-| `kv_cache_aware` | Most KV headroom, counting committed-but-unallocated context |
-| `prefix_aware` | Whoever already holds this request's prefix, unless the fleet is skewed |
-| `throughput_balance` | Smallest predicted increase in step latency |
-| `length_aware` | Orders whole prompt groups longest- or shortest-first inside a bounded block, places by predicted remaining load. Reads a `LengthPredictor` from `srl/forecast/length.py`, so it runs on the oracle or on a noisy one |
-| `inventory_deadline` | Admits and routes by forecasting each option's effect on the nearest unready psrl training buffer, with `srl/forecast/plan.py`'s `PlanSession`. No configured cap: an option that would delay a critical buffer loses to DEFER, one that would not is free. See below |
+`strategy_args` starts empty, so keys are added with `+`.
 
-`request_num_balance` reproduces the former selection exactly, so the default is
-behaviour-preserving: at `n_instances=1` every strategy must produce an identical run, which
-`tests/test_router_integration.py` asserts.
+| `strategy` | Rule | Arguments (defaults) |
+|---|---|---|
+| `request_num_balance` | fewest in-flight requests, ties to the lowest instance id. The default | none |
+| `round_robin` | cycle through the eligible instances | none |
+| `random` | uniform with an owned generator | `seed` (0) |
+| `kv_cache_aware` | largest `free_blocks - committed_blocks`. Queued requests have allocated nothing yet, so raw free blocks cannot tell a full instance from an empty one | none |
+| `prefix_aware` | the instance with the largest prefix hit for this request, unless the hit covers at most `cache_threshold` of its context or the fleet is imbalanced, in which case fewest requests | `cache_threshold` (0.3), `balance_abs_threshold` (64), `balance_rel_threshold` (1.5) |
+| `throughput_balance` | smallest predicted step-time increase from `InstanceView.step_time_delta`, which calls the rollout cost model | none |
+| `length_aware` | orders whole groups by their longest predicted member and places by predicted load | `order` (`lpt`; `fifo`, `lpt`, `spt`), `balance` (`load`; `count`, `load`), `window_groups` (0), `kv_watermark` (0.0), `length_model` (`oracle`), `length_model_args` |
+| `inventory_deadline` | forecasts the training pipeline, see below | see below |
 
-The strategies that priced SCG value or TP tiers are archived under `deprecated/`, see its README.
+`imbalanced` in `prefix_aware` means the load gap exceeds both the absolute and the relative
+threshold.
 
-Adding a strategy means one module in `component/rollout/router/strategies/`, with
-one class under `@register_strategy`, and an import in that package's `__init__.py`.
-Most strategies only select over `InstanceView`. A strategy may also narrow the
-candidate set for one queue head and decide whether dispatch may continue to the
-next version queue when that head cannot be admitted.
+### `length_aware`
 
-### Strategy hooks beyond `select`
+Two independent decisions share one length prediction.
 
-All are optional and duck-typed, so a strategy implements only what it needs.
+- **Which request next.** A prompt group is trainable only when its slowest member finishes,
+  so the group is keyed on its longest predicted member. `lpt` starts the longest group
+  first, `spt` the shortest. Members of a group that has already started always go ahead of
+  a new group. The ranking sees `rollout.router.queue_window` requests per placement
+  (`rank_queued`), so a strategy that orders the whole backlog needs a window at least as
+  wide.
+- **Where.** `balance=load` picks the instance with the least predicted remaining tokens
+  over its residents, `count` the fewest requests.
+- **Whether.** `kv_watermark` refuses an instance when its committed blocks plus the
+  newcomer's current context would exceed that fraction of the pool. It looks only at what
+  residents hold now and needs no length prediction.
+
+Reordering can change which trajectories are trained on, because consumption takes the
+first groups to finish. Ranking the whole backlog starves whichever end of the length
+distribution it ranks last. `window_groups` serves groups in consecutive blocks of that many
+in arrival order and reorders only inside a block; one training batch of groups is the
+natural size. A comparison across orderings should also report tokens per consumed group.
+
+The `LengthPredictor` (`srl/forecast/length.py`) is `oracle`, which reads the trace's
+`target_len`, or `noisy_oracle(sigma, seed)`, which multiplies it by a deterministic
+per-request lognormal error. Both read oracle information, so they bound what a real
+predictor could buy.
+
+## Strategy hooks
+
+Only `select(req, candidates) -> index | None` is required. The rest are optional and
+duck-typed, so a strategy implements what it needs.
 
 | Hook | Called | Implemented by |
 |---|---|---|
-| `narrow_candidates(req, candidates, context)` | before `select`, per request | none built in |
-| `allow_version_bypass(req, context)` | after a version head cannot be placed | none built in |
-| `select_context(req, candidates, context)` | instead of `select`, with the clock | none built in |
-| `rank_queued(window, now)` | per placement, over `rollout.router.queue_window` queued requests of one version | `length_aware` |
+| `narrow_candidates(req, candidates, context)` | after the admission gate, returns indices that stay eligible | none built in |
+| `allow_version_bypass(req, context)` | when a version's head cannot be placed; true lets dispatch try the next version | none built in (`inventory_deadline` returns false) |
+| `select_context(req, candidates, context)` | instead of `select`, with the clock and fleet TP range | `inventory_deadline` |
+| `rank_queued(window, now)` | per placement, over the first `queue_window` heap-ordered requests of one version | `length_aware` |
 | `pick_queued(window, views)` | per placement, over the whole version layer, instead of `rank_queued` | `inventory_deadline` |
-| `observe_enqueue(reqs)` | when a prompt group is first queued | `length_aware` |
+| `observe_enqueue(reqs)` | when a group is first queued, the one moment all members are known to be queued together | `length_aware`, `inventory_deadline` |
+| `observe_completion(req)` | when a response completes | none built in |
+| `observe_train_cycle(version, t)` | at publish | none built in |
 | `bind_runtime(runtime)` | once, when the simulator builds the router | `inventory_deadline` |
-| `begin_dispatch(t)` | once per `dispatch()` call, before any placement in that burst | `inventory_deadline` |
+| `begin_dispatch(t)` | at the start of each `dispatch()` call | `inventory_deadline` |
 
-`tests/test_router.py` covers `narrow_candidates` and `allow_version_bypass` through a stub strategy.
+`RoutingContext` carries `blocked_versions`, the smallest and largest TP degree in the
+fleet, and `now`. `InstanceView` is what a strategy may read about an instance: load,
+`free_blocks`, `committed_blocks`, `kv_blocks`, `block_size`, `prefix_hit_tokens(req)`,
+`step_time_delta(req)`, `residents()` and the cost model. Strategies receive read-only
+views and `TrajView` projections, never `NativeInstance`, so the same code runs on both
+engine backends.
 
-`observe_enqueue` exists because admission is per group while placement is per request. A rule keyed
-on the group, such as its slowest member, has no other moment at which every member is known to be
-queued together. `queue_window` (default 32) bounds how many requests `rank_queued` sees; a strategy
-ordering the whole backlog needs it at least that wide.
+Adding a strategy means one module under `srl/component/rollout/router/strategies/`, one
+class decorated with `@register_strategy("name")`, and an import in that package's
+`__init__.py`.
 
-### `length_aware` reorders inside a block, on purpose
+## Admission gate
 
-psrl consumes the first groups to finish, so ordering the queue by length changes which trajectories
-are trained on, not only how fast the run goes. Ranking the whole backlog starves whichever end it
-ranks last. `window_groups` serves groups in consecutive blocks of that size in arrival order and
-reorders only within a block; one training batch of groups is the natural size, since it is the set
-sharing a consumption deadline. Any comparison must also report tokens per consumed group, which
-should match the baseline's. See `docs/design/psrl-scheduling-headroom.md` for what this buys and where.
+`AdmissionGate` decides which instances may be offered a request at all. It decides
+eligibility only.
 
-### `inventory_deadline` forecasts the pipeline instead of capping it
+| Key under `rollout.router` | Refuses an instance when |
+|---|---|
+| `max_concurrent_seqs_per_instance` (0 disables) | it already holds that many requests, waiting plus running |
+| `reject_on_waiting` | it has a queue of its own |
+| `reject_preempted_on_waiting` | same, but only when placing a preemption loopback |
 
-A fixed router cap tuned at the decode knee wins by keeping admission below the point where more
-concurrency slows every resident's decode step, and by not pinning requests to an old trajectory
-version too early. `inventory_deadline` gets both effects from one model instead of a constant:
-`srl/forecast/plan.py`'s `PlanSession` forecasts, per candidate instance (or DEFER, staying
-queued), the training-finish time `E_k` of every psrl buffer the fleet's state and the pending
-reservations imply, out to `horizon_buffers`. Options are compared lexicographically buffer by
-buffer with `compare`'s tolerance, so a placement that barely moves the nearest buffer is judged
-on the next one instead. `begin_dispatch` builds one `PlanSession` per dispatch burst from
-`SchedulingRuntime`; every decision inside that burst commits into the same session, so a later
-member sees the effect of an earlier one without replaying the whole fleet.
+`rollout.max_concurrency` is a different limit: vLLM's `max_num_seqs` inside the engine. The
+`rollout.admission_control.*` flags are engine-side gates inside `add_request`
+(`reject_if_kv_full`, `reject_if_waiting`, `reject_if_running_full`); all default to false
+because KV capacity is the scheduler's constraint, which the engine already enforces by
+leaving a request that does not fit on its own waiting queue.
 
-Two decisions share the model: routing an already-admitted group's queued member (`evaluate_member`),
-and deciding whether to admit a staged group at all (`evaluate_admission`). Both go
-longest-predicted-first, and an admitted group's member always goes ahead of a staged group's,
-since it already holds a reservation a buffer is waiting on. `allow_version_bypass` always returns
-`False`: once one version's head is deferred or blocked, dispatch stops rather than letting a newer
-version jump ahead, which is what keeps the deadline order meaningful across version layers.
-`defer=False` is the ablation that removes DEFER and forces every feasible request onto the
-best-scoring instance. Requires `policy=psrl`, the only policy `SchedulingRuntime.inventory()`
-supports. This strategy's own placement rule has not yet been checked for self-consistency against
-`PlanSession`'s forecast -- see `docs/superpowers/specs/2026-10-13-inventory-deadline-scheduling-design.md`.
+A request that no candidate can take stays queued. Without `allow_version_bypass`, a blocked
+head stops dispatch for all newer versions. After every successful placement dispatch
+restarts at the oldest version. A group-sticky pin (`enable_group_sticky`) pins a group's
+responses to the instance that took the first one; it is soft, falling through to the full
+candidate set when the pinned instance cannot help, and it is released when the group is
+consumed or dropped.
 
-### Two warnings
+## When dispatch runs
 
-**`throughput_balance` has never been matched against a measurement.** It is the only strategy
-that consults the cost model, and no run has been validated under it. Offered, not recommended.
+A dispatch attempt can only succeed if capacity was released, because `add_request`'s gates
+are block counts and nothing else in the attempt varies with time. So `Router.dispatch` is
+called only at committed points and never inside a speculative engine event (it asserts
+that no instance has an open undo log):
 
-**`kv_cache_aware` needs more than free blocks, and getting that wrong fails silently.** A
-request queued on an instance has allocated nothing yet, so two instances holding very
-different commitments report *identical* free blocks. Reading that alone made the strategy
-return the first instance every time and pile an entire batch onto it while the other sat
-empty, with the run completing normally and only the figure revealing it. The strategy
-subtracts `committed_blocks`, the same quantity `add_request` reserves on, so it and the
-admission gate agree about what "full" means.
+- on entry to the engine loop;
+- after a `REQUEST_COMPLETE` commits and frees blocks, when the queue is non-empty or
+  ingress credits remain;
+- after a cross-instance preemption has been reclaimed;
+- after staging new groups, including the batch opened by a publish.
 
-## Admission and dwell
-
-Three layers, kept separate on purpose:
-
-The **staleness policy** gates the first placement with `admit_quota`. A successful first
-placement atomically admits the whole prompt group and calls `on_admit` once. Its siblings can
-remain in the router, but they bypass the admission check because the group already owns its
-policy slot. If policy capacity is unavailable, dispatch stops and the request remains staged.
-
-The **router's gate** decides *eligibility* and mirrors SMG's `admission_reject_reason`:
-`max_concurrent_seqs_per_instance` (0 disables it), global `reject_on_waiting`, and
-`reject_preempted_on_waiting`, which applies the waiting check only to preemption loopbacks.
-All three default to permissive.
-
-The **engine's `add_request`** remains the authority on whether the request actually fits. It
-is not duplicated in the router: two places deciding admission is how the two drift apart.
-
-A request whose candidates all refuse stays queued. Strategies stop at the first version
-head nothing can take unless they say otherwise. The router itself does not know which versions
-are stale or what TP policy is active. It visits one queue per `v_traj`, oldest first, and asks
-the strategy about each head. A strategy that implements `allow_version_bypass` lets dispatch
-continue to the next version queue after a head blocks, and `narrow_candidates` can then
-restrict which instances that later version may use. The `RoutingContext` it receives lists the
-blocked versions and the fleet's smallest and largest TP degree.
-
-After every successful placement, dispatch restarts at the oldest nonempty version. This keeps
-older work first whenever its instances have capacity, with the bypass policy owned by the
-strategy. Each version layer is a min-heap on `(sort_key, arrival)`. `sort_key`
-breaks ties:
-`short_length` (default), `long_length`, or `small_id`. The key uses the **original** prompt
-length even after a loopback, so a resumed request does not drift backwards every time it
-returns.
-
-Dataset ingress follows policy capacity. Staging offers a prompt group only while
-`admit_quota` grants room beyond what is already staged and uncommitted, so the policy is the
-only admission gate. `Simulator` used to grant ingress from a counter of its own,
-`(max_staleness + 1) * batch_size` groups at startup and another `batch_size` per published
-version. That counter bounded in-flight work so tightly that no policy's quota ever refused:
-measured over a full aligned run, it was consulted 3367 times and refused none, while ingress
-credits were exhausted at 1353 of 1359 staging calls. `max_staleness` was therefore the
-simulator's guarantee rather than each policy's, which made policies with genuinely different
-admission rules indistinguishable -- psrl bounds staleness through its reserve/occupy
-inventory and verl does not bound it at all, yet the two produced byte-identical telemetry.
-Unadmitted groups that cross a weight update are re-layered at the new rollout version;
-admitted or already-generated requests keep their trajectory history.
+A decode segment only grows blocks, so it triggers nothing. A segment ends at the first
+completion or KV exhaustion across the batch, which is the first instant capacity can
+change, so the trigger set is exact for the engine's event granularity. There is no polling
+interval to configure.
 
 ## Loopback
 
-Two triggers, two different rules, because the real system has two.
+Two triggers, two rules.
 
-**A weight update** aborts everything. The requests go back to the *router*, not to the
-instance that was serving them, and are placed again. In the matched run **224 of 383** aborted
-requests (58.5%) landed on a *different* instance, so pinning them in place is not a neutral
-simplification. This is also what puts the spike in the router queue row.
+**Weight update (abort mode).** Every instance aborts all its requests and hands them back
+(`abort_all(requeue=False)`). The simulator enqueues them in the router, so they can land on
+a different instance. `num_reroutes` counts re-placements and
+`n_cross_instance_reroutes` the ones that changed instance.
 
-**A preemption** keeps the victim local, at the head of its own instance's queue, exactly as
-vLLM does. It only reaches the router when that instance's queue has run deeper than
-`rollout.router.max_waiting_after_preempt`, which is vLLM's own
-`preemption_notification_threshold`: requeueing into an already-congested instance only makes
-it worse. Below the threshold nothing crosses instances, which keeps the common case cheap —
-there were 2122 preemptions in the matched run against 404 aborts.
+**Preemption.** A preempted request stays at the head of its own instance's waiting queue.
+It reaches the router only when `rollout.router.max_waiting_after_preempt` is set and that
+instance's queue has grown past it, which is vLLM's `preemption_notification_threshold`.
+That event is then treated as global: it is committed, other instances' speculative events
+are undone and aligned to it, and `reclaim_preempted` takes back up to `overflow` waiting
+requests from the tail that were preempted and have no prefill progress, keeping their
+tokens. Requests that are mid-prefill are never moved. With the threshold at `null` (the
+default) every preemption stays local.
 
-`max_waiting_after_preempt` defaults to `null`, leaving every preemption local.
-When `reject_preempted_on_waiting=true`, a reclaimed victim skips instances that still have
-local waiting work; fresh admissions and weight-update loopbacks remain unaffected.
+## Eviction
 
-```{warning}
-The preempt-overflow path is **not validated by the aligned baseline**. That run sets the
-threshold to 1024 while its instance queues peaked at 218, so the path never fired and all 383
-of its loopbacks are weight-update aborts. The path is built against the vLLM source and
-covered by its own test, but no measurement confirms it.
+When a decode step cannot get a block, the engine evicts a resident, keeps its generated
+tokens, and requeues it locally. Which resident is a separate registry from routing:
+`rollout.router.eviction`.
+
+| `eviction` | Victim |
+|---|---|
+| `vllm_lru` (default) | latest `dispatch_time`, vLLM's reverse arrival order |
+| `longest_ctx` | deepest context, freeing the most blocks |
+| `latest_deadline` | the largest `deadline_buffer`, then deepest context. Requests with `deadline_buffer == 0` are treated as most urgent |
+
+A strategy returning `None` defers to the engine's default. `deadline_buffer` is stamped
+only by `inventory_deadline` at admission, so `latest_deadline` is meaningful only with it,
+and the stamp needs the Python engine, see {doc}`backends`.
+
+## `inventory_deadline`
+
+`inventory_deadline` admits and routes by forecasting what each option does to the training
+pipeline. Instead of a configured cap on admitted work, every decision is priced as a whole
+`Pipeline`: a predicted training-finish time `E_k` for each pending buffer. An option that
+would delay a critical buffer loses to DEFER, and one that would not is free to go wherever
+the forecast finds it feasible. The code is `router/strategies/inventory_deadline.py` and
+the `srl/forecast/` package.
+
+```bash
+srl policy=psrl rollout.n_instances=4 \
+    rollout.router.strategy=inventory_deadline \
+    +rollout.router.strategy_args.kv_watermark=0.6
 ```
 
-## When the router runs
+Requirements, both enforced by the code: the policy must be `psrl`, because
+`SchedulingRuntime.inventory()` raises `TypeError` for any other policy; and the Python
+engine must be used, because the strategy writes `deadline_buffer` on each request. The
+strategy is marked `python_engine_only`, so `auto` picks that engine and `SIMRL_BACKEND=cpp`
+is rejected.
 
-A real gateway polls on a timer. A discrete-event simulator has no clock to poll, so the
-question has to be answered structurally, and one fact settles it: **a dispatch can only
-succeed when KV capacity was just released**, because `add_request`'s binding gate is a block
-count and nothing else in the attempt varies with time. A dispatch at any other moment returns
-exactly what the previous one did.
+### What is forecast
 
-Capacity is released in three places, all already event boundaries:
+| Module | Role |
+|---|---|
+| `forecast/snapshot.py` | read-only value types: `Resident`, `Arrival`, `Interrupt`, `InstanceState` (built from a live `NativeInstance` or `CppInstance`, so it works on either backend) |
+| `forecast/drain.py` | `InstanceForecast`: replays one instance to get every completion time, peak KV blocks and a `kv_overflow` flag |
+| `forecast/fleet.py` | `FleetForecast`: the same for all instances; `fold_member`, `placement_order`, `chain_buffers` |
+| `forecast/pipeline.py` | `PipelineForecast`, `Pipeline`, `TrainState`, `compare` |
+| `forecast/plan.py` | `PlanSession`: one dispatch burst, evaluated incrementally |
+| `forecast/length.py` | `LengthPredictor` (`oracle`, `noisy_oracle`) |
+| `simulator/runtime.py` | `SchedulingRuntime`: the read-only facade a strategy binds to |
 
-| Release | Event | Count in the matched run |
+**Drain replay.** With nothing queued the replay prices closed-form decode segments with the
+same `decode_segment_time` the engine uses. With a queue it iterates like the engine: a
+decode pass over the running batch, then first-come prefill chunks from the remaining token
+budget, honouring `max_concurrency`, with a prefix hit by prompt identity and whole blocks.
+KV is an upper bound: a prompt shared by siblings is charged once per sibling. Preemption is
+not modelled. The replay reports its peak block use and flags `kv_overflow` when that
+exceeds the pool, after which its finish times are void and the option is infeasible. An
+`Interrupt` models a scheduled publish: every resident is aborted at `time`, the instance
+idles for `resume_delay`, and the aborted set is re-prefilled in request-id order.
+
+**Pipeline.** `PipelineForecast.evaluate` feeds predicted group ETAs (the latest member
+finish) to psrl's own `forecast_ready_times` to get each buffer's READY time `F_k`, then
+chains `publish_k = max(F_k, E_{k-1}) + cycle` and `E_k = publish_k + weight_load +
+reconfig`. The chain starts at `now` when the trainer is idle, otherwise at the end of the
+step in progress plus its weight load. The cycle
+comes from `SchedulingRuntime.cycle_time`, which is the simulator's own `_train_cycle`
+(training plus sync plus recompute), priced on the per-response lengths of the `batch_size`
+groups predicted to finish first, padded with their mean.
+
+`chain_buffers` projects `horizon_buffers` buffers. Buffer `k`'s READY time depends only on
+finishes at or before its own publish, and every publish is later than its buffer's READY
+time, so an interrupt scheduled at `publish_k` cannot change what was already resolved:
+no fixed point is needed. Hypothetical admissions (`new_groups`) are passed to every
+re-evaluation, since each one replays the snapshot from scratch.
+
+A buffer with an empty slot can never fill from the work already admitted, so its exact
+`F_k` is infinite. `Pipeline.train_end_floor` keeps such buffers comparable: the same chain
+with an infinite READY time replaced by the latest ETA among that buffer's already-reserved
+groups (`-inf` for an empty buffer). The floor ignores `new_groups` on purpose, because
+counting a candidate's own reservation would charge it for filling a buffer.
+
+**Comparison.** `compare(a, b, eps)` walks the two `train_end_floor` vectors left to right
+over their shared prefix and returns the first difference larger than `eps`; two infinite
+values of the same sign tie. A decision that barely moves the nearest buffer is therefore
+judged on the next one. The tolerance is not transitive. The strategy uses
+`eps = eps_frac * cycle`.
+
+### Decisions
+
+`begin_dispatch` builds one `PlanSession.build(runtime, ...)` per dispatch burst. It
+snapshots the psrl inventory, folds the queued members of already-admitted groups onto the
+instances where they would finish soonest (`placement_order`: ascending deadline buffer,
+then longest predicted remaining), and computes `defer_until`, the earliest future
+completion anywhere in the fleet capped at the first publish. Every decision the strategy
+commits updates the session in place, so later decisions in the burst see earlier ones
+without replaying the fleet.
+
+Two decisions are priced the same way:
+
+- **Routing an admitted group's queued member.** `evaluate_member` prices each instance and
+  DEFER, where DEFER means arriving at `defer_until`.
+- **Admitting a staged group.** `evaluate_admission` prices the first member on each
+  instance, folding the remaining members longest-first onto the best instances, against
+  DEFER_GROUP, which is the baseline pipeline (or, with `lookahead_defer`, admitting at
+  `defer_until` on the fleet with members predicted to finish before then removed).
+
+Ordering. An admitted group's queued member always goes ahead of a staged group: by deadline
+buffer, then longest predicted remaining. Staged groups are ordered by block of
+`window_groups` groups in arrival order, then by the group's slowest predicted member
+(`window_groups=0` ranks the whole backlog, which starves one end of the length
+distribution). A deadline is real urgency and is never window-bounded.
+
+Choice. Among options, the lexicographically best by `compare` wins. Options tied with it
+within `eps` are broken toward the least-loaded instance (fewest active requests, then
+lowest id). If `throughput_margin_frac > 0` and the winner is an admission, it becomes DEFER
+unless adding the first member raises the instance's decode throughput
+(`n_d / decode_segment_time`) by at least that fraction. `allow_version_bypass` is always
+false: letting a newer version pass a blocked or deferred head would break the deadline
+order. The deadline of a group admitted earlier in the same burst, which the snapshot
+cannot know, is `rollout_version + horizon`, or the ingress window when the policy has no
+horizon. Admission commits stamp `deadline_buffer` on the group's members.
+
+### Knobs
+
+Passed through `rollout.router.strategy_args`.
+
+| Key | Default | Meaning |
 |---|---|---|
-| A finished request's blocks are freed | `REQUEST_COMPLETE` | 1394 |
-| A preemption frees its victim | `PREEMPT` | 2122 |
-| A weight update frees everything | publish | 404 |
+| `length_model` | `oracle` | name in `LENGTH_PREDICTORS` |
+| `length_model_args` | none | constructor keywords for the predictor |
+| `horizon_buffers` | 2 | pending buffers each decision projects, clamped to the snapshot's buffers |
+| `eps_frac` | 0.01 | tolerance as a fraction of the priced training cycle |
+| `defer` | true | false removes DEFER and forces every feasible request onto the best instance |
+| `window_groups` | 32 | staged groups per reordering block |
+| `kv_watermark` | 0.0 | KV-peak admission watermark, below |
+| `lookahead_defer` | false | price DEFER_GROUP as admission at `defer_until` on the reduced fleet |
+| `throughput_margin_frac` | 0.0 | smallest decode-throughput gain that justifies an admission; 0 disables, ignored when `defer` is false |
 
-So dispatch runs after those commit, plus once on entry to the engine loop. **A decode segment
-triggers nothing**: it only grows blocks. That matters more than it sounds, because one
-closed-form segment covers a median **122** engine steps, and the run has 432 decode segments
-against 108,411 prefill steps. Routing per engine step would be 28x the work for decisions
-that cannot differ.
+### KV-peak admission watermark
 
-This is not an approximation of a polling loop. A segment ends at the first completion or KV
-exhaustion across the batch, which is precisely the first instant capacity can change, so the
-trigger set is **exact** given the engine's event granularity. There is deliberately no
-`check_interval_ms` analogue: it would be a knob with nothing behind it.
+`kv_watermark` in `[0, 1]` is the fraction of an instance's pool that the forecast KV peak
+may reach before admitting a staged group there is refused. When pricing an admission
+on an instance, the strategy replays that instance with the group's first member added and
+rejects the option if `peak_blocks > kv_watermark * kv_blocks`, in addition to the
+unconditional `kv_overflow` rejection. Zero disables the check, leaving `kv_overflow` as
+the only feasibility bar.
 
-`tests/test_router_integration.py` asserts the claim rather than trusting it, by checking that
-free blocks never increase except at those events. A fourth release path added later fails
-there instead of silently leaving the router blind.
-
-### Why the router needs no rollback
-
-`advance_one_event` is speculative: the driver advances every instance, commits the earliest,
-and undoes the rest. Engine mutations therefore record into an undo log. Router mutations do
-not, because the three trigger points all sit *after* an event committed and after every other
-instance's pending event was rolled back.
-
-The two requirements are the same requirement: a dispatch needs released capacity to be able to
-succeed, and released capacity is only real once the event that released it committed. Routing
-after a committed event is both the only useful moment and the only safe one.
-
-`Router.dispatch` asserts no instance holds an open snapshot, so a future call site that
-violates this fails loudly at the boundary rather than corrupting occupancy quietly.
-
-## Group stickiness
-
-`rollout.router.enable_group_sticky` pins a prompt group's responses to the instance that
-accepted the first one, concentrating a group's KV so its siblings share the prompt prefix.
-
-It defaults to **false**, which is what the matched run does: it scatters all 160 groups across
-both instances, 4/4 every time. The pin is *soft* — if the pinned instance cannot take the
-request it falls through to the full candidate set, because a hard pin would dwell a request
-behind one busy instance while others idle. Pins are released when the group is consumed or
-dropped.
-
-## What this changed elsewhere
-
-`job.batch_size` and admission are unaffected: what bounds admission is the policy's own quota,
-as it always was. The engine refusal was a secondary gate that produced rollback churn.
-
-Two defects the new queue exposed, both fixed:
-
-- `_discard` matched requests to instances by `instance_id`. A queued request sits on no
-  instance, so it was dropped from accounting while still in the queue, and a later dispatch
-  would have placed work already written off.
-- The engine loop broke out to refill only when the policy granted quota. With a saturated
-  policy and a non-empty queue, a completion that freed capacity would not drain it until the
-  next training step.
-
-A third was latent and is now closed: an instance's undo snapshot was cleared only on *undo*,
-never on commit, so it outlived its event. `commit_last_event` closes it, which both stops the
-log growing and makes "is this instance mid-event" an answerable question.
+It applies to admission only, never to routing an already-admitted member, which holds a
+buffer reservation and must go somewhere. It checks the instance that would take the first
+member; the group's remaining members are placed afterwards by soonest finish and are
+subject to `kv_overflow` only. This is a different quantity from `length_aware`'s
+`kv_watermark`, which compares committed blocks now, with no growth, to the pool.

@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 
 import pytest
-from psrl.workers.ps.inventory_forecast import BufferView, InventorySnapshot, forecast_ready_times
+from psrl.workers.ps.staleness import BufferView, InventorySnapshot, forecast_ready_times
 
 from srl.component.rollout.engine import NativeInstance, Request, traj_view
 from srl.cost.rollout import UnifiedRoofline
@@ -521,39 +521,34 @@ class TestGroupAdmission:
         loose = PlanSession.build(runtime, ORACLE, horizon_buffers=1, kv_watermark=0.6)
         assert loose.evaluate_admission(members)[0] is not None
 
-    def _budgeted_session(self, seed: int = 13):
-        """A delay-budgeted session with a finite baseline, since a DEFER that never fills is `inf`."""
-        runtime, members = self._runtime_with_staged_group(seed=seed)
-        session = PlanSession.build(runtime, ORACLE, horizon_buffers=1, delay_budget=True)
-        candidate = session.evaluate_admission(members)[0]
-        assert candidate is not None, "the fixture group must be admissible"
-        ready = candidate.ready[0]
-        buffer_id = candidate.buffers[0]
-        session.baseline = dataclasses.replace(session.baseline, ready=(ready - 1.0,))
-        return session, members, buffer_id, ready
+    def _session_with_batch(self, n_running: int) -> PlanSession:
+        model = cost()
+        state = bare_state(model, running=tuple(resident(i, 400, 1000) for i in range(n_running)))
+        runtime = StubRuntime(
+            instance_states={0: state}, snapshot=make_snapshot({}, num_entries=4),
+            train=TrainState(None, 0.0, 10.0, 1.0),
+        )
+        return PlanSession.build(runtime, ORACLE, horizon_buffers=1)
 
-    def test_delay_budget_refuses_an_admission_past_the_buffers_remaining_budget(self):
-        session, members, buffer_id, ready = self._budgeted_session()
+    def test_throughput_gain_of_an_empty_instance_is_unbounded(self):
+        session = self._session_with_batch(0)
+        assert math.isinf(session.throughput_gain(0, member_request(100, 100, 100, 500)))
 
-        session._anchor = {buffer_id: ready - 1.0}
-        assert session.evaluate_admission(members, budget=1.0)[0] is not None, (
-            "a delay exactly at the budget must be admissible"
+    def test_throughput_gain_shrinks_as_the_batch_grows(self):
+        first = member_request(100, 100, 100, 500)
+        gains = [self._session_with_batch(n).throughput_gain(0, first) for n in (1, 16, 128)]
+        assert gains[0] > gains[1] > gains[2] > 0.0, (
+            "a launch-floor-bound batch gains almost a request's worth of throughput per request, "
+            "a saturated one gains little"
         )
 
-        session._anchor = {buffer_id: ready - 1.5}
-        assert session.evaluate_admission(members, budget=1.0)[0] is None, (
-            "the same admission must be refused once the buffer already sits 0.5s past its budget"
-        )
-
-    def test_delay_budget_is_keyed_by_buffer_so_a_new_buffer_gets_a_fresh_budget(self):
-        session, members, buffer_id, ready = self._budgeted_session()
-        session._anchor = {buffer_id: ready - 1.5}
-        assert session.evaluate_admission(members, budget=1.0)[0] is None
-
-        session._anchor = {buffer_id + 1: ready - 1.5}
-        assert session.evaluate_admission(members, budget=1.0)[0] is not None, (
-            "a different buffer has spent none of its budget"
-        )
+    def test_throughput_gain_counts_arrivals_already_placed_this_burst(self):
+        session = self._session_with_batch(1)
+        first = member_request(100, 100, 100, 500)
+        alone = session.throughput_gain(0, first)
+        placed = arrival_of(member_request(101, 100, 100, 500), 0.0, ORACLE.remaining)
+        session.fleet = session.fleet.with_placement(0, placed)
+        assert session.throughput_gain(0, first) < alone
 
     def test_admission_changes_the_pipeline_consistently_with_psrl_forecast_ready_times(self):
         runtime, members = self._runtime_with_staged_group(seed=13)

@@ -59,8 +59,11 @@ distributed_optimizer: true
 #                             pipeline schedule is otherwise in-domain.
 #   pipeline_slots        : LATENCY: number of microbatch slots filling the pipeline
 #                             (num_microbatches * pp). The latency form is linear in this
-#                             term (per_step + slots*(token_cost*tokens + overhead)), so
+#                             term (per_step + token_cost*sum(tokens) + microbatch_overhead*slots + ...), so
 #                             extrapolation risk is similar to num_microbatches in FSDP.
+#   sum_squared_tokens    : LATENCY: sum over microbatches of squared sequence lengths,
+#                             the quadratic attention term. Extrapolating past the
+#                             profiled sequence lengths mis-prices long-context batches.
 #   tokens                : LATENCY: total tokens on the critical rank per microbatch.
 #                             Extrapolating beyond the profiled token range risks predicting
 #                             configurations that cannot run on the hardware. Do not list

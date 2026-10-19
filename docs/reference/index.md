@@ -1,19 +1,20 @@
 # Reference
 
-Lookup material: exact commands, exact configuration keys, exact on-disk formats, and an
-honest account of what has and has not been validated.
+Lookup material for the installed interface: console scripts, configuration keys, on-disk
+formats, the validation method and the figures that can be re-derived, and the limits that hold
+today. Every page was written from the code, so when a page and the code disagree, the code wins.
 
 | Page | Contents |
 |---|---|
-| {doc}`cli` | Every subcommand and flag across the five entry points |
-| {doc}`configuration` | Every Hydra config group and key, with defaults |
+| {doc}`cli` | The seven console scripts, their subcommands and flags, and the environment variables the code reads |
+| {doc}`configuration` | The `srl` Hydra app: config groups, every key, defaults, and how a preset becomes a policy |
 | {doc}`schemas` | `ProfileRecord`, `CostArtifact`, and the telemetry streams |
-| {doc}`validation` | Every measured accuracy figure, with sample counts and caveats |
-| {doc}`limitations` | What is known not to work, and deferred work with acceptance criteria |
+| {doc}`validation` | How accuracy is measured, the gates, and the figures that reproduce from local data or pinned tests |
+| {doc}`limitations` | What the code does not do today |
 
-If you are looking for a number to quote, {doc}`validation` is the page that owns it. Every
-figure there carries its sample count and whether it was held out, which is usually the part
-that decides whether the number means what you want it to mean.
+Accuracy figures live on {doc}`validation` and nowhere else in the reference. Each one carries a
+sample count and says whether the samples were held out, because that decides what the number can
+be used for.
 
 ```{toctree}
 :maxdepth: 2

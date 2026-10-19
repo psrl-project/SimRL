@@ -1,15 +1,16 @@
 # Stage 3: Megatron training
 
 Rollout is half the loop. This stage measures the other half: a real training step under
-Megatron-Bridge, across four parallelism topologies, and fits a latency model and a
-memory model from it.
+Megatron-Bridge, across several parallelism topologies, and fits a latency model and a memory
+model from it.
 
 ## What it needs
 
-A checkpoint and eight GPUs on one node. Weights are never loaded (`load_weights=false`),
-so the checkpoint is read for its architecture only.
+A checkpoint and eight GPUs on one node (`hardware.gpu_count` is the world size, and DP is
+whatever TP and PP leave over). Weights are never loaded: the launcher sets
+`pretrained_checkpoint = None`, so the checkpoint is read for its architecture only.
 
-The grid is in `examples/profile/megatron/qwen3_8b.yaml`:
+The grid is `examples/profile/megatron/qwen3_8b.yaml`:
 
 ```yaml
 search_space:
@@ -25,81 +26,97 @@ training:
   warmup_steps: 4
 ```
 
-Four of the six `(TP, PP)` combinations are feasible at world size 8, giving **40
-candidates**: `tp1/pp1/dp8`, `tp1/pp4/dp2`, `tp4/pp1/dp2`, and `tp8/pp1/dp1`, ten each.
+`srl-profile megatron generate` turns that into **40 candidates**. Of the six `(TP, PP)`
+combinations, four are feasible at world size 8 (`tp1/pp1/dp8`, `tp1/pp4/dp2`, `tp4/pp1/dp2`,
+`tp8/pp1/dp1`), and each is crossed with two microbatch counts and five sequence lengths for
+ten candidates apiece. The Megatron recipe (`qwen3_8b`) and the architecture constraints are
+inferred from the checkpoint's `config.json`.
 
-Three settings in that config are load-bearing, and each one was learned by getting it
-wrong:
+Three settings in that config are load-bearing:
 
-**`max_steps: 12` with `warmup_steps: 4`.** Under a single warmup step the first profiled
-step was the slowest in 18 of 24 runs, where chance alone would give about 8. One step does
-not reach steady state. Discarding the second as well cut the median spread within a
-candidate from 16.4% to 0.5%. The eight retained samples then support a median, which two
-samples cannot. The extra steps are nearly free, since a candidate spends about 2.5
-minutes in distributed setup and well under a second per step.
+**`max_steps: 12` with `warmup_steps: 4`.** The first profiled steps are not steady state.
+Discarding four leaves eight samples, enough for a median, which the fit uses per candidate
+because step times are right-skewed: interference makes a step slower, never faster than the
+hardware allows.
 
-**Two `num_microbatches` values, not one.** The latency design row is
-`[1, slots*tokens, slots, slots*sum_squared_tokens]` where `slots = num_microbatches +
-PP - 1`. At a fixed microbatch count the slot column is constant, hence collinear with the
-intercept, so any number of sequence lengths caps the design at rank 2 where the fit needs
-rank 4. `{1, 4}` beats `{1, 2}` at the same candidate count because it opens the slot lever
-wider. A third value buys nothing.
+**Two `num_microbatches` values.** The latency design row is
+`[1, tokens, slots, sum_squared_tokens]` with `slots = num_microbatches + PP - 1`. At a fixed
+microbatch count the slot column is constant, so it is collinear with the intercept and the
+design cannot reach rank 4 whatever the sequence lengths. Vary both axes. `srl-regress`
+refuses a rank-deficient cell unless told `--allow-rank-deficient`.
 
-**Sequence lengths reaching 8192.** The `tokens` feature is the *largest* microbatch, not
-the mean, so one long sequence in a batch sets it. The DAPO trace's median sequence is 8828
-tokens and its longest is 11133, so an earlier grid stopping at 2048 was 5.4x too small and
-every simulated step raised `TrainingOutOfDomainError`.
+**Sequence lengths that reach the traffic you will simulate.** The `tokens` feature is the
+*largest* microbatch, so one long sequence in a batch sets it, and a query outside the fitted
+range is refused (stage 6). The grid above stops at 8192; a real DAPO trace has longer
+sequences.
 
 ## The commands
 
 ```bash
 bash examples/profile/megatron/profile_qwen3_8b.sh generate
-bash examples/profile/megatron/profile_qwen3_8b.sh run       # --resume to continue
-bash examples/profile/megatron/profile_qwen3_8b.sh collect
+CANDIDATE_INDEX=all bash examples/profile/megatron/profile_qwen3_8b.sh run
+CANDIDATE_INDEX=all bash examples/profile/megatron/profile_qwen3_8b.sh collect
 
 srl-regress training --latency-model hydraulis --memory-model hydraulis \
     --input  outputs/profile/qwen3_8b/megatron_bridge/profiles/megatron_bridge.jsonl \
     --output outputs/cost/qwen3_8b/training_hydraulis.json
 ```
 
-Smoke-test first on `examples/profile/megatron/qwen3_8b_smoke.yaml`, which is minutes
-rather than hours.
+The wrapper takes `generate`, `run`, or `collect`, reads `CONFIG` (default
+`examples/profile/megatron/qwen3_8b.yaml`), and **defaults `CANDIDATE_INDEX` to 0** so an
+accidental `run` cannot launch the whole sweep. Set `CANDIDATE_INDEX=all` for the full sweep.
+Extra arguments after the action are forwarded to `srl-profile`, so the underlying flags are:
 
-A note on `--resume`: it skips candidates already marked `success`, which means it
-**re-runs every out-of-memory candidate**. That is rarely what you want on a second pass,
-since an OOM is a result, not a failure to retry.
+```text
+srl-profile megatron run --config CFG [--candidates PATH] [--candidate-id ID | --index N]
+                         [--dry-run] [--resume]
+                         [--nnodes N --node-rank R --master-addr HOST --master-port PORT]
+```
 
-## How long it takes
+`--dry-run` writes each candidate's `launch_spec.json` and logs the `torchrun` command without
+starting it:
 
-Measured 2026-09-03 on 8x H20, read from `run.duration_s` in the JSONL:
+```text
+torchrun --standalone --nnodes 1 --nproc-per-node 8 -m srl.profiler.adapters.megatron.launch \
+    --spec outputs/profile/qwen3_8b/megatron_bridge/raw/megatron_bridge/<id>/launch_spec.json
+```
 
-| | |
-|---|---|
-| candidates | 40 |
-| median per candidate | 169.8 s |
-| total | 2.23 h |
-| median training step | 1.34 s |
+Smoke-test first on `examples/profile/megatron/qwen3_8b_smoke.yaml` (a two-layer model), and
+use `CUDA_VISIBLE_DEVICES=0 CONFIG=examples/profile/megatron/qwen3_8b_smoke.yaml ...` to prove
+the chain on a single GPU before launching a full-model candidate.
 
-Roughly 143 s of each 170 s is fixed process overhead: spawning eight processes, importing
-torch and transformers in every rank, building a 36-layer model, forming the NCCL group,
-tearing it down. Actual measurement is about 11 seconds of it.
+A mesh wider than one host takes the same launcher on every host with its own `--node-rank`
+and a shared `--master-addr`/`--master-port`; there is no separate scheduler path.
 
-The consequence is that **cutting `max_steps` is not the lever it looks like**. Going from
-12 steps to 8 saves about 2 s out of 170, roughly 1%, while halving the sample count the
-median depends on. The real lever would be amortising startup across candidates that share
-a topology, which is not implemented, and is not free: candidates would then share
-allocator state, compromising the independence of the memory measurement.
+`--resume` skips a candidate whose `status.json` says `success`, which means it
+**re-runs every out-of-memory or failed candidate**. That is rarely what you want on a second
+pass, since an OOM is a result.
 
 ## What lands on disk
 
 ```text
 outputs/profile/qwen3_8b/megatron_bridge/
-├── control/                                    candidate list, per-candidate status
-├── raw/megatron_bridge/<hash>/                 resolved ConfigContainer.yaml, step logs
-└── profiles/megatron_bridge.jsonl              40 records, all status: success
+├── control/megatron_bridge/candidates.json     the candidate list
+├── raw/megatron_bridge/<candidate_id>/         one directory per candidate
+│   ├── launch_spec.json                        what the launcher was told to run
+│   ├── ConfigContainer.yaml                    the resolved Megatron-Bridge config
+│   ├── srl_metrics.json                        step times and per-rank memory, written by the launcher
+│   ├── oom_rank<N>.json                        only if a rank caught an out-of-memory
+│   ├── run.log
+│   └── status.json                             success | oom | failed, plus duration
+└── profiles/megatron_bridge.jsonl              one normalised record per candidate
 ```
 
-One record's payload:
+`candidates.json` is `{"schema_version": 1, "candidates": [...]}`, each entry carrying
+`parallelism`, `micro_batch_size`, `global_batch_size`, `num_microbatches`, `sequence_shape`,
+`schedule`, `recompute`, `packing`, and a `candidate_id`. Status comes from the OOM marker
+files: only a rank that caught `torch.OutOfMemoryError` writes one, and a log that merely
+mentions the phrase stays `failed`.
+
+The launcher owns the training loop, so step times and per-rank CUDA peaks are measured through
+Megatron's callback API in-process. It does not use the vendored `scripts/performance` CLI.
+
+One record's payload (abridged):
 
 ```javascript
 {
@@ -115,14 +132,12 @@ One record's payload:
       "sum_squared_tokens": 262144         // Sum(s_i^2), the attention feature
     }
   ],
-  "step_times_s": [0.5031, 0.5069, 0.5515, 0.5820, ...],   // 8 retained of 12
+  "step_times_s": [ ... ],                 // retained steps after warmup
   "warmup_steps": 4,
-  "peak_allocated_bytes": 63099938816,     // 58.77 GiB, what the memory model fits
-  "peak_reserved_bytes":  66790096896,     // 62.20 GiB, an allocator artefact
-  "rank_memory": [                         // all eight ranks, so PP imbalance is visible
-    {"rank": 0, "allocated_bytes": 63098900992, "reserved_bytes": 66790096896},
-    {"rank": 1, "allocated_bytes": 63098277376, "reserved_bytes": 66787999744},
-    ...
+  "peak_allocated_bytes": 63099938816,     // what the memory model fits
+  "peak_reserved_bytes":  66790096896,     // caching-allocator high-water mark
+  "rank_memory": [                         // every rank, so PP imbalance is visible
+    {"rank": 0, "allocated_bytes": 63098900992, "reserved_bytes": 66790096896}, ...
   ],
   "schedule": "1f1b",
   "recompute": "full",
@@ -136,67 +151,84 @@ One record's payload:
 }
 ```
 
-Two fields in there are the ones to understand.
-
 **`sum_squared_tokens`, not the square of `sum_tokens`.** Attention does not cross sequence
 boundaries, so a microbatch holding several packed sequences costs the sum of their squared
-lengths. Squaring the packed total instead overcharges by the sequence count: eight
-2048-token sequences give 3.36e7 against 2.68e8, an 8x error. The Megatron sweep here uses
-`micro_batch_size: 1` so every microbatch holds one sequence and the two agree, but the
-FSDP sweep in {doc}`04-fsdp-training` does pack, where it matters.
+lengths. Squaring the packed total overcharges by the sequence count. With
+`micro_batch_size: 1` every microbatch holds one sequence and the two agree;
+{doc}`04-fsdp-training` packs.
 
-**Both `allocated` and `reserved` are recorded, and the model fits `allocated`.** Reserved
-bytes are the caching allocator's high-water mark, not a footprint. Under full activation
-recomputation, doubling the sequence length moved `allocated` by +304 MiB and `reserved` by
-*minus* 4 MiB, giving $r^2 = 0.196$ on reserved against 1.0 on allocated. A feature that
-moves the wrong way when the input doubles is not a target.
+**Both `allocated` and `reserved` are recorded, and the Megatron memory model fits
+`allocated`.** Reserved bytes are the allocator's high-water mark, not a footprint, and can
+move the wrong way when the input changes.
+
+### Packing: BSHD or THD
+
+The grid above profiles `packing: bshd` (the default), where every sequence in a microbatch is
+padded to the longest, so `sum_squared_tokens` equals `sum_tokens` squared and the linear and
+quadratic token columns are collinear. A real RL trainer packs sequences behind `cu_seqlens`
+(THD) and runs the varlen attention kernel, whose cost is `O(sum(s_i^2))`.
+`examples/profile/megatron/qwen3_8b_thd.yaml` shows the THD variant: `search_space.packing: thd`,
+a fixed `data_parallel_sizes`, and `sequence_shapes` where each entry is one packed microbatch.
+A coefficient fitted on BSHD does not price a THD step. Fit from the layout your trainer uses.
 
 ## The fitted artifact
 
-`outputs/cost/qwen3_8b/training_hydraulis.json` holds eight entries, one per
-`(component, cell)`: four latency and four memory.
+A fit of the sweep above produces a `CostArtifact` with `model_type: hydraulis` and seven
+entries, one `(component, cell)` each:
+
+| component | cell | design rank | train MRE | held-out samples |
+|---|---|---|---|---|
+| latency | `tp1` (pp 1 and 4 pooled) | 4 | 13.8% | 4 |
+| latency | `tp4` | 4 | 6.2% | 2 |
+| latency | `tp8` | 4 | 9.5% | 2 |
+| memory | `tp1/pp1` | 2 | 1.4% | 2 |
+| memory | `tp1/pp4` | 2 | 3.4% | 2 |
+| memory | `tp4/pp1` | 2 | 0.6% | 2 |
+| memory | `tp8/pp1` | 2 | 0.4% | 2 |
+
+Latency cells are keyed by TP (and CP, EP) only, and the pipeline depth is derived: every
+workload term is divided by `PP` and the slot count is `num_microbatches + PP - 1`, so one
+profiled PP per TP is enough to predict another. Memory is not a per-stage division, so it is
+looked up by the exact `(TP, PP)`. A query for an unprofiled TP raises `KeyError` rather than
+interpolating.
+
+A latency entry:
 
 ```javascript
 {
   "coefficients": {
-    "per_step_overhead":     1e-10,
-    "token_cost":            0.0005456,     // seconds per token
-    "token_quadratic_cost":  1.030e-07,     // against sum_squared_tokens
-    "microbatch_overhead":   0.1616         // seconds per pipeline slot
+    "per_step_overhead":     0.02789,
+    "token_cost":            0.0003619,     // seconds per token
+    "token_quadratic_cost":  8.182e-08,     // against sum_squared_tokens
+    "microbatch_overhead":   0.2458         // seconds per pipeline slot
   },
   "feature_ranges": {
-    "tokens":           [512.0, 8192.0],
-    "pipeline_slots":   [1.0, 4.0],
-    "micro_batch_size": [1.0, 1.0]
+    "tokens":             [512.0, 8192.0],
+    "sum_squared_tokens": [262144.0, 268435456.0],
+    "pipeline_slots":     [1.0, 7.0],
+    "micro_batch_size":   [1.0, 1.0]
   },
-  "parallelism": {"tp": 1, "pp": 1, "dp": 1, "cp": 1},
   "selector": {
-    "component": "latency",                 // or "memory"
-    "schedule": "1f1b", "recompute": "full", "optimizer": "adam",
-    "parameter_dtype": "bf16", "gradient_dtype": "fp32",
-    "optimizer_state_dtype": "fp32", "distributed_optimizer": true
+    "component": "latency", "schedule": "1f1b", "recompute": "full", "optimizer": "adam",
+    "parameter_dtype": "bf16", "gradient_dtype": "fp32", "optimizer_state_dtype": "fp32",
+    "distributed_optimizer": true
   },
-  "train_metrics":      {"n_samples": 8, "design_rank": 4, "r_squared": 0.99998, "mre_percent": 3.845},
-  "validation_metrics": {"n_samples": 2, "design_rank": 4, "r_squared": 0.99350, "mre_percent": 2.322},
   "diagnostics": {
-    "formula": "per_step_overhead + (num_microbatches + PP - 1) * (token_cost * max_microbatch_tokens + token_quadratic_cost * max_microbatch_sum_squared_tokens + microbatch_overhead)",
-    "step_aggregation": "median-per-candidate",
-    "dp_latency": "ideal-local-workload-scaling",
+    "formula": "per_step_overhead + (token_cost * (sum_over_microbatches(sum_tokens) + (PP - 1) * max_microbatch_tokens) + token_quadratic_cost * (sum_over_microbatches(sum_squared_tokens) + (PP - 1) * max_microbatch_sum_squared_tokens) + microbatch_overhead * (num_microbatches + PP - 1)) / PP",
+    "profiled_pipeline_degrees": [1, 4],
     "validation_fraction": 0.2,
-    "validation_is_in_sample": false
+    "validation_is_in_sample": false,
+    ...
   }
 }
 ```
 
-The four coefficients each name something physical: a cost paid once per step, work
-proportional to tokens, work quadratic in sequence length (attention), and a fixed cost
-per pipeline slot. {doc}`../../cost-models/training-megatron` derives the form and explains
-why the quadratic term is needed above 2048 tokens and harmful below it.
-
-Cells are fitted independently and looked up by exact match. A query for `tp2` raises
-rather than interpolating between `tp1` and `tp4`, because the token cost per rank and the
-communication overhead differ qualitatively across those regimes, and an average would
-describe neither. {doc}`../concepts` covers cells and selectors.
+The four coefficients name something physical: a cost paid once per step, work proportional
+to tokens, work quadratic in sequence length (attention), and a fixed cost per pipeline slot.
+The token terms are sums over the rank's real microbatches, with the `PP - 1` bubble slots
+charged at the largest microbatch. A memory entry has coefficients `activation_scale`,
+`parameter_count`, `residual_constant` and the model-geometry terms, and feature ranges for
+`activation_bytes` and `profiled_dp`. {doc}`../../cost-models/training-megatron` derives both.
 
 ## How to tell it worked
 
@@ -207,28 +239,37 @@ a = json.load(open('outputs/cost/qwen3_8b/training_hydraulis.json'))
 for e in a['entries']:
     p, s = e['parallelism'], e['selector']
     print(f\"{s['component']:8s} tp{p['tp']}pp{p['pp']}  rank={e['train_metrics']['design_rank']}\"
-          f\"  train {e['train_metrics']['mre_percent']:6.3f}%  val {e['validation_metrics']['mre_percent']:6.3f}%\")
+          f\"  train {e['train_metrics']['mre_percent']:6.3f}%\"
+          f\"  val {e['validation_metrics']['mre_percent']:6.3f}% (n={e['validation_metrics']['n_samples']})\")
 "
 ```
 
-**`design_rank: 4` in every cell is the first thing to check.** Four columns, rank 4, so
-all four coefficients are separately identified. A rank of 3 means the grid collapsed, most
-often because `num_microbatches` was pinned, and the fit is then not trustworthy no matter
-what the MRE says.
+**`design_rank: 4` on every latency cell is the first thing to check**, and `2` on a memory
+cell (two fitted columns). A lower latency rank means the grid collapsed, most often because
+`num_microbatches` was pinned, and the fit is untrustworthy whatever the MRE says.
 
-The figures this artifact carries, and how to read them, are in
-{doc}`../../cost-models/training-megatron`. One caution belongs here: the `tp4/pp1` cell
-reports 23.28% held-out MRE, which is an artifact of reserving 20% of 10 candidates. Two
-points, where a single miss dominates. Its leave-one-out error is 12.46%. **On a grid this
-small, prefer leave-one-out to a two-point split.**
+Do not over-read the held-out column. The split reserves about 20% of runs, which on a few
+candidates per cell is two to four points, and a single miss dominates. The split is by
+`run_id`, so repeats of one configuration cannot straddle it. On a grid this small, prefer the
+train metrics plus a leave-one-out check of your own to a two-point split.
 
 ## Use it
 
 ```bash
-TRAINING_BACKEND=hydraulis \
-TRAINING_ARTIFACT=outputs/cost/qwen3_8b/training_hydraulis.json \
-bash examples/simulate/simulate.sh
+srl rollout_cost=roofline rollout_cost.artifact_path=outputs/cost/qwen3_8b/rollout_roofline.json \
+    training_cost=hydraulis \
+    training_cost.artifact_path=outputs/cost/qwen3_8b/training_hydraulis.json \
+    training_cost.parallelism.tp=1 training_cost.parallelism.dp=8 \
+    training_cost.activation_recompute=full \
+    workload=bimodal job.n_versions=3 job.batch_size=16
 ```
+
+The `selector` keys of the cell are config keys of `training_cost`
+(`activation_recompute`, `optimizer`, the three dtypes, `distributed_optimizer`), and a
+mismatch finds no cell. The response count per step (`batch_size * group_size`) must be
+divisible by `dp * micro_batch_size`: `batch_size=4` with `dp=8` raises
+`global_batch_size must be divisible by dp * micro_batch_size`. {doc}`06-simulate` shows the
+domain gates firing on a real trace.
 
 ## Next
 

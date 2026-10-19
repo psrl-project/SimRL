@@ -1,228 +1,154 @@
 # Domain gates
 
-A cost model will refuse a query it cannot justify rather than extrapolate silently. This
-is the single most common first-run failure, and it is intentional: a plausible-looking
-number derived from a region where the hardware cannot even run is worse than no number,
-because it passes downstream checks that would have caught a hard error.
+A cost model refuses a query it cannot justify instead of extrapolating silently. A
+plausible number derived from a region where nothing was measured, or where the hardware
+cannot even run, is worse than an error, because it passes every downstream check that a
+hard failure would have stopped. This page lists the refusals, what each one means, and the
+switches that relax them.
 
-This page explains the two categories of refusal, out-of-domain queries and OOM projections,
-plus the three batching modes that affect how a real batch's lengths become
-a cost query.
+## Kinds of refusal
 
----
+| Gate | Raised as | When |
+|---|---|---|
+| Feature range | `TrainingOutOfDomainError` | a training feature lies outside the range the artifact was fitted on and is not listed in `extrapolate` |
+| Cell lookup | `KeyError` (artifact), `TrainingOutOfDomainError` (model) | the requested mesh or discrete selector matches no fitted cell, or more than one |
+| Memory capacity | `RuntimeError` from the simulator | predicted training peak memory exceeds `training_cost.gpu_memory_mib` |
+| Kernel coverage | `KernelCoverageError` | the `composed` rollout model is asked for a shape its measured kernel tables do not cover |
+| Structural | `ValueError` | an inconsistent configuration, see the end of this page |
 
-## Interpolation vs extrapolation
+## Interpolation and extrapolation
 
-The most common misunderstanding is conflating the two. They are different:
-
-- **Interpolation** means the query lies within the range of the profiled grid. It is
-  *always allowed* and requires no configuration. A query at 5905 tokens against a grid
-  of `[512, 1024, 2048, 4096, 8192, 16384]` is interpolation, because the value falls between
-  two profiled points, and the cost model answers it without complaint.
-- **Extrapolation** means the query lies outside the profiled range. Going below 512 or
-  above 16384 tokens in the example above is extrapolation, and the cost model raises
-  `TrainingOutOfDomainError` unless the feature name has been explicitly listed in
-  `training_cost.extrapolate`.
-
-The distinction matters because the profiled range usually covers the space where the
-hardware actually runs. Outside that space, the model is making a prediction without any
-measured ground truth to anchor it.
-
----
-
-## `training_cost.extrapolate`
-
-`training_cost.extrapolate` is a list of feature names for which out-of-domain queries
-are permitted. It defaults to the empty list, meaning any out-of-domain query raises
-immediately at predict time.
-
-To permit a specific feature:
+Each fitted artifact entry records, per feature, the range of values it was fitted on
+(`feature_ranges`). A query inside the range is **interpolation** and always allowed. A
+query outside it is **extrapolation** and raises `TrainingOutOfDomainError` naming the
+feature, the value and the range, unless that feature is listed in `training_cost.extrapolate`.
+A feature the artifact did not record is not checked; refitting restores the gate.
 
 ```bash
-# Hydra override
-training_cost.extrapolate=[num_microbatches]
-
-# or via the simulate.sh env-var interface
-EXTRAPOLATE=[num_microbatches] bash examples/simulate/simulate.sh
+srl training_cost=fsdp training_cost.artifact_path=... \
+    'training_cost.extrapolate=[num_microbatches]'
 ```
 
-**A name not recognised by the artifact raises at model construction time** and lists
-the valid names. This catches typos (`num_microbatch` instead of `num_microbatches`)
-before any simulation begins. The check uses the feature names recorded in the artifact
-itself (`entry.feature_ranges.keys()`), so it stays correct as the feature set evolves.
+`extrapolate` defaults to the empty list. Names are validated at construction against the
+union of feature names present in the artifact, so a typo such as `num_microbatch` raises
+immediately and lists the valid names, instead of enabling nothing.
 
-**A permitted extrapolation is never silent.** When a query exceeds the profiled range
-for a listed feature, `check_feature_range` returns a diagnostic string of the form:
+A permitted extrapolation is never silent. The prediction proceeds and a note of the form
+`extrapolated 'num_microbatches'=8 outside profiled range [1, 4]` is collected into
+`TrainingCostEstimate.diagnostics["extrapolation_notes"]` and written to the
+`extrapolation_notes` field of that step's `train.jsonl` record.
 
-```
-extrapolated 'num_microbatches'=8 outside profiled range [1, 4]
-```
+### Which features can be extrapolated
 
-That string is collected into `TrainingCostEstimate.diagnostics["extrapolation_notes"]`
-and written verbatim to the `extrapolation_notes` field of the `train.jsonl` record.
-Every step that used an extrapolated prediction is therefore auditable after the fact.
+The names below are the ones the code checks.
 
----
+| Backend | Latency features | Memory features |
+|---|---|---|
+| `fsdp` | `tokens`, `num_microbatches`, `sequences_per_microbatch` | `num_microbatches`, `activation_tokens` |
+| `hydraulis` | `tokens`, `pipeline_slots`, `sum_squared_tokens`, `micro_batch_size` | `activation_bytes`, and `profiled_dp` when an artifact covers one DP degree and the query uses the analytical DP extension |
 
-## Which features are defensible to extrapolate
+Not every feature is equally defensible. The per-feature reasoning is kept next to the
+defaults in `srl/config/defaults/training_cost/fsdp.yaml` and `hydraulis.yaml`.
 
-Not all features are safe to extrapolate, even upward. The FSDP artifact documents the
-reasoning per feature in `srl/config/defaults/training_cost/fsdp.yaml`.
+`num_microbatches` and `pipeline_slots`
+: The fitted latency form is a sum over microbatches of per-microbatch work, plus a per-step
+  overhead and a per-microbatch overhead. Gradient accumulation repeats identical work, so
+  the form is linear in the count and extrapolating the count upward is the one extension
+  that rests on structure rather than on a trend. The assumption to check is that the
+  per-microbatch overhead does not change with the count.
 
-### `num_microbatches`: yes, upward
-
-Latency under gradient accumulation is exactly linear in the number of microbatches.
-Each accumulation step repeats identical work on its own microbatch, and the steps do
-not interact. The latency form is:
-
-```
-latency = per_step_overhead + num_microbatches * (token_cost * tokens
-          + token_quadratic_cost * sum_squared_tokens + microbatch_overhead)
-```
-
-Every term inside the bracket is per-microbatch work, so the whole bracket scales with
-`num_microbatches` regardless of how many terms it holds. That is why the argument here
-survived the addition of the quadratic term unchanged.
-
-Because the relationship is a physical identity rather than a statistical correlation,
-extrapolation is defensible. Fitting on `num_microbatches` in `{1, 2}` and predicting
-the 23 measured `nmb=4` candidates gave a median absolute error of **7.7%**, on par
-with the model's own 9-11% in-domain MRE (measured for Qwen3-8B on 8x H20, 2026-08-31,
-23 held-out candidates). The risk is not the extrapolation itself but the assumption
-that the overhead terms do not change with microbatch count. For the FSDP sweep they
-did not.
-
-### `tokens`: no
-
-Beyond 16384 tokens per rank the hardware cannot run. The FSDP sweep found: at 32768
-tokens/rank there were 0 successes and 18 OOM failures, and at 65536 tokens/rank, 0 successes and 9
-OOM failures (Qwen3-8B on 8x H20, 2026-08-31). There is no measured latency at those
-shapes to extrapolate toward. A prediction there looks numerically plausible because the
-linear form has no saturation term, but it describes a configuration that the hardware
-physically cannot execute. Do not list `tokens` in `extrapolate` unless you have profiled
-beyond 16384 tokens/rank.
-
-The same reasoning applies to `activation_tokens` in the memory model.
-
----
+`tokens`, `activation_tokens` and `activation_bytes`
+: Do not list them without profiling past the target. Beyond a certain size the hardware
+  cannot run the configuration at all, and a linear form with no saturation term still
+  returns a smooth number there. The fitted ceiling is in the artifact's feature ranges and
+  in the profiling run that produced it ({doc}`../profiling/index`).
 
 ## Cell lookup
 
-Coefficients are stored per cell, where a cell is an (shard\_size, activation\_recompute,
-optimizer, …) combination that was profiled independently. A query that matches no cell
-raises rather than falling back to a neighbouring cell.
+Coefficients are stored per cell, a combination of mesh and discrete selectors that was
+profiled independently. A query that matches no cell raises; it is never answered from a
+neighbour. A fit averaged across topologies describes none of them: the communication
+pattern changes with the mesh, so a fallback would silently calibrate to the wrong one.
 
-This is deliberate. A fit averaged over multiple topologies describes none of them: the
-shard=2 latency is not the average of shard=4 and shard=8, because the communication
-pattern changes with the mesh. A fallback would silently produce an answer calibrated
-to the wrong topology. Failing loudly forces the user to either profile the missing cell
-or choose one that was profiled.
+`fsdp`
+: A cell is one measured mesh. `shard_size` and `replicate_size` pick it, and
+  `training_cost.parallelism.dp` must equal `shard_size * replicate_size`; any other `dp` is
+  refused, because the mesh never enters the fitted form and the static memory pool scales
+  as `1 / dp`. The schedule must be `fsdp` and `activation_recompute` must equal the cell's.
+  Selectors are `shard_size`, `replicate_size`, `optimizer`, `optimizer_offload`,
+  `reshard_after_forward` and the three dtypes. When an artifact holds several values of a
+  selector and none is given, construction raises.
 
-The cell selectors for the FSDP artifact are `shard_size`, `replicate_size`,
-`activation_recompute`, `optimizer`, `optimizer_offload`, and `reshard_after_forward`.
-Every selector value must match a profiled cell exactly.
+`hydraulis`
+: Latency lookup is exact in TP and CP, and the pipeline degree is derived from the cell's
+  per-stage arithmetic, so one TP cell serves every PP. Memory lookup also matches PP, because
+  the 1F1B peak depends on which stage is in flight. DP uses the analytical extension. CP other than 1 is refused. The schedule must be `1f1b`. Without
+  `max_tokens_per_microbatch`, the global batch must be divisible by `dp * micro_batch_size`.
 
----
+## The memory capacity check
 
-## The OOM check
+Set `training_cost.gpu_memory_mib` to the device capacity in MiB. After pricing each step
+the simulator compares the predicted peak with it and **raises `RuntimeError`**, ending the
+run, if the prediction exceeds capacity. `null` (the default) disables the check.
 
-When `training_cost.gpu_memory_mib` is set to the device's capacity in MiB, the
-simulator compares the predicted peak memory against that capacity. A step whose
-predicted peak exceeds the device is flagged as an OOM in the simulation output rather
-than being silently accepted.
+The FSDP memory model fits `peak_allocated_bytes` and `peak_reserved_bytes`, and picks the
+better target on validation. When the allocated target is selected, the prediction is
+multiplied by the artifact's measured `reserved_over_allocated` ratio, because an
+out-of-memory failure is caused by the allocator's reserved pool and not by live tensors.
+The check therefore compares like with like.
 
-This check uses *reserved* bytes (the allocator's high-water mark) rather than
-*allocated* bytes, because OOM is triggered by the allocator failing to satisfy a
-reservation, not by the instantaneous allocation. The memory model fits `allocated`
-bytes (which has $r^2 \approx 1.0$ for the FSDP artifact), then applies a
-`reserved/allocated` ratio measured from the profiling sweep to recover the reserved
-prediction. The ratio ranged from 1.148 to 1.901 across the three shard cells measured
-for Qwen3-8B (8x H20, 2026-08-31).
+## Batching modes
 
-Leaving `gpu_memory_mib: null` (the default) disables the check and lets all steps
-through. Set it to the device's memory when you want the simulation to identify
-configurations that would OOM in practice.
+Profiling measures uniform shapes, while a real RL batch has ragged lengths. How real
+lengths become microbatches is decided by `MicrobatchPlanner` (`cost/training/microbatch.py`)
+for the FSDP model, and by `TrainingWorkload` for `hydraulis`.
 
----
+For both, the batch is first balanced across the `dp` ranks by a greedy
+longest-processing-time pass over verl's workload proxy `24576 * length + length ** 2`, and
+the model prices the rank with the largest workload, because a step ends when its slowest
+rank ends.
 
-## The three batching modes
+`fsdp` takes `training_cost.batching_mode`:
 
-Profiling measures uniform shapes: every sequence in a microbatch has the same length.
-A real RL batch has heterogeneous lengths. The `batching_mode` setting controls how
-the cost model translates real lengths into a microbatch plan, and the choice matters.
+| Mode | Microbatches on the critical rank |
+|---|---|
+| `pad_to_max` (default) | consecutive groups of `micro_batch_size` sequences, each padded to its longest member |
+| `packed_no_pad` | the same groups, priced on true token counts with no padding |
+| `token_budget` | `min(len(sequences), ceil(total_tokens / max_tokens_per_rank))` groups balanced by workload, each padded to its longest member. `micro_batch_size` is ignored, as in verl's dynamic batching. `max_tokens_per_rank` is required |
 
-The measured spread between the extremes is **1.17x to 4.34x** in latency for
-DAPO-like bimodal length distributions, so the mode is a first-class configuration
-choice rather than a detail.
+`hydraulis` has no `batching_mode`. It groups by `micro_batch_size`, or by a token budget
+when `training_cost.max_tokens_per_microbatch` is set. That value is the already multiplied
+budget: verl uses `ppo_max_token_len_per_gpu * sp_size`, and sequence parallelism makes
+`sp_size` equal TP under Megatron.
 
-### `pad_to_max` (default)
+### When the modes agree
 
-Every microbatch is padded to its longest sequence. Padding tokens cost full compute
-on the critical rank. This is the conservative estimate: it charges for work the
-hardware actually does when padding is present.
+`pad_to_max` and `packed_no_pad` differ only by padding. At `micro_batch_size=1` each
+microbatch holds one sequence, so the padded length is its own length and the two are
+identical by construction. For larger microbatches they separate only if a microbatch mixes
+lengths, and that depends on the order the balanced partitioner leaves sequences in.
+`token_budget` equals them only when the budget is small enough that every group holds one
+sequence, or when the groups it forms happen to be uniform. Identical results from two modes
+are therefore a property of the input shape and not evidence that a mode is unwired; if you
+believe padding matters in your system, vary `micro_batch_size` and the length spread
+before drawing a conclusion.
 
-### `token_budget`
+## Structural guards
 
-Sequences are grouped to a token budget per rank rather than split into fixed-size
-microbatches. The number of microbatches is `ceil(total_tokens / max_tokens_per_rank)`,
-capped so no microbatch exceeds `micro_batch_size` sequences. Within each group,
-padding still applies to the longest sequence. This reproduces verl's dynamic batching
-strategy.
+These are not cost-model gates, but they are the other common reasons a run stops at
+startup or early.
 
-Requires `training_cost.max_tokens_per_rank` to be set, or equivalently the
-`MAX_TOKENS_PER_RANK` environment variable in `simulate.sh`. A common value for DAPO
-training with Qwen3-8B is 10240.
+| Guard | Message gist |
+|---|---|
+| `job.batch_size < 1`, `group_size < 1` | must be at least 1 |
+| `job.group_size` differs from the workload's | group size does not match the workload |
+| `SIMRL_UNDOABLE_EVENTS` lacks `request_complete` | completions must be speculative |
+| a request needs more KV blocks than an instance owns | it can never be admitted; the pool is too small for `prompt_len + target_len` |
+| `rollout_cost=composed` without `kernel_table_root`, `gpu`, `model_path` | each is required |
+| `rollout_cost=psrl` without `artifact_path` | required |
+| `recompute_cost=training_forward` with no artifact descriptor and no checkpoint path | the geometry cannot be read, and it is never defaulted |
+| an unknown policy, strategy, eviction, cost-model or workload name | `ValueError` or `KeyError` listing the valid names |
 
-### `packed_no_pad`
-
-Sequences are concatenated end-to-end with no padding tokens. The cost is charged on
-true token counts only. This is the optimistic estimate: it requires the training
-backend to support packed sequences (flash-attention with variable-length inputs).
-
----
-
-## Why a three-way tie is expected, not a wiring bug
-
-At `micro_batch_size=1`, there is exactly one sequence per microbatch. `pad_to_max`
-pads to the single sequence's own length, which is itself, so padding adds nothing.
-`token_budget` forms microbatches of one sequence each. `packed_no_pad` concatenates
-one sequence, which is already contiguous. All three charge the same true token count,
-and the simulator correctly reports identical results.
-
-The same collapse occurs at `mbs>1` when `_balanced_partitions` is used. The balanced
-partitioner sorts sequences by a workload proxy (verl's
-`_VERL_LINEAR_WEIGHT * length + length^2`) and groups them using a greedy
-longest-processing-time heuristic. This tends to put long sequences together and short
-sequences together, so each microbatch ends up internally uniform. When sequences in a
-group are already close in length, the padding penalty in `pad_to_max` is small, the
-token-budget grouping produces the same groups, and `packed_no_pad` charges nearly the
-same real tokens. The three modes converge again.
-
-To see the modes separate you need `mbs>1` **and** grouping that mixes long and short
-sequences in the same microbatch. The **1.17x to 4.34x** figure quoted above was
-measured on deliberately ragged microbatches. It does not transfer to a simulation using
-the balanced planner. If you believe padding is a significant cost in your real system,
-measure the fill ratio in your actual training runs before choosing a mode.
-
----
-
-## Configuring extrapolation in `simulate.sh`
-
-The example script in `examples/simulate/simulate.sh` exposes the two relevant knobs
-as environment variables:
-
-```bash
-# Permit num_microbatches to exceed the profiled range
-EXTRAPOLATE=[num_microbatches] \
-TRAINING_BACKEND=fsdp \
-TRAINING_ARTIFACT=outputs/cost/qwen3_8b/training_fsdp.json \
-bash examples/simulate/simulate.sh
-
-# verl's token-budget batching
-BATCHING_MODE=token_budget \
-MAX_TOKENS_PER_RANK=10240 \
-bash examples/simulate/simulate.sh
-```
-
-The bracket syntax (`[num_microbatches]`) is Hydra's list override format. To permit
-multiple features, separate them with commas: `[num_microbatches,sequences_per_microbatch]`.
+A run that stops making progress is reported rather than raised: after more than
+`rollout.livelock_rounds` rounds without a change in time, in-flight, ready or dropped
+counts, `SimResult.livelocked` is set and the CLI prints a warning.

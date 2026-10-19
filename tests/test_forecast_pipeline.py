@@ -5,8 +5,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from psrl.workers.ps.inventory_forecast import BufferView, InventorySnapshot
-from psrl.workers.ps.staleness_controller import BufferStatus
+from psrl.workers.ps.staleness import BufferStatus, BufferView, InventorySnapshot
 
 from srl.component.sync.cost import FixedSyncCost
 from srl.cost.rollout import UnifiedRoofline

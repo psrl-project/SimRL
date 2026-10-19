@@ -108,6 +108,8 @@ rollout:
     #   length_aware         order whole groups longest- or shortest-first and place
     #                        by predicted remaining load. Needs queue_window wide
     #                        enough to cover the backlog
+    #   inventory_deadline   admit and route by the forecast delay to each pending
+    #                        training buffer. Python engine only
     strategy: request_num_balance
 
     # Keyword arguments for the chosen strategy, e.g.
@@ -119,6 +121,7 @@ rollout:
     # the router, so an experiment can move one without the other.
     #   vllm_lru      reverse arrival order, what vLLM itself does (default)
     #   longest_ctx   the deepest context, freeing the most blocks per eviction
+    #   latest_deadline  the request with the most deadline slack. Python engine only
     eviction: vllm_lru
 
     # Tie-break among queued requests of the same weight version:
@@ -162,9 +165,6 @@ rollout:
 
   # Idle rounds before the simulator declares livelock.
   livelock_rounds: 50
-
-  # Safety cap on engine iterations per generate call.
-  max_engine_iters: 10000
 
 # Directory for plots and simulation outputs.
 output_dir: outputs

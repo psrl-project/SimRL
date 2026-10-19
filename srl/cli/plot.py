@@ -33,9 +33,16 @@ def main() -> None:
     )
     parser.add_argument(
         "--only",
-        choices=("instance_load", "rollout_step", "staleness_distribution", "request_timeline", "throughput"),
+        choices=(
+            "instance_load",
+            "rollout_step",
+            "staleness_distribution",
+            "request_timeline",
+            "throughput",
+            "scg_curve",
+        ),
         default=None,
-        help="Render just one plot instead of all five.",
+        help="Render just one plot instead of all six.",
     )
     parser.add_argument(
         "--time-label",

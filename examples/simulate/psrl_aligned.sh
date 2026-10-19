@@ -24,10 +24,6 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-# ROLLOUT_MODEL=composed below, and ComposedRollout has no C++ translation, so
-# the default `auto` backend fails in `_make_cpp_cost` before the first step.
-export SIMRL_BACKEND="${SIMRL_BACKEND:-native}"
-
 PSRL_LOG_DIR="${PSRL_LOG_DIR:-/apdcephfs_zwfy10_303541817/share_303541817/lhy/psrl/examples/dapo_trainer/megatron_psrl_log/qwen3_8b_megatron_simulate}"
 MODEL_PATH="${MODEL_PATH:-/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}"
 TRACE="${TRACE:-${ROOT_DIR}/outputs/workload/psrl_aligned/joint.jsonl}"
@@ -64,8 +60,6 @@ export BATCH_SIZE="${BATCH_SIZE:-32}"
 # GEN_INSTANCES = (1 node * 2 GPUs) / (GEN_TP=1 * GEN_PP=1) = 2.
 export N_INSTANCES="${N_INSTANCES:-2}"
 export ROLLOUT_TP="${ROLLOUT_TP:-1}"
-# psrl.staleness=1.
-export MAX_STALENESS="${MAX_STALENESS:-2}"
 export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-1024}"
 export MAX_OUTPUT_LENGTH="${MAX_OUTPUT_LENGTH:-10240}"
 # gen_actor_rollout_ref.rollout.max_num_batched_tokens=12800.

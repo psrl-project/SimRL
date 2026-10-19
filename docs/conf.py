@@ -44,10 +44,8 @@ source_suffix = {".md": "markdown", ".rst": "restructuredtext"}
 master_doc = "index"
 
 # `superpowers/` and `design/` hold AI scratch (specs, plans, working notes) that is
-# gitignored and deliberately not part of the site; without excluding them Sphinx
-# would try to build every plan. `_snippets/` holds fragments that are `include`d
-# into real pages rather than being pages themselves, and `tools/` is a generator
-# script. `README.md` is the maintainer build guide, published as development/docs.
+# deliberately not part of the site; without excluding them Sphinx would try to build
+# every plan.
 exclude_patterns = [
     "_build",
     "superpowers",
@@ -66,7 +64,11 @@ html_theme = "pydata_sphinx_theme"
 html_title = "SimRL Documentation"
 
 html_theme_options = {
-    "logo": {"text": "SimRL"},
+    "logo": {
+        "image_light": "_static/img/SimRL_logo_merge.png",
+        "image_dark": "_static/img/SimRL_logo_merge.png",
+        "alt_text": "SimRL",
+    },
     "show_toc_level": 2,
     "navigation_depth": 3,
     "show_nav_level": 1,

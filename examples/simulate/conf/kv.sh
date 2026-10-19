@@ -5,7 +5,7 @@
 #         ROLLOUT_TP, GPU, KV_NON_KV_OVERHEAD_BYTES
 
 KV_OVERRIDES=()
-if [[ -n "${KV_MODEL_PATH}" ]]; then
+if [[ -n "${KV_MODEL_PATH:-}" ]]; then
     KV_OVERRIDES=(
         "rollout.kv_cache_sizing.model_path=${KV_MODEL_PATH}"
         "rollout.kv_cache_sizing.probe=${KV_PROBE:-true}"
