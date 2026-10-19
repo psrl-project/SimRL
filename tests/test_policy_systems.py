@@ -125,7 +125,6 @@ class TestVerlV1Integration:
         result = _verl_v1_sim("drop", threshold=2, n_versions=6).run()
         assert not result.livelocked
         assert result.versions_done == 6
-        assert result.staleness_report().strict is True, "drop evicts anything the horizon would violate."
 
     def test_wait_runs_to_completion_and_never_evicts(self) -> None:
         result = _verl_v1_sim("wait", threshold=2, n_versions=6).run()
@@ -143,6 +142,7 @@ class TestVerlV1Integration:
         result = _verl_v1_sim("drop", threshold=1, n_versions=12, warmup=2.0).run()
         assert not result.livelocked
         assert result.dropped, "a cohort surplus must be evicted end to end under drop."
+        assert result.staleness_report().strict is True, "eviction is what keeps the bound strict here."
 
     def test_wait_blocks_sampling_in_situ(self) -> None:
         workload = GroupedWorkload.from_lengths([150], [2000, 50, 50, 50])
@@ -334,6 +334,8 @@ class TestOpenRLHFIntegration:
         version once it is finally released.
         """
         workload = GroupedWorkload.from_lengths([150], [10000] + [50] * 11)
+        # n_versions well past the brief's 8: a 10000-token straggler needs that many
+        # training steps to actually finish and register its staleness.
         cfg = SimConfig(batch_size=2, staleness_horizon=0, n_versions=30, workload=workload, ingress_window_groups=24)
         policy = OpenRLHFPolicy(async_queue_size=1, partial_rollout_enable=True)
         sim = Simulator(
@@ -476,9 +478,14 @@ def _nemo_rl_groups() -> tuple[list[list[Request]], tuple[GroupView, ...]]:
     return groups, views
 
 
-def _nemo_rl_sim(sampler: str, n_versions: int = 8, **kwargs) -> Simulator:
+def _nemo_rl_sim(
+    sampler: str, n_versions: int = 8, staleness_horizon: int | None = None, **kwargs
+) -> Simulator:
     workload = GroupedWorkload.from_lengths([150], uniform(32, 50, 150, seed=5))
-    cfg = SimConfig(batch_size=4, n_versions=n_versions, workload=workload, ingress_window_groups=16)
+    cfg = SimConfig(
+        batch_size=4, n_versions=n_versions, workload=workload, ingress_window_groups=16,
+        staleness_horizon=staleness_horizon,
+    )
     policy = NeMoRLPolicy(sampler=sampler, max_inflight_prompts=16, max_buffered_rollouts=16, **kwargs)
     return Simulator(
         rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
@@ -526,6 +533,8 @@ class TestNeMoRLWindowed:
 
     def test_a_straggler_never_trains_past_the_window(self) -> None:
         workload = GroupedWorkload.from_lengths([150], [3000] + [50] * 11)
+        # n_versions well past the brief's 8: a 3000-token straggler needs that many
+        # training steps to actually finish and go stale.
         cfg = SimConfig(
             batch_size=2, n_versions=20, workload=workload, ingress_window_groups=24, staleness_horizon=2
         )
@@ -555,9 +564,10 @@ class TestNeMoRLWeightFifo:
         assert policy.on_publish(4, st) == [], "weight_fifo has no L2, it only filters at selection."
 
     def test_runs_to_completion(self) -> None:
-        result = _nemo_rl_sim("weight_fifo", max_staleness_versions=2).run()
+        result = _nemo_rl_sim("weight_fifo", max_staleness_versions=2, staleness_horizon=2).run()
         assert not result.livelocked
         assert result.versions_done == 8
+        assert result.staleness_report().strict is True, "weight_fifo only ever selects inside the window."
 
 
 class TestNeMoRLReadyFirst:
@@ -581,8 +591,16 @@ class TestNeMoRLReadyFirst:
 
         later, faster cohorts are free to train around it, so nothing here
         checks its generation version against the training version.
+
+        max_staleness_versions=100 is load-bearing, not a copy-paste leftover:
+        _gate_window() applies it to every sampler's ADMISSION gate except
+        in_order, including ready_first, whose own SELECTION ignores it. At
+        the default of 1 that gate itself would bound the straggler, hiding
+        the thing this test exists to prove.
         """
         workload = GroupedWorkload.from_lengths([150], [10000] + [50] * 11)
+        # n_versions well past the brief's 8: a 10000-token straggler needs that many
+        # training steps to actually finish and register its staleness.
         cfg = SimConfig(
             batch_size=2, n_versions=40, workload=workload, ingress_window_groups=24, staleness_horizon=2
         )
@@ -635,9 +653,10 @@ class TestNeMoRLInOrder:
         assert {req.group_id for req in batch} == {2, 3}
 
     def test_runs_to_completion(self) -> None:
-        result = _nemo_rl_sim("in_order", max_lookahead_versions=2).run()
+        result = _nemo_rl_sim("in_order", max_lookahead_versions=2, staleness_horizon=2).run()
         assert not result.livelocked
         assert result.versions_done == 8
+        assert result.staleness_report().strict is True, "in_order binds every cohort to one target step."
 
 
 class TestNeMoRLAdmissionGate:

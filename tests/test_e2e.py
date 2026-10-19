@@ -188,6 +188,8 @@ class TestArealTokenBucket:
         exceeding the declared horizon.
         """
         workload = GroupedWorkload.from_lengths([150], [10000] + [50] * 11)
+        # n_versions well past the brief's 8: a 10000-token straggler needs that many
+        # training steps to actually finish and register its staleness.
         cfg = SimConfig(batch_size=2, staleness_horizon=2, n_versions=40, workload=workload)
         result = _run_sim(ArealPolicy(), None, cfg)
 
@@ -205,7 +207,6 @@ class TestRollBound:
         assert not result.livelocked
         for r in result.consumed:
             assert r.staleness_true() <= cfg.staleness_horizon
-        assert result.staleness_report().strict is True
 
 
 def _roll_sim(group_size: int, store=None, n_versions: int = 10):
@@ -250,6 +251,7 @@ class TestRollGarbageCollection:
         assert not result.livelocked
         assert policy.gc_dropped > 0, "the fixture must make GC fire."
         assert len(result.dropped) == policy.gc_dropped * group_size
+        assert result.staleness_report().strict is True, "GC is what keeps the bound strict here."
 
     @pytest.mark.parametrize("group_size", [1, 4])
     def test_policy_counters_agree_with_the_ledger(self, group_size):
@@ -335,6 +337,8 @@ class TestSlimeBarrier:
         so admission concurrency alone does not bound its eventual staleness.
         """
         workload = GroupedWorkload.from_lengths([150], [10000] + [50] * 11)
+        # n_versions well past the brief's 8: a 10000-token straggler needs that many
+        # training steps to actually finish and register its staleness.
         cfg = SimConfig(
             batch_size=2, staleness_horizon=0, n_versions=40, ingress_window_groups=24, workload=workload
         )
