@@ -3,7 +3,9 @@
 </p>
 
 <p align="center">
-  <a href="https://srl.readthedocs.io"><b>Documentation</b></a>
+  <a href="https://srl.readthedocs.io"><img src="https://img.shields.io/badge/docs-latest-brightgreen.svg?style=flat" alt="Documentation"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License"></a>
+  <a href="https://github.com/psrl-project/SimRL"><img src="https://img.shields.io/github/stars/psrl-project/SimRL?style=social" alt="GitHub stars"></a>
 </p>
 
 # SimRL
@@ -13,28 +15,28 @@ models. You profile a real system once, fit cost models from those measurements,
 configurations you never ran (a different parallelism layout, a different staleness policy, a different
 rollout-to-training ratio) in seconds rather than GPU-hours.
 
-## What you can do with SimRL
+## 🧭 What you can do with SimRL
 
-![What you can do with SimRL](assets/simrl-capabilities.png)
+![What you can do with SimRL](assets/simrl-capabilities-plain.png)
 
-- **Simulate how a framework behaves.** More than ten typed presets each reimplement one real
+- 🔄 **Simulate how a framework behaves.** More than ten typed presets each reimplement one real
   system's admission, runtime and filtering logic, so a run tells you how that system handles your
   workload. For example: with staleness bounded at 2 and the same batch size, does PSRL stay
   latency-bound while verl's overage queue slowly fills up?
-- **Design a deployment.** Compare GPU splits between rollout and training, instance counts, and
+- 🏗️ **Design a deployment.** Compare GPU splits between rollout and training, instance counts, and
   TP/PP/DP/EP layouts under the same workload. For example: on 32 GPUs, is 20/12 with TP2 rollout
   better than 16/16 with TP4, and where is the training step no longer the bottleneck?
-- **Predict at runtime.** Derive placement and finish times from a snapshot of the live system, so a
+- 🔮 **Predict at runtime.** Derive placement and finish times from a snapshot of the live system, so a
   scheduler can resize or re-parallelise instead of guessing. For example: rollout load spikes and
   training falls idle, so how many engines can move to training without stalling the next batch?
-- **Auto research.** Strategies are a registry. A proposal agent designs a policy, a validation agent
+- 🤖 **Auto research.** Strategies are a registry. A proposal agent designs a policy, a validation agent
   simulates it against a baseline, and an analysis agent writes the lesson back. For example: on
   this workload, is `kv_cache_aware` routing better than `throughput_balance`, and under what
   length dispersion does the answer flip?
 
-## How it is built
+## 🔬 How it is built
 
-![How SimRL is built](assets/simrl-architecture.png)
+![How SimRL is built](assets/simrl-architecture-plain.png)
 
 Three concerns, three components, one documented seam between each pair:
 
@@ -44,11 +46,15 @@ Three concerns, three components, one documented seam between each pair:
 | Model | `srl/cost/` | Fits coefficients plus a validity domain from that JSONL: rollout cost (roofline, composed, distserve, psrl), training cost (fixed, analytical, linear, hydraulis, FSDP latency/memory), and a kernel database behind both. Models interpolate. They never measure. |
 | Simulate | `srl/simulator/`, `srl/policy/`, `srl/component/` | Drives the rollout/training loop under one of twelve typed system presets, asking the cost models for latency and peak memory as it goes. |
 
+Each artifact is a JSON file, but it is only ever read once: `srl/cli/main.py` parses it into a Python cost-model
+object when a simulation starts, and every training/rollout step after that calls straight into that object's
+methods — no further file I/O during the run.
+
 The simulator engine has two interchangeable backends. The C++ engine runs by default. Set
 `SIMRL_BACKEND=native` for the Python reference engine. See
 [`docs/simulation/backends.md`](docs/simulation/backends.md).
 
-## Install
+## 📦 Install
 
 ```bash
 conda create -n simrl python=3.12 -y && conda activate simrl
@@ -60,7 +66,7 @@ pip install -e ".[dev]"
 clones vLLM and Megatron-Bridge under `third_party/`, and builds flash-attn from source. The cloned source
 trees are not committed. Simulation and cost fitting need no GPU of their own. Profiling does.
 
-## Run a simulation
+## 🚀 Run a simulation
 
 ```bash
 ACTIVE_CAP=0 bash examples/simulate/psrl_aligned.sh
@@ -80,7 +86,7 @@ Telemetry, the run report and plots land in the run directory under `outputs/`. 
 system preset, pick any of the presets below and point `rollout_cost`/`training_cost` at artifacts you
 produced with `srl-profile` and `srl-regress`.
 
-## System presets
+## 🧩 System presets
 
 Each preset is a typed `StalenessPolicy` that reimplements one upstream system's admission, runtime
 and filtering logic. Select one with `policy=<name>`:
@@ -100,7 +106,7 @@ and filtering logic. Select one with `policy=<name>`:
 Exact knobs, defaults, and which one bounds staleness for each preset are in
 [`srl/policy/README.md`](srl/policy/README.md).
 
-## Command-line tools
+## 🛠️ Command-line tools
 
 | Command | Use |
 |---|---|
@@ -112,7 +118,7 @@ Exact knobs, defaults, and which one bounds staleness for each preset are in
 | `srl-psrl-plot` | Convert and plot a real PSRL run for comparison. |
 | `srl-compare` | Quantify where a simulation disagrees with a real run. |
 
-## Verify
+## ✅ Verify
 
 ```bash
 pytest                     # tests needing MODEL_PATH are skipped without it
@@ -120,10 +126,10 @@ ruff check .
 make -C docs strict        # warnings promoted to errors
 ```
 
-## License
+## 📄 License
 
 SimRL is released under the [Apache License 2.0](LICENSE).
 
-## Contributing
+## 🤝 Contributing
 
 Bug reports, fixes and new presets are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).

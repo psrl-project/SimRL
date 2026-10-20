@@ -269,7 +269,9 @@ dmypy.json
 # Claude Code machine-local settings (proxy env, permission allowlists).
 # .claude/coding-style.md and codebase-map.md ARE tracked; only this file is local.
 .claude/settings.local.json
-deprecated/docs/
+
+# Quarantined code kept on disk for reference, not meant to ship in commits.
+deprecated/
 
 # Generated validation experiments
 workflow/validate_performance/experiments/*.py

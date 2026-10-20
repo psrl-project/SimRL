@@ -38,9 +38,6 @@ _BLUE_LIGHT = "#6da7ec"
 _BLUE_DARK = "#104281"
 _ORANGE = "#eb6834"
 _AQUA = "#1baf7a"
-# Recessive ink for meta-annotations (timestamp markers) that should recede
-# behind the data series rather than compete with them.
-_MUTED_INK = "#898781"
 # A neutral background highlight, not a data color, so it stays outside the
 # categorical palette and is shared verbatim by every plot that shades the
 # training window.
@@ -191,7 +188,6 @@ class SimPlotter:
             return self._empty_placeholder(path, "No instance telemetry logged")
 
         intervals = self._train_intervals()
-        train_start_events = self._train_start_events()
         phase_blocks = self._train_phase_spans()
         gateway_rows = self._gateway_rows()
 
@@ -230,36 +226,6 @@ class SimPlotter:
                 drawn_phases[label] = colour
         train_ax.set_yticks([])
         train_ax.set_ylabel("train")
-
-        # Shading shows duration. These markers identify the exact event that
-        # starts each training step. Labels live on one row only to keep the
-        # instance panels readable, while the vertical line crosses every row.
-        marker_axes = [*([gateway_ax] if gateway_ax is not None else []), *axes]
-        for start, _ in train_start_events:
-            for ax in marker_axes:
-                ax.axvline(
-                    start,
-                    color=_MUTED_INK,
-                    linestyle=":",
-                    linewidth=0.7,
-                    alpha=0.55,
-                    zorder=3,
-                )
-        label_ax = gateway_ax if gateway_ax is not None else train_ax
-        for start, _ in train_start_events:
-            label_ax.text(
-                start,
-                0.96,
-                f"{start:.1f}s",
-                rotation=45,
-                rotation_mode="anchor",
-                ha="right",
-                va="top",
-                fontsize=9,
-                color=_MUTED_INK,
-                transform=label_ax.get_xaxis_transform(),
-                zorder=4,
-            )
 
         # The phase key goes on the figure rather than inside the band, whose
         # full width is occupied by the blocks it would otherwise cover.

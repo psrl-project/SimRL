@@ -59,7 +59,7 @@ def svg_family(char):
 
 class Canvas:
     def __init__(self, name, w, h, title, out_dir):
-        self.name, self.w, self.h, self.out_dir = name, w, h, out_dir
+        self.name, self.w, self.h, self.title, self.out_dir = name, w, h, title, out_dir
         out_dir.mkdir(parents=True, exist_ok=True)
         self.im = Image.new("RGB", (w, h), BG)
         self.d = ImageDraw.Draw(self.im)
@@ -198,3 +198,20 @@ class Canvas:
     def save(self):
         self.im.save(self.out_dir / f"{self.name}.png")
         (self.out_dir / f"{self.name}.svg").write_text("\n".join(self.svg + ["</svg>"]), encoding="utf-8")
+
+    def save_plain(self, crop_top, suffix="-plain"):
+        """Save a second variant with the in-figure title band cropped off.
+
+        Pans the SVG viewBox and crops the PNG instead of redrawing: every panel
+        keeps the exact coordinates it was authored with, so the titled and plain
+        variants can never drift apart.
+        """
+        name = f"{self.name}{suffix}"
+        new_h = self.h - crop_top
+        self.im.crop((0, crop_top, self.w, self.h)).save(self.out_dir / f"{name}.png")
+        head = (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{self.w}" height="{new_h}" '
+            f'viewBox="0 {crop_top} {self.w} {new_h}" role="img"><title>{self.title}</title>'
+        )
+        svg = [head, *self.svg[1:], "</svg>"]
+        (self.out_dir / f"{name}.svg").write_text("\n".join(svg), encoding="utf-8")

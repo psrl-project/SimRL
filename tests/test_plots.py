@@ -6,7 +6,7 @@ from srl.cost.rollout import UnifiedRoofline
 from srl.policy.psrl import PSRLPolicy
 from srl.simulator import SimConfig, Simulator
 from srl.telemetry.store import JsonlStore
-from srl.visualizer.plots import SimPlotter
+from srl.visualizer.plots import _BLUE, SimPlotter
 from srl.workload.distributions import uniform
 from srl.workload.grouped import GroupedWorkload
 
@@ -179,7 +179,7 @@ class TestTrainPhaseBand:
         """A train row predating the phase fields still covers its whole block."""
         store = self._store_with_train(tmp_path)
         spans = SimPlotter(store, tmp_path / "plots")._train_phase_spans()
-        assert spans[0] == [(0.0, 10.0, "train", "steelblue")]
+        assert spans[0] == [(0.0, 10.0, "train", _BLUE)]
 
     def test_the_figure_renders_with_a_split_band(self, tmp_path):
         store = self._store_with_train(
