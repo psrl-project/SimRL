@@ -12,6 +12,7 @@ from . import (  # noqa: F401
     random_choice,
     request_num_balance,
     round_robin,
+    tail_reserve,
     throughput_balance,
 )
 
