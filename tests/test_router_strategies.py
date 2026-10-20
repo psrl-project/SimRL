@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from srl.component.rollout.engine import InstanceView, Request, TrajView
+from srl.component.rollout.engine import InstanceView, Request
 from srl.component.rollout.router import (
     STRATEGY_REGISTRY,
     AdmissionGate,
@@ -26,7 +26,6 @@ def _view(
     committed_blocks: int = 0,
     hit: int = 0,
     delta: float = 0.0,
-    residents: tuple[TrajView, ...] = (),
 ) -> InstanceView:
     return InstanceView(
         instance_id=instance_id,
@@ -38,23 +37,11 @@ def _view(
         committed_blocks=committed_blocks,
         prefix_hit_tokens=lambda req, v=hit: v,
         step_time_delta=lambda req, v=delta: v,
-        residents=lambda v=residents: list(v),
     )
 
 
-def _req(rid: int = 0, prompt_len: int = 100, group_id: int = 0, target_len: int = 50) -> Request:
-    return Request(rid=rid, prompt_len=prompt_len, target_len=target_len, v_traj=0, group_id=group_id)
-
-
-def _resident(target_len: int, generated: int = 0) -> TrajView:
-    return TrajView(
-        generated=generated,
-        prompt_len=100,
-        target_len=target_len,
-        prompt_key=0,
-        v_traj=0,
-        admit_time=0.0,
-    )
+def _req(rid: int = 0, prompt_len: int = 100, group_id: int = 0) -> Request:
+    return Request(rid=rid, prompt_len=prompt_len, target_len=50, v_traj=0, group_id=group_id)
 
 
 class TestRegistry:
@@ -68,7 +55,6 @@ class TestRegistry:
             "throughput_balance",
             "length_aware",
             "inventory_deadline",
-            "tail_reserve",
         }
 
     def test_an_unknown_name_lists_the_known_ones(self):
@@ -204,43 +190,6 @@ class TestThroughputBalance:
         strategy = build_strategy("throughput_balance")
         views = [_view(0, delta=0.05), _view(1, delta=0.01), _view(2, delta=0.30)]
         assert strategy.select(_req(), views) == 1
-
-
-class TestTailReserve:
-    def test_a_short_request_avoids_an_instance_hosting_a_tail_resident(self):
-        strategy = build_strategy("tail_reserve", tail_length=100_000)
-        views = [
-            _view(0, residents=(_resident(target_len=200_000),)),
-            _view(1),
-        ]
-        assert strategy.select(_req(target_len=500), views) == 1
-
-    def test_a_short_request_falls_back_when_every_instance_hosts_a_tail_resident(self):
-        strategy = build_strategy("tail_reserve", tail_length=100_000)
-        views = [
-            _view(0, residents=(_resident(target_len=200_000),)),
-            _view(1, residents=(_resident(target_len=150_000, generated=140_000),)),
-        ]
-        # Both are closed, so the rule falls back to least remaining load rather
-        # than leaving the request unplaced.
-        assert strategy.select(_req(target_len=500), views) == 1
-
-    def test_a_tail_request_prefers_consolidating_onto_an_already_closed_instance(self):
-        strategy = build_strategy("tail_reserve", tail_length=100_000)
-        views = [
-            _view(0),
-            _view(1, residents=(_resident(target_len=200_000),)),
-        ]
-        assert strategy.select(_req(target_len=250_000), views) == 1
-
-    def test_a_tail_request_opens_a_fresh_instance_when_none_is_closed_yet(self):
-        strategy = build_strategy("tail_reserve", tail_length=100_000)
-        views = [_view(0, residents=(_resident(target_len=5_000),)), _view(1)]
-        assert strategy.select(_req(target_len=250_000), views) == 1
-
-    def test_a_non_positive_threshold_is_refused(self):
-        with pytest.raises(ValueError, match="tail_length"):
-            build_strategy("tail_reserve", tail_length=0)
 
 
 class TestAdmissionGate:
