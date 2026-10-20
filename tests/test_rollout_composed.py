@@ -86,7 +86,7 @@ def test_the_logits_projection_is_counted_once_not_once_per_layer(model, databas
 
 
 def test_a_prefill_step_runs_its_gemms_over_all_prompt_tokens(model):
-    """Prefill's m is the token count; decode's is the request count."""
+    """Prefill's m is the token count. Decode's is the request count."""
     reqs, tokens = 4, 4096
     prefill = model.predict(
         RolloutWorkload(
@@ -199,7 +199,7 @@ def test_step_cost_memo_deduplicates_across_integrators(model):
         # First call populates the cache for these (n_d, ctxsum, offset) triples.
         model.decode_segment_time(16, 32768.0, 300)
         first_count = len(calls)
-        # Second call with identical arguments must hit the cache; predict() must not
+        # Second call with identical arguments must hit the cache. predict() must not
         # be called again.
         model.decode_segment_time(16, 32768.0, 300)
         second_count = len(calls)
@@ -209,7 +209,7 @@ def test_step_cost_memo_deduplicates_across_integrators(model):
     assert first_count > 0, "First call made no predictions."
     assert second_count == first_count, (
         f"Second identical segment call added {second_count - first_count} extra "
-        f"predict() calls; expected 0 (all results already cached)."
+        f"predict() calls. Expected 0 (all results already cached)."
     )
 
 
@@ -235,7 +235,7 @@ def test_steps_within_returns_zero_for_an_exhausted_budget(model):
 
 
 def test_the_segment_matches_a_step_by_step_sum_within_one_percent(model):
-    """The lattice is an approximation; this bounds it against the exact reference."""
+    """The lattice is an approximation. This bounds it against the exact reference."""
     n_d, ctx0, k = 16, 2048.0, 2048
     exact = sum(
         model.predict(
@@ -287,7 +287,7 @@ def test_decode_coeffs_reports_a_secant_over_the_segment(model):
 
 
 def test_tensor_parallel_above_one_constructs(database):
-    """Replaces a test asserting tp>1 was rejected; the all_reduce op removed that refusal.
+    """Replaces a test asserting tp>1 was rejected. The all_reduce op removed that refusal.
 
     Construction only. The prediction it would make is end-to-end unvalidated: no vLLM tp=2
     baseline exists, and this database holds tp=1 tables, so a `predict` call would raise on
@@ -342,7 +342,7 @@ def test_the_memo_is_sized_to_hold_one_segments_lattice(database, ops):
 
 
 def test_the_memo_is_clamped_so_a_tiny_stride_cannot_exhaust_memory(database, ops):
-    """stride=1 wants 2^20 entries (~180 MB); the clamp trades hit rate for a bounded footprint."""
+    """stride=1 wants 2^20 entries (~180 MB). The clamp trades hit rate for a bounded footprint."""
     model = ComposedRollout(database, ops, tensor_parallel=1, stride=1)
     assert model._predict_cache_cap == _MAX_CACHE_ENTRIES
     assert model._predict_cache_cap < _SEGMENT_CAP // 1 + 2
@@ -398,7 +398,7 @@ def test_steps_within_inverts_segment_time_deep_kv(deep_model):
 
 
 def test_closed_form_path_costs_fewer_predictions_than_lattice(database, ops):
-    """Closed form uses 2 predict() calls (decode_coeffs); lattice uses stride-sampled nodes."""
+    """Closed form uses 2 predict() calls (decode_coeffs). Lattice uses stride-sampled nodes."""
     n_d, ctxsum = 16, 16 * 16384.0  # depth 16384 >= 8192 -> closed form
     k = 4096
 

@@ -36,7 +36,7 @@ def _validate_resolved_config(
     """
     Cross-check the config Megatron actually resolved against the candidate.
 
-    The launcher mutates a `ConfigContainer` in Python; this reads back what rank
+    The launcher mutates a `ConfigContainer` in Python. This reads back what rank
     zero serialized, so a mutation that failed to land cannot pass unnoticed.
     """
     configured = Path(manifest.get("resolved_config", run_dir / "ConfigContainer.yaml"))

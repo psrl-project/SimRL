@@ -97,7 +97,7 @@ class PSRLPolicy(StalenessPolicy):
             buffer_id, entry_id = self._inventory.reserve_data(entry_info, max_bid)
             assert buffer_id is not None, (
                 f"reserve_data returned None for group {req.group_id} "
-                f"(v_traj={req.v_traj}, max_bid={max_bid}); admit_quota should have gated this."
+                f"(v_traj={req.v_traj}, max_bid={max_bid}). admit_quota should have gated this."
             )
 
     def on_route(self, req: Request, instance_id: int, st: SimState) -> None:

@@ -21,12 +21,12 @@ choice of how `NativeInstance` and `Request` are implemented, not a different si
 
 | `SIMRL_BACKEND` | Behaviour |
 |---|---|
-| `cpp` (default) | require the C++ engine; an `ImportError` is raised if the extension is not built, a `ValueError` if a configured strategy or eviction is `python_engine_only` |
-| `auto` | use the C++ engine if it imports and nothing configured is `python_engine_only`, otherwise the Python engine; never raises on its own account |
+| `cpp` (default) | require the C++ engine. An `ImportError` is raised if the extension is not built, a `ValueError` if a configured strategy or eviction is `python_engine_only` |
+| `auto` | use the C++ engine if it imports and nothing configured is `python_engine_only`, otherwise the Python engine. Never raises on its own account |
 | `native` | the Python engine |
 
 Any other value raises `ValueError`. The `Simulator` constructor itself defaults to `native`,
-since it is the reference implementation used directly by tests and scripts; the CLI defaults
+since it is the reference implementation used directly by tests and scripts. The CLI defaults
 to `cpp`.
 
 The run log does not print which engine was chosen. To check, run
@@ -80,7 +80,7 @@ Two cautions about replacing the file:
 
 - Install by rename, not by copying over the old file. A running simulation has the extension
   mapped, and overwriting it in place can crash that process. Do not rebuild while sweeps are
-  running; the sweep scripts under `examples/analysis/` record the file's checksum before and
+  running. The sweep scripts under `examples/analysis/` record the file's checksum before and
   after to catch this.
 - After any change under `engine_cpp/`, rebuild and rerun `tests/test_engine_cpp_*`, because
   the Python and C++ engines must be changed together.
@@ -95,7 +95,7 @@ trampoline: each of `step_time`, `decode_segment_time`, `decode_steps_within`,
 `decode_saturated_steps`, `decode_coeffs` and `saturated` calls the Python object's method of
 the same name. Forwarding all of them matters. A model such as `ComposedRollout` integrates
 decode segments exactly, while the C++ defaults rebuild each segment query from
-`decode_coeffs`, which is a secant approximation; a model overriding only some methods would
+`decode_coeffs`, which is a secant approximation. A model overriding only some methods would
 otherwise be priced differently on the two backends.
 
 **Term memos.** A model may publish `cpp_term_spec()`. `ComposedRollout` does so for dense
@@ -106,12 +106,12 @@ keyed by the integer shapes `ComposedRollout` itself would query. Python is call
 a memo miss. The keys are derived with CPython's `//`, `round` (half to even) and `int`
 semantics, and the terms are summed in the order `predict` sums them, so the result is
 bit-identical to `predict`. Inputs Python would reject go to Python so it raises. Each memo
-is cleared when it reaches 2^18 entries; entries are exact, so clearing costs only
+is cleared when it reaches 2^18 entries. Entries are exact, so clearing costs only
 recomputation. `PyWrappedCostModel.term_fast_path` reports whether the memo path is active.
 
 A model without a spec is called through Python on every step. That is slower and exact.
 The native `UnifiedRooflineCostModel` and `PsrlCostModel` classes in C++ are used by tests
-that build a `CppInstance` directly; the simulator always goes through the trampoline.
+that build a `CppInstance` directly. The simulator always goes through the trampoline.
 
 The router and the forecast package see the Python cost model, not the wrapper, so a strategy
 that prices a hypothetical batch uses the same coefficients on both backends.
@@ -141,7 +141,7 @@ must be present, because completions decide the order batches are collected in.
 
 | Setting | Behaviour |
 |---|---|
-| default, all three | every event can be undone; results are exact |
+| default, all three | every event can be undone. Results are exact |
 | `request_complete` only | the successor of a `preempt` or `iteration_done` event is produced with `advance_one_event_committed`, with no snapshot. The dominant bookkeeping cost disappears, but a committed advance cannot be rolled back, so an instance can end up ahead of the global clock. `_align_instances` then leaves it where it is and widens the clock, so results can differ from the exact mode |
 
 **Iteration batching.** When the `instance/<id>` telemetry stream is suppressed
@@ -162,7 +162,7 @@ configuration:
 | Event-by-event state of one instance (queues, counters, per-request progress, KV counters) | equal | `test_engine_cpp_instance.py` |
 | Undo then replay, including block-level KV state | equal | `test_engine_cpp_undo_invisible.py` |
 | `versions_done`, `livelocked`, consumed and dropped counts, per-request lengths, versions and staleness | equal | `test_engine_cpp_integration.py` |
-| `sim_time` | relative 1e-9; relative 1e-3 for the long bimodal case | same |
+| `sim_time` | relative 1e-9, relative 1e-3 for the long bimodal case | same |
 | `request.jsonl` rows and `sim_time` under `vllm_lru` and `longest_ctx` eviction on a pool that preempts | identical | `test_engine_cpp_eviction.py` |
 | `ComposedRollout.step_time` through the term memos | bit-identical to `predict` (needs the measured kernel tables) | `test_composed_term_memo.py` |
 | Every cost-model method overridden in Python | reached from C++ | `test_engine_cpp_cost_dispatch.py` |
@@ -181,7 +181,7 @@ What is **not** the same:
   and why `deadline_buffer` is unavailable.
 - **Reads that convert.** A C++ `waiting`, `running`, `completed` or `step_stats` read builds a
   new Python list each time. The simulator and telemetry avoid this with `n_active`,
-  `n_running`, `n_waiting`, `n_step_stats` and `step_stats_since`; a strategy that reads
+  `n_running`, `n_waiting`, `n_step_stats` and `step_stats_since`. A strategy that reads
   `inst.waiting` per placement pays for it.
 - **Cost-model speed.** A model with no `cpp_term_spec` pays a Python call per step. The
   results are the same.
@@ -190,7 +190,7 @@ What is **not** the same:
 
 `examples/analysis/diff_backends.py` runs both backends in-process on a set of cases that
 reach preemption, chunked prefill, prefix caching on and off, partial-rollout aborts,
-concurrency caps and several instances, and compares every telemetry stream row by row; its
+concurrency caps and several instances, and compares every telemetry stream row by row. Its
 `--mode batching` compares the iteration-batched engines against event-by-event stepping.
 `examples/analysis/bench_backends.sh` runs four arms (native and C++, exact and fast undo) on
 one configuration and reports an arm as DIVERGED if its request telemetry is not

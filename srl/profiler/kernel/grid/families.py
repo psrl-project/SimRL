@@ -2,8 +2,8 @@
 Which kernels a model's layer executes, dispatched by architecture.
 
 The shapes a transformer layer runs are a property of its architecture, not of any single
-formula. A dense Llama-style block fuses into four projections; a mixture-of-experts block adds
-a router and per-expert GEMMs; a compressed-KV block does not have a
+formula. A dense Llama-style block fuses into four projections. A mixture-of-experts block adds
+a router and per-expert GEMMs. A compressed-KV block does not have a
 `(heads + 2 * kv_heads) * head_dim` qkv projection at all. One hardcoded arithmetic path can
 only be right for one of those, and its failure mode on the others is a plausible-looking
 number rather than an error.

@@ -43,11 +43,11 @@ being process-group setup.
 **Elementwise was low by 4.6x, and the cause was kernel count, not kernel size.** The trace
 issues 158.7 tensor-staging launches per layer per microbatch where the inventory named 7
 model kernels, and the population is `aten::copy_`, `aten::cat` (the QKV split), `aten::to`,
-`aten::mul` and `aten::add_` — buffer plumbing around TE's fused modules, not norms or
+`aten::mul` and `aten::add_`, buffer plumbing around TE's fused modules rather than norms or
 activations. At 4096 tokens **85% of its cost is launch floor** (8.74 us per launch against
 2.5 ns per token), which is why scaling the existing seven kernels by 4.6 would have been
 wrong: that scales with tokens where most of the real cost does not. Added as a
-`tensor_plumbing` elementwise kind with a traced count; closed 4.50pp.
+`tensor_plumbing` elementwise kind with a traced count. Closed 4.50pp.
 
 **What remains is per-token work the trace has not named.** The gap goes as total tokens at
 r^2 = 0.936, better than the microbatch count (0.860) or total predicted time (0.893), and
@@ -56,7 +56,7 @@ is 0.1-18.4% of prediction with every record the same sign. Not fitted.
 **The bubble is real and is a named term at 36.1% of the prediction.** It appears on the GPU
 as `ncclDevKernel_SendRecv` blocking at the stage boundary: 2.859 s across 2 calls for a
 48 MiB handoff, which is 35 MB/s on a 450 GB/s link, so it is a stage waiting rather than
-bytes moving. `pp_comm` is the transfer; `bubble` is the wait.
+bytes moving. `pp_comm` is the transfer. `bubble` is the wait.
 
 **Per-layer work is charged per microbatch, not per slot**, which the trace settles: every
 per-layer kernel count scales exactly 4.00x from nmb=1 to nmb=4 (flash forward 24 -> 96,
@@ -103,7 +103,7 @@ class ComposedTraining(TrainingLatencyModel):
         ops: Per-microbatch op list, sharded for the intended TP degree.
         charge_optimizer: Whether to price the fused Adam step from the `optimizer_step`
             table. Default True. Set False to score a configuration whose optimizer table
-            has not been swept; the term is then absent from the decomposition rather than
+            has not been swept. The term is then absent from the decomposition rather than
             silently zero, so the omission is visible.
 
     Example::
@@ -173,7 +173,7 @@ class ComposedTraining(TrainingLatencyModel):
 
         This is different from ``pipeline_slots`` returning ``nmb + pp - 1``: that
         formula counts slots on the critical path, which is correct, but the slot
-        unit is a single stage's work — not all layers.
+        unit is a single stage's work, not all layers.
 
         Args:
             workload: Sequence lengths and batching parameters.
@@ -289,7 +289,7 @@ class ComposedTraining(TrainingLatencyModel):
         exactly the instrument you would use to diagnose that drift, so it must not be the
         thing that drifted.
 
-        **Per-layer work is charged per microbatch; only the bubble is charged per slot.**
+        **Per-layer work is charged per microbatch. Only the bubble is charged per slot.**
         Verified by tracing rank 0 of a real step at 12288 tokens, nmb 1 against nmb 4:
         every per-layer kernel count scales exactly 4.00x (flash forward 24 -> 96, flash
         backward 12 -> 48, all-gather 97 -> 388, reduce-scatter 73 -> 292), and the device
@@ -298,7 +298,7 @@ class ComposedTraining(TrainingLatencyModel):
         Charging per *slot* was a measured over-count: at nmb=1, pp=3 the step has 3 slots
         but one microbatch, so the SP collectives were priced at 288 all-gathers where the
         trace shows 96. The error is `slots / num_microbatches`, which is 3x at nmb=1, 1.5x
-        at nmb=4 and 1.03x at nmb=64 — invisible in a pooled MRE fitted over mixed
+        at nmb=4 and 1.03x at nmb=64, invisible in a pooled MRE fitted over mixed
         microbatch counts, and the reason the residual looked proportional to total cost.
 
         The bubble is the `pp - 1` slots in which a stage has no microbatch to process. It
@@ -331,7 +331,7 @@ class ComposedTraining(TrainingLatencyModel):
         num_microbatches = len(microbatches)
         slots = pipeline_slots(num_microbatches, parallelism.pp)
         # Each slot is one pipeline stage's work. A multiplier declared per *model* is
-        # scaled by this ratio; a multiplier declared per *step* is not.
+        # scaled by this ratio. A multiplier declared per *step* is not.
         stage_fraction = 1.0 / parallelism.pp
         layers = self._ops.num_layers * stage_fraction
 

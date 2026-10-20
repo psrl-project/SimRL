@@ -1,7 +1,7 @@
 """Time gated-delta-net (linear attention) kernels, both phases.
 
-This is the layer type a hybrid-attention model uses for most of its depth -- 30 of
-Qwen3.5-35B-A3B's 40 layers -- and it is priced by different kernels from softmax attention,
+This is the layer type a hybrid-attention model uses for most of its depth (30 of
+Qwen3.5-35B-A3B's 40 layers), and it is priced by different kernels from softmax attention,
 so it is a separate family rather than a slice of the `attention` one.
 
 Two kernels, matching what vLLM dispatches in `qwen_gdn_linear_attn.py`:
@@ -10,12 +10,10 @@ Two kernels, matching what vLLM dispatches in `qwen_gdn_linear_attn.py`:
   `gdn_prefill.chunk_gated_delta_rule`, varlen over a packed batch behind `cu_seqlens` and
   linear in the token total.
 
-  This is the kernel `_resolve_gdn_prefill_backend` selects on this hardware -- verified to
-  return `'flashinfer'` for an `'auto'` request. Timing `fla.ops.gated_delta_rule` instead
-  measures a kernel the engine never runs: the fla version has a ~368 us launch floor flat
-  to 4096 tokens, and charging that across 30 GDN layers claimed 11 ms of a real 4.24 ms
-  256-token step. Same failure mode as reading the FlashInfer attention table for a server
-  that dispatches FA3.
+  This is the kernel `_resolve_gdn_prefill_backend` selects on this hardware for an `'auto'`
+  request. Timing `fla.ops.gated_delta_rule` instead measures a kernel the engine never runs,
+  the same failure mode as reading the FlashInfer attention table for a server that
+  dispatches FA3.
 - decode: `fused_recurrent_gated_delta_rule_packed_decode` from vLLM's own ops, one token per
   request against a fixed-size recurrent state.
 
@@ -30,37 +28,18 @@ head count here would write a table nothing can query.
 The only family that does. FlashInfer dispatches both GDN kernels through the CUTLASS DSL,
 which re-marshals every tensor argument in Python on each call, and that host work costs
 several times the device work at small shapes. Timing back-to-back calls with CUDA events
-then measures the interpreter, not the GPU: 491 us event-timed against 57 us replayed at 128
-tokens (8.58x), and 27.8 us against 1.0 us of device time for decode at batch 8 (26.5x). The
-earlier tables recorded that as a dispatch floor and charged it across all 30 GDN layers,
-claiming 17.9 ms of dispatch inside a real 4.24 ms step -- four times the step that contains
-it, which is what made the error visible.
+measures the interpreter, not the GPU, rather than the kernel the engine actually dispatches.
 
-A live 35B server resolves `cudagraph_mode=FULL_AND_PIECEWISE` and captures 51 `(decode,
-FULL)` graphs covering the whole forward pass, GDN included, so decode pays none of the
-marshaling. Capture was checked for validity, not assumed: replayed output matches eager
-output for both phases, so the faster number is the same computation rather than a stale
-plan.
+A live 35B server resolves `cudagraph_mode=FULL_AND_PIECEWISE` and captures the whole decode
+forward pass, GDN included, so decode pays none of the marshaling. Capture was checked for
+validity, not assumed: replayed output matches eager output for both phases.
 
 Prefill is the weaker case and is a deliberate approximation. `vllm::qwen_gdn_attention_core`
 is in `splitting_ops`, so a piecewise-captured prefill batch leaves this op outside the graph
-and does pay some host cost. It is timed by replay anyway, because the alternative is worse:
-the eager number is 8.6x the device work at the small-token end, and prefill is 4.3% of
-engine time against decode's 95.3%. Fixing it properly means a phase-aware table rather than
-a different timing helper here.
+and does pay some host cost. It is timed by replay anyway, because the alternative
+over-predicts far more and prefill is a small fraction of engine time against decode's.
 
-**This change buys honesty, not accuracy.** A paired A/B against the same vLLM baseline,
-refitting floors for each variant, moved decode MRE the wrong way (16.77% -> 18.02%) while
-improving its median ratio (1.064 -> 1.022), and left prefill and mixed flat once weighted
-by engine time. The errors moved rather than shrank: over-prediction fell from 166 to 131 of
-236 buckets, but p10/p90 barely budged (0.839/1.502 -> 0.829/1.499), so the residual ~16% is
-not coming from this table. The magnitude explains why -- the per-call correction is 21.95 us
-at batch 1, which over 30 layers is 0.658 ms of a 5.0 ms step (13%), and at batch 64 it is
-1.72 us per layer, essentially nothing. What the old tables bought was a cancellation: an
-inflated floor offsetting under-prediction elsewhere. That cancellation is specific to this
-workload and this machine's CPU, and it would scale by 30 layers into any new model.
-
-GEMM, elementwise and attention stay on `time_cuda_call`; see `utils/timing.py` for the
+GEMM, elementwise and attention stay on `time_cuda_call`. See `utils/timing.py` for the
 measurements behind that split and for why attention is not converted despite showing the
 same pattern.
 """
@@ -190,7 +169,7 @@ def time_gdn_decode_point(
     `num_value_heads x head_dim x head_dim` per request however many tokens came before.
 
     Args:
-        batch_size (int): Requests decoding concurrently; one token each.
+        batch_size (int): Requests decoding concurrently. One token each.
         num_key_heads (int): Key heads on this rank.
         num_value_heads (int): Value heads on this rank.
         head_dim (int): Per-head dimension.
@@ -215,7 +194,7 @@ def time_gdn_decode_point(
     mixed_qkv = torch.randn(batch_size, 2 * key_dim + value_dim, dtype=dtype, device=device)
     a = torch.randn(batch_size, num_value_heads, dtype=dtype, device=device)
     b = torch.randn(batch_size, num_value_heads, dtype=dtype, device=device)
-    # Gating parameters, per value head. `A_log` is negative in the real layer; the magnitude
+    # Gating parameters, per value head. `A_log` is negative in the real layer, but the magnitude
     # does not change the kernel's work, only its numerics.
     a_log = torch.rand(num_value_heads, dtype=torch.float32, device=device).log()
     dt_bias = torch.randn(num_value_heads, dtype=torch.float32, device=device)

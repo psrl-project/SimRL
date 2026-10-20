@@ -14,7 +14,7 @@ and profiling flags could vanish without an error.
 SimRL's adapter resolves the library's published recipe
 (`megatron.bridge.recipes.<family>.<name>`) and applies the candidate to the resulting
 `ConfigContainer` in Python, where a wrong field raises. The torchrun child is
-`srl.profiler.adapters.megatron.launch`; every setting it needs travels in `launch_spec.json`
+`srl.profiler.adapters.megatron.launch`. Every setting it needs travels in `launch_spec.json`
 inside the candidate's run directory, and nothing is marshalled through a CLI.
 
 The recipe is inferred from the checkpoint's `model_type`, architecture name and parameter count,
@@ -61,7 +61,7 @@ candidate that was never prepared at all.
 
 A mesh wider than one host's GPU count passes `--nnodes N --node-rank K --master-addr HOST
 --master-port PORT` to `srl-profile megatron run`. Every host runs the same command with its own
-rank. There is no separate Slurm entry point; a Slurm job array calling the same command works.
+rank. There is no separate Slurm entry point. A Slurm job array calling the same command works.
 
 ### Smoke test
 
@@ -85,18 +85,18 @@ actually ran, so the activation footprint is priced against the measured model.
 - `expert_parallel_sizes` defaults to `[1]`. EP does not consume ranks (Megatron carves expert
   groups out of DP) but it changes the all-to-all volume and the expert count per rank, so it is
   part of the cell key. Megatron requires `expert_parallel_size * pp` to divide the mesh, and the
-  launcher pins expert tensor parallelism to 1; combinations that violate this are dropped at
+  launcher pins expert tensor parallelism to 1. Combinations that violate this are dropped at
   enumeration rather than raising minutes into distributed init.
 
 Key fields:
 
 | key | meaning |
 |---|---|
-| `tensor_parallel_sizes`, `pipeline_parallel_sizes`, `context_parallel_sizes`, `expert_parallel_sizes`, `data_parallel_sizes` | topology axes; CP must be 1 |
-| `micro_batch_size` | sequences per microbatch; must be 1 under THD |
+| `tensor_parallel_sizes`, `pipeline_parallel_sizes`, `context_parallel_sizes`, `expert_parallel_sizes`, `data_parallel_sizes` | topology axes, CP must be 1 |
+| `micro_batch_size` | sequences per microbatch, must be 1 under THD |
 | `num_microbatches` | local microbatches per DP rank. Defaults to `[1, *pipeline_parallel_sizes]` when absent |
 | `sequence_lengths` | one uniform sequence per microbatch entry: `[L] * micro_batch_size` |
-| `sequence_shapes` | mutually exclusive with `sequence_lengths`; each entry is one *packed microbatch* |
+| `sequence_shapes` | mutually exclusive with `sequence_lengths`, each entry is one *packed microbatch* |
 | `recompute` (or `recompute_modes`) | default `full` |
 | `packing` | `bshd` (default) or `thd` |
 
@@ -135,7 +135,7 @@ list the feature explicitly and accept the recorded extrapolation. See
 
 ## Steps and warmup
 
-The YAML's `training:` block sets `max_steps` and `warmup_steps`; the shipped example uses `12`
+The YAML's `training:` block sets `max_steps` and `warmup_steps`. The shipped example uses `12`
 and `4`. `max_steps` must exceed `warmup_steps`. The launcher writes every step into the sidecar
 and the collector slices the warmup off, so the window can change without re-profiling. See
 {doc}`methodology`.
@@ -147,7 +147,7 @@ wall clock is used rather than CUDA events because the model has a per-step over
 must include host-side optimizer work and the gradient reduction.
 
 The launcher resets peak memory counters at train start, after the model and optimizer exist.
-Resetting does not free memory, so the static pool is immediately re-counted; the construction
+Resetting does not free memory, so the static pool is immediately re-counted. The construction
 spike is discarded.
 
 ## Output layout
@@ -207,7 +207,7 @@ Written atomically by rank 0 in `on_train_end`:
   `static_allocated_bytes` and `local_parameter_count`. The static figure is read per rank, so a
   heavier pipeline stage's share is visible.
 - `microbatch_sequence_lengths`: the shapes actually trained. Under BSHD this is
-  `[seq_length] * micro_batch_size`; under THD the per-sequence lengths, padded to the TP degree
+  `[seq_length] * micro_batch_size`. Under THD the per-sequence lengths, padded to the TP degree
   exactly as the launcher aligns them.
 - `parameter_count`: the global count, summed across the model-parallel group so it is invariant
   across TP and PP degrees.
@@ -228,7 +228,7 @@ carries `rank`, `torch_oom`, `device_free_bytes`, `device_total_bytes`,
 The second detection route is a `RuntimeError` naming NCCL and `unhandled cuda error` (or
 `out of memory`) on a device with under 2% free memory. NCCL allocates its buffers outside the
 PyTorch allocator, so exhaustion surfaces there as a plain `RuntimeError`. The free-memory reading
-is what distinguishes it from a driver fault; anything else re-raises and stays `failed`. The
+is what distinguishes it from a driver fault. Anything else re-raises and stays `failed`. The
 collector decides OOM from markers, never from log text. See {doc}`methodology`.
 
 ### `status.json`

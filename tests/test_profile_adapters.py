@@ -224,7 +224,7 @@ def test_trusted_iterations_drops_a_large_step_at_an_impossible_token_rate():
     The absolute `_MIN_MEASURED_ELAPSED_MS` floor is necessary but not sufficient: an
     async-scheduling overlap artifact on a *large* prefill lands just above 1 ms and so
     survived it. Qwen3.5-35B-A3B measured 16128 tokens in 1.080 ms (14.9M tok/s) and
-    11317 in 1.030 ms; the psrl fit then scored them as a 39178% residual and dragged
+    11317 in 1.030 ms. The psrl fit then scored them as a 39178% residual and dragged
     tp=1 prefill MRE to 813%.
 
     The 4096-token step at 400 ms (10k tok/s) is kept, which is the point: the bound sits
@@ -379,7 +379,7 @@ def test_megatron_bridge_timer_memory_and_resolved_config(tmp_path: Path):
 
 
 def test_megatron_bridge_success_without_measurements_is_rejected(tmp_path: Path):
-    """A run cannot claim success with no measurements; that is a launcher bug."""
+    """A run cannot claim success with no measurements. That is a launcher bug."""
     config, candidate, run_dir = _prepare_bridge_fixture(
         tmp_path,
         repeat=0,

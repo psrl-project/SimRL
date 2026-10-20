@@ -47,7 +47,7 @@ refuses a rank-deficient cell unless told `--allow-rank-deficient`.
 
 **Sequence lengths that reach the traffic you will simulate.** The `tokens` feature is the
 *largest* microbatch, so one long sequence in a batch sets it, and a query outside the fitted
-range is refused (stage 6). The grid above stops at 8192; a real DAPO trace has longer
+range is refused (stage 6). The grid above stops at 8192. A real DAPO trace has longer
 sequences.
 
 ## The commands
@@ -86,7 +86,7 @@ use `CUDA_VISIBLE_DEVICES=0 CONFIG=examples/profile/megatron/qwen3_8b_smoke.yaml
 the chain on a single GPU before launching a full-model candidate.
 
 A mesh wider than one host takes the same launcher on every host with its own `--node-rank`
-and a shared `--master-addr`/`--master-port`; there is no separate scheduler path.
+and a shared `--master-addr`/`--master-port`. There is no separate scheduler path.
 
 `--resume` skips a candidate whose `status.json` says `success`, which means it
 **re-runs every out-of-memory or failed candidate**. That is rarely what you want on a second
@@ -154,7 +154,7 @@ One record's payload (abridged):
 **`sum_squared_tokens`, not the square of `sum_tokens`.** Attention does not cross sequence
 boundaries, so a microbatch holding several packed sequences costs the sum of their squared
 lengths. Squaring the packed total overcharges by the sequence count. With
-`micro_batch_size: 1` every microbatch holds one sequence and the two agree;
+`micro_batch_size: 1` every microbatch holds one sequence and the two agree.
 {doc}`04-fsdp-training` packs.
 
 **Both `allocated` and `reserved` are recorded, and the Megatron memory model fits

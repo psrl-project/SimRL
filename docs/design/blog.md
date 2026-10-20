@@ -74,7 +74,7 @@ trajectory 已经生成完，会在 queue/buffer 中等待。系统可以按 FIF
 
 ### 4. 不同框架的三层机制
 
-下面先用一张图整理 10 个框架的做法，再按 L1 → L2 → L3 展开。L1–L3 的勾叉表示是否在对应层有进行 staleness 控制相关操作。最后一列是**严格 staleness 控制（按本文定义）**：能保证所有训练 token 都不超限，才记为勾，否则记为叉。
+下面先用一张图整理 10 个框架的做法，再按 L1 → L2 → L3 展开。L1-L3 的勾叉表示是否在对应层有进行 staleness 控制相关操作。最后一列是**严格 staleness 控制（按本文定义）**：能保证所有训练 token 都不超限，才记为勾，否则记为叉。
 
 > **配置说明**：图中结论对应下文核对的配置。部分框架在不同配置下会采用不同机制，具体条件随实现一起说明。
 
@@ -165,7 +165,7 @@ min_step = self.current_step - math.ceil(self.async_generation_ratio)
 
 这个参数也不总能直接读成 staleness。RLVR 中设成 1.5，取整后的训练轮次窗口为 2，小数部分还影响窗口边缘的取样量。
 
-RLVR pipeline 还在配置加载时直接断言这个比例不能小于 1（`async_generation_ratio >= 1.0`），比 scheduler 自身更宽松的 `>= 0` 校验更严——因为 agentic 的另一条路径复用同一个字段，且不需要这个下限。换句话说，RLVR 下看到的 `async_generation_ratio` 永远至少是 1，首轮额度也永远不会小于两个 batch。
+RLVR pipeline 还在配置加载时直接断言这个比例不能小于 1（`async_generation_ratio >= 1.0`），比 scheduler 自身更宽松的 `>= 0` 校验更严。这是因为 agentic 的另一条路径复用同一个字段，且不需要这个下限。换句话说，RLVR 下看到的 `async_generation_ratio` 永远至少是 1，首轮额度也永远不会小于两个 batch。
 
 </details>
 
@@ -251,7 +251,7 @@ if version_switches <= max_partial_rollout_preempts:
 <details class="framework-detail" id="framework-nemo-rl">
 <summary>4.8 NeMo-RL</summary>
 
-NeMo-RL 的 single-controller 可以选择四种 sampler，也就是决定如何准入和训练取样的策略。它们采用不同机制，需要分开来看。真实系统的默认值是 `in_order`，不是下面篇幅最长的 `windowed`——`windowed` 在 L1、L2、L3 三层都有动作，容易让人读完误以为它才是默认选择。
+NeMo-RL 的 single-controller 可以选择四种 sampler，也就是决定如何准入和训练取样的策略。它们采用不同机制，需要分开来看。真实系统的默认值是 `in_order`，不是下面篇幅最长的 `windowed`。`windowed` 在 L1、L2、L3 三层都有动作，容易让人读完误以为它才是默认选择。
 
 **L1：** 所有 sampler 都受生成并发 `max_inflight_prompts` 和 buffer 容量 `max_buffered_rollouts` 限制。buffer 许可从准入前就开始占用，到 group 被淘汰或训练取样后才释放，所以正在生成的 group 也占额度。除了 `windowed`，另外三种 sampler 还会限制生成批次相对训练版本的提前量，额度用完就等训练推进。
 

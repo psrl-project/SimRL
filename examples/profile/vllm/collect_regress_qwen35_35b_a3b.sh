@@ -49,7 +49,7 @@ done
 # --------------------------------------------------------------------------
 # Step 2: merge collected JSONL files and fit a single psrl artifact
 # --------------------------------------------------------------------------
-# srl-regress accepts a single --input path; combine both TP profiles into
+# srl-regress accepts a single --input path. Combine both TP profiles into
 # one file so the fit sees both parallelism degrees and produces entries for both.
 MERGED="${COST_DIR}/vllm_merged.jsonl"
 > "${MERGED}"

@@ -234,7 +234,7 @@ def merge_shards(
     is named rather than silently producing a short trace.
 
     The generation cap (`max_output_tokens`) is taken from the shard headers,
-    not from `metadata`. All shards must agree on the cap; if they disagree a
+    not from `metadata`. All shards must agree on the cap. If they disagree a
     `ValueError` is raised naming the differing values and their workers.
 
     If `metadata` contains `max_output_tokens`, it is treated as an assertion:
@@ -298,7 +298,7 @@ def merge_shards(
         )
         raise ValueError(
             f"Shards disagree on max_output_tokens: {cap_summary}. "
-            f"A mixed-cap merge is meaningless; re-collect with a consistent cap."
+            f"A mixed-cap merge is meaningless. Re-collect with a consistent cap."
         )
     shards_cap = next(iter(distinct_caps))
 

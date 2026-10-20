@@ -133,7 +133,7 @@ outputs/
 
 Hydra's run directory is separate from `output_dir`. Re-running with the same `output_dir`
 replaces `logs/` instead of appending to it. {doc}`../../simulation/outputs` documents every
-stream; the ones used most are below.
+stream. The ones used most are below.
 
 One `train.jsonl` record from the first run:
 

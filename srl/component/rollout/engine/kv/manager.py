@@ -212,9 +212,9 @@ class KvCacheManager:
             n_full = (computed + n_tokens) // self.block_size
             n_cached = self._n_cached.get(req.rid, len(hit_blocks))
             # Only blocks `[n_cached, n_full)` can gain a hash here, so only
-            # their hashes are built. Asking for the whole context rebuilt every
-            # id of a 30k-token request on each decode step -- O(context) work
-            # per token, and the single largest cost in the engine loop.
+            # their hashes are built. Asking for the whole context would rebuild
+            # every id of a 30k-token request on each decode step, which is
+            # O(context) work per token and the single largest cost in the loop.
             if n_cached < n_full:
                 self.pool.cache_full_blocks(
                     held,

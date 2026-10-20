@@ -80,7 +80,7 @@ srl/
 │   │           └── inventory_deadline.py   # forecasts each option against forecast/plan.py
 │   ├── recompute/cost.py    # Fixed, Analytical, TrainingForward recompute models
 │   ├── sync/cost.py         # Fixed and Bandwidth sync models
-│   └── training/__init__.py # Namespace; the training models live in cost/training/
+│   └── training/__init__.py # Namespace, the training models live in cost/training/
 ├── config/
 │   ├── __init__.py          # register_configs() for the Hydra ConfigStore
 │   ├── schema.py            # SimulateConfig and its blocks
@@ -101,7 +101,7 @@ srl/
 │   │   │   │   gdn.py, optimizer.py
 │   │   ├── database.py      # Query dataclasses, KernelDatabase (SOL / interpolated utility)
 │   │   ├── floor.py         # fit_floors, fit_floors_report, load_floors, write_floors
-│   │   ├── hardware.py      # GpuSpec, gpu_slug, load_gpu_spec; data/gpu_specs.yaml
+│   │   ├── hardware.py      # GpuSpec, gpu_slug, load_gpu_spec, data/gpu_specs.yaml
 │   │   ├── holdout.py       # evaluate_holdout, holdout_report, bracketing_indices
 │   │   ├── interp.py        # UtilitySample, UtilityGrid, KernelCoverageError
 │   │   ├── model_ops.py     # ModelOps: a checkpoint's per-step op list, sharded for one TP
@@ -167,7 +167,7 @@ srl/
 │       ├── collective.py    # Multi-node collective driver (torchrun / ssh)
 │       ├── collective_launch.py  # torchrun child, named as a string by collective.py
 │       ├── grid/            # Which shapes a sweep enumerates. TORCH-FREE
-│       │   ├── families.py      # ModelFamily, FAMILY_REGISTRY; imports the families at its tail
+│       │   ├── families.py      # ModelFamily, FAMILY_REGISTRY, imports the families at its tail
 │       │   ├── families_dense.py, families_moe.py
 │       │   ├── shape.py         # GemmShape
 │       │   └── gemm, attention, attention_training, elementwise, gdn, optimizer
@@ -202,7 +202,7 @@ deprecated/                  # Archive. Not packaged, not collected, not importa
 workflow/                    # Agent-oriented validation workflows and reference notes
 scripts/                     # Standalone analysis scripts
 examples/                    # profile/ configs, simulate/ arms, analysis/ scripts, regress/
-tests/                       # Flat; prefixes group them (kernel_, engine_cpp_, forecast_, ...)
+tests/                       # Flat. Prefixes group them (kernel_, engine_cpp_, forecast_, ...)
 ```
 
 ## Key Interfaces
@@ -228,7 +228,7 @@ same attribute surface.
   raise.
 
 ### NativeInstance (`srl/component/rollout/engine/instance.py`)
-- `add_request(req, t) -> bool` (the authority on admission; the router only gates eligibility)
+- `add_request(req, t) -> bool` (the authority on admission, while the router only gates eligibility)
 - `advance_one_event(version) -> EngineEvent | None` with `undo_last_event()` or
   `commit_last_event()`. Exactly one of the two must follow. A snapshot left open outlives its event.
 - `advance_to(t_limit, version) -> (completed, reached_limit)`
@@ -280,42 +280,42 @@ Read-only facade for a routing strategy that declares `bind_runtime`: `now`, `tr
 ## Import Dependency Order
 
 1. `_logging` (no internal deps)
-2. `profiler.schema`, `profiler.io` (import `_logging`); `cost.kernel.hardware`, `sol`, `interp`,
-   `surface`; `workload.distributions`, `workload.trace`, `workload.sharding`
+2. `profiler.schema`, `profiler.io` (import `_logging`). `cost.kernel.hardware`, `sol`, `interp`,
+   `surface`. `workload.distributions`, `workload.trace`, `workload.sharding`
 3. `profiler.kernel.utils.{model_dims,validators}`, `profiler.kernel.sweep.*`,
-   `profiler.kernel.grid.*` (depend on `profiler.schema`; `grid.gemm` dispatches through
+   `profiler.kernel.grid.*` (depend on `profiler.schema`, and `grid.gemm` dispatches through
    `grid.families`, whose tail imports the family modules). All must stay torch-free.
-4. `cost.kernel.ops.*` (depend on `cost.kernel.{hardware,sol,interp}`; `ops/__init__` imports every
-   op module, the only registration path; `parse_sweep` and `measure` import the profiler lazily).
+4. `cost.kernel.ops.*` (depend on `cost.kernel.{hardware,sol,interp}`. `ops/__init__` imports every
+   op module, the only registration path. `parse_sweep` and `measure` import the profiler lazily).
    MUST stay torch-free.
-5. `cost.kernel.{table,floor,holdout,database}` (depend on `ops.base`; `floor` imports `holdout`
+5. `cost.kernel.{table,floor,holdout,database}` (depend on `ops.base`, and `floor` imports `holdout`
    lazily).
 6. `cost.kernel.model_ops` (depends on `profiler.kernel.grid.gemm`, `cost.kernel.database`).
-7. `cost.artifact` (imports `profiler.schema`); `cost.rollout.segment`, `cost.rollout.advance`.
-8. `cost.training.{base,inventory,fsdp_inventory,latency,microbatch,fitting,activation}`;
-   `cost.training.{analytical,fixed,linear,hydraulis,fsdp}`; `cost.training.composed` and
-   `cost.training.training_ops`; `cost.training.__init__` (registry);
+7. `cost.artifact` (imports `profiler.schema`). `cost.rollout.segment`, `cost.rollout.advance`.
+8. `cost.training.{base,inventory,fsdp_inventory,latency,microbatch,fitting,activation}`.
+   `cost.training.{analytical,fixed,linear,hydraulis,fsdp}`. `cost.training.composed` and
+   `cost.training.training_ops`. `cost.training.__init__` (registry).
    `cost.training.validate`.
 9. `cost.rollout.{base,roofline,distserve,psrl,composed}` (`composed` depends on
-   `cost.kernel.database`, `cost.rollout.base`, `cost.rollout.segment`); `cost.rollout.__init__`.
+   `cost.kernel.database`, `cost.rollout.base`, `cost.rollout.segment`). `cost.rollout.__init__`.
 10. `cost.kernel.validate` (depends on `cost.rollout.base`).
 11. `component.rollout.engine.{request,event,state,snapshot,undo,kv,eviction}`. Importing
     `eviction` registers the strategies.
 12. `component.rollout.engine.instance` (depends on the engine modules and `cost.rollout.advance`).
 13. `forecast.{length,snapshot}`, then `forecast.{drain,pipeline,fleet,plan}`.
-14. `component.rollout.router.*` (depends on the engine and `forecast.length`; `strategies/` imports
+14. `component.rollout.router.*` (depends on the engine and `forecast.length`. `strategies/` imports
     `forecast` at module level, and importing the package registers every strategy).
 15. `policy.base`, `policy.ledger`, `policy.rules`, `policy.*`, `policy.registry`.
 16. `workload.grouped`, `workload.fitting`, `workload.inference`.
 17. `buffer.queue`.
 18. `telemetry.store`, `telemetry.writer` (depends on the engine), `telemetry.psrl_log`.
 19. `visualizer.plots` (depends on `telemetry.store` only).
-20. `simulator.config` (depends on the engine and `workload.grouped`); `simulator.report`;
-    `simulator.runtime` (depends on `forecast`); `simulator.simulator`;
+20. `simulator.config` (depends on the engine and `workload.grouped`). `simulator.report`.
+    `simulator.runtime` (depends on `forecast`). `simulator.simulator`.
     `simulator.dynamic_parallel.{plan,fleet}` (nothing in `simulator.simulator` imports them).
-21. `config.policies.*` (import the policy classes); `config.schema`; `config.__init__`.
-22. `profiler.hf`, `profiler.search_space`, `profiler.fsdp_search_space`;
-    `profiler.adapters.base`; `profiler.adapters.{vllm,megatron,fsdp}`;
+21. `config.policies.*` (import the policy classes). `config.schema`. `config.__init__`.
+22. `profiler.hf`, `profiler.search_space`, `profiler.fsdp_search_space`.
+    `profiler.adapters.base`. `profiler.adapters.{vllm,megatron,fsdp}`.
     `profiler.adapters.__init__`.
 23. `cli.*`, with `cli.main` on top of almost everything.
 

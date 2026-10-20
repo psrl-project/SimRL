@@ -5,9 +5,9 @@ PSRL baseline's TP2/PP3 mesh needed its own run before it could be simulated.
 The hypothesis under test is that only TP needs measuring:
 
 - a 1F1B stage holds `num_layers / pp` of the layers, so its per-microbatch cost
-  should fall by `pp`;
+  should fall by `pp`.
 - the critical path is `num_microbatches + pp - 1` slots, which is already
-  analytic in `srl.cost.training.latency.pipeline_slots`;
+  analytic in `srl.cost.training.latency.pipeline_slots`.
 - point-to-point activation sends between stages are small next to the layer
   compute, so ignoring them should cost little accuracy.
 
@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-# Megatron prints one of these per iteration; the profiler's own JSONL is only
+# Megatron prints one of these per iteration. The profiler's own JSONL is only
 # written at collect time, which is too late to watch a running sweep.
 _ITER_TIME = re.compile(r"elapsed time per iteration \(ms\): ([\d.]+)")
 
@@ -129,7 +129,7 @@ def main() -> int:
 
     present = sorted({record["pp"] for record in records})
     if len(present) < 2:
-        print(f"\nOnly pp={present} measured so far; the comparison needs at least two.")
+        print(f"\nOnly pp={present} measured so far. The comparison needs at least two.")
         return 0
 
     print("\n=== Per-cell fits (status quo: one fit per PP) ===")

@@ -1,7 +1,7 @@
 """Configuration for SimRL-owned FSDP2 training profiling.
 
 There is no recipe inference here. Megatron needs it because its library recipes
-carry tuned defaults keyed by model family and size; an FSDP run is fully described
+carry tuned defaults keyed by model family and size. An FSDP run is fully described
 by a HuggingFace checkpoint plus a device mesh, so the checkpoint is read directly.
 """
 

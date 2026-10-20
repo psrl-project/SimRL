@@ -227,7 +227,7 @@ def test_a_phase_dropped_by_min_samples_is_reported_not_silent(tmp_path):
     ]
     baseline = _write_baseline(tmp_path / "vllm.jsonl", records)
 
-    # `srl_logger` sets propagate = False, so caplog cannot see it; attach a handler.
+    # `srl_logger` sets propagate = False, so caplog cannot see it. Attach a handler.
     captured: list[str] = []
 
     class _Collect(logging.Handler):
@@ -236,7 +236,7 @@ def test_a_phase_dropped_by_min_samples_is_reported_not_silent(tmp_path):
 
     handler = _Collect(level=logging.WARNING)
     srl_logger.addHandler(handler)
-    # Only the coverage warning is under test; let the later model construction fail.
+    # Only the coverage warning is under test. Let the later model construction fail.
     args = argparse.Namespace(
         # A real config: cmd_kernels_validate loads it before reaching the coverage warning,
         # so a bogus path would abort first and the test would pass vacuously.

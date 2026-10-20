@@ -264,17 +264,13 @@ def _fit_latency_entry(
         ),
         feature_ranges=feature_ranges,
         diagnostics={
-            # Spelled in the same terms `LatencyFeatures.design_row` actually builds, which
-            # differ from the earlier `slots * max_microbatch_tokens` wording in two ways.
+            # Spelled in the same terms `LatencyFeatures.design_row` actually builds.
             #
             # The token terms are SUMS over the rank's microbatches plus a `pp - 1` bubble
             # charged at the largest: a stage runs every microbatch it is given, so a step
             # costs the sum of their costs, and only the slots it cannot fill are charged
             # at the maximum. And every term carries a `1 / PP` stage share, because the
             # fitted coefficients price the whole model while a stage holds one slice.
-            #
-            # The two forms coincide on the uniform microbatches profiling measures, so the
-            # old string still fitted correctly; it just could not be reimplemented from.
             "formula": (
                 "per_step_overhead "
                 "+ (token_cost * (sum_over_microbatches(sum_tokens) "
@@ -400,7 +396,7 @@ def _fit_memory_entry(
     allocator-overhead margin on top of this prediction.
 
     Both terms are in bytes, so `activation_scale` is a dimensionless correction that
-    should land near one; a value far from one means the geometry is wrong rather than
+    should land near one. A value far from one means the geometry is wrong rather than
     the machine being unusual.
     """
     successful = [
@@ -581,7 +577,7 @@ class HydraulisLatencyModel(TrainingLatencyModel):
                 optimizer_state_dtype=self.optimizer_state_dtype,
                 distributed_optimizer=self.distributed_optimizer,
             ),
-            # One TP entry serves every PP; see `_pool_latency_cells`.
+            # One TP entry serves every PP. See `_pool_latency_cells`.
             ignore_pp=True,
         )
         microbatches = workload.critical_rank_microbatches(parallelism)
@@ -785,7 +781,7 @@ class HydraulisTrainingCost(TrainingCostModel):
                 return explicit
             values = {selector[name] for selector in selectors}
             if len(values) != 1:
-                raise ValueError(f"Artifact has multiple {name} values; select one explicitly.")
+                raise ValueError(f"Artifact has multiple {name} values. Select one explicitly.")
             return values.pop()
 
         selected_parameter_dtype = str(infer("parameter_dtype", parameter_dtype))

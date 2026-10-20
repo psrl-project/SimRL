@@ -113,7 +113,7 @@ def build_launch_spec(
         # `position_ids is None`, so every PP>1 candidate dies with
         # `AttributeError: 'NoneType' object has no attribute 'shape'`. No batch-reader
         # patch can fix that, because the iterator is never reached. The sweep uses PP=1 for
-        # such a model; this field is here so the artifact records why.
+        # such a model. This field is here so the artifact records why.
         "derives_position_ids_from_input_ids": "VL" in str(config.model.architecture or "")
         or "Conditional" in str(config.model.architecture or ""),
         # The launcher builds `cu_seqlens` from these and the sidecar records them,

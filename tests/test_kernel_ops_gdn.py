@@ -61,7 +61,7 @@ def test_gdn_prefill_is_linear_in_tokens_where_attention_is_quadratic():
         attn_dtype="bfloat16",
     )
     # Taken above the chunk size so the intra-chunk term has saturated and the state term
-    # dominates; below it the cost is constant, which is the measured plateau.
+    # dominates. Below it the cost is constant, which is the measured plateau.
     short = gdn_context_sol(spec, total_tokens=8192, **kwargs).latency_s
     long = gdn_context_sol(spec, total_tokens=16384, **kwargs).latency_s
     assert 1.9 < long / short < 2.1
@@ -103,11 +103,11 @@ def test_gdn_state_is_indexed_by_value_heads_not_key_heads():
     `(num_v_heads, head_v_dim, head_k_dim)`, and the decode kernel reads `HV` off
     `initial_state.shape[-3]` to validate its `a` and `b` arguments. Keying the state on key
     heads instead raises `a/b must have shape [B, HV] with HV=16` at measurement time, and
-    would understate the decode roofline by the value/key head ratio -- 2x on this model.
+    would understate the decode roofline by the value/key head ratio, which is 2x on this model.
     """
     spec = load_gpu_spec("h20")
     base = dict(batch_size=8, head_dim=_HEAD_DIM, attn_dtype="bfloat16")
-    # Swapping the two head counts must change the answer; if the formula used key heads it
+    # Swapping the two head counts must change the answer. If the formula used key heads it
     # would be symmetric in the wrong direction.
     by_value = gdn_decode_sol(
         spec, num_key_heads=_KEY_HEADS, num_value_heads=_VALUE_HEADS, **base
@@ -156,6 +156,6 @@ def test_gdn_refuses_a_model_without_the_linear_attention_fields():
 
 
 def test_gdn_refuses_differing_key_and_value_head_dimensions():
-    """The SOL assumes one head dimension; a model with two needs separate terms."""
+    """The SOL assumes one head dimension. A model with two needs separate terms."""
     with pytest.raises(ProfileValidationError, match="linear_value_head_dim"):
         gdn_head_counts(_hybrid_model(linear_value_head_dim=256), tensor_parallel=1)

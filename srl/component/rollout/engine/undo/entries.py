@@ -89,17 +89,13 @@ class MappingKeysChanged:
     """Writes to a mapping during one event, restored to what they displaced.
 
     `note` is called with the key *before* the write, so each entry records the
-    value that was there -- or `MISSING` when the key was absent. Rollback then
+    value that was there, or `MISSING` when the key was absent. Rollback then
     deletes what was added and puts back what was overwritten.
 
-    Recording the displaced value is the whole point, and replaces an earlier
-    `MappingKeysAdded` that stored keys alone and popped them on rollback. That
-    was wrong whenever one event *re-pointed* an existing key: rollback deleted
-    the entry instead of restoring its previous value. In the KV pool that meant
-    a prefix hash moving from block A to block B, then the undo dropping the
-    hash entirely while block A still held it and was still held by a live
-    request -- content resident in the cache but no longer addressable, so
-    prefix reuse was under-reported. See `tests/test_undo_full_state.py`.
+    Recording the displaced value matters whenever one event *re-pointed* an
+    existing key: popping the key on rollback instead of restoring its previous
+    value would leave a block's content resident in the cache but no longer
+    addressable, under-reporting prefix reuse. See `tests/test_undo_full_state.py`.
 
     This does not diff the mapping: a key written without a `note` is a caller
     bug, and quietly reverting it would hide the bug instead of surfacing it.

@@ -31,7 +31,7 @@ fine to reuse, but none of them is required.
 | `srl-plot <run_dir>` | Regenerate `SimPlotter` plots from an existing run's `logs/` without re-simulating |
 | `srl-compare <sim_dir> <real_dir>` | Time-weighted span, train/recompute/sync, running requests, KV util, idle fraction side by side |
 | `srl-psrl-plot` | Convert a real PSRL run's logs into the simulator schema and plot it |
-| `examples/analysis/sim_digest.py` | Hash every telemetry stream plus the C++ extension; `check --reference` fails on any divergence |
+| `examples/analysis/sim_digest.py` | Hash every telemetry stream plus the C++ extension. `check --reference` fails on any divergence |
 | `examples/analysis/diff_backends.py` | Row-identical comparison of the native and C++ engines over adversarial cases |
 | `examples/analysis/headroom_probe.py report <grid>` | Per-point arms against the default and the static baselines |
 | `examples/analysis/inventory_deadline_knobs.py report <grid>` | One knob at a time against shipped and best static |

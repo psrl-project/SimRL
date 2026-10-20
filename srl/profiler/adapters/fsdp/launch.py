@@ -100,8 +100,8 @@ def build_model(spec: dict[str, Any]) -> torch.nn.Module:
     # and from which the static inventory is sized. AdamW inherits its moment dtype from
     # the parameter dtype it is handed: verified experimentally: a bf16 module produces
     # bf16 moments, an fp32 module produces fp32 moments. `MixedPrecisionPolicy.param_dtype`
-    # (`compute_dtype`) governs only the all-gathered parameters used during forward/backward;
-    # those are transient and freed per block when `reshard_after_forward=True`, so they are
+    # (`compute_dtype`) governs only the all-gathered parameters used during forward/backward.
+    # Those are transient and freed per block when `reshard_after_forward=True`, so they are
     # not part of the static pool at all. The analytic inventory (`16p/world_size`) was fitted
     # on a module built in fp32 (4p params + 4p grads + 8p Adam moments, all sharded), so
     # building in any other dtype would make the measured pool disagree with that formula.
@@ -128,13 +128,13 @@ def apply_fsdp(model: torch.nn.Module, spec: dict[str, Any], mesh: DeviceMesh):
     Shard each transformer block, then the root module.
 
     Wrapping per block rather than once at the root is what makes the all-gather
-    granular enough to overlap with compute; a single root wrap would gather every
+    granular enough to overlap with compute. A single root wrap would gather every
     parameter before the first layer runs.
     """
     from torch.distributed.fsdp import CPUOffloadPolicy, MixedPrecisionPolicy, fully_shard
 
     # `param_dtype` is the dtype the all-gathered parameters are *computed* in, which is
-    # `compute_dtype`; `reduce_dtype` is what the gradient reduce-scatter accumulates in.
+    # `compute_dtype`. `reduce_dtype` is what the gradient reduce-scatter accumulates in.
     # Passing `parameter_dtype` as `param_dtype` would conflate storage with compute and
     # silently make bf16-stored/fp32-computed candidates unmeasurable.
     policy = MixedPrecisionPolicy(
@@ -248,7 +248,7 @@ def _measure_collectives(model, batch, optimizer, measurement, num_microbatches:
     exposed wall time. With `reshard_after_forward=True` most of the all-gather runs
     concurrently with compute on another stream, so these totals are an upper bound on
     what the collectives cost the step: a kernel-summation model that adds them to
-    compute time would over-predict. They bound the communication term; they do not
+    compute time would over-predict. They bound the communication term, and they do not
     decompose the step.
 
     The profiled step accumulates the same `num_microbatches` the timed loop does, so the
@@ -293,7 +293,7 @@ def main() -> None:
 
     dist.init_process_group("nccl")
     # `LOCAL_RANK`, not the global rank modulo the device count. torchrun sets it per
-    # node, and it already respects `CUDA_VISIBLE_DEVICES`; deriving the device from the
+    # node, and it already respects `CUDA_VISIBLE_DEVICES`. Deriving the device from the
     # global rank would collide as soon as a node hosts an unequal share of the ranks.
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     measurement = FsdpMeasurement(run_dir=run_dir, spec=spec)

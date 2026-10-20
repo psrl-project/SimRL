@@ -4,7 +4,7 @@
 //
 // Port of srl/component/rollout/engine/kv/lineage.py. Two contexts agree on
 // a prefix exactly when they agree on the provenance that produced it.
-// Prompt blocks key on (is_shared=true, source_group_id, j); response blocks
+// Prompt blocks key on (is_shared=true, source_group_id, j). Response blocks
 // key on (is_shared=false, rid, j).
 #pragma once
 
@@ -25,8 +25,8 @@ inline int block_count(const Request& req, int block_size) {
 
 // Hash ids for full blocks [start, stop) of this request's context.
 //
-// A negative stop (the default) means "whole context".  start is clamped to 0.
-// Prompt blocks key on source_group_id; response blocks key on rid.
+// A negative stop (the default) means "whole context". start is clamped to 0.
+// Prompt blocks key on source_group_id. Response blocks key on rid.
 inline std::vector<BlockHash> block_hashes(const Request& req, int block_size,
                                            int start = 0, int stop = -1) {
   if (block_size <= 0) {

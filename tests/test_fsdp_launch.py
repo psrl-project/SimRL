@@ -72,7 +72,7 @@ def test_synthetic_batch_has_the_requested_shape(tmp_path: Path):
 
 
 def test_synthetic_batch_position_ids_do_not_restart(tmp_path: Path):
-    """Profiling measures padded uniform shapes; restarting ids would signal packing."""
+    """Profiling measures padded uniform shapes. Restarting ids would signal packing."""
     batch = synthetic_batch(_spec(tmp_path), device="cpu")
     assert torch.equal(batch["position_ids"][0], torch.arange(128))
 
@@ -238,7 +238,7 @@ def test_sidecar_records_the_comm_compute_split(tmp_path: Path):
     """
     Ground truth for a later kernel-summation model.
 
-    The regression never reads these timers; they exist because measuring the
+    The regression never reads these timers. They exist because measuring the
     all-gather and reduce-scatter share now is cheap and re-profiling later is not.
     """
     measurement = FsdpMeasurement(run_dir=tmp_path, spec=_spec(tmp_path))
@@ -334,7 +334,7 @@ def test_a_matching_optimizer_state_dtype_passes(tmp_path: Path):
 
 
 def test_build_model_pins_train_mode(tmp_path: Path, monkeypatch):
-    """HF gates recompute on `self.training`; eval would silently disable checkpointing."""
+    """HF gates recompute on `self.training`. Eval would silently disable checkpointing."""
     from transformers import AutoConfig
 
     def fake_from_pretrained(path, **kwargs):
@@ -444,8 +444,8 @@ def test_static_allocated_uses_live_not_peak(tmp_path: Path, monkeypatch):
 
     A peak-based figure would include the pre-shard full-model residency that
     `fully_shard` releases before `on_train_start` is called, overstating the static
-    pool and making the 16p/world_size inventory check read high.  The live figure
-    lands within ~6% of the analytic inventory; the peak overshoots by ~23%.
+    pool and making the 16p/world_size inventory check read high. The live figure
+    lands within ~6% of the analytic inventory, while the peak overshoots by ~23%.
     """
     LIVE_BYTES = 1_000_000
     PEAK_BYTES = 1_230_000  # ~23% higher, simulating the pre-shard spike

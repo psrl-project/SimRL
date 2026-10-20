@@ -2,7 +2,7 @@
 //
 // Per-instance KV cache manager: the engine's view of the block pool.
 //
-// Port of srl/component/rollout/engine/kv/manager.py.  NativeInstance talks
+// Port of srl/component/rollout/engine/kv/manager.py. NativeInstance talks
 // to this and never to BlockPool directly, so occupancy accounting and hit
 // lookup stay in one place.
 #pragma once

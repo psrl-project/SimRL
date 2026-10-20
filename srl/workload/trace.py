@@ -2,7 +2,7 @@
 
 The JSONL file contains a `_meta` header followed by
 one `{"group_id": ..., "prompt_len": ..., "output_lens": [...]}` record per
-`RequestGroup`.  This format captures a joint prompt-and-response distribution
+`RequestGroup`. This format captures a joint prompt-and-response distribution
 with explicit group boundaries, as produced by the DAPO recipe where each
 prompt is paired with `n` independently sampled responses.
 """
@@ -106,7 +106,7 @@ def write_group_trace(
         output_path (str | Path): Destination JSONL path. Parents are created.
         metadata (dict[str, Any]): Provenance merged into the `_meta` header.
             Must contain a positive `max_output_tokens` entry (the generation
-            cap used during data collection); this value is required to
+            cap used during data collection). This value is required to
             correctly count truncated responses in the summary stats.
         n_bins (int): Histogram bins for the summary stats.
 

@@ -49,7 +49,7 @@ def _validate_observed_mesh(
 
     Absent-key contract:
     - If ``observed_mesh`` is missing and the run succeeded and ``allow_incomplete`` is
-      false, a ``ProfileValidationError`` is raised.  Without the key there is no way to
+      false, a ``ProfileValidationError`` is raised. Without the key there is no way to
       verify the topology, so the record must not silently enter the fit as though it were
       verified: that is the exact failure this function exists to prevent.
     - If ``allow_incomplete`` is true, a missing key is tolerated: the caller is

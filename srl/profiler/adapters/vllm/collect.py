@@ -138,7 +138,7 @@ def collect_vllm_records(
             if not details:
                 raise ProfileValidationError(
                     "Missing scheduler iteration timings for vLLM run: "
-                    f"{result_path}. vLLM only emits Iteration(...) logs at INFO; "
+                    f"{result_path}. vLLM only emits Iteration(...) logs at INFO. "
                     "VLLM_LOGGING_LEVEL=WARN disables LoggingStatLogger."
                 )
             with result_path.open(encoding="utf-8") as handle:

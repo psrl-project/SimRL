@@ -60,8 +60,8 @@ def cmd_training(args: argparse.Namespace) -> None:
     if args.latency_model == "fsdp" or args.memory_model == "fsdp":
         if args.latency_model != args.memory_model:
             raise ValueError(
-                "FSDP latency and memory must be fitted together; "
-                "set both --latency-model and --memory-model to fsdp."
+                "FSDP latency and memory must be fitted together. "
+                "Set both --latency-model and --memory-model to fsdp."
             )
         artifact = FsdpTrainingCost.fit(
             records,

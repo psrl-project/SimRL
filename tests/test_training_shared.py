@@ -50,7 +50,7 @@ def test_read_status_prefers_oom_markers_over_generic_failure(tmp_path: Path):
 
 
 def test_read_status_never_infers_oom_from_a_log_phrase(tmp_path: Path):
-    """A log mentioning the phrase must stay `failed`; only markers are authoritative.
+    """A log mentioning the phrase must stay `failed`. Only markers are authoritative.
 
     A false OOM adds an inequality constraint that can only raise the fitted memory
     floor, so it silently makes the memory model more conservative.

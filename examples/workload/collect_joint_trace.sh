@@ -42,7 +42,7 @@ mapfile -t WORKERS <<<"${WORKER_ROWS}"
 N_WORKERS="${#WORKERS[@]}"
 echo "Collecting ${SAMPLE_SIZE} groups of n=${GROUP_N} across ${N_WORKERS} workers."
 
-# Kill vLLM servers launched by this script on every host.  Scoped narrowly to
+# Kill vLLM servers launched by this script on every host. Scoped narrowly to
 # the model path and port range so unrelated vLLM processes are not disturbed.
 _cleanup() {
     echo "Cleaning up: terminating vLLM servers (model=${MODEL}, ports ${BASE_PORT}..$((BASE_PORT + 7)))..." >&2
@@ -112,7 +112,7 @@ if [[ "${DRY_RUN:-}" == "1" ]]; then
 fi
 
 # Check whether an existing shard is complete by counting the actual groups in
-# the body against n_groups_requested in the header.  Trusting only the header
+# the body against n_groups_requested in the header. Trusting only the header
 # count would miss a shard whose write was interrupted after the header was
 # already committed.
 _shard_is_complete() {

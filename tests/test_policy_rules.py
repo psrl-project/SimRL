@@ -139,7 +139,7 @@ class TestVersionWindow:
 
 
 class TestRollEquivalence:
-    """`RollPolicy.on_publish` keeps its own cohort-step loop; this proves the generic
+    """`RollPolicy.on_publish` keeps its own cohort-step loop. This proves the generic
     `CancelBelowVersion` rule would select the identical group-id set for the same scenario.
     """
 

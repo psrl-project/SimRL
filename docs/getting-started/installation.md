@@ -50,7 +50,7 @@ registers seven console scripts:
 | `srl-workload` | Collect and validate joint grouped workload traces |
 
 `pyarrow` (parquet kernel tables) and `aiohttp` (trace collection) are imported by the code
-but not declared in `pyproject.toml`; install them if your environment lacks them.
+but not declared in `pyproject.toml`. Install them if your environment lacks them.
 
 Verify the install:
 
@@ -114,7 +114,7 @@ FLASH_ATTENTION_MAX_JOBS=4 bash third_party/install.sh
 
 `MAX_JOBS` defaults to 8. Each `nvcc` invocation can use about a gigabyte of RAM, so a host
 that reports hundreds of cores but little free memory is killed by the OOM reaper with an
-empty log; lower the value if the build stalls without output.
+empty log. Lower the value if the build stalls without output.
 
 ### Hosts with glibc older than 2.39
 
@@ -139,11 +139,11 @@ not resolve. Variables the code reads:
 |---|---|---|
 | `MODEL_PATH` | `examples/profile/**/*.yaml` | Checkpoint directory for profiling configs |
 | `SIMRL_BACKEND` | `srl` | Rollout engine: `cpp` (default), `auto`, or `native` |
-| `SIMRL_KV_CACHE` | `srl`, `srl-profile kv-probe` | KV-capacity cache file; default `~/.cache/srl/kv_capacity.json` |
-| `SIMRL_LOG_LEVEL` | all CLIs | Level of the `srl` logger; default `INFO` |
+| `SIMRL_KV_CACHE` | `srl`, `srl-profile kv-probe` | KV-capacity cache file, default `~/.cache/srl/kv_capacity.json` |
+| `SIMRL_LOG_LEVEL` | all CLIs | Level of the `srl` logger, default `INFO` |
 
 The C++ engine runs by default. `SIMRL_BACKEND=auto` uses it when `srl._engine_cpp` imports and
-falls back to the Python engine otherwise; `SIMRL_BACKEND=native` forces the Python engine.
+falls back to the Python engine otherwise. `SIMRL_BACKEND=native` forces the Python engine.
 {doc}`../simulation/backends` explains the two engines.
 
 ---

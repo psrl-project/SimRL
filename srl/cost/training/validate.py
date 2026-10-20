@@ -86,7 +86,7 @@ class TrainingValidationResult:
 
         Reported alongside the absolute figure because the sign is diagnostic in a way the
         magnitude is not. A kernel sum that is uniformly negative is missing an additive
-        term; one that scatters around zero has a noisy term; one that is uniformly positive
+        term. One that scatters around zero has a noisy term. One that is uniformly positive
         is double-counting or ignoring overlap.
         """
         if not self.comparisons:

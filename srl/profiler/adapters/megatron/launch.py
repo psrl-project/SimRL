@@ -99,7 +99,7 @@ def _nccl_allocation_failure(error: BaseException) -> bool:
     NCCL allocates its communicator and channel buffers with `cudaCalloc`, outside the
     PyTorch caching allocator. When the device is full that call fails inside the library
     and torch re-raises a plain `RuntimeError: NCCL Error 1: unhandled cuda error`, never a
-    `torch.OutOfMemoryError` -- so the candidate is classified `failed` and the memory model
+    `torch.OutOfMemoryError`, so the candidate is classified `failed` and the memory model
     loses a real upper bound. On a MoE sweep that is most of the boundary, because the
     expert `all_to_all` is both the largest allocation and the last one attempted.
 
@@ -132,8 +132,8 @@ def _nccl_allocation_failure(error: BaseException) -> bool:
         # The CUDA context is already poisoned, which happens only after a real fault.
         # Treating that as inconclusive leaves the candidate `failed`.
         return False
-    # NCCL's buffers are a few MiB. A device with under 2% headroom had no room for them;
-    # one with more failed for some other reason.
+    # NCCL's buffers are a few MiB. A device with under 2% headroom had no room for them.
+    # One with more failed for some other reason.
     return free_bytes < 0.02 * total_bytes
 
 
@@ -160,7 +160,7 @@ def _make_thd_batch_iterator(
 
     Args:
         sequence_lengths: Per-sequence lengths in one packed microbatch.
-        global_batch_size: Unused; kept so callers can pass the spec verbatim.
+        global_batch_size: Unused. Kept so callers can pass the spec verbatim.
         num_microbatches: Unused here, checked in `SrlMeasurementCallback`.
         vocab_size: Upper bound for random token ids.
         tensor_parallel_size: Alignment multiple for each sequence.
@@ -185,7 +185,7 @@ def _make_thd_batch_iterator(
     argmin = torch.tensor([n_seqs + 1], dtype=torch.long)
     max_seqlen = torch.tensor([max(sequence_lengths)], dtype=torch.long)
 
-    # Position ids restart per sequence; one arange over the flat buffer would
+    # Position ids restart per sequence. One arange over the flat buffer would
     # rotate later sequences as though they continued the first.
     position_ids_flat = torch.cat(
         [torch.arange(length, dtype=torch.long) for length in sequence_lengths]
@@ -287,7 +287,7 @@ def _patch_thd_batches(gpt_step_module, spec: dict[str, Any]) -> None:
             elif key in host_keys:
                 placed[key] = value
             else:
-                # Bridge nulls every key the rank does not need; middle pipeline
+                # Bridge nulls every key the rank does not need. Middle pipeline
                 # stages therefore receive no tokens.
                 placed[key] = None
         return placed
@@ -321,8 +321,8 @@ def build_config(spec: dict[str, Any]) -> ConfigContainer:
     cfg.model.virtual_pipeline_model_parallel_size = None
 
     # Expert parallelism is applied from the candidate, never inherited. A MoE library
-    # recipe ships its own `expert_model_parallel_size` tuned for its own mesh --
-    # `qwen3_30b_a3b` uses 4 with TP=4/PP=2 -- and Megatron requires
+    # recipe ships its own `expert_model_parallel_size` tuned for its own mesh
+    # (`qwen3_30b_a3b` uses 4 with TP=4/PP=2), and Megatron requires
     # `expert_tensor_parallel * ep * pp` to divide the world size. Overriding TP and PP
     # while leaving EP at the recipe's value therefore builds a mesh the recipe never
     # described, and the failure is a RuntimeError inside distributed init rather than
@@ -352,7 +352,7 @@ def build_config(spec: dict[str, Any]) -> ConfigContainer:
         # `alltoall` is the right fallback rather than a mere workaround: it is the
         # dispatcher whose per-layer all-to-all volume expert parallelism is meant to price,
         # so measuring it is measuring the thing EP trades against. DeepEP is a faster
-        # implementation of the same collective; swapping it in later would change the
+        # implementation of the same collective. Swapping it in later would change the
         # fitted coefficients, so `moe_flex_dispatcher_backend` is recorded in the manifest
         # and the two must not share a cell.
         if getattr(cfg.model, "moe_flex_dispatcher_backend", None):
@@ -361,8 +361,7 @@ def build_config(spec: dict[str, Any]) -> ConfigContainer:
 
     # Follows TP, as Megatron and verl both do by default. Being a function of TP it
     # is not a free cell-key dimension, so one cell per TP still describes one
-    # configuration. `SIMRL_SEQUENCE_PARALLEL=0` forces it off for A/B diagnosis;
-    # measured effect on step time is nil.
+    # configuration. `SIMRL_SEQUENCE_PARALLEL=0` forces it off for A/B diagnosis.
     _sp_override = os.environ.get("SIMRL_SEQUENCE_PARALLEL")
     cfg.model.sequence_parallel = (
         int(parallelism["tp"]) > 1 if _sp_override is None else _sp_override == "1"
@@ -429,9 +428,9 @@ def build_config(spec: dict[str, Any]) -> ConfigContainer:
     cfg.checkpoint.pretrained_checkpoint = None
     cfg.checkpoint.save_interval = None
 
-    # These live on the validation config; the identically named training fields
-    # are deprecated and warn on every access. The recipe enables evaluation by
-    # default, which a four-step profiling run must not pay for.
+    # These live on the validation config, not the identically named and deprecated
+    # training fields. The recipe enables evaluation by default, which a four-step
+    # profiling run must not pay for.
     cfg.validation.eval_iters = 0
     cfg.validation.eval_interval = None
     cfg.validation.skip_train = False
@@ -522,25 +521,18 @@ def main() -> None:
         write_oom_sidecar(run_dir, spec, error)
         raise SystemExit(OOM_EXIT_CODE) from error
     except RuntimeError as error:
-        # A NCCL collective that cannot allocate its own buffers is an out-of-memory
-        # condition wearing a different exception. NCCL allocates communicator and
-        # channel buffers outside the PyTorch caching allocator, so when the device is
-        # full its `cudaCalloc` fails inside the library and torch re-raises a plain
-        # `RuntimeError: NCCL Error 1: unhandled cuda error` -- never
-        # `torch.OutOfMemoryError`. Measured on Qwen3.5-35B-A3B at TP2/DP4/EP4, where the
-        # expert `all_to_all_single` died with
-        # `NCCL WARN Cuda failure 'out of memory' / Failed to CUDA calloc 10485760 bytes`.
+        # A NCCL collective that cannot allocate its own buffers raises a plain
+        # `RuntimeError: NCCL Error 1: unhandled cuda error` rather than
+        # `torch.OutOfMemoryError`. Left unclassified, the candidate is `failed` and the
+        # memory model loses a real upper bound, which matters most for a MoE sweep where
+        # expert dispatch is the largest allocation.
         #
-        # Left unclassified that candidate is `failed`, so the memory model loses a real
-        # upper bound -- and for a MoE sweep that is most of the boundary, because the
-        # expert dispatch is both the largest allocation and the last one made.
-        #
-        # The match is on NCCL's own failure shape plus a direct reading of free device
-        # memory, rather than on the word "memory" appearing somewhere in the log, which
-        # `base/run.py` rightly refuses to do: a false OOM can only raise the fitted floor.
-        # Querying the device is evidence rather than inference -- the NCCL WARN lines go to
-        # the parent's log file and the child cannot read them. Any other RuntimeError, or a
-        # NCCL fault on a device with room to spare, re-raises and stays `failed`.
+        # Detection matches NCCL's own failure shape plus a direct free-memory read,
+        # rather than the word "memory" in the log, which `base/run.py` rightly refuses
+        # to do because a false OOM can only raise the fitted floor. The device is
+        # queried directly because the NCCL WARN line reaches only the parent's log, not
+        # this child process. Any other RuntimeError, or a NCCL fault on a device with
+        # room to spare, re-raises and stays `failed`.
         if not _nccl_allocation_failure(error):
             raise
         write_oom_sidecar(run_dir, spec, error)

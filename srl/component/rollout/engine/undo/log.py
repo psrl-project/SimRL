@@ -13,23 +13,21 @@ class UndoLog:
     Reverse order matters: a later entry may have been captured after an earlier
     one already changed something, so rollback has to unwind rather than replay.
     It is load-bearing even under `record_once`, because two different keys can
-    name overlapping state -- `("req", id(req))` and `("hit", id(req))` both
-    capture `prefilled` -- and the earliest capture is the only one holding the
+    name overlapping state: `("req", id(req))` and `("hit", id(req))` both
+    capture `prefilled`, and the earliest capture is the only one holding the
     true pre-event value. Unwinding newest-first lets it win.
 
     There is deliberately no "capture this whole object" entry point. Callers
     register the specific things they touch, which is what keeps cost
     proportional to the work an event did rather than to the size of the
-    subsystem it did the work in. A whole-pool `copy.deepcopy` measured 179 ms
-    per event, or 1771 s across a run whose real duration is 3349 s.
+    subsystem it did the work in.
 
     An entry is either an `Undoable` or, for the attribute captures that are
     almost all of the traffic, an inline `(target, names, values)` tuple. The
-    tuple is the same information an `AttrSnapshot` holds, stored without
-    building one: an event records tens of millions of these across a run and
-    only 16% of events are ever rolled back, so the object was allocated and
-    discarded far more often than it was used. `AttrSnapshot` remains the form
-    callers outside this module pass to `record`.
+    tuple holds the same information an `AttrSnapshot` would, without building
+    one, since most captures are never rolled back and the object would be
+    discarded unused. `AttrSnapshot` remains the form callers outside this
+    module pass to `record`.
     """
 
     __slots__ = ("_entries", "_keys")
@@ -46,9 +44,8 @@ class UndoLog:
 
         The engine's invertible mutations (a refcount, a linked-list insertion)
         register a small slotted object whose `restore` performs the inverse
-        rather than a captured value. A `(callable, args)` pair was tried for
-        those and measured 1.6x *slower* end to end, because binding a method
-        allocates; see `_Unlinked`.
+        rather than a captured value, since binding a method into a
+        `(callable, args)` pair allocates per call. See `_Unlinked`.
         """
         self._entries.append(entry)
 
@@ -69,7 +66,7 @@ class UndoLog:
         """`record_once` for the one case that is almost all of the traffic.
 
         Every hot-path `record_once` captures attributes of one object, and
-        passing a callable meant building a closure per call -- including for
+        passing a callable meant building a closure per call, including for
         the repeat keys the callable exists to avoid paying for. Taking the
         target and names directly means a repeat key costs a set lookup and
         nothing else, which is what the callable was supposed to buy.
@@ -112,7 +109,7 @@ class UndoLog:
         # Two entry shapes, told apart without an isinstance call: a tuple is an
         # attribute capture from `record_attrs_once`, anything else is an
         # `Undoable`. The tuple exists so that the hottest capture path does not
-        # allocate an object per call; see the class docstring.
+        # allocate an object per call. See the class docstring.
         for entry in reversed(self._entries):
             if type(entry) is tuple:
                 target, names, values = entry

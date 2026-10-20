@@ -1,4 +1,4 @@
-# HuggingFace checkpoint. Set MODEL_PATH, or edit this line; the default is a
+# HuggingFace checkpoint. Set MODEL_PATH, or edit this line. The default is a
 # placeholder and will not resolve.
 model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}
 hardware:

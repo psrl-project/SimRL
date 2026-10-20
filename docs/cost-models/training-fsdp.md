@@ -2,7 +2,7 @@
 
 This page documents the FSDP2 / HSDP cost model: its latency form, memory design, static
 inventory, the three batching modes, fitting and lookup, and how it differs from the Megatron
-model. Measurements are on {doc}`../profiling/fsdp`; accuracy is in
+model. Measurements are on {doc}`../profiling/fsdp`. Accuracy is in
 {doc}`../reference/validation`.
 
 FSDP and Megatron have separate models because they shard differently and their schedules differ.
@@ -27,7 +27,7 @@ latency = per_step_overhead
 ```
 
 `latency_features` is the same function the Megatron model uses, so the two cannot drift, and
-`latency_from_coefficients` is the single evaluator. The design must reach rank 4; with a single
+`latency_from_coefficients` is the single evaluator. The design must reach rank 4. With a single
 microbatch count the slot column is constant and collinear with the intercept, so
 `check_latency_rank` raises and names the axes to vary. At least two, and preferably three,
 microbatch counts are needed alongside at least three sequence lengths.
@@ -35,7 +35,7 @@ microbatch counts are needed alongside at least three sequence lengths.
 The quadratic term is present for the same reason as in the Megatron model: the same code path
 serves short- and long-sequence regimes, and the term must be $\sum_i s_i^2$ because attention
 does not cross a packed sequence boundary. Under BSHD with a micro-batch size of one every
-microbatch holds one sequence and the two token columns are collinear; that is a property of the
+microbatch holds one sequence and the two token columns are collinear. That is a property of the
 sweep, not of the model, and the THD hint in {doc}`../profiling/methodology` applies to FSDP as
 well.
 
@@ -81,7 +81,7 @@ The memory design is `[num_microbatches, max_tokens, 1]` and must reach rank 3.
 
 Both `peak_allocated_bytes` and `peak_reserved_bytes` are fitted, and the winner is selected per
 cell on **validation** coefficient of determination, before any OOM bump. Allocated is the better
-regression target because it responds to load, while reserved is quantised and sticky; the
+regression target because it responds to load, while reserved is quantised and sticky. The
 selection is still a measurement, so both are attempted and both scores are recorded in
 `candidate_r_squared`. A cell whose two targets score identically (which a one-sample validation
 set makes inevitable) records `validation_selection_informative: false`, and the tie keeps
@@ -142,9 +142,9 @@ which is the input the cost model evaluates. `MicrobatchPlanner` implements thre
 
 | mode | behaviour |
 |---|---|
-| `pad_to_max` | split into groups of `micro_batch_size`; each group is padded to its longest sequence |
-| `token_budget` | group to `max_tokens_per_rank`; still padded within a group |
-| `packed_no_pad` | groups of `micro_batch_size` are concatenated end to end; only true tokens are charged |
+| `pad_to_max` | split into groups of `micro_batch_size`. Each group is padded to its longest sequence |
+| `token_budget` | group to `max_tokens_per_rank`. Still padded within a group |
+| `packed_no_pad` | groups of `micro_batch_size` are concatenated end to end. Only true tokens are charged |
 
 The planner:
 
@@ -158,7 +158,7 @@ The planner:
 
 In `token_budget` the count is `min(len(lengths), ceil(total / budget))` and `micro_batch_size` is
 deliberately ignored: verl reads it only on the static path (`use_dynamic_bsz=False`), so using it
-here would invent microbatches the engine never runs. The budget is a target, not a guarantee; one
+here would invent microbatches the engine never runs. The budget is a target, not a guarantee. One
 sequence longer than the budget yields one oversized microbatch, as it does in verl.
 
 At `micro_batch_size = 1` the three modes coincide: one sequence per microbatch leaves padding
@@ -176,7 +176,7 @@ that mixes short and long sequences in one microbatch.
  optimizer_offload, reshard_after_forward, parameter_count)
 ```
 
-Every entry's `parallelism` is canonicalised to `tp = pp = cp = dp = 1`; the mesh travels in the
+Every entry's `parallelism` is canonicalised to `tp = pp = cp = dp = 1`. The mesh travels in the
 selector, because sharding and replication are configuration rather than data partitioning.
 
 At predict time the model enforces two things the fitted form cannot express:
@@ -189,9 +189,9 @@ At predict time the model enforces two things the fitted form cannot express:
 
 `feature_ranges` gate the query: `tokens`, `num_microbatches` and `sequences_per_microbatch` for
 latency, `num_microbatches` and `activation_tokens` for memory. A value outside a recorded range
-raises unless the name is listed in `training_cost.extrapolate`; a permitted extrapolation is
+raises unless the name is listed in `training_cost.extrapolate`. A permitted extrapolation is
 recorded in the estimate's diagnostics. The names are per component, and an unknown name raises at
-construction. {doc}`../simulation/domain-gates` covers the semantics; the FSDP default file
+construction. {doc}`../simulation/domain-gates` covers the semantics. The FSDP default file
 `config/defaults/training_cost/fsdp.yaml` lists each selectable name and what it is safe to
 extrapolate.
 
@@ -207,12 +207,12 @@ srl-regress training --latency-model fsdp --memory-model fsdp \
     --output outputs/cost/qwen3_8b/training_fsdp.json
 ```
 
-- FSDP latency and memory must be selected together; selecting one raises.
+- FSDP latency and memory must be selected together. Selecting one raises.
 - `_fsdp_records` refuses a record that is not an FSDP record rather than skipping it, rejects
   `sequence_parallel != 1`, requires `tp = pp = cp = 1`, requires `shard_size * replicate_size` to
   equal `dp`, and requires a `parameter_count`. Silently dropping a foreign record would hide a
   mis-pointed input file.
-- Each candidate contributes one row, its step times reduced to a median; the split is by run id at
+- Each candidate contributes one row, its step times reduced to a median. The split is by run id at
   `--validation-fraction` (default `0.2`).
 - The solve matches the Megatron model: scaled non-negative soft-L1 with relative residuals, one
   MAD refit, and a rank check that `--allow-rank-deficient` lowers.
@@ -248,5 +248,5 @@ TRAINING_ARTIFACT=outputs/cost/qwen3_8b/training_fsdp.json \
 bash examples/simulate/simulate.sh
 ```
 
-Coverage gaps — `optimizer_offload: true` never profiled, sequence parallelism out of scope, a
-narrow microbatch range — are in {doc}`../reference/limitations`.
+Coverage gaps (`optimizer_offload: true` never profiled, sequence parallelism out of scope, a
+narrow microbatch range) are in {doc}`../reference/limitations`.

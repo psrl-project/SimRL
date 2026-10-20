@@ -1,31 +1,21 @@
 """The LRU queue of unheld blocks, as a reversible doubly linked list.
 
 Ported from vLLM's `FreeKVCacheBlockQueue`. Head is least recently freed, so
-head is the eviction victim; releases append at the tail.
+head is the eviction victim. Releases append at the tail.
 
-Why a linked list rather than an `OrderedDict`: a prefix-cache hit on a block
-that is currently free removes it from the *middle* of the queue, and undoing
-that means putting it back exactly where it was. The node's own `prev_free` /
-`next_free` are that position, so the information an undo needs already exists.
-`OrderedDict.pop(key)` discards it, and re-inserting at the tail would leave
-`num_free` correct while silently rewriting LRU order -- invisible to
-`blocks_used()` and decisive for every later eviction.
+A linked list, not an `OrderedDict`, because a prefix-cache hit can remove a
+free block from the middle of the queue, and undoing that means re-linking it
+at its old position. The node's own `prev_free` / `next_free` hold that
+position. `OrderedDict.pop(key)` discards it.
 
-Sentinel head and tail nodes mean a real block's links are never `None` while it
-is in the list, which removes the branching vLLM's own comment calls out.
+Sentinel head and tail nodes mean a real block's links are never `None` while
+it is in the list, avoiding a branch on every link update.
 
-**Rollback is a journal of inverse operations, not a snapshot of state.** Each
-of the two mutations has an exact inverse -- unlinking a block is undone by
-re-linking it between the neighbours it had, appending one is undone by
-unlinking it -- and `UndoLog` already unwinds newest-first, which is precisely
-the order those inverses compose in. So one entry per mutation suffices.
-
-Snapshotting instead meant registering three nodes' link pairs plus the free
-count per operation, deduplicated by key: four keyed captures per mutation,
-41 million of them in a 16-instance run, and they were the single largest cost
-in the engine. The journal is also *more* exactly correct, not less: a node
-relinked several times within one event unwinds through each step rather than
-relying on the first capture having been the right one.
+Rollback is a journal of inverse operations, not a snapshot of state:
+unlinking a block is undone by re-linking it between its old neighbours, and
+appending one is undone by unlinking it. `UndoLog` unwinds newest-first,
+which is exactly the order those inverses compose in, so one entry per
+mutation suffices.
 """
 
 from __future__ import annotations
@@ -88,7 +78,7 @@ class FreeBlockList:
 
         Raises:
             RuntimeError: If the list is empty. The caller is expected to have
-                checked `num_free`; handing out a sentinel would corrupt the
+                checked `num_free`. Handing out a sentinel would corrupt the
                 pool.
         """
         block = self._head.next_free
@@ -157,11 +147,8 @@ class FreeBlockList:
 class _Unlinked:
     """Undoes one `_unlink` by re-linking the block between its old neighbours.
 
-    A slotted class rather than a `(callable, args)` pair: both were measured in
-    the full simulator, and the class is 1.6x faster (53 s against 84 s of CPU
-    over three interleaved rounds), because binding a method allocates where
-    constructing this does not. A microbenchmark of the two in isolation says
-    the opposite, which is why the decision was made end to end.
+    A slotted class rather than a `(callable, args)` pair, since binding a
+    method allocates per call where constructing this does not.
     """
 
     __slots__ = ("_list", "_block", "_prev", "_next")

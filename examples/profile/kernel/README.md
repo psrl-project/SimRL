@@ -58,8 +58,8 @@ exactly at the hardware ceiling. Utilities above 1.2 indicate a bug in the SOL f
 a measurement problem.
 
 Calibrated ranges on H20 with Qwen3-8B:
-- GEMM: 0.47–0.95, rising monotonically with token count (m=1 is ~0.62, m=8192 is ~0.94).
-- Context attention: 0.013–0.951 (full grid including overhead-limited regime at small seq_len).
+- GEMM: 0.47-0.95, rising monotonically with token count (m=1 is ~0.62, m=8192 is ~0.94).
+- Context attention: 0.013-0.951 (full grid including overhead-limited regime at small seq_len).
 - Generation attention: 0.014 (batch 1, step 1024) up to 0.436 (batch 64, step 16384).
 
 The very low generation-attention utility at small batch sizes is a known, physically real
@@ -109,8 +109,8 @@ So a FlashInfer-first server is what you get on Blackwell, or by passing an expl
 `--attention-backend`. Re-verify this per GPU generation rather than assuming it.
 
 That distinction matters when validating against a real server. **Any end-to-end comparison
-must read the `vllm` rows**, because those are the kernels the server actually executed;
-scoring against the FlashInfer rows would be measuring a backend that never ran.
+must read the `vllm` rows**, because those are the kernels the server actually executed.
+Scoring against the FlashInfer rows would be measuring a backend that never ran.
 `AttentionQuery.backend` defaults to the vLLM table for exactly this reason, and the
 end-to-end scripts assert the default resolves there rather than trusting it to stay put.
 
@@ -147,7 +147,7 @@ the first H20 sweep GEMM measured 3.38% MRE over 13 sampled points but 8.48% ove
 
 ### Current result on H20 (Qwen3-8B): every op except context_attention/flashinfer is under 7%
 
-Measured at `--fraction 1.0`. The `gemm` and attention rows are TP=1; `all_reduce` is TP=2,
+Measured at `--fraction 1.0`. The `gemm` and attention rows are TP=1, and `all_reduce` is TP=2,
 since no collective runs at world size 1.
 
 | op | backend | points | MRE | p90 | utility range |
@@ -174,10 +174,10 @@ unmeasured degree raises a coverage error rather than extrapolating. That is int
 The collective is timed through `get_tp_group().all_reduce` (vLLM's own dispatcher) and **not**
 `torch.distributed.all_reduce`. Measured on H20 at all three degrees, that call is never what a
 server selects: the custom P2P kernel covers the whole 8-512 KiB range a decode step lives in.
-Both tables are written; `vllm` is what the cost model reads and `nccl` is kept as a control.
+Both tables are written. `vllm` is what the cost model reads and `nccl` is kept as a control.
 Holdout, dispatched vs control: 6.01%/4.96% at tp=2, 3.76%/7.56% at tp=4, 9.30%/10.66% at tp=8.
 See `docs/profiling/tensor-parallel.md` and `DISPATCH.md`. The tp=8 pair was corrected on
-2026-10-04; its `holdout_report.json` predates the tables it scores.
+2026-10-04, and its `holdout_report.json` predates the tables it scores.
 
 See `docs/kernel-ops.md` for how the op abstraction works and how to add a family, and
 `docs/composed-rollout.md` for why the `elementwise` table is measured but deliberately not
@@ -220,11 +220,11 @@ is far higher because vLLM's Python/dispatch path is much more expensive than Fl
 The `context_attention/flashinfer` family at 9.87% remains above the 5% gate. The 4 us
 floor is correct for the dispatch mechanism but insufficient to collapse residual variance
 at small shapes where both math and memory work are also near-zero. Densifying the grid
-in that regime is the next lever; no new floor tuning is warranted.
+in that regime is the next lever. No new floor tuning is warranted.
 
 #### GEMM: cross-projection neighbour contamination
 
-Error is concentrated at small token counts (m ≤ 256: MRE 12.7%; m > 256: MRE 1.4%). The
+Error is concentrated at small token counts (m ≤ 256: MRE 12.7%, m > 256: MRE 1.4%). The
 tile-cliff observation is directionally real but names the wrong fix. The actual mechanism is
 neighbour identity: the unified GEMM table keys its slice only on dtype, so all four
 Qwen3-8B projections share one grid. In log2 space the nearest neighbour to
@@ -257,7 +257,7 @@ near-identical shape and computes the mean relative error (MRE) of `ComposedRoll
 predictions against the median measured latency of each bucket.
 
 **Always compare against the `vllm` rows.** Those are the kernels the server actually ran.
-FlashInfer rows answer what a backend switch would buy; scoring against them on a vLLM server
+FlashInfer rows answer what a backend switch would buy. Scoring against them on a vLLM server
 is measuring a backend that never ran.
 
 **Use `--min-samples 1` to score all three phases.** At the default `--min-samples 20`,
@@ -278,7 +278,7 @@ Measured with `--min-samples 1 --gate 100` against `outputs/profile/qwen3_8b/vll
 | mixed | 5 | 0.48% | 0.43% | 6 real iterations only |
 
 All three phases are inside the 5% gate. The mixed result (0.48%) is encouraging but rests on
-only six real baseline records. The baseline is 0.01% mixed; a simulator with chunked prefill
+only six real baseline records. The baseline is 0.01% mixed, while a simulator with chunked prefill
 produces them constantly. Six samples is not a validation: see `docs/composed-rollout.md` for
 the full discussion of limitations.
 

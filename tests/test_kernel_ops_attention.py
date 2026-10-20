@@ -86,7 +86,7 @@ def test_generation_sol_reproduces_the_free_function(spec):
 
 
 def test_the_floor_binds_when_the_work_is_small(spec):
-    """A floor inside max() is a lower bound; at batch 1 step 1 it must be what binds."""
+    """A floor inside max() is a lower bound. At batch 1 step 1 it must be what binds."""
     tiny = GENERATION_ATTENTION_OP.sol(spec, slice_key=_SLICE, coords=(32.0, 1.0, 1.0), floor_s=22e-6)
     assert tiny.latency_s == pytest.approx(22e-6, rel=1e-12)
     assert tiny.math_s < 22e-6
@@ -94,7 +94,7 @@ def test_the_floor_binds_when_the_work_is_small(spec):
 
 
 def test_the_floor_does_not_bind_when_the_work_is_large(spec):
-    """It is max(floor, work), not floor + work; deep KV must not pay the floor twice."""
+    """It is max(floor, work), not floor + work. Deep KV must not pay the floor twice."""
     big = GENERATION_ATTENTION_OP.sol(spec, slice_key=_SLICE, coords=(32.0, 64.0, 32768.0), floor_s=22e-6)
     assert big.latency_s > 22e-6
     assert big.latency_s == pytest.approx(max(big.math_s, big.memory_s), rel=1e-12)

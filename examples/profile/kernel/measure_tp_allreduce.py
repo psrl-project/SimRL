@@ -28,7 +28,7 @@ import torch
 import torch.distributed as dist
 
 HIDDEN = 2048
-# 10 of 40 layers are full_attention; each contributes an attention all-reduce and
+# 10 of 40 layers are full_attention. Each contributes an attention all-reduce and
 # an MLP all-reduce, and the 30 linear-attention layers still reduce their MLP.
 FULL_ATTENTION_LAYERS = 10
 TOTAL_LAYERS = 40

@@ -8,7 +8,7 @@ budget rather than by catching OOM keeps the grid reproducible across machines.
 Points are ordered largest-footprint first so that a sweep which is going to run out
 of memory does so in its first seconds rather than its last hour.
 
-Timing lives in `runner/`; this module stays importable without a GPU, because the cost
+Timing lives in `runner/`. This module stays importable without a GPU, because the cost
 path reads `rank_head_counts` from here to shard its own query shapes.
 """
 

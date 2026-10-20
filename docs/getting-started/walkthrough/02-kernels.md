@@ -13,7 +13,7 @@ tables directly, so there is no `CostArtifact`.
 ## What it needs
 
 A checkpoint and one GPU for the compute families. The grid is
-`examples/profile/kernel/qwen3_8b_h20_tp1.yaml`; its main blocks are:
+`examples/profile/kernel/qwen3_8b_h20_tp1.yaml`. Its main blocks are:
 
 ```yaml
 gemm:
@@ -147,9 +147,9 @@ permutations (dgrad and wgrad), and deduplicates. At simulation time `ModelOps` 
 queries from the same function, so a slice always hits. The asymmetry between the two kinds
 of column is what you feel in practice:
 
-- an `m` between measured points interpolates utility;
+- an `m` between measured points interpolates utility.
 - an `m` past the measured top holds the boundary utility and reconstructs latency as
-  `SOL(query) / utility`;
+  `SOL(query) / utility`.
 - an `(n, k)` that was never measured raises `KernelCoverageError`.
 
 So `m` is the cheap axis. **A different model changes every `(n, k)`, and so does a different
@@ -172,7 +172,7 @@ covers adding a family.
 A floor exists because a small attention call is dispatch-limited: its latency barely moves
 as the KV length grows. It goes inside `max(compute, memory, floor)` rather than being added,
 so it binds only in that regime. GEMM declares no floor. The values are per backend and
-version; in the tables above the vLLM generation floor came out at 6 us.
+version. In the tables above the vLLM generation floor came out at 6 us.
 
 ## What the tables are used for
 
@@ -187,7 +187,7 @@ srl rollout_cost=composed \
     workload=bimodal job.n_versions=3 job.batch_size=16 rollout.n_instances=2
 ```
 
-`kernel_table_root`, `gpu`, and `model_path` are all required; omitting one raises
+`kernel_table_root`, `gpu`, and `model_path` are all required. Omitting one raises
 `rollout_cost.<field> is required for the composed model`. Other keys in
 `srl/config/defaults/rollout_cost/composed.yaml` are `attention_backend` (empty selects the
 vLLM-selected backend), `utility_surface` (`pchip` or `shepard`), `decode_integration_stride`,
@@ -218,7 +218,7 @@ problem. On the tables above, `gemm [vllm]` scored 3.91% MRE over 64 held-out po
 attention families 6% to 12%. {doc}`../../profiling/kernels` owns the full table.
 
 Utility above roughly 1.2 means the SOL formula is missing work the kernel does, not that the
-GPU beat its spec; generation attention staying below 0.5 says that kernel never approaches
+GPU beat its spec. Generation attention staying below 0.5 says that kernel never approaches
 its roofline.
 
 The end-to-end score is `validate`, which sums kernels per vLLM scheduler iteration and
@@ -231,7 +231,7 @@ prefill:  29 buckets, MRE 3.84%
 ```
 
 `--min-samples` (default 20) drops buckets with few iterations, and a phase that holds no
-bucket at that size is not scored at all; the command warns when that happens, and
+bucket at that size is not scored at all. The command warns when that happens, and
 `--min-samples 1` scores everything. {doc}`../../reference/validation` owns the project's
 accuracy figures.
 
@@ -254,8 +254,8 @@ srl rollout_cost=composed rollout_cost.parallelism.tp=2 \
 
 The collective sweep writes world sizes 2, 4, and 8 into one table per backend (`vllm`,
 which times vLLM's own dispatcher, and `nccl` as a control), so one run covers every TP degree
-up to 8. The shipped compute configs are `qwen3_8b_h20_tp1.yaml` and `qwen3_8b_h20_tp2.yaml`;
-the `tp4` and `tp8` configs declare only the collective block.
+up to 8. The shipped compute configs are `qwen3_8b_h20_tp1.yaml` and `qwen3_8b_h20_tp2.yaml`.
+The `tp4` and `tp8` configs declare only the collective block.
 
 A tree swept at another degree does not price the wrong shapes silently: pointing a TP=2
 simulation at the TP=1 tree raises `KernelCoverageError: No gemm rows for slice

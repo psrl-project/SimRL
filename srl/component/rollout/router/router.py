@@ -11,7 +11,7 @@ and nothing else in the attempt varies with time. Capacity is released in
 exactly three places, all of them already event boundaries: a request retiring
 (`REQUEST_COMPLETE`), a preemption freeing its victim, and a weight update
 aborting everything. So `dispatch` is called after those commit, and nowhere
-else. A decode segment only *grows* blocks, so it triggers nothing -- which
+else. A decode segment only *grows* blocks, so it triggers nothing, which
 matters, because one closed-form segment covers a median 122 engine steps.
 
 This is not an approximation of the real gateway's polling loop. A segment ends

@@ -1,14 +1,9 @@
 """Architecture-derived activation footprint for one training microbatch.
 
-The previous model used `max_tokens * min(num_microbatches, pp)` as an opaque
-feature with a single fitted slope. That carried no architecture, so a fit could not
-transfer across models, and it attributed a pipeline factor to configurations that do
-not have one.
-
 The shape here is derived from what Megatron actually retains under full activation
 recompute, then checked against measurement. With `recompute_granularity=full`,
 `recompute_method=uniform`, `recompute_num_layers=1`, each transformer layer keeps
-only its own input; the intra-layer tensors are rebuilt one layer at a time during
+only its own input. The intra-layer tensors are rebuilt one layer at a time during
 backward. The output projection is not recomputed, so the vocabulary-sized logits
 survive the forward pass and dominate for a large vocabulary.
 
@@ -21,7 +16,7 @@ two-layer and thirty-six-layer slopes give independently, which is why they are 
 as analytic rather than fitted.
 
 Two scaling facts came out of that fit and neither was guessable. The layer term is
-divided by both the tensor and pipeline degrees; the logit term is divided by neither.
+divided by both the tensor and pipeline degrees. The logit term is divided by neither.
 And sequence length is the only batch axis that matters at PP=1: the number of
 microbatches changed the measured peak by 0.0 MiB, because 1F1B runs one microbatch's
 forward and backward to completion before starting the next.
@@ -128,7 +123,7 @@ class ActivationGeometry:
         it instead forced the fitted scale to 2.53 at TP=4 and 4.59 at TP=8, which is
         the signature of a wrong term rather than a machine-specific correction.
 
-        `LOGIT_OVERHEAD` covers the loss-computation temporaries; see its definition.
+        `LOGIT_OVERHEAD` covers the loss-computation temporaries. See its definition.
         """
         return self.vocab_size * self.activation_dtype_bytes * LOGIT_OVERHEAD
 

@@ -3,8 +3,8 @@ Enumerate the elementwise kernels one token count issues, and how many elements 
 
 Extracted from the measurement loop so the `n_elements` arithmetic can be checked without a
 GPU. That matters because `cost/training/training_ops.py` derives the *same* quantities on the
-query side -- `rms_norm` over `tokens * hidden_size`, `rotary_embedding` over
-`tokens * heads * head_dim` -- and a disagreement between the two means a query lands on a
+query side (`rms_norm` over `tokens * hidden_size`, `rotary_embedding` over
+`tokens * heads * head_dim`), and a disagreement between the two means a query lands on a
 point of the surface the sweep never measured. While the expressions lived inside the timing
 loop, the only way to compare them was to run a sweep.
 

@@ -2,9 +2,9 @@
 //
 // The KV block pool: allocation, LRU reuse, and eviction.
 //
-// Port of srl/component/rollout/engine/kv/pool.py.  The central invariant:
-// a block may sit in the free list and in the hash map at the same time.  That
-// is the "nobody holds it, but it is still addressable" state.  A hash is
+// Port of srl/component/rollout/engine/kv/pool.py. The central invariant:
+// a block may sit in the free list and in the hash map at the same time. That
+// is the "nobody holds it, but it is still addressable" state. A hash is
 // destroyed only when its block is handed to a new owner (_maybe_evict), never
 // on release.
 #pragma once
@@ -46,7 +46,7 @@ class BlockPool {
     return static_cast<double>(num_used_blocks()) / num_blocks_;
   }
 
-  // Free block ids, least recently freed first.  O(num_free).
+  // Free block ids, least recently freed first. O(num_free).
   std::vector<int> free_list_ids() const { return free_.ids(); }
 
   // The block holding `block_hash`, or nullptr on a miss.

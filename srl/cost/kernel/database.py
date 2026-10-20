@@ -408,7 +408,7 @@ class CommQuery:
         # missing-table coverage error, which reads like an unswept topology.
         if op_for(self.op).family != "collective":
             raise KernelCoverageError(
-                f"Comm op {self.op!r} is not a collective; it belongs to family "
+                f"Comm op {self.op!r} is not a collective. It belongs to family "
                 f"{op_for(self.op).family!r}."
             )
 
@@ -428,7 +428,7 @@ class CommQuery:
         return (float(self.message_bytes),)
 
 
-# Union of all concrete query types; used in signatures that must not branch on the type.
+# Union of all concrete query types. Used in signatures that must not branch on the type.
 _AnyQuery = (
     GemmQuery
     | AttentionQuery
@@ -456,7 +456,7 @@ class KernelDatabase:
         self._root = root
         self._gpu = gpu
         self._gpu_spec = gpu_spec
-        # Spec for the hardware the measurements were collected on; used to compute
+        # Spec for the hardware the measurements were collected on. Used to compute
         # utility so grids remain independent of the target GPU.
         self._measurement_spec = measurement_spec
         self._default_backend = default_backend
@@ -490,17 +490,17 @@ class KernelDatabase:
 
         Args:
             root (str | Path): Directory holding `{gpu}/{family}/{backend}/{version}/`.
-            gpu (str): GPU slug or device name; also selects the bundled spec.
+            gpu (str): GPU slug or device name. Also selects the bundled spec.
             gpu_spec (GpuSpec | None): Target hardware for SOL. Defaults to the bundled
                 spec for `gpu`. Pass explicitly to price on hardware other than the one
                 measured.
             default_backend (str): Backend used when a query does not override it.
             versions (dict[str, str] | None): Pin `{backend: version}` when a backend
                 directory holds more than one version.
-            utility_surface (str): Interpolation strategy name; see `SURFACE_REGISTRY`.
+            utility_surface (str): Interpolation strategy name. See `SURFACE_REGISTRY`.
 
         Returns:
-            KernelDatabase: Ready for queries; no parquet is read until one arrives.
+            KernelDatabase: Ready for queries. No parquet is read until one arrives.
         """
         slug = gpu_slug(gpu)
         measurement_spec = load_gpu_spec(slug)
@@ -587,7 +587,7 @@ class KernelDatabase:
 
         Args:
             query (ElementwiseQuery): Kind and element count. The element count is the
-                number of elements *read*; the SOL assumes an equal write.
+                number of elements *read*. The SOL assumes an equal write.
 
         Returns:
             float: `SOL(query) / interpolated utility`, in seconds.

@@ -2,4 +2,4 @@
 #include "engine/request.h"
 #include "engine/event.h"
 
-// Translation unit anchor — definitions are in the headers.
+// Translation unit anchor. Definitions are in the headers.

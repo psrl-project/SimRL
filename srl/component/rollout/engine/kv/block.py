@@ -6,7 +6,7 @@ it sits in the free list (`prev_free` / `next_free`).
 
 The first two are deliberately independent. A block whose `ref_cnt` has fallen
 to zero keeps its hash, so a later request with the same prefix can still find
-and reuse it. That state -- free but still addressable -- is what makes reuse
+and reuse it. That state, free but still addressable, is what makes reuse
 across a weight update or an agentic round boundary possible at all.
 
 The link fields live here rather than inside the list because they are what
@@ -63,8 +63,8 @@ class KvBlock:
         """
         if self._block_hash is not None:
             raise ValueError(
-                f"Block {self.block_id} already holds hash {self._block_hash!r}; "
-                f"call reset_hash() before assigning {value!r}."
+                f"Block {self.block_id} already holds hash {self._block_hash!r}. "
+                f"Call reset_hash() before assigning {value!r}."
             )
         self._block_hash = value
 

@@ -119,7 +119,7 @@ def test_flashinfer_decode_group_sizes_exclude_this_checkpoints_ratio():
 
     FlashInfer dispatches the GQA ratio as a template parameter and compiles
     specializations only for the set declared here (`DISPATCH_GQA_GROUP_SIZE` in
-    `flashinfer/data/include/flashinfer/utils.cuh`); anything else raises
+    `flashinfer/data/include/flashinfer/utils.cuh`). Anything else raises
     "Unsupported group_size" from inside the generated kernel. This is asserted rather
     than discovered at measurement time because the runner skips the generation phase on
     the strength of it, and because the invariance across TP is the non-obvious part:

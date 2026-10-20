@@ -37,7 +37,7 @@ def main() -> int:
             )
             return 1
     else:
-        # Only TP is a measured cell; PP is derived, since the latency features are
+        # Only TP is a measured cell. PP is derived, since the latency features are
         # per-layer and the slot count is analytic. Predicting an unprofiled PP costs
         # 2.2-4.6%.
         available = sorted({int(e["parallelism"]["tp"]) for e in entries})
@@ -45,7 +45,7 @@ def main() -> int:
             degrees = ", ".join(f"tp={t}" for t in available)
             print(
                 f"TRAINING_TP={tp} is not a fitted cell. Available: {degrees}.\n"
-                f"TP changes how each layer is sharded, so it has to be measured; "
+                f"TP changes how each layer is sharded, so it has to be measured. "
                 f"PP is derived and needs no cell of its own.",
                 file=sys.stderr,
             )
@@ -57,14 +57,14 @@ def main() -> int:
         })
         if profiled and int(pp) not in profiled:
             print(
-                f"note: PP={pp} was not profiled (measured: {profiled}); "
-                f"its latency is derived from the per-layer form.",
+                f"note: PP={pp} was not profiled (measured: {profiled}). "
+                f"Its latency is derived from the per-layer form.",
                 file=sys.stderr,
             )
 
     # Report the fitted token domain up front. `tokens` is the LARGEST microbatch,
     # not the mean, so one long sequence sets it. A step exceeding the domain raises
-    # unless EXTRAPOLATE=[tokens] is set; the fit is linear while attention is
+    # unless EXTRAPOLATE=[tokens] is set. The fit is linear while attention is
     # quadratic, so a stretched tail is understated.
     ranges = [e.get("feature_ranges", {}).get("tokens") for e in entries]
     spans = [r for r in ranges if r]

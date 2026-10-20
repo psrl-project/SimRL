@@ -51,8 +51,8 @@ def _require_allocated_state(optimizer: object, parameter: object, param_count: 
 
     The failure this catches is silent by construction: when the state allocation OOMs, TE
     leaves the state empty and the next `step()` returns almost immediately, so the sweep
-    records a very *fast* row rather than an error. Nothing downstream rejects a fast row —
-    a floor fit accepts it, and the holdout MRE improves because the point is easy to
+    records a very *fast* row rather than an error. Nothing downstream rejects a fast row.
+    A floor fit accepts it, and the holdout MRE improves because the point is easy to
     interpolate. Only the utility exceeding 1 gives it away, and that is a diagnostic a
     reader has to go looking for.
     """
@@ -63,7 +63,7 @@ def _require_allocated_state(optimizer: object, parameter: object, param_count: 
             f"Optimizer state {missing} was not allocated for a {param_count:,}-parameter "
             f"shard, so the timed step would measure an empty update. The shard needs "
             f"roughly {param_count * 18 / 2**30:.1f} GiB for parameters, gradients and "
-            f"fp32 state; drop this point from optimizer.param_counts or profile on a "
+            f"fp32 state. Drop this point from optimizer.param_counts or profile on a "
             f"larger card."
         )
     for name in _ADAM_STATE_TENSORS:

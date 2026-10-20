@@ -44,7 +44,7 @@ source_suffix = {".md": "markdown", ".rst": "restructuredtext"}
 master_doc = "index"
 
 # `superpowers/` and `design/` hold AI scratch (specs, plans, working notes) that is
-# deliberately not part of the site; without excluding them Sphinx would try to build
+# deliberately not part of the site. Without excluding them, Sphinx would try to build
 # every plan.
 exclude_patterns = [
     "_build",

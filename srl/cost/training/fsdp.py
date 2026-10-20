@@ -31,7 +31,7 @@ Measured on 8x H20, `shard_size=8`, `gradient_checkpointing=true`:
     nmb=2  tokens=1024 -> allocated 10.0585 GiB
     nmb=2  tokens=2048 -> allocated 10.0585 GiB
 
-Memory is flat to four decimal places across a 4x token range; one extra microbatch
+Memory is flat to four decimal places across a 4x token range. One extra microbatch
 adds ~580 MiB. Fitting only `max_tokens` against a flat target produces a degenerate
 regression: `activation_slope` collapses to ~5e-14 and both candidates score
 catastrophically negative r² (allocated -2.6e9, reserved -3.4e5) because the single
@@ -266,7 +266,7 @@ def _fsdp_records(
             )
         if (record.parallelism.tp, record.parallelism.pp, record.parallelism.cp) != (1, 1, 1):
             raise ValueError(
-                "FSDP records must have tp=pp=cp=1; the mesh is expressed by shard_size "
+                "FSDP records must have tp=pp=cp=1. The mesh is expressed by shard_size "
                 f"and replicate_size, got {record.parallelism!r}."
             )
         parameter_count = payload.parameter_count or record.model.parameter_count
@@ -277,7 +277,7 @@ def _fsdp_records(
         if shard_size * replicate_size != record.parallelism.dp:
             raise ValueError(
                 f"The FSDP mesh {shard_size}x{replicate_size} disagrees with dp="
-                f"{record.parallelism.dp}; the static inventory would be mis-sized."
+                f"{record.parallelism.dp}. The static inventory would be mis-sized."
             )
         key = _CellKey(
             shard_size=shard_size,
@@ -309,7 +309,7 @@ def _memory_features(microbatches: tuple[SequenceStats, ...]) -> tuple[float, fl
     With gradient checkpointing, each microbatch accumulates its autograd graph until
     `backward()` completes, so `num_microbatches` drives peak memory even when activations
     are small. Without gradient checkpointing, activations are resident and `max_tokens`
-    drives peak memory. Both terms are kept so the fit is correct in either case; the
+    drives peak memory. Both terms are kept so the fit is correct in either case. The
     non-negative constraint drives whichever coefficient does not explain the target to
     approximately zero rather than distorting the other.
     """
@@ -405,10 +405,8 @@ def _fit_latency_entry(
             # Spelled in the same terms `LatencyFeatures.design_row` actually builds. The
             # token terms are SUMS over the rank's microbatches, not the largest microbatch
             # times the microbatch count: a rank runs every microbatch it is given, so a
-            # step costs the sum of their costs. The two forms coincide on the uniform
-            # microbatches profiling measures, which is why this string once read
-            # `num_microbatches * max_microbatch_tokens` and still fitted correctly -- but
-            # reimplementing it that way scores a ragged batch at 27% error against 0.6%.
+            # step costs the sum of their costs. The two forms coincide on uniform
+            # microbatches but diverge badly on a ragged batch.
             "formula": (
                 "per_step_overhead + token_cost * sum_over_microbatches(sum_tokens) "
                 "+ token_quadratic_cost * sum_over_microbatches(sum_squared_tokens) "
@@ -707,7 +705,7 @@ def _fit_memory_entry(
             # `n_samples=1` guarantees regardless of how large the residual is: with five
             # runs and the default fraction the split yields a single validation run, both
             # targets can score 0.0, and the winner is then decided by MEMORY_TARGETS
-            # order. The selection rule is unchanged; the audit trail now says so.
+            # order. The selection rule is unchanged. The audit trail now says so.
             "validation_selection_informative": len(set(candidate_r_squared.values())) > 1,
             "validation_fraction": validation_fraction,
             "validation_is_in_sample": validation_is_in_sample(
@@ -1023,13 +1021,13 @@ class FsdpTrainingCost(TrainingCostModel):
                 return explicit
             values = {selector[name] for selector in entry_selectors}
             if len(values) != 1:
-                raise ValueError(f"Artifact has multiple {name} values; select one explicitly.")
+                raise ValueError(f"Artifact has multiple {name} values. Select one explicitly.")
             return values.pop()
 
         extrapolate_set = frozenset(extrapolate) if extrapolate else frozenset()
         # Validate names against the union of all feature_ranges keys so the check is
         # correct regardless of which entry the query will eventually hit. Both latency
-        # and memory entries are checked; a name valid for one component but not the other
+        # and memory entries are checked. A name valid for one component but not the other
         # is still valid here because the user is naming features, not components.
         all_valid_names = frozenset().union(
             *(frozenset(entry.feature_ranges.keys()) for entry in artifact.entries)

@@ -1,4 +1,4 @@
-# HuggingFace checkpoint. Set MODEL_PATH, or edit this line; the default is a
+# HuggingFace checkpoint. Set MODEL_PATH, or edit this line. The default is a
 # placeholder and will not resolve.
 model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}
 hardware:
@@ -51,7 +51,7 @@ optimizer:
   # Parameter counts, not token counts: an Adam step reads and writes the optimizer state
   # once per step regardless of how many tokens produced the gradients. The grid brackets
   # `total_parameters / (tp * pp * dp)`, which is the shard one rank updates. Qwen3-8B at
-  # tp=2/pp=3/dp=1 gives 1.365B; the smaller points cover higher parallelism degrees and a
+  # tp=2/pp=3/dp=1 gives 1.365B. The smaller points cover higher parallelism degrees and a
   # distributed optimizer dividing again across DP, and the sub-10M points exist to locate
   # the launch floor rather than because any real shard is that small.
   #

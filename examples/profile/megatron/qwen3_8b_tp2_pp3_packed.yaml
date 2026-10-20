@@ -12,7 +12,7 @@
 #
 # and the quadratic term carries 71% of the predicted time, so a 2.7x stretch
 # on it is the whole error. The same coefficients score +5.6% on the batch-8
-# baseline, whose features sit at 0.61x of the cap. The fit is not wrong; it is
+# baseline, whose features sit at 0.61x of the cap. The fit is not wrong. It is
 # being asked outside its domain.
 #
 # Why more of the same points would not fix it. Measured on the design matrix
@@ -31,16 +31,16 @@
 #
 # What does work: hold the microbatch's token count fixed and vary how many
 # sequences it is split into. Attention does not cross sequence boundaries, so
-# `Sum(s^2)` changes by the sequence count while `Sum(s)` stays put --
+# `Sum(s^2)` changes by the sequence count while `Sum(s)` stays put.
 # 1x12288 and 12x1024 are the same 12288 tokens but differ 12x in `Sum(s^2)`.
 # That drops the correlation to 0.6608 on its own, and 0.7296 when combined
 # with the length arm below, at rank 4 and cond 4.5e9.
 #
 # This config therefore measures two arms in one tree:
 #   - the length arm (one sequence per microbatch, the original sweep), which
-#     is what sets the absolute scale;
+#     sets the absolute scale.
 #   - the packing arm (a fixed ~12288-token microbatch split 1/2/4/8/12 ways),
-#     which is what separates the linear and quadratic terms.
+#     which separates the linear and quadratic terms.
 #
 # Acceptance, registered before measuring: after refitting, the cell's
 # `corr(w_tokens, w_sumsq)` must fall below 0.85 and the loopback-fix run's

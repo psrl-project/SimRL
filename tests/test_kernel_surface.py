@@ -37,7 +37,7 @@ def test_the_spline_interpolates_between_measured_points():
 
 
 def test_the_spline_is_shape_preserving_across_a_trough():
-    """The real GEMM utility curve dips before climbing; the spline must not overshoot it."""
+    """The real GEMM utility curve dips before climbing. The spline must not overshoot it."""
     samples = (
         UtilitySample(coords=(1.0,), utility=0.6294),
         UtilitySample(coords=(32.0,), utility=0.4727),
@@ -52,7 +52,7 @@ def test_the_spline_is_shape_preserving_across_a_trough():
 
 
 def test_the_spline_clamps_above_the_measured_range():
-    """PCHIP extrapolation falls back below the last measurement; clamping must prevent it."""
+    """PCHIP extrapolation falls back below the last measurement. Clamping must prevent it."""
     surface = PchipSurface(_RISING)
     for query in (2048.0, 65536.0, 1.0e9):
         assert surface.utility((query,)) == pytest.approx(0.9, rel=1e-12)
@@ -65,7 +65,7 @@ def test_the_spline_clamps_below_the_measured_range():
 
 
 def test_a_single_sample_holds_its_value_everywhere():
-    """A slice with one measured point cannot be splined; it must hold, not raise."""
+    """A slice with one measured point cannot be splined. It must hold, not raise."""
     surface = PchipSurface((UtilitySample(coords=(4096.0,), utility=0.72),))
     assert surface.utility((1.0,)) == pytest.approx(0.72)
     assert surface.utility((1.0e6,)) == pytest.approx(0.72)

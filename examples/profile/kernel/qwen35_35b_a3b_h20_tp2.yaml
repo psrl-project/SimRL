@@ -7,12 +7,12 @@
 # declares seven GEMM shapes per layer rather than the dense four: `qkv_proj`, `o_proj`,
 # `router`, `expert_gate_up`, `expert_down`, `shared_gate_up`, `shared_down`. The expert
 # shapes are per-expert at `moe_intermediate_size=512`, so they are narrow and launch-bound
-# where the dense projections are bandwidth-bound; the grid below keeps the small token
+# where the dense projections are bandwidth-bound. The grid below keeps the small token
 # counts dense for exactly that reason.
 #
 # Hybrid attention is the other difference. Only 10 of the 40 layers run softmax attention
-# (`full_attention_interval: 4`); the other 30 are gated delta-net, which this sweep does
-# NOT measure -- there is no linear-attention kernel op. So the attention tables here price
+# (`full_attention_interval: 4`). The other 30 are gated delta-net, which this sweep does
+# NOT measure, since there is no linear-attention kernel op. So the attention tables here price
 # a quarter of the model's layers, and a composed rollout built from them would understate a
 # step. That is a known gap, recorded rather than papered over: the per-kernel tables and
 # their holdout gate are still valid for the kernels they cover.
@@ -44,7 +44,7 @@ attention:
 
 gdn:
   # Gated delta net: the linear-attention layer this model runs on 30 of its 40 layers. A
-  # separate family from `attention:` because the kernels and the cost function differ -- GDN
+  # separate family from `attention:` because the kernels and the cost function differ. GDN
   # is LINEAR in tokens where softmax attention is quadratic, which at 32k tokens is a 128x
   # difference in the roofline.
   #

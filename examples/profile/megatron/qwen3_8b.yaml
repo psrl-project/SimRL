@@ -35,7 +35,7 @@ profiling:
 environment:
   # The library recipe reads one config.json through the hub identifier it pins.
   # Resolving it from the local cache keeps a candidate from depending on network
-  # reachability; model weights are never fetched (load_weights=false).
+  # reachability. Model weights are never fetched (load_weights=false).
   HF_HUB_OFFLINE: "1"
 
 # Bring-up sweep, not the production sweep.

@@ -272,12 +272,12 @@ class TestSCGCurve:
         store.close()
         plotter = SimPlotter(store, tmp_path / "plots")
         path = plotter.plot_scg_curve()
-        # _empty_placeholder writes a file; the important thing is no exception.
+        # _empty_placeholder writes a file. The important thing is no exception.
         assert path.exists()
         assert path.name == "scg_curve.png"
 
     def test_consume_rows_without_staleness_true_produce_placeholder(self, tmp_path):
-        """Rows missing staleness_true are skipped; if none survive, a placeholder is returned."""
+        """Rows missing staleness_true are skipped. If none survive, a placeholder is returned."""
         store = JsonlStore(tmp_path / "logs")
         store.write(
             "request",
@@ -298,7 +298,7 @@ class TestSCGCurve:
             v_max=1,
             num_preemptions=0,
             num_aborts=0,
-            # staleness_true intentionally absent — simulates a pre-feature log
+            # staleness_true intentionally absent. Simulates a pre-feature log.
         )
         store.close()
         plotter = SimPlotter(store, tmp_path / "plots")

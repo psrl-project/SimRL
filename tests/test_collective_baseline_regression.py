@@ -52,12 +52,12 @@ _HOLDOUT_COMPUTE = {
     # `gemm_dgrad_shapes` added (first re-sweep), then again when non-power-of-two token
     # counts 3072/6144/7510/10240/11264/12288/22528 were added for ComposedTraining validation.
     # The MRE is identical across both re-sweeps (4.6436%) because the utility fit is robust
-    # to the grid densification; the point count rose because more shapes are now held out.
+    # to the grid densification. The point count rose because more shapes are now held out.
     ("gemm", "vllm"): (3.7249, 174),
     # Attention was re-swept 2026-10-09 when `generation_attention` moved to CUDA graph
     # replay. Both phases move: they share a floor fit, so re-fitting the decode floor from
     # 22 us to 6 us perturbs the context surface too. The decode holdout rising (4.5715% to
-    # 9.5042%) is the expected direction -- the old table was flat across a 256x range of KV
+    # 9.5042%) is the expected direction. The old table was flat across a 256x range of KV
     # work, and a utility surface over a constant is trivially accurate. The end-to-end
     # decode number below improves 2.4x, which is the quantity that matters.
     ("context_attention", "vllm"): (6.5900, 59),
@@ -132,8 +132,8 @@ _SUPERSEDED_DEGREE_TREES = (4, 8)
 # post-sweep values so the gate compares against data that exists.
 #
 # 2026-10-09: decode 9.497 -> 4.031 when `generation_attention` moved to graph replay. The
-# comment below had identified the cause years' worth of sweeps ago -- a composed step was
-# summing per-call floors that CUDA graph replay removes in the real server -- and this is
+# comment below had identified the cause years' worth of sweeps ago. A composed step was
+# summing per-call floors that CUDA graph replay removes in the real server, and this is
 # that diagnosis finally applied to the measurement rather than worked around downstream.
 _VALIDATE_WHOLE_GRID = {
     "prefill": (4.017, 29),
@@ -144,11 +144,11 @@ _VALIDATE_WHOLE_GRID = {
 # The figure the documentation headlines, excluding the small-batch decode region whose
 # over-prediction WAS a known model error: a composed step summed 253 per-call floors that
 # CUDA graph replay removes in the real server. Those floors are now gone from the table, so
-# the exclusion no longer buys anything -- the full grid scores 4.031% against this subset's
+# the exclusion no longer buys anything. The full grid scores 4.031% against this subset's
 # 4.272%, i.e. small batches are no longer the worse region. Kept as a tripwire: if a future
 # change reintroduces a dispatch floor into the decode table, this number will diverge from
 # the whole-grid one again.
-# A0 value 2.957; A1 gave 3.071; the B0 gemm re-sweep gave 3.439.
+# A0 value 2.957, A1 gave 3.071, and the B0 gemm re-sweep gave 3.439.
 _VALIDATE_DECODE_REQS_GE_5 = (4.272, 137)
 
 # Fitted floors. The attention and elementwise values are **unchanged** by the A1 re-sweep,

@@ -55,7 +55,7 @@ class SrlMeasurementCallback(Callback):
         self._micro_batch_size = int(spec["micro_batch_size"])
         self._expected_microbatches = int(spec["num_microbatches"])
         self._packing = str(spec.get("packing", "bshd"))
-        # TP-aligned exactly as the launcher's THD iterator aligns them; recording
+        # TP-aligned exactly as the launcher's THD iterator aligns them. Recording
         # the unaligned lengths would describe a buffer that never ran.
         _tp = max(1, int(spec.get("parallelism", {}).get("tp", 1)))
         self._sequence_lengths = [
@@ -173,7 +173,7 @@ class SrlMeasurementCallback(Callback):
         the latency model is fitted against, so a traced run must not also be a
         measured run. It exists to answer "which kernels does a step actually
         execute", which is the one question `ComposedTraining`'s per-op decomposition
-        cannot answer from the cost side — the composition can only report the ops it
+        cannot answer from the cost side. The composition can only report the ops it
         already knows about, and a residual that is *none* of them is invisible to it.
 
         Only rank 0 traces. The ranks hold different pipeline stages, so a trace per
@@ -214,14 +214,14 @@ class SrlMeasurementCallback(Callback):
         Record the shape trained on and verify the derived microbatch count.
 
         Megatron derives `num_microbatches` from global batch, micro batch, and
-        data-parallel size; it cannot be set directly. This is where a mismatch
+        data-parallel size, and it cannot be set directly. This is where a mismatch
         against the candidate becomes a hard error instead of a fit silently
         attributed to the wrong pipeline depth.
 
         The recorded shape has to be what the attention kernel saw: the collector
         turns it into `SequenceStats` and the quadratic latency term is fitted
         against `sum_squared_tokens`. BSHD pads to the longest sequence, so the
-        shape is `[seq_length] * micro_batch_size`; THD keeps the per-sequence
+        shape is `[seq_length] * micro_batch_size`. THD keeps the per-sequence
         lengths, whose individual squares are what the pack actually costs.
         """
         from megatron.core.num_microbatches_calculator import get_num_microbatches
@@ -311,7 +311,7 @@ def write_oom_sidecar(
 #
 # Matching on kernel names is inherently a heuristic, and the summary keeps an
 # `unmatched` list naming every kernel that fell through with its total time. A residual
-# hiding in `unmatched` is the finding; a residual hiding in a *mis*-matched bucket would
+# hiding in `unmatched` is the finding. A residual hiding in a *mis*-matched bucket would
 # be a bug in this table, which is why nothing is silently absorbed into "other".
 _KERNEL_CATEGORIES: tuple[tuple[str, str | None], ...] = (
     # Attention, before GEMM: flash kernels are matmuls too but are charged separately.

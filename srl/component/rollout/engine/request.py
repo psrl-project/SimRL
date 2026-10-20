@@ -96,7 +96,7 @@ class Request:
     deadline_buffer: int = 0
     """The training buffer index this request's group must reach before its deadline.
 
-    Stamped at admission by `inventory_deadline`'s `_commit_admission`; zero for
+    Stamped at admission by `inventory_deadline`'s `_commit_admission`. Zero for
     requests admitted by other strategies. Used by the `latest_deadline` eviction
     strategy to evict the least-urgent resident first.
     """

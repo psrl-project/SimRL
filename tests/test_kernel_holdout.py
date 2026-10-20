@@ -62,8 +62,8 @@ def test_bracketing_indices_excludes_endpoints_of_1d_frontier():
 
 
 def test_bracketing_indices_with_two_points_vacuously_brackets_both():
-    # With only two points, removing either leaves a single degenerate remaining set;
-    # all axes are vacuously satisfied, so both indices are returned.
+    # With only two points, removing either leaves a single degenerate remaining set, so
+    # all axes are vacuously satisfied and both indices are returned.
     coords = [(1024.0, 4096.0), (2048.0, 8192.0)]
     assert bracketing_indices(coords) == (0, 1)
 
@@ -171,7 +171,7 @@ def test_holdout_agrees_with_the_database_on_a_full_table_point(tmp_path):
 
 
 def test_passes_returns_false_at_zero_point_count():
-    # An empty scoring set must fail the gate; a zero-count result is not meaningful.
+    # An empty scoring set must fail the gate. A zero-count result is not meaningful.
     result = HoldoutResult(
         op_name="gemm",
         backend="vllm",
@@ -209,7 +209,7 @@ def test_report_over_unscorable_table_fails_gate(tmp_path):
 
 # Regression test: real Qwen3-8B GEMM coordinate structure (H20, vllm).
 # The four projections (q, k, v, o) share one (gemm_dtype,) slice and pin n and k to
-# their projection-specific values.  Before the bracketing fix, interior_indices returned
+# their projection-specific values. Before the bracketing fix, interior_indices returned
 # zero candidates because every point sat at the extremum of either n or k, making the
 # gate vacuously pass with 0 scored points.
 _QWEN3_NK_PAIRS: tuple[tuple[int, int], ...] = (
@@ -233,9 +233,9 @@ def _qwen3_gemm_rows(utility: float) -> list[tuple[int, int, int, float]]:
 
 def test_real_gemm_structure_scores_all_60_points(tmp_path):
     # With per-(n,k) slicing the 60 rows split into 4 separate slices of 15 m-values
-    # each.  In each 1-D slice the two endpoint m-values (smallest and largest) are not
+    # each. In each 1-D slice the two endpoint m-values (smallest and largest) are not
     # bracketed: removing the minimum leaves the query below the remaining range, and
-    # vice versa for the maximum.  The remaining 13 per slice are all bracketed.
+    # vice versa for the maximum. The remaining 13 per slice are all bracketed.
     # Total scorable: 4 slices × 13 interior points = 52.
     rows = _qwen3_gemm_rows(0.7)
     assert len(rows) == 60
@@ -279,7 +279,7 @@ def test_zero_step_rows_contribute_to_utility_range_but_not_to_scoring(tmp_path)
         lat = gemm_sol(spec, m=m, n=4096, k=4096, dtype="bfloat16").latency_s / 0.5
         rows.append((m, 4096, 4096, lat))
     # The GEMM table schema rejects latency<=0 but not m=0 on load: however,
-    # _log2_compatible will filter m=0 out of the scoring set.  Instead, directly
+    # _log2_compatible will filter m=0 out of the scoring set. Instead, directly
     # verify the behaviour by checking that adding a near-zero m (m=1) does not
     # break scoring (m=1 IS log2-compatible: log2(1)=0 is valid as a coordinate).
     rows_with_m1 = [(1, 4096, 4096, 1e-3)] + rows
@@ -288,6 +288,6 @@ def test_zero_step_rows_contribute_to_utility_range_but_not_to_scoring(tmp_path)
     result = evaluate_holdout(
         table, op_name="gemm", backend="vllm", gpu_spec=load_gpu_spec("h20"), fraction=1.0
     )
-    # The m=1 row has utility=gemm_sol(m=1)/1e-3, which is very small; it is included
+    # The m=1 row has utility=gemm_sol(m=1)/1e-3, which is very small, and it is included
     # in utility_min but does not affect scoring since it is a grid extreme.
     assert result.utility_min < result.utility_max

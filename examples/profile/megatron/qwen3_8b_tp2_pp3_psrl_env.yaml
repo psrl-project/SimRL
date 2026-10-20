@@ -21,7 +21,7 @@
 # Acceptance, registered before measuring. At nmb=64, one 9476-token sequence:
 #   - landing near 110 s means the stack explains the per-token gap, the cost
 #     model is sound, and artifacts must be profiled in the environment they
-#     will answer for;
+#     will answer for.
 #   - landing near 74 s again means the stack is not the cause and the remaining
 #     difference belongs to verl's wrapper, to be measured by instrumenting PSRL.
 model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}
@@ -59,7 +59,7 @@ search_space:
   tensor_parallel_sizes: [2]
   pipeline_parallel_sizes: [3]
   data_parallel_sizes: [1]
-  # 64 is the baseline's real count; 4 anchors the cheap end so a slope through
+  # 64 is the baseline's real count. 4 anchors the cheap end so a slope through
   # the new token band is measurable without paying for 64 microbatches twice.
   # 256 is the loopback's real count and the only point outside the old sweep.
   num_microbatches: [4, 64, 256]

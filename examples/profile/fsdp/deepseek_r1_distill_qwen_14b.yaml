@@ -34,7 +34,7 @@ environment:
 
 search_space:
   world_size: 8
-  # Pure FSDP and the one HSDP mesh that fits. The Qwen3-8B sweep profiles [2, 4, 8];
+  # Pure FSDP and the one HSDP mesh that fits. The Qwen3-8B sweep profiles [2, 4, 8].
   # `shard_sizes: 2` is dropped here because it cannot fit this model rather than
   # because it is uninteresting.
   #
@@ -44,7 +44,7 @@ search_space:
   # memory upper bound either, because an FSDP rank that runs out of memory during
   # collective setup surfaces it as an NCCL allocation failure rather than
   # `torch.OutOfMemoryError`, so the sidecar writes no OOM marker and the candidate is
-  # classified `failed` -- the run is lost instead of becoming an inequality constraint.
+  # classified `failed`, so the run is lost instead of becoming an inequality constraint.
   # shard=4 is 48.1 GiB and shard=8 is 24.1 GiB, both of which leave activation headroom.
   shard_sizes: [4, 8]
   # Varied independently of sequence_lengths so the latency design row

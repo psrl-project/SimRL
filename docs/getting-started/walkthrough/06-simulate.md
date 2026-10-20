@@ -53,7 +53,7 @@ Four things in that command are easy to get wrong:
 
 `training_cost.activation_recompute` and the other selector keys
 : Must match a profiled cell. The Megatron cell lookup is exact on TP (and CP, EP) and on the
-  selector; PP is derived.
+  selector. PP is derived.
 
 `policy.staleness`
 : The `psrl` preset's version bound. Other presets have their own knobs (`areal` has
@@ -86,7 +86,7 @@ Name the features the data actually exceeds:
 ```
 
 Valid names for the Megatron artifact are `tokens`, `sum_squared_tokens`, `pipeline_slots`,
-`micro_batch_size`, `activation_bytes`, and `profiled_dp`; a name that is not one of them raises
+`micro_batch_size`, `activation_bytes`, and `profiled_dp`. A name that is not one of them raises
 `Unknown extrapolation feature(s) [...]` listing the valid ones. An extrapolation is a decision
 about how far to trust a linear stretch: the token terms are fitted over a profiled range, and
 attention grows with the square of the sequence length, so a long tail is a bounded
@@ -128,7 +128,7 @@ Simulation complete: 3 versions in 223.57s
   Staleness report: mean=1.14 p50=1 p95=2 p99=2 max=2 horizon=2 strict=True
 ```
 
-223.57 s is **simulated** time; the run itself takes seconds. `Consumed: 96` is 3 versions of
+223.57 s is **simulated** time. The run itself takes seconds. `Consumed: 96` is 3 versions of
 32 responses. `Staleness report ... strict=True` says no consumed response exceeded
 `horizon`.
 
@@ -197,7 +197,7 @@ vocabulary, and parameter count from the training artifact, so it needs nothing 
 ```
 
 **Weight sync.** `sync_cost.sync_time` is added to each training step after the update and
-`sync_cost.weight_load_time` is the rollout-side time to load the new weights; both are seconds
+`sync_cost.weight_load_time` is the rollout-side time to load the new weights. Both are seconds
 and default to 0.0.
 
 **KV capacity.** `rollout.kv_blocks` is a literal placeholder (`100000`) unless sized. Naming a
@@ -209,7 +209,7 @@ checkpoint replaces it:
 ```
 
 With `probe: true` (the default) the first run starts a real vLLM engine, reads back the block
-count, and caches it in `~/.cache/srl/kv_capacity.json` (override with `SIMRL_KV_CACHE`);
+count, and caches it in `~/.cache/srl/kv_capacity.json` (override with `SIMRL_KV_CACHE`).
 `srl-profile kv-probe --model ... --tp ...` populates that cache ahead of time on a GPU box.
 `probe: false` computes the capacity from `config.json` on CPU, which is only reliable for dense
 models. {doc}`../../simulation/prefix-cache` covers capacity and the block pool.
@@ -295,8 +295,8 @@ srl --multirun \
 ```
 
 Nine jobs, each in its own `multirun/<date>/<time>/<n>/` directory. `log_telemetry=false` skips
-the JSONL and plots, so a sweep that only reads the printed summary leaves no files behind;
-drop it and set `'output_dir=${hydra:runtime.output_dir}'` to keep each job's telemetry
+the JSONL and plots, so a sweep that only reads the printed summary leaves no files behind.
+Drop it and set `'output_dir=${hydra:runtime.output_dir}'` to keep each job's telemetry
 separate. Every job costs seconds instead of GPU hours, and every one either produces a number
 backed by measurement or refuses to.
 

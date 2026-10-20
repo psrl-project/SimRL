@@ -4,7 +4,7 @@
 # GQA, which `families_dense.py` already registers. It differs from Qwen3-8B in width
 # (hidden 5120 against 4096), depth (48 layers against 36), and query heads (40 against 32),
 # and it carries NO `q_norm`/`k_norm`, so the elementwise grid omits the two `qk_norm`
-# kernels that Qwen3 pays for. All of that is read from `config.json`; nothing below
+# kernels that Qwen3 pays for. All of that is read from `config.json`. Nothing below
 # restates it.
 #
 # What matters for the grids: the KV geometry is identical to Qwen3-8B (8 KV heads at

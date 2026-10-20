@@ -28,7 +28,7 @@ class SortKey(Enum):
 class RouterQueue:
     """A priority-ordered queue of requests awaiting placement.
 
-    Requests are first partitioned by `v_traj`, oldest version first; `sort_key`
+    Requests are first partitioned by `v_traj`, oldest version first. `sort_key`
     only breaks ties inside one version layer.
 
     Usage:

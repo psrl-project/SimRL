@@ -64,7 +64,7 @@ class Regime:
     versions: int = 6
     group_size: int = 8
     trace: str = ""
-    """A recorded trace to use instead of a synthetic one; `cv`, `rho` and `mean` are then ignored."""
+    """A recorded trace to use instead of a synthetic one. `cv`, `rho` and `mean` are then ignored."""
 
     def key(self) -> str:
         shape = (
@@ -513,7 +513,7 @@ def grid_lptw() -> list[Job]:
     """How wide the reordering block should be, and how it interacts with the cap.
 
     A block of one training batch of groups matches the set that shares a
-    consumption deadline. Smaller blocks reorder less; larger ones start the next
+    consumption deadline. Smaller blocks reorder less. Larger ones start the next
     batch's long groups before the current batch's short ones are done.
     """
     jobs = []
@@ -546,7 +546,7 @@ def grid_taumax() -> list[Job]:
 def grid_real1() -> list[Job]:
     """The strongest synthetic regime again, on the recorded DAPO traces.
 
-    Synthetic traces make dispersion a free variable; this checks the gain survives
+    Synthetic traces make dispersion a free variable. This checks the gain survives
     the shape real responses have, including the pile-up at the length cap.
     """
     jobs = []
@@ -607,7 +607,7 @@ def grid_dapolike() -> list[Job]:
 
     The recorded trace shows almost no ordering gain where the synthetic one shows a
     lot. If a lognormal with matching moments reproduces the real trace's behaviour,
-    the difference is scale (longer contexts, KV-bound concurrency); if it still
+    the difference is scale (longer contexts, KV-bound concurrency). If it still
     shows the gain, the difference is the shape of the real distribution.
     """
     jobs = []

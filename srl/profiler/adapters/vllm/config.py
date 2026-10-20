@@ -19,7 +19,7 @@ DEFAULT_STARTUP_STAGGER_SECONDS = 30.0
 
 # Concurrent vLLM startups contend for the shared filesystem holding torch, vLLM and the
 # checkpoint. Eight simultaneous imports on CephFS took over 40 minutes and blew past
-# `server_ready_timeout`; admitting one startup at a time keeps each server inside it.
+# `server_ready_timeout`. Admitting one startup at a time keeps each server inside it.
 # Raise this when the checkpoint and environment live on a fast local disk.
 DEFAULT_MAX_CONCURRENT_STARTUPS = 1
 
@@ -121,7 +121,7 @@ class VLLMSweepConfig:
             for key in self.serve_args
         ):
             raise ProfileValidationError(
-                "serve.args must not enable a profiler; timing-only collection "
+                "serve.args must not enable a profiler. Timing-only collection "
                 "uses scheduler iteration logs."
             )
         if any(
@@ -129,7 +129,7 @@ class VLLMSweepConfig:
             for key in self.serve_args
         ):
             raise ProfileValidationError(
-                "serve.args must not set async scheduling; timing collection "
+                "serve.args must not set async scheduling. Timing collection "
                 "always disables it so each iteration's elapsed time measures "
                 "its own forward pass."
             )

@@ -6,11 +6,11 @@ whether the forecaster predicts buffer timing correctly. None of it says whether
 decisions make the run finish sooner. This grid runs the design doc's go/no-go comparison (see
 "## Phases and gates" step 4) at the cheap toy scale: `psrl_default` (no cap), `static_cap` (best
 of a small per-instance cap grid), `static_cap_lpt` (the same cap grid with `length_aware`
-longest-first placement), and `inventory_deadline` (no cap -- it has none to tune), on the exact
+longest-first placement), and `inventory_deadline` (no cap, since it has none to tune), on the exact
 same ten regimes `forecast_accuracy.py --scale toy` already validated the forecaster's accuracy on.
 
 Every regime runs a fixed number of training versions, so "faster" means lower `sim_time`
-(equivalently higher `throughput`, tokens/sim_time) to finish the same amount of training work --
+(equivalently higher `throughput`, tokens/sim_time) to finish the same amount of training work,
 not a fixed-wall-time token count. `tokens_per_group` (consumed tokens / distinct consumed groups)
 is the sanity check this project has been burned by skipping before: a win that moves it away from
 `psrl_default`'s value is training on a different, not-comparable set of responses, not a real win.
@@ -172,7 +172,7 @@ def _report(args: argparse.Namespace) -> None:
 
 
 GRIDS = {"toy": None}
-"""Only one grid exists today; kept as a dict so a second one slots in without touching the CLI."""
+"""Only one grid exists today. Kept as a dict so a second one slots in without touching the CLI."""
 
 
 def main() -> None:

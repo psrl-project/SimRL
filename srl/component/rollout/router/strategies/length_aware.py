@@ -5,7 +5,7 @@ Two independent decisions use the same prediction:
 * **Which request goes next.** A prompt group is trainable only when its slowest
   member finishes, so the unit that is early or late is the group, keyed on its
   longest predicted member. `lpt` starts the longest group first so a straggler
-  never begins last; `spt` starts the shortest first so the earliest batch fills
+  never begins last. `spt` starts the shortest first so the earliest batch fills
   sooner. Members of a group that has already started always go ahead of a new
   group, since each one left in the queue holds that group back.
 

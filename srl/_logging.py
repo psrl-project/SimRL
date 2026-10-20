@@ -79,7 +79,7 @@ def setup_logging(
         handler.setFormatter(formatter)
         srl_logger.addHandler(handler)
     srl_logger.setLevel(resolved_level)
-    # This logger owns its own output end to end; don't also emit through
+    # This logger owns its own output end to end. Don't also emit through
     # the root logger's handlers (e.g. a host application's own config).
     srl_logger.propagate = False
 

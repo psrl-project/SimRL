@@ -5,7 +5,7 @@ validated JSONL normalization as the only regression input.
 
 The same three workflows applied to a second checkpoint, with only the differences recorded:
 [`DEEPSEEK_R1_DISTILL_QWEN_14B.md`](DEEPSEEK_R1_DISTILL_QWEN_14B.md). Read it alongside this
-file rather than instead of it, and read it first if you are profiling a *new* model — it is
+file rather than instead of it, and read it first if you are profiling a *new* model. It is
 the worked example of what a different architecture actually forces you to change.
 
 Install pinned vLLM and Megatron-Bridge into the current conda environment first:
@@ -28,7 +28,7 @@ export MODEL_PATH=/path/to/Qwen3-8B
 For each phase the adapter launches one official unprofiled timing sweep. Collection reads
 scheduler `Iteration(...)` logs for step elapsed time and fills `sum_l2` / `ctxsum` from
 equal-length formulas (`sum_l2` from as-equal-as-possible packing of `T` tokens across
-`R` prefill requests; `ctxsum = R*(L+1+k)` on the `k`-th decode step). Client TTFT/ITL
+`R` prefill requests, and `ctxsum = R*(L+1+k)` on the `k`-th decode step). Client TTFT/ITL
 remain in the untouched benchmark JSON for diagnostics but are not clustered into
 synthetic GPU steps.
 
@@ -39,7 +39,7 @@ that still report an impossibly short elapsed time are dropped at collection.
 
 Collection also truncates a run at its first preemption. Once the KV cache fills, vLLM
 evicts requests and later re-prefills each one's prompt *plus* the tokens it already
-generated; from then on the running requests no longer share one age, so `ctxsum` cannot
+generated. From then on the running requests no longer share one age, so `ctxsum` cannot
 describe any later step. Keep `max-concurrency * (input + output)` inside the KV cache to
 avoid losing the tail of a decode point: the warning names the run and the step count it
 dropped.
@@ -61,7 +61,7 @@ When multiple GPUs are visible, TP=1 benchmark points are sharded across them an
 run concurrently. Set `CUDA_VISIBLE_DEVICES` to choose the GPU pool, or force the
 legacy serial layout with `MAX_PARALLEL=1` (equivalent to
 `srl-profile vllm run --max-parallel 1`). `--max-parallel auto` is the
-default; a workflow can set the same policy with `run.max_parallel: auto|N`.
+default. A workflow can set the same policy with `run.max_parallel: auto|N`.
 Each parallel worker gets an isolated server port, experiment directory,
 and scheduler log.
 
@@ -69,12 +69,12 @@ Shards benchmark in parallel but boot one at a time, because concurrent imports 
 torch, vLLM, and the checkpoint from a shared filesystem are slow enough to trip
 `server_ready_timeout` and kill the shard before it benchmarks anything. Raise
 `run.max_concurrent_startups` when the checkpoint and environment sit on a fast local
-disk. A shard that still fails no longer cancels the others; rerunning the same command
+disk. A shard that still fails no longer cancels the others. Rerunning the same command
 retries only the unfinished shards.
 
 The normalized output is `outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl`. Official benchmark JSON remains
 under `raw/vllm_timing/` and scheduler logs under `control/vllm/`. Parallel experiment directories and
-control files carry an `sNNN` shard suffix; collection merges them by their
+control files carry an `sNNN` shard suffix. Collection merges them by their
 original serve/bench combination path.
 
 For a smoke test, copy the YAML and reduce each phase grid, `num_runs`, and `bench.args.num-prompts`. Keep at least
@@ -99,7 +99,7 @@ bash examples/profile/kernel/profile_qwen3_8b.sh all
 ## Megatron-Bridge training
 
 The YAML only needs a HuggingFace checkpoint path. Architecture constraints and the Megatron-Bridge recipe are
-inferred from `config.json`. `hardware.gpu_count` is the fixed world size; remaining ranks after TP and PP become
+inferred from `config.json`. `hardware.gpu_count` is the fixed world size, and remaining ranks after TP and PP become
 DP. Each candidate discards four warmup steps and records eight, with micro-batch size 1 and full activation
 recomputation. The same topology is not repeated.
 
@@ -137,7 +137,7 @@ bash examples/profile/megatron/profile_qwen3_8b.sh collect
 ```
 
 Set `CANDIDATE_INDEX=all` only for a provisioned sweep. Multiple nodes use the same launcher through
-`torchrun --nnodes N --node-rank`; there is no separate Slurm path.
+`torchrun --nnodes N --node-rank`. There is no separate Slurm path.
 
 The sweep covers three sequence lengths at MBS=1 and local microbatch counts `{1, 4}` across four `(TP, PP)` cells.
 Both axes are required: the latency design row is `[1, slots * tokens, slots]` with `slots = num_microbatches + PP - 1`,
@@ -151,6 +151,6 @@ spread within a candidate from 16.4% to 0.5%. The retained steps are reduced by 
 interference inflates individual steps but nothing makes a step faster than the hardware allows.
 
 OOM candidates are expected data for memory regression and are preserved instead of being discarded. The launcher
-catches `torch.OutOfMemoryError` and writes a per-rank `oom_rank{N}.json` marker; classification reads those markers
+catches `torch.OutOfMemoryError` and writes a per-rank `oom_rank{N}.json` marker. Classification reads those markers
 rather than scanning the log, because a log that merely mentions the phrase would add an inequality constraint that
 can only raise the fitted memory floor.

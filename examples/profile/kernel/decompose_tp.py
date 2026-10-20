@@ -118,7 +118,7 @@ def _summarize(rows: list[Decomposition], phase: str) -> dict[str, float]:
         "comm_share_percent_median": median(comm_share),
         "comm_share_percent_max": max(comm_share),
         # MRE under each pricing of the collective. The gap between them is the cost of having
-        # measured the wrong kernel; the gap to `comm_zero` is the size of the term itself.
+        # measured the wrong kernel. The gap to `comm_zero` is the size of the term itself.
         "mre_percent_vllm": median(abs(r.error_percent(r.comm_vllm_s)) for r in selected),
         "mre_percent_nccl": median(abs(r.error_percent(r.comm_nccl_s)) for r in selected),
         "mre_percent_comm_zero": median(abs(r.error_percent(0.0)) for r in selected),

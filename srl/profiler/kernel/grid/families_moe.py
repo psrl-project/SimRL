@@ -11,7 +11,7 @@ differ, each of which changes the measured GEMM set:
   `moe_intermediate_size`, plus a shared expert that every token traverses. Priced as
   dense, the per-expert GEMMs vanish and the router never appears.
 * **Only every `full_attention_interval`-th layer attends over context.** 10 of this
-  checkpoint's 40 layers are `full_attention`; the other 30 are `linear_attention`, whose
+  checkpoint's 40 layers are `full_attention`. The other 30 are `linear_attention`, whose
   cost does not grow with context. A family that reports one attention shape times
   `num_layers` overstates the context-dependent term fourfold.
 * **`head_dim` is not `hidden_size / num_heads`.** Here it is 256 against
@@ -149,11 +149,9 @@ class Qwen35MoeFamily:
 
         shapes = [
             # `attn_output_gate` doubles the query rows: the projection emits a gate
-            # alongside the query and the two are split after the GEMM. Verified against
-            # Qwen3.5-35B-A3B's module graph, where `q_proj` is (8192, 2048) at 16 heads
-            # and head_dim 256 -- twice the 4096 an ungated projection would hold. Without
-            # the factor this shape understates the fused QKV GEMM by 1.8x (5120 against
-            # the real 9216 rows), which `kernels verify-shapes` reports as a mismatch.
+            # alongside the query, and the two split after the GEMM. Omitting the factor
+            # understates the fused QKV GEMM width, which `kernels verify-shapes` catches
+            # as a mismatch against the real module graph.
             GemmShape(
                 "qkv_proj",
                 (heads * (2 if model.extra.get("attn_output_gate") else 1) + 2 * kv_heads)
@@ -246,8 +244,8 @@ class Qwen35MoeFamily:
 
 QWEN35_MOE_FAMILY = Qwen35MoeFamily()
 
-# `Qwen3_5MoeForConditionalGeneration` is the multimodal wrapper the checkpoint declares;
-# the vision tower is not priced here because the rollout traces are text-only. The text
+# `Qwen3_5MoeForConditionalGeneration` is the multimodal wrapper the checkpoint declares.
+# The vision tower is not priced here because the rollout traces are text-only. The text
 # backbone is what `Qwen3_5MoeForCausalLM` names, registered alongside so a text-only
 # release of the same architecture resolves to the same shapes.
 for _architecture in (

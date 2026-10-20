@@ -11,8 +11,8 @@ Training differs from inference in four ways this module must get right:
 2. Collectives under sequence parallelism are NOT all_reduce.
    Megatron sets sequence_parallel whenever tp>1. Under it RowParallelLinear calls
    reduce_scatter_to_sequence_parallel_region and ColumnParallelLinear calls
-   gather_from_sequence_parallel_region. The existing all_reduce table is for vLLM rollout;
-   training needs reduce_scatter + all_gather.
+   gather_from_sequence_parallel_region. The existing all_reduce table is for vLLM rollout.
+   Training needs reduce_scatter + all_gather.
 
 3. Full recompute pays the forward collectives twice.
    CheckpointFunction.backward re-runs the whole forward, which includes the SP collectives.
@@ -21,7 +21,7 @@ Training differs from inference in four ways this module must get right:
 
 4. Elementwise IS summed for training, unlike the rollout model.
    The rollout omission is justified by CUDA-graph replay absorbing elementwise into the
-   fitted kernel utilities; Megatron runs no CUDA graphs. The cost is genuinely exposed.
+   fitted kernel utilities. Megatron runs no CUDA graphs. The cost is genuinely exposed.
    This is a deliberate divergence from ComposedRollout, not an oversight.
 
 The op counts per layer under full recompute, verified against Transformer Engine source
@@ -44,7 +44,7 @@ all_gather and 2 column reduce_scatter in backward.
 
 DP gradient collectives (reduce_scatter + all_gather) are implemented but flagged:
 all 22 THD validation records are dp=1, so this term cannot be end-to-end validated.
-The Spec A tables were gated and the individual queries resolve; only the composition
+The Spec A tables were gated and the individual queries resolve. Only the composition
 against a real step time is untested. The DP term is inactive at dp=1.
 """
 
@@ -83,8 +83,8 @@ if TYPE_CHECKING:
 # This is a *measured* count rather than a derived one, and that is a real limitation: it is
 # a property of how megatron-core and Transformer Engine stage their buffers, so it cannot be
 # read off the architecture and does not transfer to another framework or version. It is a
-# count rather than a fitted coefficient — the per-launch cost still comes from the measured
-# table — but a count taken from one trace is the weakest input in this model.
+# count rather than a fitted coefficient (the per-launch cost still comes from the measured
+# table), but a count taken from one trace is the weakest input in this model.
 #
 # The 334 per-step launches (grad-norm plumbing, optimizer staging) are not charged: they
 # amortize to under 0.5% of a step at nmb>=4 and would need their own term.
@@ -139,17 +139,17 @@ class TrainingOps:
         Args:
             model (ModelDescriptor): Architecture read from a checkpoint.
             tensor_parallel (int): Ranks each TP group spans.
-            dp (int): Data-parallel degree; sets DP gradient collective sizes.
-            recompute (str): ``"full"`` charges forward collectives twice; ``"none"`` does not.
+            dp (int): Data-parallel degree. Sets DP gradient collective sizes.
+            recompute (str): ``"full"`` charges forward collectives twice. ``"none"`` does not.
             dtype (str): Activation dtype, which sets TP collective message sizes.
-            gradient_dtype (str): Gradient dtype; ``float32`` is Megatron's default.
+            gradient_dtype (str): Gradient dtype. ``float32`` is Megatron's default.
             distributed_optimizer (bool): Whether the distributed optimizer is used. At
                 ``dp=1`` this has no effect. At ``dp>1`` it selects reduce_scatter + all_gather
                 rather than an all_reduce for the gradient sync.
-            nodes_per_tp_group (int): Nodes the TP group spans. 1 for a within-node group
-                (NVLink); >1 for a cross-node group. This is an assumption about deployment;
-                it is named here so a reader can find and review it, not because the model
-                dynamically adjusts.
+            nodes_per_tp_group (int): Nodes the TP group spans, 1 for a within-node group
+                (NVLink) and more than 1 for a cross-node group. This is an assumption about
+                deployment. It is named here so a reader can find and review it, not because
+                the model dynamically adjusts.
 
         Raises:
             ProfileValidationError: If the architecture is incomplete or any dimension
@@ -245,7 +245,7 @@ class TrainingOps:
         step. Verified against ``tensor_parallel/random.py:621``.
 
         Measured consequence of omitting it: the composed prediction was 43% low at
-        12288 tokens; charging the second forward pass brought that to 29% low.
+        12288 tokens. Charging the second forward pass brought that to 29% low.
 
         Args:
             token_count (int): Tokens per microbatch after the SP all_gather. Under THD
@@ -424,7 +424,7 @@ class TrainingOps:
         attention call: a varlen kernel processes each segment independently, and the
         quadratic work is ``sum_i s_i^2`` rather than ``(sum_i s_i)^2``. Pricing the pack
         at its total was the last systematic error in the composition, and the validation
-        set isolates it exactly — five records hold 12288 tokens in different packings:
+        set isolates it exactly, with five records holding 12288 tokens in different packings:
 
         | lengths | measured step | model, pack-total | model, per-sequence |
         |---|---|---|---|
@@ -484,7 +484,7 @@ class TrainingOps:
         Together the attention term was understated by 2.35-2.60x. The cause is that a
         packed microbatch is one row with ``cu_seqlens`` while the rollout grid varies a
         batch dimension a packed layout does not have, so every training query landed at
-        the edge of the measured surface; and that TE dispatches FlashAttention for THD
+        the edge of the measured surface, and that TE dispatches FlashAttention for THD
         rather than the cuDNN FusedAttention the design doc assumed.
 
         Args:
@@ -521,7 +521,7 @@ class TrainingOps:
         - Backward: 4 all_gather + 2 reduce_scatter.
         - Full recompute re-runs the forward: +2 all_gather +2 reduce_scatter.
 
-        All collectives carry the full hidden size; tp shards the sequence dimension.
+        All collectives carry the full hidden size. `tp` shards the sequence dimension.
 
         Returns:
             tuple[tuple[CommQuery, int], ...]: ``(query, multiplier)`` pairs. Empty when
@@ -612,7 +612,7 @@ class TrainingOps:
         rank at tp=2, pp=3 holds 1.365B parameters and the step costs 14.1 ms on H20, running
         at 2703 GB/s against the card's 3.35 TB/s peak. Against the 1.06-72 s steps in the
         THD validation set that is 0.02-1.3%. The term is real and it is not where a composed
-        step's error lives; measuring it is how that was established rather than assumed.
+        step's error lives. Measuring it is how that was established rather than assumed.
 
         Returns None rather than raising when `parameter_count` is absent, because a
         descriptor built from a config without a weight index carries an estimate or
@@ -658,7 +658,7 @@ class TrainingOps:
             return ()
         if self._hidden_size is None:
             return ()
-        # Approximate total parameter count from model descriptor; using inventory is more
+        # Approximate total parameter count from model descriptor. Using inventory is more
         # accurate but requires the checkpoint, which may not be available here.
         # The caller can set dp_param_count on construction if precision matters.
         # This path is clearly marked UNVALIDATED in the docstring.

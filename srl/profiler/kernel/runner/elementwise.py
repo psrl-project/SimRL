@@ -15,7 +15,7 @@ PyTorch fallback, which is a different kernel from the fused one the server runs
 the whole loop runs inside `set_current_vllm_config` rather than per point.
 
 `silu_and_mul` is not exposed on `vllm._custom_ops`, so it is reached as `SiluAndMul().op`
-after the module is constructed inside the config context; that attribute is what the module's
+after the module is constructed inside the config context. That attribute is what the module's
 own `forward_cuda` calls.
 
 Each point's tensors are allocated inside `_time_point`, so they are released when it returns
@@ -135,7 +135,7 @@ class ElementwiseRunner(KernelRunner):
         """
         Allocate, time, and release one `(op_kind, token_count)` point.
 
-        Tensors are function-locals so they die with this frame; the caller empties the
+        Tensors are function-locals so they die with this frame. The caller empties the
         allocator cache afterwards.
 
         Args:

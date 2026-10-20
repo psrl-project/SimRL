@@ -14,7 +14,7 @@
 # Every TP or PP comparison there is also a DP comparison, and DP changes the
 # gradient all-reduce volume and the per-rank token count at once. A measured
 # per-layer cost of 5.2e-5 s at tp1/pp1 against 1.2e-4 s at tp1/pp4 could be
-# the pipeline's doing or dp8-vs-dp2's; the design cannot separate them.
+# the pipeline's doing or dp8-vs-dp2's. The design cannot separate them.
 #
 # This config holds TP=2 and DP=1 fixed and moves ONLY pp, so world_size varies
 # (2, 4, 6 GPUs) instead of DP. That is the whole point: a varying world size

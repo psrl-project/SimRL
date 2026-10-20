@@ -33,7 +33,7 @@ One iteration of `Simulator.run` does the following.
    the router. Staging does not admit anything.
 2. **Admit.** Router dispatch places a group's first response on an instance only if
    `policy.admit_quota(state)` covers a whole group. That placement commits the admission
-   of the entire group (`on_admit`, ledger entry, `v_traj` stamped); siblings may still
+   of the entire group (`on_admit`, ledger entry, `v_traj` stamped). Siblings may still
    wait in the router.
 3. **Generate.** `_run_engine` advances every instance in global time order and collects
    finished responses. A group is released to the policy only when all of its responses
@@ -96,7 +96,7 @@ and the workload sources in {doc}`../workload/index`.
 
 1. **`job.batch_size` counts prompt groups, not responses.** A step consumes
    `batch_size * group_size` responses, and a batch is always whole groups because GRPO
-   scores a response against its own group. `group_size` comes from the workload; an
+   scores a response against its own group. `group_size` comes from the workload. An
    explicit `job.group_size` that disagrees with the workload raises.
 2. **The staleness bound is a property of the policy preset, not of `job`.** There is no
    `job.max_staleness`. Each preset exposes its own knob (`psrl.staleness`,
@@ -107,14 +107,14 @@ and the workload sources in {doc}`../workload/index`.
    when another policy is selected. The editable install must use strict mode:
    `pip install --no-deps -e <psrl> --config-settings editable_mode=strict`.
 4. **Length caps clip the pair, not each axis.** The prompt is clipped to
-   `max_prompt_length`; the output is clipped to
+   `max_prompt_length`. The output is clipped to
    `max_prompt_length + max_output_length - prompt_len`, so a short prompt buys extra
    output room. Training sees per-axis caps, so rollout can generate tokens that training
    never charges. See `clip_total_length` in `srl/simulator/config.py`.
 5. **A cost model refuses out-of-domain queries** instead of extrapolating. This is the
    most common first-run failure. See {doc}`domain-gates`.
 6. **The C++ engine runs by default (`SIMRL_BACKEND=cpp`).** Some features only work on the
-   Python engine; those are marked `python_engine_only` and raise under `cpp` rather than
+   Python engine. Those are marked `python_engine_only` and raise under `cpp` rather than
    silently switching. See {doc}`backends`.
 
 ## Sync and recompute costs

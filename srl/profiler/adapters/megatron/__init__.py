@@ -8,7 +8,7 @@ to a `ConfigContainer` directly in Python, and `measure` records step times and
 per-rank memory peaks through the official callback API.
 
 `launch` and `measure` import torch and megatron, so they are deliberately absent
-from this namespace; only the torchrun child imports them.
+from this namespace. Only the torchrun child imports them.
 """
 
 from .collect import collect_bridge_record, collect_bridge_records

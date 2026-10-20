@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# conf/recompute.sh — log-prob recomputation cost overrides
+# conf/recompute.sh: log-prob recomputation cost overrides
 # Sourced by simulate.sh. Sets RECOMPUTE_OVERRIDES.
 # Inputs: RECOMPUTE_MODEL, RECOMPUTE_TIME_PER_TOKEN,
 #         RECOMPUTE_MODEL_PARAMS, RECOMPUTE_PEAK_FLOPS, RECOMPUTE_OVERHEAD_FACTOR

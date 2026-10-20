@@ -13,7 +13,7 @@ Attention calls carry a per-call dispatch cost that the pure roofline does not r
 Real H20 data (fitted 2026-08-24) shows decode latency flat across a 64x increase in KV
 work at small batch sizes: batch 1 measures ~70 us at step 128 and still ~70 us at step
 8192. That is conclusive evidence the cost is `max(floor, roofline_work)`, not
-`floor + roofline_work`. Adding a constant before deriving utility barely helps; placing the
+`floor + roofline_work`. Adding a constant before deriving utility barely helps. Placing the
 floor inside the max (as `floor_s`) restores utility to order 1 in the overhead-limited
 regime and lifts the holdout gate from >20% MRE to <10%.
 
@@ -44,7 +44,7 @@ def _require_positive(**values: int) -> None:
 # Per-backend, per-op dispatch floor in seconds, used only when a fitted floors.json is absent.
 # Fitted for H20 + Qwen3-8B TP=1 (2026-08-24, elementwise and all_reduce 2026-08-26): these are
 # the MRE-minimising floors for that hardware and those backend versions, not general truths. Run
-# `srl-profile kernels fit-floor` to generate floors.json for the actual deployment; it is
+# `srl-profile kernels fit-floor` to generate floors.json for the actual deployment. It is
 # loaded in place of these values.
 #
 # Every op declaring `fits_floor = True` must appear here under at least one backend, which
@@ -182,7 +182,7 @@ def context_attention_sol(
         window_size (int): Sliding window span, or 0 for full causal attention.
             A `window_size` at or above `seq_len` yields a strictly larger estimate
             than 0 does, because the causal triangular saving does not apply within a window.
-        floor_s (float): Per-backend dispatch floor in seconds; see `FALLBACK_FLOORS_S`.
+        floor_s (float): Per-backend dispatch floor in seconds. See `FALLBACK_FLOORS_S`.
             Placed inside the `max`, not added, because dispatch cost is a lower bound on
             latency: when work is small the kernel is entirely dispatch-limited, and
             `floor + work` would double-count it. Defaults to 0.0 (no floor).
@@ -230,14 +230,14 @@ def generation_attention_sol(
     Args:
         spec (GpuSpec): Target hardware.
         batch_size (int): Requests decoding concurrently.
-        step (int): KV history length per request before this step; may be 0.
+        step (int): KV history length per request before this step. May be 0.
         num_heads (int): Query heads on this rank.
         num_kv_heads (int): Key/value heads on this rank.
         head_dim (int): Per-head dimension.
         attn_dtype (str): Query, output, and compute dtype.
         kv_cache_dtype (str): KV cache dtype, which may be narrower.
         window_size (int): Sliding window span, or 0 for unbounded history.
-        floor_s (float): Per-backend dispatch floor in seconds; see `FALLBACK_FLOORS_S`.
+        floor_s (float): Per-backend dispatch floor in seconds. See `FALLBACK_FLOORS_S`.
             Placed inside the `max`, not added, because dispatch cost is a lower bound on
             latency: when work is small the kernel is entirely dispatch-limited, and
             `floor + work` would double-count it. Defaults to 0.0 (no floor).
@@ -279,7 +279,7 @@ def gdn_context_sol(
     gated delta net carries a fixed-size recurrent state of `num_value_heads * head_dim^2`
     instead of a growing KV cache, so a token attends to the state rather than to every
     earlier token. Pricing it with `context_attention_sol` would overstate a long prompt by
-    roughly `seq_len / chunk_size` -- 128x at 32k tokens.
+    roughly `seq_len / chunk_size` (128x at 32k tokens).
 
     The chunked algorithm (`fla.ops.gated_delta_rule.chunk_gated_delta_rule`) splits the
     sequence into chunks of `chunk_size` and, per chunk, does intra-chunk attention plus a
@@ -294,10 +294,7 @@ def gdn_context_sol(
 
     Measured on H20 (Qwen3.5-35B-A3B, 16 key / 32 value heads, head_dim 128, 2026-10-08) by
     CUDA graph replay, the cost scales from 57.8 us at 128 tokens to 3106 us at 32768, clean
-    doublings once past ~2048. An earlier version of this docstring reported the kernel as
-    flat at ~368 us to 4096 tokens; that plateau was FlashInfer's CUTLASS DSL python
-    marshaling, which an engine replaying a captured graph never pays, and it is gone from
-    the measurement now. The fitted floor is correspondingly small, 16 us.
+    doublings once past ~2048. The fitted floor is correspondingly small, 16 us.
 
     Args:
         spec (GpuSpec): Target hardware.

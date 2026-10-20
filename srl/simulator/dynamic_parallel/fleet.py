@@ -1,7 +1,7 @@
 """Applying a fleet plan: rebuild the instance list at a weight update.
 
-A weight update invalidates every KV block anyway -- `abort_all` frees them and
-`reset_hashes` clears the prefix-cache map -- so this is the one moment a rebuild
+A weight update invalidates every KV block anyway. `abort_all` frees them and
+`reset_hashes` clears the prefix-cache map, so this is the one moment a rebuild
 costs nothing beyond scheduling metadata. There is no KV to migrate.
 
 Instances are reused when their TP degree is unchanged, which keeps their
@@ -71,7 +71,7 @@ class DynamicParallelFleet:
 
         Returns:
             The aborted requests, for the caller to re-enqueue into the router.
-            They keep their generated tokens and version segments; only the KV is
+            They keep their generated tokens and version segments. Only the KV is
             lost, which is what a weight update means.
         """
         aborted: list[Request] = []

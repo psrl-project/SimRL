@@ -2,7 +2,7 @@
 
 This page covers the FSDP2 / HSDP pipeline: how to configure and run a sweep, which axes must
 vary or the fit will refuse the data, and what lands on disk. The formulas are in
-{doc}`../cost-models/training-fsdp`; general measurement rules are in {doc}`methodology`.
+{doc}`../cost-models/training-fsdp`. General measurement rules are in {doc}`methodology`.
 
 ## Commands
 
@@ -16,7 +16,7 @@ srl-profile fsdp collect  --config $CFG [--index N | --candidate-id ID] [--outpu
 ```
 
 `generate` writes the candidate list to `{output_dir}/control/fsdp/candidates.json`. `run` walks
-the list, launches one `torchrun` child per candidate and records a status for each; a failing
+the list, launches one `torchrun` child per candidate and records a status for each. A failing
 candidate is logged and skipped. `collect` normalises every candidate directory into
 `{output_dir}/profiles/fsdp.jsonl` by default. `--candidates PATH` overrides the manifest path on
 all three.
@@ -39,19 +39,19 @@ about. Use `--index` or `--candidate-id` to run one candidate instead.
 
 | axis | meaning |
 |---|---|
-| `world_size` | the fixed mesh size; defaults to `hardware.gpu_count` |
+| `world_size` | the fixed mesh size, defaults to `hardware.gpu_count` |
 | `shard_sizes` | the HSDP shard degree. `replicate = world_size / shard`, and a shard degree that does not divide the world is skipped |
 | `num_microbatches` | gradient-accumulation depth. **Must vary. See below.** |
 | `n_seqs_per_rank` | sequences per rank per microbatch, i.e. the micro-batch size |
-| `sequence_lengths` | tokens per sequence; every microbatch a rank runs is this shape |
+| `sequence_lengths` | tokens per sequence, every microbatch a rank runs is this shape |
 | `gradient_checkpointing` | pinned `true` in the example, matching the RL recipe |
-| `optimizer_offload` | pinned `false` in the example; see {doc}`../reference/limitations` |
+| `optimizer_offload` | pinned `false` in the example, see {doc}`../reference/limitations` |
 | `reshard_after_forward` | whether parameters are freed after each block's forward |
 
 `shard_size` and `replicate_size` are a two-dimensional HSDP mesh: parameters are sharded within
 each row and replicated across rows. `shard == world` is pure FSDP. Sharding and replication are
 configuration rather than data partitioning, so every rank still consumes a distinct microbatch
-and the profile topology is pure DP; the mesh travels into the artifact as selectors.
+and the profile topology is pure DP. The mesh travels into the artifact as selectors.
 
 `sequence_parallel` is not implemented at present. Any value other than 1 is rejected rather than
 silently ignored.
@@ -87,7 +87,7 @@ Each candidate is one `torchrun` child (`srl.profiler.adapters.fsdp.launch`) dri
    recompute on `self.training`, so a model left in eval silently turns checkpointing into a
    no-op while the candidate still claims it.
 5. Shards each transformer block with `fully_shard`, then the root. `reshard_after_forward` is
-   applied to the blocks; the root always uses `False`, because its parameters are needed
+   applied to the blocks. The root always uses `False`, because its parameters are needed
    immediately when backward begins and resharding it adds a fixed cost to one side of the very
    comparison the axis is meant to isolate. `MixedPrecisionPolicy` uses `compute_dtype` for the
    all-gathered parameters and `gradient_dtype` for the reduction.
@@ -97,12 +97,12 @@ Each candidate is one `torchrun` child (`srl.profiler.adapters.fsdp.launch`) dri
 7. After the first step, records the live static allocation. It must be read after that step,
    because AdamW allocates its moments lazily.
 8. After the timed loop, runs one extra step under `torch.profiler` and records collective kernel
-   occupancy. Profiling inside the loop would inflate a retained sample; outside it, it can
+   occupancy. Profiling inside the loop would inflate a retained sample. Outside it, it can
    contaminate none.
 9. Gathers each rank's peak and has rank 0 write `srl_metrics.json`.
 
 The synthetic batch is one uniform padded microbatch, repeated `num_microbatches` times.
-Profiling measures uniform shapes only; forming ragged microbatches from real trajectory lengths
+Profiling measures uniform shapes only. Forming ragged microbatches from real trajectory lengths
 is the simulate-side planner's job (`MicrobatchPlanner`).
 
 `prepare` also records the effective mesh the child built as `observed_mesh`, and `collect`
@@ -141,7 +141,7 @@ There is no `ConfigContainer`. `srl_metrics.json` carries:
 `timers_s` holds summed `self_device_time_total` per collective kind from the profiled step. That
 is kernel *occupancy*, not exposed wall time: with `reshard_after_forward=True` most of the
 all-gather overlaps compute on another stream, so the sum is an upper bound on what the step pays.
-It is not read by the regression; it is ground truth for a future kernel-summation model.
+It is not read by the regression. It is ground truth for a future kernel-summation model.
 
 `static_allocated_bytes_at_train_start` is a diagnostic despite its name: it is captured after the
 first optimizer step, not at train start, because the moments are allocated lazily. It is
@@ -167,7 +167,7 @@ memory bounds.
 
 Stale markers are deleted before a launch. If a re-run is killed after that deletion but before
 new markers are written, `status.json` still reads `oom` while `collect` reports `failed`. The
-two disagreeing is the signature; re-run that candidate with `--candidate-id` rather than
+two disagreeing is the signature. Re-run that candidate with `--candidate-id` rather than
 accepting the classification.
 
 ## Fitting
@@ -182,6 +182,6 @@ FSDP latency and memory must be fitted together. The fitter groups records by th
 cell key including `shard_size` and `replicate_size`, refuses a record whose schedule is not
 `fsdp`, whose `sequence_parallel` is not `1`, or whose `tp`/`pp`/`cp` are not 1, and checks that
 `shard_size * replicate_size` agrees with `dp`. `--validation-fraction` defaults to `0.2` and the
-split is by run. Memory fits both peak metrics and selects one per cell; see
+split is by run. Memory fits both peak metrics and selects one per cell. See
 {doc}`../cost-models/training-fsdp` for that rule and for what the selected target means at
 predict time.

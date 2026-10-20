@@ -61,7 +61,7 @@ latency = max(F, W + G * n_tokens + A_p * sum_l2 / b + A_d * ctxsum)
 - `b` is the KV block size, recorded in the coefficients and in the entry selector.
 
 The floor enters as a `max`, not as an additive term, so it cannot double-count in the
-compute-bound regime. The fit is nonlinear only through the `max`; it initialises from a scan over
+compute-bound regime. The fit is nonlinear only through the `max`. It initialises from a scan over
 candidate floors, each solved as a non-negative linear least-squares problem, and keeps the
 combination with the lowest squared error before the robust refit.
 
@@ -143,7 +143,7 @@ Delta(k) = k0 * F + (k - k0) * (alpha + beta * k0) + beta * (k - k0) * (k - k0 -
 ```
 
 `crossing_step`, `elapsed` and `steps_within` all implement this. `steps_within` inverts the sum
-for a time budget; every branch corrects its integer division by stepping forward while the
+for a time budget. Every branch corrects its integer division by stepping forward while the
 result fits and back if it overshoots, because `budget // tau` can land one step short of an exact
 quotient. Functions are exact under `Fraction` inputs.
 
@@ -156,7 +156,7 @@ The coefficients per model:
 | `psrl` | `0` | `d_attn_b + d_attn_k*ctxsum + max(d_other_floor, d_other_b + d_other_k*n_d)` | `d_attn_k*n_d` |
 | `composed` | `0` | step cost at the segment start | secant slope over one stride |
 
-PSRL returns `F = 0` because its floor is already inside the non-attention term; returning both
+PSRL returns `F = 0` because its floor is already inside the non-attention term. Returning both
 would count it twice.
 
 `saturated(n_tokens, sum_l2, ctxsum, n_reqs)` reports whether the step's non-floor branch is
@@ -176,11 +176,11 @@ but its segments are integrated numerically on a lattice ({doc}`composed-rollout
 - `psrl` fits the phases separately, which gives more parameters and a better-conditioned
   per-phase regression when the data are large and the phase balance is uneven. It needs at least
   five observations per pure phase.
-- `distserve` is numerically the roofline on a single-model fit; use it when the artifact's
+- `distserve` is numerically the roofline on a single-model fit. Use it when the artifact's
   architecture-constant form is what a downstream tool expects.
 - `composed` needs no fit at all and generalises across models, GPUs and degrees without a
   server sweep, provided the kernel tables exist for that GPU and that TP degree.
 
 To use a fitted artifact, point `rollout_cost.artifact_path` at it. The simulator loads the entry
-matching the requested `parallelism` and calls `predict()` or the closed-form advance; no
+matching the requested `parallelism` and calls `predict()` or the closed-form advance. No
 regression code runs at simulation time.

@@ -84,7 +84,7 @@ class TestMappingKeysChanged:
         """The case `MappingKeysAdded` got wrong.
 
         A key written during an event may already have had a value. Rollback
-        has to put that value back; popping the key loses it. In the KV pool
+        has to put that value back. Popping the key loses it. In the KV pool
         this was a prefix hash re-pointed from one block to another, where the
         undo dropped the hash while the original block still held it.
         """
@@ -207,7 +207,7 @@ class TestUndoLog:
             log.rollback()
 
     def test_clear_discards_without_restoring(self):
-        """Committing an event discards its log; the mutations stand."""
+        """Committing an event discards its log. The mutations stand."""
         thing = Thing(count=1)
         log = UndoLog()
         log.record(AttrSnapshot.capture(thing, "count"))

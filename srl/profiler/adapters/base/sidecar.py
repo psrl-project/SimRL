@@ -66,7 +66,7 @@ def iter_candidate_dirs(
     Yield the candidate directories that carry an adapter manifest.
 
     A missing manifest means the candidate was never prepared. That is an error by
-    default; `allow_incomplete` makes it a skip so a partially finished sweep can
+    default, but `allow_incomplete` makes it a skip so a partially finished sweep can
     still be collected.
     """
     for candidate_id in candidate_ids:

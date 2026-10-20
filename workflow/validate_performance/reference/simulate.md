@@ -7,7 +7,7 @@ production-shaped run. Both drive the same `Simulator`.
 
 ```bash
 export SIMRL_WORKSPACE=<workspace dir holding env/ and SimRL/>   # required, no default
-export SIMRL_KV_CACHE=$HOME/.cache/dryrun/kv_capacity.json        # measured cache, avoids re-probing
+export SIMRL_KV_CACHE=$HOME/.cache/srl/kv_capacity.json           # measured cache, avoids re-probing
 source "$SIMRL_WORKSPACE/env/simrl.sh"
 cd "$SIMRL_WORKSPACE/SimRL"
 OUTPUT_DIR=outputs/simulate/<experiment>/<arm> bash examples/simulate/simulate.sh
@@ -83,5 +83,5 @@ process per point.
   tables.
 - Attention tables cover step up to 32768 and input length up to 16384. Beyond that the utility
   surface holds at the boundary, so long-context results are trends, not accuracy claims.
-- The KV capacity cache moved on rename. The measured cache still lives at
-  `$HOME/.cache/dryrun/kv_capacity.json`; point `SIMRL_KV_CACHE` at it or every run re-probes.
+- The measured KV capacity cache lives at `$HOME/.cache/srl/kv_capacity.json`. Point
+  `SIMRL_KV_CACHE` at it or every run re-probes.

@@ -61,7 +61,7 @@ environment:
 # across all three while quartering the sum of squares.
 #
 # num_microbatches stays small because the slot axis is already covered to 66
-# by the nmb64 config; what this run buys is the mbs axis.
+# by the nmb64 config. What this run buys is the mbs axis.
 #
 # The lengths must reach the regime the real batch lives in. A first pass
 # stopped at 3072 tokens per sequence, which left the long-sequence rows still

@@ -2,7 +2,7 @@
 """At admission, which buffer does the slowdown land on, and could the trainer absorb it?
 
 `inventory_deadline` compares options by their `E_k` vectors. Admitting a group slows requests
-already in flight (the externality); that only matters if it pushes some buffer's READY time past
+already in flight (the externality). That only matters if it pushes some buffer's READY time past
 the moment the trainer is free to take it, because `E_k = max(F_k, E_{k-1}) + tau` absorbs any
 delay up to that slack. This records, per admission decision, each option's `E_k`, `F_k` and
 publish times plus the externality, then reports for the decisions that admitted: the nearest

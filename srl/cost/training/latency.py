@@ -36,7 +36,7 @@ A quadratic token term was tried, rejected, and later restored. On short sequenc
 improves in-sample error without improving leave-one-out error, and attention accounts
 for only a few percent of a step under full recompute, so there it absorbs residual
 rather than representing a mechanism. Past roughly 2048 tokens attention does dominate
-and the term earns its place; `design_row` carries the reasoning. If it is ever dropped
+and the term earns its place. `design_row` carries the reasoning. If it is ever dropped
 again, check the implied utilization against the device's throughput before trusting it.
 
 The residual that remains is structured: the shortest sequence is over-predicted by
@@ -70,7 +70,7 @@ class LatencyFeatures:
     # Totals over the real microbatch sequence, plus the bubble charged at the
     # largest microbatch. On a uniform sequence these equal `slots * tokens` and
     # `slots * sum_squared_tokens` exactly, so a fit built before they existed
-    # stays valid; they only differ once the microbatches are ragged.
+    # stays valid. They only differ once the microbatches are ragged.
     weighted_tokens: float = 0.0
     weighted_sum_squared_tokens: float = 0.0
     weighted_slots: float = 0.0
@@ -85,7 +85,7 @@ class LatencyFeatures:
 
         The token terms are totals over the actual microbatch sequence rather than the
         largest microbatch times the slot count. A pipeline stage runs every microbatch
-        it is given, so a step costs the sum of their costs; only the `pp - 1` bubble
+        it is given, so a step costs the sum of their costs. Only the `pp - 1` bubble
         slots it cannot fill are charged at the largest, since that is what sets the
         drain rate. Charging every slot the maximum treats a ragged batch as though
         every sequence were the longest, which both overpredicts it and flattens the
@@ -97,7 +97,7 @@ class LatencyFeatures:
 
         The quadratic term sums each sequence's square rather than squaring a total.
         Attention does not cross sequence boundaries, so a packed microbatch costs the
-        sum of each sequence's square; squaring the packed total would overcharge it by
+        sum of each sequence's square. Squaring the packed total would overcharge it by
         the sequence count.
 
         Both backends carry the term because both need it once the profiled sequence
@@ -144,7 +144,7 @@ def latency_features(
     All three workload terms are divided by `pp`, which is what makes pipeline
     parallelism derivable rather than something to profile. A 1F1B stage owns
     `num_layers / pp` of the layers, so its cost per slot falls by `pp` while the
-    slot count rises to `nmb + pp - 1`; both factors are known from the topology
+    slot count rises to `nmb + pp - 1`. Both factors are known from the topology
     alone. On a sweep holding TP and DP fixed, predicting an unprofiled PP costs a
     few percent, against an order of magnitude more when the terms are left
     unscaled. Point-to-point activation sends between stages are folded into the

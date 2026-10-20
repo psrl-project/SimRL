@@ -28,7 +28,7 @@ def test_every_registered_op_declares_a_timing_mode() -> None:
     for name, op in sorted(OP_REGISTRY.items()):
         assert isinstance(getattr(op, "graph_replayed", None), bool), (
             f"Op {name!r} does not declare `graph_replayed`. Decide whether the engine "
-            f"replays it from a captured CUDA graph; see cost/kernel/ops/base.py."
+            f"replays it from a captured CUDA graph. See cost/kernel/ops/base.py."
         )
 
 
@@ -45,7 +45,7 @@ def test_training_ops_are_never_graph_replayed() -> None:
     for name, op in sorted(OP_REGISTRY.items()):
         if name in training_only or op.family == "attention_training":
             assert not op.graph_replayed, (
-                f"Op {name!r} feeds the training model, which runs eager; timing it by "
+                f"Op {name!r} feeds the training model, which runs eager. Timing it by "
                 f"graph replay would discard a launch cost Megatron really pays."
             )
 

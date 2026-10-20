@@ -72,7 +72,7 @@ key, so it takes the `+` form shown above.
 `SIMRL_BACKEND` selects between two implementations of the same instance engine:
 
 `cpp` (default)
-: Require the C++ engine. A missing module raises `ImportError`; a router strategy or eviction
+: Require the C++ engine. A missing module raises `ImportError`. A router strategy or eviction
   policy marked `python_engine_only` (`inventory_deadline`, `latest_deadline`) raises `ValueError`.
 
 `auto`

@@ -7,7 +7,7 @@ arithmetic here that is not a plain cross product:
     num_kv_heads = max(num_heads * total_kv_heads // total_heads, 1)
 
 The sweep declares query head counts, and a GQA model's KV heads must be sharded in the same
-ratio or the measured slice is one no query can reach -- `rank_head_counts` shards both by the
+ratio or the measured slice is one no query can reach. `rank_head_counts` shards both by the
 same `tensor_parallel` on the cost side, so a sweep that pinned `num_kv_heads` to the full
 model value would write rows keyed on a head count that only exists at tp=1. The `max(..., 1)`
 floor matters at the small end: Qwen3-8B has 32 query heads to 8 KV heads, so a 2-head sweep

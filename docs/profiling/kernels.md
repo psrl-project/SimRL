@@ -47,7 +47,7 @@ kernel root, and scores it against a vLLM baseline. See {doc}`tensor-parallel`.
 ## What is measured
 
 `run` iterates the registered families, and for each family calls the first op's `measure` once.
-Families are directories under the table root; ops are the rows inside them.
+Families are directories under the table root. Ops are the rows inside them.
 
 | family | op | slice columns | axis columns | floor | graph-replayed |
 |---|---|---|---|---|---|
@@ -70,7 +70,7 @@ Notes on individual families:
 - **`gemm`** covers forward, dgrad, wgrad and logits shapes in one table. Per-`(n, k)` slicing
   makes a dgrad's swapped `(k, n)` pair a *different slice* from its forward projection, and a
   wgrad row is `(n, k, tokens)` because that is what `F.linear` is actually called with. The
-  table stores latency only; one surface therefore prices both a training and an inference step.
+  table stores latency only. One surface therefore prices both a training and an inference step.
   GEMM takes no floor.
 - **`attention`** measures both phases against one paged KV cache, through two backends per grid
   point (below).
@@ -78,7 +78,7 @@ Notes on individual families:
   `silu_and_mul`, `qk_norm`, and `tensor_plumbing`. The last is not a model kernel. It stands for
   the `aten::copy_`, `aten::cat`, `aten::to`, `aten::mul` and `aten::add_` launches a Megatron
   step issues to stage buffers around Transformer Engine's fused modules, and it is priced by
-  count rather than by bandwidth. `ComposedRollout` does **not** add an elementwise term;
+  count rather than by bandwidth. `ComposedRollout` does **not** add an elementwise term.
   `ComposedTraining` does. See {doc}`../cost-models/composed-rollout`.
 - **`collective`** is the tensor-parallel and training-communication family. Its op list,
   topology axes and dispatch measurement are the subject of {doc}`tensor-parallel`.
@@ -88,7 +88,7 @@ Notes on individual families:
   `padding_causal` and that masking selects a different kernel path.
 - **`gdn`** prices a gated delta net, the linear-attention layer a hybrid model uses for most of
   its depth. Its prefill is varlen and linear in the token total, so it has one axis
-  `total_tokens`; its decode state is a fixed size whatever the KV depth, so it has one axis
+  `total_tokens`. Its decode state is a fixed size whatever the KV depth, so it has one axis
   `batch_size` and no `step`.
 - **`optimizer`** prices Transformer Engine's `FusedAdam`, which is what megatron-core calls, over
   the parameter shard one rank updates. It is the only op with no token axis: an Adam step costs
@@ -106,7 +106,7 @@ all of them, so converting it would fix decode and break prefill by the same fac
 
 ## Grids
 
-Each family reads its own block from the YAML; a family that is absent is simply not swept.
+Each family reads its own block from the YAML. A family that is absent is simply not swept.
 Adding an op adds a block under `sweep/` and nothing in the config schema.
 
 | block | keys |
@@ -142,8 +142,8 @@ cost four bytes each at bfloat16 because K and V are both stored:
 
 `kernel_source` is a **column** of each table, not a path segment, so one table may mix kernels
 (the collective tables normally do). `framework` and `version` name what timed the kernel:
-`vllm` for GEMM, elementwise, softmax attention and GDN; `flashinfer` for the FlashInfer
-attention tables; `nccl` for the collective control tables; and `megatron` for training
+`vllm` for GEMM, elementwise, softmax attention and GDN. `flashinfer` for the FlashInfer
+attention tables. `nccl` for the collective control tables. `megatron` for training
 attention and the optimizer, because Transformer Engine is what megatron-core calls.
 
 Every table carries `framework, version, device, op_name, kernel_source, <op columns>, latency_s`.
@@ -189,7 +189,7 @@ the FlashInfer GQA restriction that can leave one table unwritten.
 
 Utility is `SOL / measured_latency`. SOL is the roofline upper bound from the GPU's peak
 throughput (`srl/cost/kernel/sol.py`) and the packaged spec in `cost/kernel/data/gpu_specs.yaml`.
-A utility near 1 means the kernel runs at the hardware ceiling; a value above roughly 1.2 means
+A utility near 1 means the kernel runs at the hardware ceiling. A value above roughly 1.2 means
 the SOL formula is missing work, not that the GPU beat its spec.
 
 Interpolating utility rather than latency is what makes a sparse table sufficient. The roofline
@@ -218,14 +218,14 @@ the backend, its version or the GPU changes.
 `KernelDatabase` takes `utility_surface`:
 
 - `pchip` (default for `ComposedRollout` and `kernels validate`): monotone-preserving cubic
-  Hermite splines, hand-rolled. It is exact for one or two varying axes; above two it defers to
+  Hermite splines, hand-rolled. It is exact for one or two varying axes. Above two it defers to
   Shepard. Constant axes do not count, so an attention slice that pins `num_heads` is
   effectively two-dimensional. Past the measured range it clamps.
 - `shepard`: the log2-space modified-Shepard blend over all measured points, defined for any
   number of axes.
 
 An axis value that is zero cannot be placed in log2 space. Such rows stay in the measured
-utility range diagnostic but are excluded from interpolation scoring; generation attention at
+utility range diagnostic but are excluded from interpolation scoring. Generation attention at
 `step = 0` is the canonical case.
 
 ## Holdout gate
@@ -281,7 +281,7 @@ The baseline is a vLLM JSONL ({doc}`vllm`). Bucketing is what makes the comparis
   256`), never to a power of two. Snapping to powers of two once floored a real mean context and
   produced an error that did not exist.
 - A bucket's latency is the **median** of its iterations, so one slow step cannot move it.
-- A bucket holding fewer than `--min-samples` iterations is dropped. The default is `20`; on a
+- A bucket holding fewer than `--min-samples` iterations is dropped. The default is `20`. On a
   decode-dominated baseline that can hide prefill and mixed entirely, and the tool warns once per
   phase it dropped. Pass `--min-samples 1` to score all three.
 
@@ -313,7 +313,7 @@ bash examples/simulate/simulate.sh
 `kernel_table_root` is the directory that *contains* `kernel/`, so `ComposedRollout` resolves
 tables at `{kernel_table_root}/kernel/{gpu}/`. `gpu` must match the slug in the tree. Leave
 `attention_backend` empty unless deliberately comparing backends. A `tp > 1` simulation needs a
-tree swept at that degree, and the example script checks that the path names it; see
+tree swept at that degree, and the example script checks that the path names it. See
 {doc}`tensor-parallel`.
 
 For adding a new op, the op protocol, and the shape families that decide which kernels a model

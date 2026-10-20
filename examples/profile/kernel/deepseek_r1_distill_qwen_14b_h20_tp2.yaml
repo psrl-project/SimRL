@@ -42,7 +42,7 @@ attention_training:
   total_tokens: [512, 1024, 2048, 3072, 4096, 6144, 7510, 8192, 10240, 11264, 12288,
      16384, 22528, 32768]
   # Per-rank query head counts. This model has 40 query heads to 8 KV, so 40 is tp=1, 20 is
-  # tp=2, 10 is tp=4 and 5 is tp=8 -- not the powers of two a 32-head model gives. The KV
+  # tp=2, 10 is tp=4 and 5 is tp=8, not the powers of two a 32-head model gives. The KV
   # head count is derived in the same 5:1 ratio (40->8, 20->4, 10->2, 5->1), matching how
   # `rank_head_counts` shards both on the cost side. Listing 32 or 16 here would write rows
   # keyed on a head count no query can reach.
@@ -67,7 +67,7 @@ optimizer:
   #
   # The ceiling stays at 2.048B, which 2.041B sits just inside. A shard needs ~18 bytes per
   # parameter for its parameter, gradient and fp32 state, so 4.096B wants 115 GiB against
-  # H20's 95 GiB; the Qwen3-8B sweep included that point, the allocation OOM'd inside TE,
+  # H20's 95 GiB. The Qwen3-8B sweep included that point, the allocation OOM'd inside TE,
   # and the timed step then measured an empty update at an implied 190 TB/s.
   param_counts: [1000000, 2000000, 5000000, 10000000, 20000000, 50000000, 100000000,
      200000000, 341000000, 512000000, 683000000, 1024000000, 1365000000,

@@ -62,7 +62,7 @@ class TestWithinGroupSharedPrompt:
         _drain(inst)
 
         # 2048 is a whole number of 16-token blocks, so every block of the
-        # prompt hits -- less the one vLLM hands back so the step has work.
+        # prompt hits, less the one vLLM hands back so the step has work.
         expected = (_GROUP - 1) * (_PROMPT - _BLOCK)
         assert sum(r.prefix_hit_tokens for r in inst.completed) == expected
 
@@ -166,7 +166,7 @@ class TestLruEviction:
     """
 
     def test_revisiting_a_working_set_larger_than_the_pool_evicts(self):
-        # 32 distinct prompts of 2048 tokens need 4096 blocks; give 2000.
+        # 32 distinct prompts of 2048 tokens need 4096 blocks. Give 2000.
         inst = _inst(kv_blocks=2000)
         for rid in range(32):
             if not inst.add_request(_req(rid, _PROMPT, group=rid), t=0.0):

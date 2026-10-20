@@ -12,7 +12,7 @@
 # 79 s of a 110 s prediction coming from the quadratic term alone. The real
 # batch's quadratic feature is 37x larger than anything the grid contained.
 #
-# One candidate would make the corner non-empty; three give the token axis a
+# One candidate would make the corner non-empty. Three give the token axis a
 # slope there, so the quadratic coefficient is identified rather than merely
 # constrained at a point.
 model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}

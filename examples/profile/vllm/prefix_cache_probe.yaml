@@ -3,12 +3,12 @@
 #
 # Every `expect_*` value below is arithmetic over prompt_len and block_size and
 # was written before anything was measured. A disagreement means the pool's
-# semantics are wrong and the logic has to change; it is never a reason to edit
+# semantics are wrong and the logic has to change. It is never a reason to edit
 # an expectation.
 #
 # lru_eviction is listed first deliberately. KV never saturates under the
 # project's main workload, so it is the one scenario that reaches
-# `BlockPool._maybe_evict` at all -- without it that path ships unexercised.
+# `BlockPool._maybe_evict` at all. Without it that path ships unexercised.
 
 block_size: 16
 ready_timeout: 900
@@ -68,6 +68,6 @@ scenarios:
     expect_hit_rate_min: 0.80
     expect_note: >-
       The reset empties the map, so the first request of the resend misses
-      everything and repopulates it; its siblings then hit. The post-reset rate
+      everything and repopulates it. Its siblings then hit. The post-reset rate
       therefore matches the within-group rate rather than falling to zero, which
       is the mechanism behind the 9% measured in SMG_LOOPBACK_FIX.md.

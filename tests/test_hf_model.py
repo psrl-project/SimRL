@@ -48,7 +48,7 @@ def test_qk_layernorm_is_detected_for_qwen3_and_absent_elsewhere(tmp_path: Path)
     40.8 us: a 128-wide row cannot saturate the memory system. So `ComposedTraining` must
     know whether they are present, and defaulting either way would be a real error in one
     direction. HuggingFace Qwen3 configs do not carry the flag, so the architecture name is
-    the fallback; `self_attn.q_norm.weight` in the weight index is the ground truth.
+    the fallback. `self_attn.q_norm.weight` in the weight index is the ground truth.
     """
     assert load_hf_model_descriptor(HF_QWEN).extra["qk_layernorm"] is True
 

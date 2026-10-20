@@ -238,7 +238,7 @@ def test_build_config_uses_the_local_checkpoint(applied_config):
 
 
 def test_build_config_disables_checkpointing_and_eval(applied_config):
-    """Eval is on by default in the recipe; a four-step profile must not pay it."""
+    """Eval is on by default in the recipe. A four-step profile must not pay it."""
     cfg, spec = applied_config
     assert cfg.checkpoint.save is None
     assert cfg.checkpoint.load is None

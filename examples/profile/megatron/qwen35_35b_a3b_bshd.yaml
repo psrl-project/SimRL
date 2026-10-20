@@ -13,8 +13,8 @@
 # `sum_tokens^2` and the linear and quadratic token columns are collinear: the fit cannot
 # separate "many tokens" from "long sequences". For the dense models that mattered enough to
 # drive the whole THD effort (a BSHD fit overpredicted real packed steps by 57-60% on
-# Qwen3-8B). Here it matters less than it would there -- only 10 of 40 layers run softmax
-# attention at all, so the quadratic term is a minority of the step -- but the artifact this
+# Qwen3-8B). Here it matters less than it would there, since only 10 of 40 layers run softmax
+# attention at all, so the quadratic term is a minority of the step. The artifact this
 # produces is still a padded-batch model. Read its predictions as such, and do not compare
 # its `token_quadratic_cost` against a THD-fitted one.
 #
@@ -23,8 +23,8 @@
 # 4096-12288 to give the linear column a real slope.
 #
 # This is the first MoE model in the training sweep, and expert parallelism is the axis
-# that makes it different. EP does not consume ranks of its own -- Megatron carves the
-# expert groups out of the data-parallel dimension -- but it changes how many of the 256
+# that makes it different. EP does not consume ranks of its own. Megatron carves the
+# expert groups out of the data-parallel dimension, but it changes how many of the 256
 # experts each rank owns and therefore the all-to-all volume of every layer. So EP is a
 # cell key in the fitted artifact, not a free dimension: two candidates with the same
 # (TP, PP) and different EP are different measurements.
@@ -39,13 +39,13 @@ model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy10/share_303541817/lhy/models/Qwen3.5-
 
 hardware:
   # 16, not 8: this model has no trainable mesh on a single node. See the search_space
-  # comments -- TP<=2 and PP=1 are forced, so EP is the only way to shard 93% of the
+  # comments. TP<=2 and PP=1 are forced, so EP is the only way to shard 93% of the
   # parameters, and EP competes with DP for the same ranks
   # (`expert_data_parallel_size = world_size // (etp * ep * pp)`). At 8 ranks EP=8 leaves
   # expert_dp=1, the distributed optimizer cannot shard expert state, and a rank holds
-  # 82 GiB -- measured, OOM. 16 ranks give EP=8 with expert_dp=2 and fit in ~53 GiB.
+  # 82 GiB, measured, and OOMs. 16 ranks give EP=8 with expert_dp=2 and fit in ~53 GiB.
   #
-  # Run with `--nnodes 2 --node-rank {0,1} --master-addr <host0>`; the fleet has three
+  # Run with `--nnodes 2 --node-rank {0,1} --master-addr <host0>`. The fleet has three
   # 8-GPU hosts.
   gpu_name: H20
   gpu_count: 16
@@ -65,7 +65,7 @@ training:
   distributed_optimizer: true
   # Twelve steps discarding four, as the dense sweeps use, rather than the 6/2 a
   # single-node sweep gets away with. Measured at 2 nodes the first step is 154 s (compile
-  # and the first all-to-all rendezvous) and the four retained steps had a CV of 0.27 --
+  # and the first all-to-all rendezvous) and the four retained steps had a CV of 0.27,
   # 50x the 0.005 a single-node dense candidate shows. Inter-node expert traffic is simply
   # noisier, so the median needs more samples under it.
   max_steps: 12
@@ -74,7 +74,7 @@ training:
 # `qwen3_30b_a3b` is the closest library recipe: the same ~30B-A3B MoE shape, and it is the
 # one that carries MoE-specific tuning (expert parallelism, full recompute, sequence
 # parallel). Named explicitly because `infer_bridge_recipe` has no entry for
-# `qwen3_5_moe` -- its parameter count would not match any tabled size anyway, and the
+# `qwen3_5_moe`, since its parameter count would not match any tabled size anyway, and the
 # architecture itself comes from the profiled checkpoint via `_local_checkpoint`, not from
 # the recipe. Megatron-Bridge maps this checkpoint natively to
 # `Qwen35VLMoEModelProvider` (verified: 40 layers, 256 experts, moe_ffn 512).
@@ -96,16 +96,16 @@ search_space:
   # The mesh is boxed in by three hard constraints, which together are why it looks
   # nothing like the dense models' sweep:
   #
-  #   TP <= 2   -- the model has 2 KV heads, and Megatron refuses
+  #   TP <= 2   : the model has 2 KV heads, and Megatron refuses
   #                `TP size N should be less than or equal to num_query_groups 2`.
-  #   PP  = 1   -- this provider's forward derives rotary positions from `input_ids` when
+  #   PP  = 1   : this provider's forward derives rotary positions from `input_ids` when
   #                `position_ids` is None, but Megatron's `get_batch` returns all-None for a
   #                MIDDLE pipeline stage before it ever consults the data iterator
   #                (`gpt_step.py`: `if (not is_first) and (not is_last): return None, ...`).
   #                Every PP>1 candidate dies with `AttributeError: 'NoneType' object has no
-  #                attribute 'shape'`, and no batch-reader patch can reach it -- verified by
+  #                attribute 'shape'`, and no batch-reader patch can reach it. Verified by
   #                writing that patch and watching it fail identically.
-  #   EP >= 2   -- see below. Without it nothing fits in memory at all.
+  #   EP >= 2   : see below. Without it nothing fits in memory at all.
   tensor_parallel_sizes: [1, 2]
   pipeline_parallel_sizes: [1]
   # EP is the memory lever here, not a refinement. 93% of this model's parameters are
@@ -116,10 +116,10 @@ search_space:
   # That also makes EP the axis most worth measuring: it trades per-rank expert memory
   # against an all-to-all on every layer, and the simulator has no way to price that
   # trade without measurements. The dispatcher is Megatron's built-in `alltoall` rather
-  # than DeepEP (not installed); the launcher overrides the recipe's request for it.
+  # than DeepEP (not installed). The launcher overrides the recipe's request for it.
   # EP >= 8, which is measured rather than estimated. With `expert_tensor_parallel_size=1`
   # the experts shard by EP ALONE, not by `tp * ep`, so a rank holds `32.2B/ep + 2.25B/tp`.
-  # At EP=4 that is 9.18B -- Megatron reported 9.73B and the candidate OOM'd inside the
+  # At EP=4 that is 9.18B. Megatron reported 9.73B and the candidate OOM'd inside the
   # expert all-to-all. EP=8 brings it to 5.15B (43 GiB static), which fits.
   # EP is swept, not pinned, because at 16 ranks both values fit and they differ in exactly
   # the trade this sweep exists to price: EP=8 leaves expert_dp=2 (optimizer state sharded
@@ -131,22 +131,22 @@ search_space:
   # value of it to reach full rank now that TP and PP are both pinned.
   #
   # `ep * pp | mesh` and `tp * dp = mesh` together mean dp=4 at TP2 and dp=8 at TP1 are the
-  # single-node options; dp=12 at TP2 would use all 24 GPUs across three nodes. Kept to one
-  # node here so no sweep step depends on inter-node bandwidth -- the 24-GPU fleet is better
+  # single-node options. dp=12 at TP2 would use all 24 GPUs across three nodes. Kept to one
+  # node here so no sweep step depends on inter-node bandwidth. The 24-GPU fleet is better
   # spent running three candidates concurrently than one wider mesh.
   data_parallel_sizes: [8, 16]
 
   # Two microbatch counts, which is the minimum for the latency design to reach full rank:
   # at a fixed count the slot column is constant and collinear with the intercept. 64 (the
   # structural ceiling used for the dense models) is omitted here because a 36B MoE step at
-  # nmb=64 ran 4+ minutes on the 14B and this model is heavier; the sweep already spans 8
+  # nmb=64 ran 4+ minutes on the 14B and this model is heavier. The sweep already spans 8
   # mesh cells.
   num_microbatches: [1, 4]
   recompute: full
 
   # One sequence per microbatch, deliberately. Under BSHD a multi-sequence entry is padded
   # to its longest member, so `[10240, 2048]` would measure a 2x20480-token batch and charge
-  # 8192 tokens of padding -- it would report the padding, not the workload. With one
+  # 8192 tokens of padding. It would report the padding, not the workload. With one
   # sequence per microbatch `sum_tokens == max_tokens` and the measurement is unambiguous.
   #
   # The equal-total/different-split entries that buy quadratic identifiability under THD
@@ -156,8 +156,8 @@ search_space:
   # The range stops at 12288 rather than 22528: static state alone is ~75 GiB of a 95 GiB
   # card, and a sweep spanning 7 mesh cells cannot afford a tail of OOM candidates.
   # Stops at 8192, measured. At 12288 a TP1/EP8 candidate filled all 16 devices to 95 GiB
-  # of 95 and sat there spinning inside a collective rather than raising -- 100% utilisation
+  # of 95 and sat there spinning inside a collective rather than raising. 100% utilisation
   # on seven GPUs per node and 0% on the eighth, which reads as progress and is not. The
-  # `oom` record for that point is kept as the memory model's upper bound; it just must not
+  # `oom` record for that point is kept as the memory model's upper bound. It just must not
   # be in the sweep, because a hang costs the whole run rather than one candidate.
   sequence_lengths: [2048, 4096, 8192]

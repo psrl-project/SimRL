@@ -110,7 +110,7 @@ done
 
 # A concurrent rebuild of the engine `.so` can crash running sims or mix builds across points.
 if [[ "${SIMRL_BACKEND}" == "cpp" && "$(md5sum "${so}" | cut -d' ' -f1)" != "${so_md5_before}" ]]; then
-    echo "  ${so} changed during the sweep; points may come from different builds." >&2
+    echo "  ${so} changed during the sweep. Points may come from different builds." >&2
     failed=1
 fi
 (( failed == 0 )) || exit 1

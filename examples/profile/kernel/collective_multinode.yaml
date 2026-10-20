@@ -14,7 +14,7 @@
 # Prerequisites, all of which fail loudly rather than silently degrading:
 #   - passwordless ssh to every host (the driver uses BatchMode=yes)
 #   - the conda env sourced on every host, since each runs its own torchrun
-#   - NCCL_IB_DISABLE unset or 0; the driver refuses a cross-node topology otherwise,
+#   - NCCL_IB_DISABLE unset or 0, since the driver refuses a cross-node topology otherwise,
 #     because a TCP fallback would produce rows that look like a slow NIC
 #
 # The fabric variables (NCCL_IB_HCA, NCCL_SOCKET_IFNAME, NCCL_IB_GID_INDEX, NCCL_IB_TC,
@@ -28,7 +28,7 @@ hardware:
   gpu_memory_mib: 97871
   node_count: 3
   gpus_per_node: 8
-  # Intra-node is NVLink; across nodes it is 8 bonded 400 Gb/s RoCE links, one per GPU.
+  # Intra-node is NVLink. Across nodes it is 8 bonded 400 Gb/s RoCE links, one per GPU.
   # See the inter_node_bandwidth_bytes_per_s comment in srl/cost/kernel/data/gpu_specs.yaml.
   interconnect: NVLink+RoCE
 output_dir: ../../../outputs/profile/qwen3_8b/kernel_multinode

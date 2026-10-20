@@ -53,7 +53,7 @@ def test_the_written_table_loads_back_through_its_op(writer):
 
 
 def test_a_missing_column_is_rejected_at_write_time(writer):
-    """write_attention trusted its caller for eleven columns; a typo surfaced only on read."""
+    """write_attention trusted its caller for eleven columns. A typo surfaced only on read."""
     incomplete = dict(_gemm_row(1))
     del incomplete["k"]
     with pytest.raises(ValueError, match="k"):

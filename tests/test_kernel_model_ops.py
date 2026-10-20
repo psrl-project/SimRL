@@ -23,7 +23,7 @@ def ops():
 
 
 def test_the_architecture_comes_from_the_checkpoint(ops):
-    """Seven interrelated integers; hand-writing them is silently wrong when wrong."""
+    """Seven interrelated integers. Hand-writing them is silently wrong when wrong."""
     assert ops.num_layers == 36
     assert ops.num_heads == 32
     assert ops.num_kv_heads == 8
@@ -117,7 +117,7 @@ def test_no_collective_runs_at_tensor_parallel_one(ops):
 
 
 def test_a_tensor_parallel_step_pays_two_all_reduces_per_layer():
-    """One after o_proj and one after down_proj; an inline count would be a 36x error."""
+    """One after o_proj and one after down_proj. An inline count would be a 36x error."""
     tp2 = ModelOps.from_checkpoint(str(_CHECKPOINT), tensor_parallel=2)
     queries = tp2.comm_queries(token_count=16)
     assert len(queries) == 1
@@ -130,7 +130,7 @@ def test_a_tensor_parallel_step_pays_two_all_reduces_per_layer():
 
 
 def test_the_all_reduce_message_grows_with_the_token_count():
-    """Prefill reduces every prompt token; decode reduces one per request."""
+    """Prefill reduces every prompt token. Decode reduces one per request."""
     tp2 = ModelOps.from_checkpoint(str(_CHECKPOINT), tensor_parallel=2)
     decode = tp2.comm_queries(token_count=8)[0][0].message_bytes
     prefill = tp2.comm_queries(token_count=4096)[0][0].message_bytes

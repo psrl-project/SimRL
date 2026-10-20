@@ -31,8 +31,8 @@ time, whichever policy is selected. It is not listed in `pyproject.toml`. Withou
 **The C++ engine is a prebuilt binary for one interpreter.** `srl/_engine_cpp.cpython-312-x86_64-linux-gnu.so`
 is committed. The default `SIMRL_BACKEND=cpp` raises `ImportError` on another CPython version or
 platform until the module is rebuilt from `srl/component/rollout/engine_cpp/` with CMake and
-pybind11; set `SIMRL_BACKEND=auto` to fall back to the Python engine instead, or `native` to use it
-outright. `SIMRL_BACKEND` accepts `cpp`, `auto` and `native`; any other value raises `ValueError`.
+pybind11. Set `SIMRL_BACKEND=auto` to fall back to the Python engine instead, or `native` to use it
+outright. `SIMRL_BACKEND` accepts `cpp`, `auto` and `native`. Any other value raises `ValueError`.
 
 **Profiling needs the real stack.** `srl-profile` drives vLLM, Megatron-Bridge or torch and needs
 GPUs. Simulation and `srl-regress` do not.

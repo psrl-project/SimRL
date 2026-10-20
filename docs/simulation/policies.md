@@ -52,21 +52,21 @@ example `policy.staleness=1` for `psrl`.
 
 | Hook | Called | Default |
 |---|---|---|
-| `admit_quota(st)` | when the router offers a group that is not yet admitted. Counted in responses; the simulator requires at least `group_size` | abstract |
+| `admit_quota(st)` | when the router offers a group that is not yet admitted. Counted in responses. The simulator requires at least `group_size` | abstract |
 | `on_admit(group, st)` | once per group, right after its first response is placed | no-op |
 | `on_route(req, instance_id, st)` | after every placement, including re-placements | no-op |
 | `on_group_complete(group, st)` | when the last response of a group finishes. `CompleteAction.KEEP` moves it to `ready_groups`, `DROP` discards the whole group | `KEEP` |
-| `can_sample(st)` | before each batch request; `False` keeps generating | `True` |
-| `peek_batch(st)` / `take_batch(st)` | peek is also used by the engine loop's stop check; take consumes. A batch is `batch_size` whole groups | abstract / `peek_batch` |
+| `can_sample(st)` | before each batch request. `False` keeps generating | `True` |
+| `peek_batch(st)` / `take_batch(st)` | peek is also used by the engine loop's stop check. Take consumes. A batch is `batch_size` whole groups | abstract / `peek_batch` |
 | `on_batch_unavailable(st)` | each time no batch can be formed | no-op |
-| `will_sync_after_train(st)` | when pricing a step; `False` skips `sync_time` | `True` |
+| `will_sync_after_train(st)` | when pricing a step. `False` skips `sync_time` | `True` |
 | `on_publish(new_version, st)` | after `train_version` advances, before weights reach the engines. Returns `Cancel` entries | `[]` |
 | `on_train_version_advance(v, st)` | after the cancels are applied | no-op |
 | `rollout_version_after_train(st)` | picks the version the engines serve after publish | `st.train_version` |
 | `pause_mode(st)` | `"abort"` or `"in_place"`, see below | `"abort"` |
 | `on_interrupt(reqs, st)` | after an abort-mode publish re-enqueued the in-flight work | no-op |
 | `on_discard(reqs, st)` | when committed requests are permanently removed | no-op |
-| `replacement_groups_on_drop(groups, st)` | after a `DROP` from `on_group_complete`; returns extra ingress credits | `0` |
+| `replacement_groups_on_drop(groups, st)` | after a `DROP` from `on_group_complete`. Returns extra ingress credits | `0` |
 | `check_invariants(st)` | after every training step | no-op |
 
 `SimState` is the whole visible surface: time, `train_version`, `rollout_version`,
@@ -81,7 +81,7 @@ request lists. `SimState.groups` is a tuple of immutable `GroupView`s, one per l
 | Field | Meaning |
 |---|---|
 | `group_id` | monotonic key, not the workload's own id |
-| `admit_version` | rollout version stamped when the first response was placed; never rewritten |
+| `admit_version` | rollout version stamped when the first response was placed. Never rewritten |
 | `start_version` | earliest weight version among completed members, `admit_version` before any completes |
 | `status` | `running`, `partial` (some members done) or `done` |
 | `admit_time`, `complete_time` | `complete_time` is the latest member's completion once `done` |
@@ -100,7 +100,7 @@ that the new version makes worthless.
 |---|---|
 | `DROP` | the group is discarded and no replacement is credited |
 | `REPLACE` | the group is discarded and one fresh dataset group is credited |
-| `RETRY_FROM_SCRATCH` | credited like `REPLACE`; the drop is logged with `retry: true` |
+| `RETRY_FROM_SCRATCH` | credited like `REPLACE`. The drop is logged with `retry: true` |
 
 A cancelled group is always removed whole, siblings included, because a group that lost
 one response can never be consumed. Drop reasons in `request.jsonl` are `l2_cancel` for a
@@ -118,8 +118,8 @@ cancel of a group still generating, `l3_stale` for a finished group (also the de
   land on a different instance, and re-prefill their whole context. `on_interrupt` fires.
 
 `in_place`
-: nothing is interrupted. Requests continue under the new weights with their KV retained;
-  their segment list records which version produced which tokens, so `v_min` and `v_max`
+: nothing is interrupted. Requests continue under the new weights with their KV retained.
+  Their segment list records which version produced which tokens, so `v_min` and `v_max`
   differ for such requests.
 
 If the served version did not change (slime between pushes) nothing is paused either way.
@@ -137,10 +137,10 @@ L1 is admission, L2 is the runtime cancel at publish, L3 is sampling.
 | L2 | `CancelBelowVersion(horizon, action)` | cancel live groups with `admit_version < new_version - horizon` | nemo_rl, prime_rl |
 | L2 | `VersionSpanCap(max_preempts, action)` | cancel groups whose members span more than `max_preempts + 1` distinct versions, counting the version being published | dressage |
 | L3 | `FIFO` | oldest first by `(dispatch_time, group_id)` of the first member | areal, skyrl, openrlhf, dressage, trl, prime_rl, nemo_rl |
-| L3 | `OffPolicySpan(threshold, strategy)` | `span = train_version - admit_version + 1`; `drop` replaces finished groups past the threshold at publish, `wait` blocks sampling while a running group has reached it | verl_v1 |
+| L3 | `OffPolicySpan(threshold, strategy)` | `span = train_version - admit_version + 1`. `drop` replaces finished groups past the threshold at publish, `wait` blocks sampling while a running group has reached it | verl_v1 |
 | L3 | `WarnOnly(threshold)` | counts taken groups past the threshold, never drops | skyrl |
 | L3 | `VersionWindow(threshold, refill)` | at publish, finished groups with `new_version - admit_version > threshold` are cancelled, `REPLACE` when `refill` else `DROP` | trl, prime_rl |
-| L3 | `DistinctVersionWindow(keep)` | keep the last `keep` distinct observed versions in arrival order; `keep <= 0` is off | dressage |
+| L3 | `DistinctVersionWindow(keep)` | keep the last `keep` distinct observed versions in arrival order. `keep <= 0` is off | dressage |
 
 ## Presets at a glance
 
@@ -195,7 +195,7 @@ lazily with `num_entries = ready_num_entries = batch_size`, `staleness`, and
   original `v_traj`.
 - `check_invariants` asserts every placement satisfies `buffer_id - generated_version <= staleness`.
 
-`inventory_snapshot` exposes the inventory read-only; the `inventory_deadline` router
+`inventory_snapshot` exposes the inventory read-only. The `inventory_deadline` router
 strategy needs it (see {doc}`routing`).
 
 ### `areal`
@@ -215,7 +215,7 @@ age of any one sample. `check_invariants` asserts unconsumed responses never exc
 
 Only `ceil(ratio)` matters: the policy reads `st.max_staleness` as its window. The budget
 starts at `window * B + B` groups (just `B` when the window is 0) and grows by `B` per
-training step; admission is `budget - (running + completed)` groups.
+training step. Admission is `budget - (running + completed)` groups.
 
 - Groups are bucketed in cohorts by admission version (`v_traj`).
 - Consumption draws oldest cohort first from cohorts in `[train_version - window,
@@ -229,7 +229,7 @@ training step; admission is `budget - (running + completed)` groups.
 
 `update_weights_interval: 1`, `over_sampling_ratio: 1.0`, `pause_mode: abort`.
 
-No staleness parameter; the bound comes from the loop structure. `admit_quota` is 0 while
+No staleness parameter. The bound comes from the loop structure. `admit_quota` is 0 while
 `remaining >= B`, else `max(1, round(over_sampling_ratio * B))` groups, where `remaining`
 counts groups admitted since the last take and resets to 0 on take. Surplus groups beyond a
 full batch are dropped whole at completion. The batch is the first `B` ready groups.
@@ -252,7 +252,7 @@ length, in groups.
 - **Admission.** 0 when the queue is full or `staleness_samples >= max_required`, else
   `max_required - staleness_samples` groups. `staleness_samples` increments at admission and
   is reset at every publish to the in-flight groups plus the queue length.
-- **Completion.** A finished group enters the queue; if the queue is full the new group is
+- **Completion.** A finished group enters the queue. If the queue is full the new group is
   dropped with reason `queue_overflow`.
 - **Consumption.** FIFO from the queue. The step starts once the queue holds
   `B * require_batches` groups and consumes exactly that many.
@@ -265,7 +265,7 @@ length, in groups.
 Admission is a step-clocked feed and is not staleness-gated: `floor(warmup * B)` groups
 are credited once and `B` more at every publish. The only staleness-aware control is
 `OffPolicySpan`, keyed on `admit_version`. With `drop`, finished groups whose span exceeds
-the threshold are `REPLACE`d at publish; running groups are never cancelled. With `wait`,
+the threshold are `REPLACE`d at publish. Running groups are never cancelled. With `wait`,
 `can_sample` stays false while any unfinished group has span `>= threshold`, and nothing is
 evicted. Selection takes the oldest admission versions first.
 
@@ -303,7 +303,7 @@ lock that would prevent overlap is not modelled. Selection is FIFO.
 - **L3.** `DistinctVersionWindow(keep_versions)` keyed on each group's last token version
   (`v_max`): when a group completes, its version joins an arrival-ordered list and the group
   is dropped if its version is no longer among the last `keep_versions` distinct ones.
-  `gc_dropped` counts these; dropped groups are replaced one for one. `0` disables the
+  `gc_dropped` counts these. Dropped groups are replaced one for one. `0` disables the
   window and also makes `horizon` `None`.
 
 ### `nemo_rl`
@@ -322,7 +322,7 @@ every `B` groups admitted. They differ in selection:
 |---|---|---|---|
 | `in_order` | stamped for exactly `train_version` at admission | completion order | none |
 | `ready_first` | all | FIFO by dispatch time | none |
-| `weight_fifo` | `admit_version >= train_version - max_staleness_versions` | oldest admit version | none; a group below the window is never selected |
+| `weight_fifo` | `admit_version >= train_version - max_staleness_versions` | oldest admit version | none. A group below the window is never selected |
 | `windowed` | same window | oldest, or newest with `sample_freshest_first` | `CancelBelowVersion(window, DROP)` on running and finished groups |
 
 `horizon` is the staleness window for `windowed` and `weight_fifo`, the lookahead for
@@ -336,7 +336,7 @@ One bounded queue of admitted-unconsumed groups, capped at `max_inflight_tasks` 
 resolves to `max(max_staleness, 1) * B` when the first quota is asked). Selection is FIFO.
 At publish `VersionWindow(max_staleness, refill=True)` replaces finished groups with
 `new_version - admit_version > max_staleness`. Real TRL drops single samples after groups
-are disaggregated; the simulator keeps groups atomic, so the whole group is dropped.
+are disaggregated. The simulator keeps groups atomic, so the whole group is dropped.
 
 ### `prime_rl`
 

@@ -5,7 +5,7 @@
 routing: uncapped concurrency is still 1.2-1.6x the tuned static-cap baseline's at every point, and
 the fleet loses to a deployable fixed cap=48 on 4/6 points (geomean 0.980x). The design's own
 "admission candidates = instances whose forecast future KV peak fits" limb was never given a
-fractional threshold -- only literal `kv_overflow`, which a single marginal admission almost never
+fractional threshold, only literal `kv_overflow`, which a single marginal admission almost never
 trips. This sweeps `InventoryDeadline(kv_watermark=...)` (now wired through `PlanSession`) across
 the same 6 points, to see whether a soft KV ceiling on *admission* (not routing) can do what a
 configured concurrency cap does, without being a configured concurrency cap.

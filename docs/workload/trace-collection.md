@@ -13,8 +13,8 @@ better choice.
 ## What you need
 
 A HuggingFace checkpoint, a parquet dataset, one or more hosts with GPUs, and the pinned stack
-from {doc}`../getting-started/installation` (vLLM serves the model; `transformers` renders the
-chat template; `pyarrow` reads the dataset; `aiohttp` sends requests).
+from {doc}`../getting-started/installation` (vLLM serves the model, `transformers` renders the
+chat template, `pyarrow` reads the dataset, `aiohttp` sends requests).
 
 The dataset needs a `prompt` column of chat messages (`list[{"role", "content"}]`) and an
 `extra_info` column with an `index` key. Prompts are deduplicated on that index, in
@@ -65,7 +65,7 @@ bash examples/workload/collect_joint_trace.sh
 `DATASET`, `MODEL`, and `ENV_SCRIPT` are required and the script aborts naming whichever is
 missing. `ENV_SCRIPT` is sourced on **every worker** before the collector starts, so it must be
 a path that exists on the workers and not only on the host you launch from. A worker whose host
-is one of this machine's addresses runs locally; any other host is reached over `ssh` with
+is one of this machine's addresses runs locally. Any other host is reached over `ssh` with
 `BatchMode`.
 
 Set `DRY_RUN=1` to print the per-worker commands without starting a server. Do that first on
@@ -97,7 +97,7 @@ The knobs, with their defaults:
 
 `STARTUP_STAGGER_S` is not arbitrary: concurrent loads of a multi-shard checkpoint from shared
 storage can exceed the server readiness timeout, so launches are spaced out. The script pins
-each worker to a single GPU, so it is a `TP=1` collector; for a larger `--tp` call
+each worker to a single GPU, so it is a `TP=1` collector. For a larger `--tp` call
 `srl-workload collect-groups` yourself without `--gpu`. `max_model_len` is set to
 `MAX_TOKENS + 2048` so the longest response and its prompt fit.
 
@@ -107,7 +107,7 @@ each worker to a single GPU, so it is a `TP=1` collector; for a larger `--tp` ca
 2. Skips any worker whose shard already exists and is complete, so a rerun resumes.
 3. Launches `srl-workload collect-groups` per worker, locally or over `ssh`.
 4. Waits for all workers and reports the log path of any that failed. A failed worker does not
-   cancel the others; rerun the script and only the incomplete shards retry.
+   cancel the others. Rerun the script and only the incomplete shards retry.
 5. Merges the shards by `group_id` with `merge-shards`, then runs `verify-collection`.
 
 `Ctrl-C` kills the vLLM servers the script started, scoped to `vllm serve <MODEL> --port <N>`
@@ -165,7 +165,7 @@ Each subsequent line is one group:
 {"group_id": 0, "prompt_len": 93, "output_lens": [7143, 7677, 7558, 6236, 7230, 7740, 7644, 6818]}
 ```
 
-`output_lens` holds exactly `group_size` entries and every group must agree; a ragged trace is
+`output_lens` holds exactly `group_size` entries and every group must agree. A ragged trace is
 rejected when written.
 
 ---
@@ -207,8 +207,8 @@ srl-workload merge-shards --shard-dir SHARDS --n-workers 16 --output joint.jsonl
 ```
 
 It checks that every expected shard exists and holds groups, and that all shards agree on
-`max_output_tokens`; two shards generated under different caps do not belong in one trace.
-`--max-output-tokens` is an assertion against the shards' own value, not an override; omit it
+`max_output_tokens`. Two shards generated under different caps do not belong in one trace.
+`--max-output-tokens` is an assertion against the shards' own value, not an override. Omit it
 to let the shards be authoritative.
 
 ---
@@ -234,7 +234,7 @@ group, `batch_size=64` consumes 64 prompts (512 responses) per training step.
 The reference trace used across this site was collected with the defaults above from Qwen3-8B
 on `dapo-math-17k`: 1024 prompts times 8 responses across 16 workers, `max_tokens=10240`,
 temperature 1.0, TP=1. It lives at `outputs/workload/qwen3_8b_dapo_tp1/joint.jsonl` in the
-working tree it was produced in; `outputs/` is not tracked by git, so a fresh clone must
+working tree it was produced in. `outputs/` is not tracked by git, so a fresh clone must
 collect its own.
 
 | | mean | median | p95 | min | max |

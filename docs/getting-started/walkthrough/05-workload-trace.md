@@ -57,7 +57,7 @@ BASE_PORT=8700 STARTUP_STAGGER_S=25
 
 `STARTUP_STAGGER_S` waits between worker launches so that concurrent loads of a multi-shard
 checkpoint from shared storage do not trip the readiness timeout. Each worker is the CLI
-`srl-workload collect-groups`; {doc}`../../workload/trace-collection` documents the script's
+`srl-workload collect-groups`. {doc}`../../workload/trace-collection` documents the script's
 steps, the flags, and the verification commands.
 
 ## What lands on disk
@@ -75,7 +75,7 @@ outputs/workload/qwen3_8b_dapo_tp1/
 **The first line of the trace is a metadata header, and every line after it is one group.**
 Skip line one, or check for `_meta`, when reading the file by hand.
 
-The header from a trace collected this way (Qwen3-8B on `dapo-math-17k`; histograms omitted):
+The header from a trace collected this way (Qwen3-8B on `dapo-math-17k`, histograms omitted):
 
 ```javascript
 {
@@ -150,7 +150,7 @@ assert all(len(r['output_lens']) == meta['group_size'] for r in rows)
 "
 ```
 
-Every group carries exactly `group_size` responses; the writer rejects a ragged trace. A
+Every group carries exactly `group_size` responses. The writer rejects a ragged trace. A
 `truncated_fraction` near zero means the cap never bound and the tail is real. Near one means
 the cap is doing all the work and the trace mostly records your `MAX_TOKENS` setting.
 

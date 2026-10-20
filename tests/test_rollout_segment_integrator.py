@@ -94,7 +94,7 @@ def test_steps_within_saturates_at_k_max():
 
 
 def test_total_clamps_at_k_max():
-    """k_max is the hard ceiling on segment length; beyond it the total must not keep growing."""
+    """k_max is the hard ceiling on segment length. Beyond it the total must not keep growing."""
     integrator = LatticeIntegrator(_linear, k_max=1024, stride=1024)
     assert integrator.total(3000) == pytest.approx(integrator.total(1024), rel=1e-12)
 
@@ -107,7 +107,7 @@ def test_construction_samples_nothing():
 
 
 def test_a_short_segment_only_samples_the_nodes_it_needs():
-    """instance.py builds an integrator per decode event; most segments are short."""
+    """instance.py builds an integrator per decode event. Most segments are short."""
     calls = []
 
     def counted(offset: int) -> float:

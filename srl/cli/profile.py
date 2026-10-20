@@ -345,13 +345,12 @@ def cmd_kernels_holdout(args: argparse.Namespace) -> None:
 
     config = _kernel_config(args.config)
     if args.fraction < 1.0:
-        # A subset can make a bad surface look good: GEMM once scored 3.38% over 13 sampled
-        # points where the full set was 8.48%. Reporting a sampled figure as the surface's
-        # accuracy is the specific mistake this warning exists to prevent.
+        # A subset can make a bad surface look good by sampling only the well-fit points.
+        # Reporting a sampled figure as the surface's accuracy is the mistake this guards against.
         srl_logger.warning(
             f"--fraction {args.fraction} scores only a subset of the bracketed points, so the "
             f"MRE below understates the surface's real error. Do not report it as the gate "
-            f"result; rerun with --fraction 1.0."
+            f"result. Rerun with --fraction 1.0."
         )
     results = holdout_report(
         config.table_root(),
@@ -495,8 +494,8 @@ def cmd_megatron_run(args: argparse.Namespace) -> None:
         except subprocess.CalledProcessError as exc:
             failures += 1
             srl_logger.warning(
-                f"Candidate {candidate.candidate_id!r} exited with code {exc.returncode}; "
-                "its status and raw log were preserved."
+                f"Candidate {candidate.candidate_id!r} exited with code {exc.returncode}. "
+                "Its status and raw log were preserved."
             )
     if failures:
         srl_logger.warning(f"{failures} Megatron-Bridge candidates failed or ran out of memory.")
@@ -582,8 +581,8 @@ def cmd_fsdp_run(args: argparse.Namespace) -> None:
         except subprocess.CalledProcessError as exc:
             failures += 1
             srl_logger.warning(
-                f"Candidate {candidate.candidate_id!r} exited with code {exc.returncode}; "
-                "its status and raw log were preserved."
+                f"Candidate {candidate.candidate_id!r} exited with code {exc.returncode}. "
+                "Its status and raw log were preserved."
             )
     if failures:
         srl_logger.warning(f"{failures} FSDP candidates failed or ran out of memory.")
@@ -777,7 +776,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate_kernels.add_argument(
         "--baseline", required=True, help="vLLM profiling JSONL to score against."
     )
-    validate_kernels.add_argument("--model-path", help="Checkpoint path; defaults to the config's.")
+    validate_kernels.add_argument("--model-path", help="Checkpoint path. Defaults to the config's.")
     validate_kernels.add_argument("--surface", default="pchip", choices=["pchip", "shepard"])
     validate_kernels.add_argument("--min-samples", type=int, default=20)
     validate_kernels.add_argument("--gate", type=float, default=6.0)

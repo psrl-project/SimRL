@@ -29,7 +29,7 @@ that sets how curved the cost is across a lattice interval:
     2048                  0.07%      0.01%
     16384 and beyond    <=0.01%    <=0.01%
 
-Over 2048 steps the cold case is the worst at 1.31% (batch 16) and 1.11% (batch 64); a cold
+Over 2048 steps the cold case is the worst at 1.31% (batch 16) and 1.11% (batch 64). A cold
 segment is the common case right after prefill, so treat ~1.3% as the bound rather than the
 sub-0.1% figures a warm segment shows. A 4096-step segment costs 6 cost evaluations instead of
 4096, against 7.08% and 13.68% for a single tangent.
@@ -53,7 +53,7 @@ class LatticeIntegrator:
         stride: int = DEFAULT_STRIDE,
     ) -> None:
         """
-        Prepare to integrate; no cost evaluation happens here.
+        Prepare to integrate. No cost evaluation happens here.
 
         Args:
             step_cost (Callable[[int], float]): Seconds of the step `offset` steps into the
@@ -90,7 +90,7 @@ class LatticeIntegrator:
         Return the seconds of the first `k` steps of this segment.
 
         Args:
-            k (int): Step count. Zero or negative returns exactly `0.0`; above `k_max` clamps.
+            k (int): Step count. Zero or negative returns exactly `0.0`. Above `k_max` clamps.
 
         Returns:
             float: Strictly increasing in `k` up to `k_max`.

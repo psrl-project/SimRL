@@ -6,7 +6,7 @@ could select a different backend for each phase.
 
 Two backends are measured rather than one so that the choice is a number rather than an
 argument. `CommQuery`-style backend selection on the cost side reads whichever table it was
-asked for; the row's `kernel_source` records what actually ran.
+asked for. The row's `kernel_source` records what actually ran.
 
 This runner is a dispatcher: the timing loops live in `_vllm_attn` and `_flashinfer_attn`,
 which are kept as separate modules because each imports its own engine at module scope.

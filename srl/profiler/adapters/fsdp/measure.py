@@ -205,7 +205,7 @@ class FsdpMeasurement:
             # allocated lazily. It is parameters plus master weights plus optimizer
             # moments at whatever dtype the optimizer actually produced: that dtype
             # follows configuration, so no fixed bytes-per-parameter formula describes it.
-            # Compare it against the analytic FSDP inventory; it does not predict one.
+            # Compare it against the analytic FSDP inventory. It does not predict one.
             payload["static_allocated_bytes_at_train_start"] = self._static_allocated_bytes
         return payload
 

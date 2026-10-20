@@ -12,8 +12,8 @@ class LatestDeadline:
     """Evicts the resident whose training deadline is furthest in the future.
 
     When KV pressure forces an eviction, the request whose group has the most
-    slack (latest deadline buffer) pays. Urgent groups -- those closest to
-    missing their training window -- keep their KV and generate uninterrupted,
+    slack (latest deadline buffer) pays. Urgent groups, those closest to
+    missing their training window, keep their KV and generate uninterrupted,
     which lets the critical buffer fill sooner.
 
     Requires `deadline_buffer` to be stamped on requests at admission time.

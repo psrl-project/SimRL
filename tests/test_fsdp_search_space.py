@@ -35,7 +35,7 @@ def test_every_rank_receives_distinct_data_so_dp_equals_world_size():
 
 
 def test_a_rank_runs_identically_shaped_microbatches():
-    """Accumulation depth is swept; every microbatch a rank runs is the same shape."""
+    """Accumulation depth is swept. Every microbatch a rank runs is the same shape."""
     candidate = _candidate(n_seqs_per_rank=4, num_microbatches=3)
     assert candidate.num_microbatches == 3
     assert candidate.micro_batch_size == 4
@@ -246,7 +246,7 @@ def test_enumerate_rejects_non_positive_repeats():
 
 
 def test_enumerate_rejects_sequence_parallelism_before_the_product_loop():
-    """Returning an empty sweep for sp>1 looks like a config typo; failing fast makes the cause obvious."""
+    """Returning an empty sweep for sp>1 looks like a config typo. Failing fast makes the cause obvious."""
     with pytest.raises(ProfileValidationError, match="sequence_parallel"):
         enumerate_fsdp_candidates(
             world_size=8,
@@ -261,7 +261,7 @@ def test_enumerate_rejects_sequence_parallelism_before_the_product_loop():
 
 
 def test_enumerate_rejects_non_positive_shard_size():
-    """A zero or negative shard_size is never valid; it must raise rather than silently disappear."""
+    """A zero or negative shard_size is never valid. It must raise rather than silently disappear."""
     with pytest.raises(ProfileValidationError, match="shard_size"):
         enumerate_fsdp_candidates(
             world_size=8,

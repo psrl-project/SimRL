@@ -12,8 +12,8 @@ def test_fp32_master_dtype_gives_sixteen_p_over_world_size():
     Ground truth: fp32 master dtype must yield exactly 16p/ws.
 
     Measured on 8×H20 with a 1.630B-parameter model: allocator reported 3.101 GiB
-    against the analytic 16p/ws = 3.037 GiB, a ratio of 0.979.  The analytic figure
-    must be exact to floating-point precision; the 2.1 % gap is allocator overhead.
+    against the analytic 16p/ws = 3.037 GiB, a ratio of 0.979. The analytic figure
+    must be exact to floating-point precision. The 2.1 % gap is allocator overhead.
     """
     parameter_count = 1_630_600_000
     world_size = 8
@@ -37,7 +37,7 @@ def test_total_bytes_invariant_to_parameter_dtype():
     total_bytes must not change when only parameter_dtype changes.
 
     Under reshard_after_forward=True the all-gathered compute copy is freed after each
-    layer and is not part of the static pool.  The module is built in the master dtype
+    layer and is not part of the static pool. The module is built in the master dtype
     (optimizer_state_dtype), so the resident parameter shard is always sized by that
     dtype regardless of the compute dtype requested via parameter_dtype.
     """
@@ -80,7 +80,7 @@ def test_gradients_are_sharded_unlike_megatron():
     Megatron holds a full-size fp32 gradient buffer as the reduce-scatter source.
 
     FSDP2 reduce-scatters per layer into already-sharded gradients, so no full-size
-    buffer exists.  Reusing the Megatron inventory here would overstate memory by
+    buffer exists. Reusing the Megatron inventory here would overstate memory by
     roughly twofold.
     """
     parameter_count = 1_000_000_000
@@ -98,8 +98,8 @@ def test_gradients_are_sharded_unlike_megatron():
 def test_model_parameters_sized_by_master_dtype_not_compute_dtype():
     """
     The resident parameter shard is in the master dtype because the module is built
-    in optimizer_state_dtype so AdamW moments inherit the right dtype.  There is no
-    separate master-weight tensor; the module IS the master.
+    in optimizer_state_dtype so AdamW moments inherit the right dtype. There is no
+    separate master-weight tensor. The module IS the master.
     """
     parameter_count = 1_000_000_000
     inventory = fsdp_inventory(

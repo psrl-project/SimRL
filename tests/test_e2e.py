@@ -529,14 +529,17 @@ class TestPartialRolloutPublish:
         assert not result.livelocked
         trains = list(store.iter("train"))
         admit_ts = [r["t"] for r in store.iter("request") if r["event"] == "admit"]
-        for train in trains:
+        for index, train in enumerate(trains):
             start, end = train["start"], train["end"]
             during = [t for t in admit_ts if start < t < end]
             assert not during, "AReaL quota should not open mid-training."
             at_end = [t for t in admit_ts if abs(t - end) < 1e-9]
-            assert at_end, "AReaL quota should open when train_version is published."
+            if index < len(trains) - 1:
+                assert at_end, "AReaL quota should open when train_version is published."
+            else:
+                assert not at_end, "AReaL quota should not open past the last published version."
 
-    def test_psrl_interrupt_keeps_one_batch_per_published_version(self, tmp_path):
+    def test_psrl_interrupt_keeps_one_batch_per_published_version_but_not_past_the_last(self, tmp_path):
         store = JsonlStore(tmp_path / "logs")
         cost = UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7)
         training_cost = TrainingCostModel(
@@ -565,8 +568,13 @@ class TestPartialRolloutPublish:
         assert not result.livelocked
         assert not result.dropped
         assert all(r.staleness_true() <= cfg.staleness_horizon for r in result.consumed)
-        assert sim.n_admitted == (cfg.staleness_horizon + 1 + cfg.n_versions) * cfg.batch_size
-        assert sim.n_admitted - sim.n_consumed == (cfg.staleness_horizon + 1) * cfg.batch_size
+        # One batch opens per publish, except the last: there is no next training
+        # step left to overlap it with, so the final publish grants no new batch
+        # (see `Simulator._publish_weights`). The window is seeded with
+        # `staleness_horizon + 1` batches up front, then tops up once per publish
+        # for all but the last of `n_versions` publishes.
+        assert sim.n_admitted == (cfg.staleness_horizon + cfg.n_versions) * cfg.batch_size
+        assert sim.n_admitted - sim.n_consumed == cfg.staleness_horizon * cfg.batch_size
 
         admit_counts: dict[float, int] = {}
         for row in store.iter("request"):
@@ -574,8 +582,12 @@ class TestPartialRolloutPublish:
                 admit_counts[row["t"]] = admit_counts.get(row["t"], 0) + 1
         trains = list(store.iter("train"))
         assert admit_counts.pop(0.0) == (cfg.staleness_horizon + 1) * cfg.batch_size
-        for train in trains:
+        for train in trains[:-1]:
             assert admit_counts.pop(train["end"]) == cfg.batch_size
+        assert trains[-1]["end"] not in admit_counts, (
+            "The last published version must not admit a fresh batch: nothing "
+            "will ever train on it."
+        )
         assert not admit_counts, "PSRL should admit only initially and when a version is published."
 
 

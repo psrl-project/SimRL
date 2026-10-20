@@ -737,7 +737,7 @@ def _sweep_table(runs: list[MediumRunResult]) -> list[dict]:
 
 def _medium_regimes_for(strategy: str) -> list[MediumRegime]:
     """`medium_regimes()`, or the same axes re-run under `inventory_deadline` with its cap forced
-    off -- see `_toy_regimes_for`'s docstring for why that is what running it "on its own terms"
+    off. See `_toy_regimes_for`'s docstring for why that is what running it "on its own terms"
     means.
     """
     if strategy == "request_num_balance":

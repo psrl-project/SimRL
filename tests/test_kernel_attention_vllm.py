@@ -127,7 +127,7 @@ def test_generation_latency_grows_with_kv_history(tmp_path):
         )
     )
     # At small batch (e.g. 4) a constant per-call overhead inside vLLM's attention path swamps
-    # the KV-length signal, so the ordering there is within jitter.  At batch 16 the KV-length
+    # the KV-length signal, so the ordering there is within jitter. At batch 16 the KV-length
     # signal is large enough (measured ~43% gap) to beat the overhead reliably.
     short = rows[(32.0, 16.0, 1024.0)]
     long = rows[(32.0, 16.0, 2048.0)]

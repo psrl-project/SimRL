@@ -63,7 +63,7 @@ _RECORD_COUNT = 22
 #
 # The last row *raises* the pooled MRE and is still the right change, which is the one case
 # where this file's pinned number must not be read as a quality score. Attention does not
-# attend across a `cu_seqlens` boundary, so a pack's quadratic work is `sum_i s_i^2`; the
+# attend across a `cu_seqlens` boundary, so a pack's quadratic work is `sum_i s_i^2`. The
 # pack-total model charged `(sum_i s_i)^2` and was over-predicting packed records by enough
 # to offset the ~197 ms/slot term that is still unexplained. Removing one of two cancelling
 # errors makes the other visible. Evidence that the correction is right rather than merely
@@ -99,7 +99,7 @@ _TERM_SHARES = {
     "tp_collective": 4.7,
     # 1.0% before `tensor_plumbing` was measured. The trace found 158.7 staging launches per
     # layer-microbatch against the 7 model kernels the inventory named, at ~8.7 us of launch
-    # floor each; adding them closed 4.50pp of the pooled error.
+    # floor each. Adding them closed 4.50pp of the pooled error.
     "elementwise": 4.1,
     "logits": 1.7,
     "optimizer": 0.2,
@@ -167,7 +167,7 @@ def test_the_packing_spread_is_tracked():
     only `sum_i s_i^2` varies. Measured step time falls monotonically as the pack splits:
     4.2866, 4.0712, 3.8828, 3.7616, 3.6836 s for (12288), (10240,2048), (6144,6144),
     (4096x3), (3072x4). The pack-total model predicted all five identically and so carried
-    that 14% spread as residual; the per-sequence model orders them correctly.
+    that 14% spread as residual. The per-sequence model orders them correctly.
 
     The assertion is on ordering and spread rather than on absolute error, because the
     unexplained ~197 ms/slot term offsets every prediction in this family equally and would
@@ -186,7 +186,7 @@ def test_the_packing_spread_is_tracked():
     )
     measured_spread = family[-1].measured_s - family[0].measured_s
     predicted_spread = predictions[-1] - predictions[0]
-    # Measured 0.603 s; the per-sequence model gives 0.796 s. Within 1.5x is the claim:
+    # Measured 0.603 s. The per-sequence model gives 0.796 s. Within 1.5x is the claim:
     # the effect is represented and of the right magnitude, not that it is exact.
     assert 0.7 < predicted_spread / measured_spread < 1.5
 
@@ -200,11 +200,11 @@ def test_the_residual_scales_with_total_tokens():
     rather than a per-step or per-microbatch overhead.
 
     Three earlier versions of this test were falsified by their own data, and each failure
-    narrowed the shape — which is the test earning its place rather than recording a number:
+    narrowed the shape, which is the test earning its place rather than recording a number:
 
-    1. "~197 ms per pipeline slot" — per-slot values actually span 0.039-0.484 s.
-    2. "proportional to the prediction" — true but weak, r^2 = 0.893.
-    3. "a per-microbatch constant" — held only on the 4096-token subset; across all records
+    1. "~197 ms per pipeline slot": per-slot values actually span 0.039-0.484 s.
+    2. "proportional to the prediction": true but weak, r^2 = 0.893.
+    3. "a per-microbatch constant": held only on the 4096-token subset. Across all records
        the per-microbatch gap spans 5-612 ms, a 120x range.
 
     Every record is the same sign, which is what makes this one missing additive term rather
@@ -263,7 +263,7 @@ def test_the_gemm_and_attention_terms_match_a_traced_step():
     """
     result = _scored()
     # GEMM forward and backward are near-equal because the backward's two GEMMs cost about
-    # what the recompute-doubled forward does; a drift between them means a multiplier moved.
+    # what the recompute-doubled forward does. A drift between them means a multiplier moved.
     assert result.term_shares["gemm_fwd"] == pytest.approx(
         result.term_shares["gemm_bwd"], rel=0.05
     )
@@ -274,14 +274,14 @@ def test_the_traced_record_itself_predicts_almost_exactly():
 
     12288 tokens at nmb=1 is the step that was traced, so every term in it was compared
     against real kernels rather than inferred. It predicts to -0.12%. That is not a general
-    accuracy claim — the per-microbatch residual below still affects the nmb=4 and nmb=64
-    records — but it does establish that when the inventory is right, the tables are too.
+    accuracy claim. The per-microbatch residual below still affects the nmb=4 and nmb=64
+    records, but it does establish that when the inventory is right, the tables are too.
     """
     result = _scored()
     traced = [
         c for c in result.comparisons if c.sum_tokens == 12288 and c.num_microbatches == 1
     ]
-    # Five packings share this token count; the traced one is the unpacked record, which is
+    # Five packings share this token count. The traced one is the unpacked record, which is
     # also the most accurate of the five.
     best = min(traced, key=lambda c: abs(c.relative_error))
     assert abs(best.relative_error) < 0.01, (

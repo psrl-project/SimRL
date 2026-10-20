@@ -29,7 +29,7 @@ def test_an_interior_query_lands_between_its_neighbours():
 
 
 def test_the_result_does_not_depend_on_which_axis_is_splined_first():
-    """The geometric mean of both orders is what makes this true; a single order is not."""
+    """The geometric mean of both orders is what makes this true. A single order is not."""
     surface = PchipSurface(_LATTICE)
     transposed = PchipSurface(tuple(
         UtilitySample(coords=(s.coords[0], s.coords[2], s.coords[1]), utility=s.utility)

@@ -150,7 +150,7 @@ def test_a_different_target_gpu_rescales_through_sol(gemm_root, tmp_path):
     fast = KernelDatabase.from_root(gemm_root, gpu="h20")
     slow = KernelDatabase.from_root(gemm_root, gpu="h20", gpu_spec=load_spec("h20", path=spec_path))
     query = GemmQuery(m=2048, n=4096, k=4096)
-    # Utility is a property of the measurement; halving peak throughput doubles SOL
+    # Utility is a property of the measurement. Halving peak throughput doubles SOL
     # and therefore doubles the predicted latency at the same utility.
     assert slow.query_gemm(query) == pytest.approx(2.0 * fast.query_gemm(query), rel=1e-6)
     assert slow.utility(query) == pytest.approx(fast.utility(query))
@@ -256,10 +256,10 @@ def test_sol_closure_cache_keeps_its_table_alive(tmp_path):
 
     `self._tables` holds every loaded table alive unconditionally, so a weakref test
     cannot distinguish between `id(table)` and `table` as the cache key: the table is
-    never freed either way.  The property that actually matters is behavioral: two
+    never freed either way. The property that actually matters is behavioral: two
     DIFFERENT tables loaded for different backends must each get their OWN closure, and
     therefore correctly different SOL-derived utilities, even when the tables share the
-    same slice_key.  An `id(table)`-keyed cache could in principle collide (same CPython
+    same slice_key. An `id(table)`-keyed cache could in principle collide (same CPython
     address for two distinct objects) whereas the object-keyed cache cannot.
 
     This test verifies the observable outcome: each backend's table produces results
@@ -278,9 +278,9 @@ def test_sol_closure_cache_keeps_its_table_alive(tmp_path):
     utility_vllm = database.utility(base)
     utility_fi = database.utility(flashinfer_query)
 
-    # Both tables share the same slice_key.  If the SOL closures were aliased (wrong
+    # Both tables share the same slice_key. If the SOL closures were aliased (wrong
     # cache key), one utility would be computed with the other table's rows and the two
-    # values would be equal.  They must differ because the latencies differ.
+    # values would be equal. They must differ because the latencies differ.
     assert utility_vllm != pytest.approx(utility_fi), (
         "Two tables loaded for different backends with the same slice_key must produce "
         "distinct utilities derived from their own rows, not each other's."
@@ -342,7 +342,7 @@ def step_zero_root(tmp_path):
 
 
 def test_query_attention_succeeds_with_step_zero_row_in_table(step_zero_root):
-    # Must not raise; step=0 row is silently excluded from the grid.
+    # Must not raise. The step=0 row is silently excluded from the grid.
     database = KernelDatabase.from_root(step_zero_root, gpu="h20")
     query = AttentionQuery(
         phase="generation", batch_size=16, num_heads=32, num_kv_heads=8, head_dim=128, step=512

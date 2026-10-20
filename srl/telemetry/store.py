@@ -2,8 +2,8 @@
 
 A `JsonlStore` maps a stream name (e.g. "train", "instance/0", "rollout_step")
 to a `.jsonl` file under a root directory. Within one store lifetime writers
-append one JSON object per call and the store never holds history in memory;
-readers stream records back with `iter`. Pass `overwrite=True` to wipe that
+append one JSON object per call and the store never holds history in memory.
+Readers stream records back with `iter`. Pass `overwrite=True` to wipe that
 root first, so a new simulation does not concatenate onto a previous run.
 This lets the simulator log richly (per-step, per-instance telemetry) without
 accumulating large lists in `SimResult`, and lets visualization run standalone

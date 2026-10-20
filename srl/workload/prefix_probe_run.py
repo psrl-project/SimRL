@@ -8,14 +8,14 @@ and the logic has to change, not that a coefficient needs tuning.
 The four scenarios exist because each exercises a different path through
 `srl/component/rollout/engine/kv/`:
 
-- `within_group_shared_prompt` -- one prompt at `n=8`, the GRPO shape. Hits on
+- `within_group_shared_prompt`: one prompt at `n=8`, the GRPO shape. Hits on
   blocks another live request holds.
-- `continued_prefix` -- round two's prompt is round one's prompt plus its
+- `continued_prefix`: round two's prompt is round one's prompt plus its
   output, the shape a resumed partial rollout and an agentic next round both
   take. Hits on blocks whose `ref_cnt` has reached zero.
-- `hit_rate_after_reset` -- `reset_prefix_cache`, then resend. The weight-sync
+- `hit_rate_after_reset`: `reset_prefix_cache`, then resend. The weight-sync
   path.
-- `lru_eviction` -- squeeze the pool until reuse must evict. The only scenario
+- `lru_eviction`: squeeze the pool until reuse must evict. The only scenario
   that reaches `_maybe_evict`, because KV never saturates under the project's
   main workload.
 
@@ -128,7 +128,7 @@ def _synthetic_prompt(n_tokens: int) -> str:
     The count is approximate by construction, which is why every expectation in
     the fixture is a hit *rate* rather than a block count. A multi-digit integer
     costs more than one token, so emitting `n_tokens` words would overshoot the
-    context limit; the divisor below is calibrated against Qwen3's tokeniser
+    context limit. The divisor below is calibrated against Qwen3's tokeniser
     (about two tokens per "<number><space>" pair at these magnitudes) and the
     exact prompt length is read back from `prompt_token_ids` anyway.
     """
@@ -204,7 +204,7 @@ def _run_lru_eviction(base_url: str, model: str, scenario: dict[str, Any]) -> di
     n_prompts = int(scenario["n_prompts"])
     # The differentiator goes at the FRONT. Appending it would leave every
     # prompt sharing an identical prefix, so they would all hit and nothing
-    # would ever be evicted -- the scenario would pass while testing nothing.
+    # would ever be evicted, and the scenario would pass while testing nothing.
     prompts = [
         f"case {i}: " + _synthetic_prompt(scenario["prompt_len"])
         for i in range(n_prompts)

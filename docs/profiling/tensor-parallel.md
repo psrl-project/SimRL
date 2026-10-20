@@ -125,7 +125,7 @@ srl-profile kernels holdout   --config examples/profile/kernel/collective_multin
 ```
 
 `torch.multiprocessing.spawn` cannot produce a cross-node group, since it binds `MASTER_ADDR` to
-loopback; that is why the child is launched under `torchrun` and, across hosts, under ssh.
+loopback. That is why the child is launched under `torchrun` and, across hosts, under ssh.
 
 ### 3. Collect a real baseline at the same degree
 
@@ -153,7 +153,7 @@ python examples/profile/kernel/decompose_tp.py --config $CFG --baseline $BASE \
 ```
 
 `validate` takes the degree from the config's `tensor_parallel`, so the config must be the one
-swept at that degree. `--min-samples 1` is required to score all three phases; the default of 20
+swept at that degree. `--min-samples 1` is required to score all three phases. The default of 20
 silently drops prefill and mixed from a typical decode-dominated baseline, and the tool warns
 about each dropped phase. `--gate 100` observes rather than fails.
 
@@ -177,7 +177,7 @@ GPU=h20 MODEL_PATH=$MODEL_PATH \
     bash examples/simulate/simulate.sh
 ```
 
-`ROLLOUT_TP` defaults to 1 and only the composed model reads it; the fitted models were
+`ROLLOUT_TP` defaults to 1 and only the composed model reads it. The fitted models were
 regressed at one degree and carry no notion of a second, so setting it there is silently
 ignored. `pp`, `dp` and `cp` are accepted in `rollout_cost.parallelism`, but the composed model
 uses `tp` only. `ComposedRollout` raises if the degree passed to it disagrees with the degree its

@@ -42,7 +42,7 @@ def test_the_family_is_separate_from_the_rollout_attention_family():
     """Not a new phase on the existing `attention` family, and the separation is the point.
 
     The rollout table measures vLLM's prefill kernel over a BSHD batch whose grid varies a
-    batch dimension a THD pack does not have; this one measures TE's FlashAttention over one
+    batch dimension a THD pack does not have. This one measures TE's FlashAttention over one
     packed row. Sharing a family directory would put two kernels under one `floors.json`.
     """
     assert op_for("context_attention").family == "attention"

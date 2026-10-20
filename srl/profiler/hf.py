@@ -22,7 +22,7 @@ _DTYPE_BYTES = {
 # Keys that identify a block shape the dense kernel-shape family does not describe. They are
 # forwarded verbatim so `families_dense.py` can refuse the model instead of pricing a
 # mixture-of-experts or compressed-KV block as though it were dense. Nothing reads them for
-# arithmetic yet; they exist so the refusal is reachable from a real checkpoint.
+# arithmetic yet. They exist so the refusal is reachable from a real checkpoint.
 _ARCHITECTURE_MARKER_KEYS = (
     "num_experts",
     "num_local_experts",
@@ -31,7 +31,7 @@ _ARCHITECTURE_MARKER_KEYS = (
     "moe_intermediate_size",
     "kv_lora_rank",
     "q_lora_rank",
-    # Hybrid attention: every N-th layer is full attention; the rest are linear/SSM.
+    # Hybrid attention: every N-th layer is full attention, and the rest are linear/SSM.
     # Required by the MoE family to count full-attention layers for the attention grid.
     "full_attention_interval",
     # Explicit shared-expert MLP size (Qwen3.5-MoE has one in addition to the MoE block).
@@ -158,8 +158,8 @@ def _flatten_text_config(config: dict[str, Any]) -> dict[str, Any]:
     Multimodal checkpoints (Qwen3.5-MoE, InternVL, etc.) separate language and
     vision architecture fields into ``text_config`` and ``vision_config``
     sub-dicts rather than placing them at the top level. The profiler only prices
-    the language backbone, so merging ``text_config`` upward — without overwriting
-    any key that already exists at the top — makes the rest of the code oblivious
+    the language backbone, so merging ``text_config`` upward, without overwriting
+    any key that already exists at the top, makes the rest of the code oblivious
     to whether a checkpoint is purely text or multimodal.
     """
     text_sub = config.get("text_config")

@@ -1,6 +1,6 @@
 """Route and admit by forecasting the nearest unready training buffer's finish time.
 
-Every decision -- place an admitted group's queued member, or admit a staged group -- is priced
+Every decision, placing an admitted group's queued member, or admitting a staged group, is priced
 as a whole `Pipeline`: one predicted training-finish time `E_k` per pending buffer. Options
 compare lexicographically, buffer by buffer, with `compare`'s tolerance, so a decision that
 barely moves the nearest buffer looks past it to the next one. This is what makes the admitted
@@ -12,11 +12,11 @@ live `SchedulingRuntime`, and every placement this strategy commits updates it i
 next decision in the same burst sees the last one's effect, without replaying the whole fleet.
 
 Both decisions go longest-predicted-first. Among an admitted group's queued members, that is
-`PlanSession`'s own tail-fold order (reserved deadline buffer, then longest remaining); among
+`PlanSession`'s own tail-fold order (reserved deadline buffer, then longest remaining). Among
 staged groups not yet admitted, it is the group's own slowest predicted member, since that
-straggler is what the admission decision is actually about -- but only within a `window_groups`
+straggler is what the admission decision is actually about, but only within a `window_groups`
 block of arrival order (same convention as `length_aware`'s knob of the same name). A deadline
-is real urgency and is never window-bounded; a length-only tiebreak ranking the whole backlog
+is real urgency and is never window-bounded. A length-only tiebreak ranking the whole backlog
 would starve whichever end of the length distribution it ranks last, exactly the failure mode
 `length_aware`'s own docstring warns against.
 """
@@ -63,12 +63,12 @@ class InventoryDeadline:
             kv_watermark (float): Fraction of an instance's forecast KV peak a staged group's
                 admission may reach before that instance is refused as an admission candidate,
                 same convention as `length_aware`'s knob of the same name. Zero disables the check,
-                leaving literal `kv_overflow` as the only admission-feasibility bar -- this is the
+                leaving literal `kv_overflow` as the only admission-feasibility bar. This is the
                 design's own "admission candidates = instances whose forecast future KV peak fits"
                 limb, applied only to admitting a new group, never to routing an already-admitted
                 member (which already holds a buffer reservation and must still go somewhere).
             throughput_margin_frac (float): Smallest fractional decode-throughput gain the winning
-                instance must gain from taking a staged group's first member; below it the
+                instance must gain from taking a staged group's first member. Below it the
                 admission becomes DEFER even though it won the comparison. Zero disables the gate.
                 Admission only, for the same reason as `kv_watermark`, and ignored when `defer` is
                 False since there is then nothing to fall back to.
@@ -152,7 +152,7 @@ class InventoryDeadline:
             group = session.staged_groups[req.group_id]
             if req.rid != group[0].rid:
                 return None
-            # The throughput gate decides whether to admit; the comparison only decides where.
+            # The throughput gate decides whether to admit. The comparison only decides where.
             options = {
                 option: pipeline
                 for option, pipeline in session.evaluate_admission(group).items()
@@ -201,7 +201,7 @@ class InventoryDeadline:
         """Prefer the least-loaded instance among options the buffer forecast cannot tell apart.
 
         Below the decode knee, most placements tie the lexicographic pipeline within `eps` because
-        nothing is buffer-critical yet; without a secondary signal the loop above keeps whichever
+        nothing is buffer-critical yet. Without a secondary signal the loop above keeps whichever
         instance happens to iterate first, concentrating every admission there.
         """
         if best_option is None:
@@ -233,8 +233,8 @@ class InventoryDeadline:
     def _deadline(self, session: PlanSession, group_id: int) -> int:
         """A group admitted earlier this burst has no snapshot reservation yet.
 
-        Its real `reserve_data` call has not happened, so `session.snapshot` -- taken before this
-        burst -- does not know it. psrl's own rule is `deadline = version + staleness`, and a
+        Its real `reserve_data` call has not happened, so `session.snapshot`, taken before this
+        burst, does not know it. psrl's own rule is `deadline = version + staleness`, and a
         group `_commit_admission` just reserved was reserved at this session's rollout version.
         """
         try:

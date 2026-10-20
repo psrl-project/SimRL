@@ -9,7 +9,7 @@
 #
 # `microbatch_overhead` is the per-slot fixed cost, so an error in it is
 # amplified by the slot count. Two microbatch counts are enough to identify it
-# but only over the range they span; reaching 64 is what makes the real batch
+# but only over the range they span. Reaching 64 is what makes the real batch
 # interpolation rather than extrapolation.
 #
 # Collected into the same output tree as qwen3_8b_pp_scaling.yaml so the fit sees
@@ -43,13 +43,13 @@ environment:
   HF_HUB_OFFLINE: "1"
 
 # PP 1 and 3 only, not 2. The point here is to extend the slot range, and the
-# neighbouring sweep already proved the per-layer form transfers across PP; two
+# neighbouring sweep already proved the per-layer form transfers across PP. Two
 # PP values at nmb=64 are enough to confirm it still holds at 64 while keeping
 # this run to 6 candidates rather than 9.
 #
 # Sequence lengths stop at 4096 deliberately. At nmb=64 a candidate runs 64
 # microbatches per step for 12 steps, so 8192 tokens would cost roughly 15
-# minutes per candidate; the token axis is already covered to 8192 by the
+# minutes per candidate. The token axis is already covered to 8192 by the
 # {1, 4} sweep, and what this config is buying is the SLOT range.
 search_space:
   tensor_parallel_sizes: [2]

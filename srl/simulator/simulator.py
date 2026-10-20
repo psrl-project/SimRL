@@ -188,7 +188,7 @@ class Simulator:
         """
 
         # `cfg.log_telemetry=False` disables logging even if a `store` was
-        # passed in; see `SimTelemetry` for the stream schemas and the
+        # passed in. See `SimTelemetry` for the stream schemas and the
         # commit-only bookkeeping (all the logging logic lives there, not
         # here, so this class only ever calls high-level telemetry methods).
         self.telemetry = SimTelemetry(store, enabled=cfg.log_telemetry)
@@ -644,9 +644,9 @@ class Simulator:
         """Undo all pending events (one per instance) and clear the events dict.
 
         Instances whose last event was a committed advance (no snapshot) are
-        skipped — their mutations are permanent by design. Any completions they
-        produced must be collected here, because the normal collection path in
-        `_run_engine` will never see them (the event is being discarded).
+        skipped, since their mutations are permanent by design. Any completions
+        they produced must be collected here, because the normal collection path
+        in `_run_engine` will never see them (the event is being discarded).
         """
         for iid in list(events):
             inst = self.instances[iid]
@@ -664,7 +664,7 @@ class Simulator:
         Alignment is a committed advance, so any undo log still open is closed
         first. `advance_to` would otherwise record committed mutations into a
         log belonging to an event that has already been decided. Another
-        instance may complete at exactly the alignment time; that completion
+        instance may complete at exactly the alignment time. That completion
         is committed too and must be collected rather than discarded.
 
         Instances whose clock is already past ``t`` (possible when selective
@@ -863,7 +863,8 @@ class Simulator:
         `train_version` advances here, after recompute/train/sync actually finished. The
         policy's publish hook runs first, then rollout loads the new weights, interrupts
         in-flight work if the policy's pause mode is `abort`, rebases unstarted staged
-        groups, and opens one new dataset batch.
+        groups, and opens one new dataset batch -- unless this was the last training
+        step, in which case there is nothing left to overlap the new batch with.
         """
         previous_rollout_version = self.rollout_version
         self.train_version += 1
@@ -905,7 +906,12 @@ class Simulator:
             # unlocked + 188 aborted before placing any of them. Placing the
             # aborted set first empties the queue before the new batch exists,
             # which leaves the version-layered priority nothing to arbitrate.
-        self._ingress_group_credits += self.cfg.batch_size
+        # No next training step to overlap with after the last publish, so
+        # granting another batch here would admit work nothing will ever
+        # consume — the real PSRL loop never requests a buffer past its last
+        # step either.
+        if self.train_version < self.cfg.n_versions:
+            self._ingress_group_credits += self.cfg.batch_size
         # `_stage` dispatches only when it enqueued something, so keep the
         # fallback for an externally configured zero-credit update.
         if not self._stage():
@@ -962,8 +968,8 @@ class Simulator:
         for group_id in consumed_ids:
             self._ledger.drop(group_id)
         # A consumed group is finished with its instance, so its sticky pin is
-        # released. SMG drops the pin when the group's last request retires;
-        # holding it would let a repeating workload be pinned by a group that
+        # released. SMG drops the pin when the group's last request retires.
+        # Holding it would let a repeating workload be pinned by a group that
         # no longer exists.
         self.router.release_group_pins(consumed_ids)
         for req in batch:

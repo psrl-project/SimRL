@@ -17,10 +17,10 @@ bash examples/workload/collect_joint_trace.sh
 
 The script:
 
-1. deduplicates DAPO prompts by `extra_info.index`;
+1. deduplicates DAPO prompts by `extra_info.index`.
 2. samples 1024 prompts and assigns them to 16 workers with deterministic
-   strided sharding;
-3. starts one vLLM server per GPU and generates `n=8` responses per prompt;
+   strided sharding.
+3. starts one vLLM server per GPU and generates `n=8` responses per prompt.
 4. writes `shards/worker-NN.jsonl`, merges them by `group_id`, and validates
    the merged body count.
 
@@ -36,7 +36,7 @@ variables. Use `DRY_RUN=1` to inspect worker commands without launching
 servers.
 
 Completed shards are skipped on rerun. A shard is complete only when its body
-contains at least the `n_groups_requested` recorded in its header; truncated or
+contains at least the `n_groups_requested` recorded in its header. Truncated or
 short shards are recollected. The final `verify-collection` gate reports the
 workers responsible for any merged-trace shortfall.
 
@@ -55,8 +55,8 @@ cap 10240, and `max_staleness=2`.
 The 2026-08-25 collection produced 1024 groups / 8192 responses across 16 H20
 GPUs in 49 minutes:
 
-- prompt tokens: mean 149.7, median 138, p95 246, max 893;
-- output tokens: mean 7804, median 8690, p95 10240, min 989;
+- prompt tokens: mean 149.7, median 138, p95 246, max 893.
+- output tokens: mean 7804, median 8690, p95 10240, min 989.
 - 40.8% of responses reached the 10240-token cap.
 
 The corresponding 16-version simulation consumed all 8192 responses with no

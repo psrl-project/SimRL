@@ -1,7 +1,7 @@
 """What a fleet layout is: one TP degree per instance, and nothing else.
 
 `FleetPlan` deliberately carries no grouping and no routing predicate. It says
-how many instances exist and what TP degree each runs at; which request lands
+how many instances exist and what TP degree each runs at. Which request lands
 where is the router's decision, re-made at every dispatch. See the package
 docstring for why the earlier predicate-carrying design was dropped.
 """
@@ -53,7 +53,7 @@ class FleetPlan:
         """Whether the plan mixes TP degrees.
 
         A plan of four TP=1 instances is homogeneous even though it has four
-        instances; the distinction matters when reporting whether dynamic
+        instances. The distinction matters when reporting whether dynamic
         heterogeneity actually engaged, because a uniform plan is what a static
         configuration would have produced anyway.
         """
@@ -77,7 +77,7 @@ class FleetPlan:
 
         Args:
             tp: TP degree for every instance.
-            n_gpus: Total GPU budget; must be divisible by `tp`.
+            n_gpus: Total GPU budget. Must be divisible by `tp`.
 
         Returns:
             A plan of ``n_gpus // tp`` instances.

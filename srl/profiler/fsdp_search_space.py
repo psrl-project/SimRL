@@ -73,7 +73,7 @@ class FsdpCandidate:
 
     @property
     def sequence_shape(self) -> tuple[int, ...]:
-        """Return one microbatch's shape; every microbatch a rank runs is identical."""
+        """Return one microbatch's shape. Every microbatch a rank runs is identical."""
         return (self.sequence_length,) * self.n_seqs_per_rank
 
     @property
@@ -171,8 +171,8 @@ def enumerate_fsdp_candidates(
         sorted(set(sp_values)),
     )
     for shard, n_seqs, length, nmb, checkpointing, offload, reshard, sp in dimensions:
-        # A shard degree that does not divide the world describes no runnable topology;
-        # the caller may intentionally pass a superset of sizes, so skip rather than raise.
+        # A shard degree that does not divide the world describes no runnable topology.
+        # The caller may intentionally pass a superset of sizes, so skip rather than raise.
         if world_size % shard != 0:
             continue
         for repeat in range(repeats):

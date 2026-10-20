@@ -88,7 +88,7 @@ class _CollectiveOp:
         `max(math_s, memory_s, floor_s)`.
 
         Args:
-            spec (GpuSpec): Hardware; supplies both the intra-node link bandwidth and the
+            spec (GpuSpec): Hardware. Supplies both the intra-node link bandwidth and the
                 per-rank inter-node egress.
             slice_key (tuple[Any, ...]): `(dtype, world_size, nodes)`.
             coords (tuple[float, ...]): `(message_bytes,)`, the per-rank tensor size.

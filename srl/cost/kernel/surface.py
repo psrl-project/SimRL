@@ -61,7 +61,7 @@ def _hermite_slopes(xs: list[float], ys: list[float]) -> list[float]:
     secants = [(ys[i + 1] - ys[i]) / widths[i] for i in range(count - 1)]
     slopes = [0.0] * count
     for i in range(1, count - 1):
-        # A sign change in the secants means a local extremum; a zero slope there is what
+        # A sign change in the secants means a local extremum. A zero slope there is what
         # keeps the spline from overshooting, which is the whole point of choosing PCHIP.
         if secants[i - 1] * secants[i] > 0.0:
             left = 2.0 * widths[i] + widths[i - 1]
@@ -77,7 +77,7 @@ def _end_slope(width: float, next_width: float, secant: float, next_secant: floa
     slope = ((2.0 * width + next_width) * secant - width * next_secant) / (width + next_width)
     if slope * secant <= 0.0:
         return 0.0
-    # Cap to 3*secant only when secants differ in sign; this can never bind when they share a sign.
+    # Cap to 3*secant only when secants differ in sign. This can never bind when they share a sign.
     if abs(slope) > 3.0 * abs(secant):
         return 3.0 * secant
     return slope

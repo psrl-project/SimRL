@@ -3,7 +3,7 @@
 This page documents the Hydraulis cost model fitted from Megatron-Bridge profiles
 ({doc}`../profiling/megatron`): the latency decomposition, the memory formula, how fitting and
 lookup work, and the composed alternative. Measurement rules are in
-{doc}`../profiling/methodology`; accuracy is in {doc}`../reference/validation`.
+{doc}`../profiling/methodology`. Accuracy is in {doc}`../reference/validation`.
 
 ## Latency model
 
@@ -56,7 +56,7 @@ Read this carefully, because it is where a plausible reimplementation goes wrong
   profile. Point-to-point activation sends between stages are folded into the fitted
   per-microbatch cost rather than modelled.
 - **The quadratic term is $\sum_i s_i^2$, not $(\sum_i s_i)^2$.** Attention does not cross a
-  `cu_seqlens` boundary, so a packed microbatch costs the sum of each sequence's square; squaring
+  `cu_seqlens` boundary, so a packed microbatch costs the sum of each sequence's square. Squaring
   the packed total overcharges by the sequence count. `SequenceStats.sum_squared_tokens` records
   the right quantity, and a THD sweep with shapes that share a total but split it differently is
   what makes the column identifiable rather than collinear with the linear one.
@@ -114,7 +114,7 @@ means the geometry is wrong rather than the machine being unusual.
 ### Activation geometry
 
 Under full recomputation with `recompute_method=uniform`, each transformer layer keeps only its
-own input; intra-layer tensors are rebuilt one layer at a time during backward. The output
+own input. Intra-layer tensors are rebuilt one layer at a time during backward. The output
 projection is not recomputed, so vocabulary-sized logits survive the forward pass. Per token:
 
 ```text
@@ -122,7 +122,7 @@ checkpoints = (num_layers + 1) * hidden_size * activation_dtype_bytes / TP
 logits      = vocab_size * activation_dtype_bytes * LOGIT_OVERHEAD
 ```
 
-The layer term is divided by the tensor degree; the logit term is not, because each rank
+The layer term is divided by the tensor degree. The logit term is not, because each rank
 materialises a full-vocabulary-sized loss footprint however the logits are sharded.
 
 Under 1F1B the first stage keeps up to `min(nmb, PP)` microbatches in flight before its first
@@ -151,7 +151,7 @@ pipeline stage:
 | two Adam moments | `local * 2 * optimizer_state_bytes / DP` | TP, PP, DP |
 
 The gradient buffer is the reduce-scatter source, so every rank holds it at full
-model-parallel-local size; only master weights and optimizer state are sharded by DP. Omitting the
+model-parallel-local size. Only master weights and optimizer state are sharded by DP. Omitting the
 gradient buffer from the DP divisor, or sharding it, changes the static term roughly twofold.
 Moments are allocated lazily on the first optimizer step, so a snapshot taken before that step
 reports less than steady state.
@@ -166,7 +166,7 @@ Peak memory is set by the worst stage.
 The regression target is `peak_allocated_bytes`, the live-tensor high-water mark. Reserved bytes
 are the caching allocator's segment pool: quantised, sticky, and under full recompute nearly
 unresponsive to sequence length, which makes them a near-zero-signal target. Reserved is still
-recorded; a caller that needs a provisioning number should add an allocator margin on top of the
+recorded. A caller that needs a provisioning number should add an allocator margin on top of the
 prediction rather than treating this model's output as one.
 
 Each OOM record contributes an inequality: the true peak was at least the device capacity. The fit
@@ -190,7 +190,7 @@ OOM-measured configuration fits. The increase is recorded in `oom_intercept_incr
 - The activation geometry keeps two models with the same parameter count but different depth or
   width apart.
 
-**Latency pools pipeline degrees; memory does not.** The latency features are per-layer and the
+**Latency pools pipeline degrees. Memory does not.** The latency features are per-layer and the
 slot count is analytic, so every PP in a TP group is fitted together and the surviving entry is
 addressed with `pp = 1`. `CostArtifact.entry_for(..., ignore_pp=True)` finds it for any requested
 PP. Memory is fitted per PP, because the 1F1B peak depends on which stage is in flight and how
@@ -203,7 +203,7 @@ unrecognised combination raises `KeyError` rather than falling back to a neighbo
 `feature_ranges` gate the query: `tokens`, `pipeline_slots`, `sum_squared_tokens` and
 `micro_batch_size` for latency, `activation_bytes` and `profiled_dp` for memory. A value outside a
 recorded range raises `TrainingOutOfDomainError` unless the name is listed under
-`training_cost.extrapolate`; a permitted extrapolation is recorded in the estimate's diagnostics.
+`training_cost.extrapolate`. A permitted extrapolation is recorded in the estimate's diagnostics.
 
 ## Fitting
 
@@ -214,7 +214,7 @@ srl-regress training \
     --output outputs/cost/qwen3_8b/training_hydraulis.json
 ```
 
-- Records must be `training` records with `cp = 1` and schedule `1f1b`; anything else is skipped
+- Records must be `training` records with `cp = 1` and schedule `1f1b`. Anything else is skipped
   during grouping and the fit raises if nothing remains.
 - Each candidate contributes one design row: its retained step times reduced by `robust_step_time`,
   a median. Every step entering as its own row would let a noisy candidate outvote a clean one.
@@ -223,7 +223,7 @@ srl-regress training \
   residuals, followed by one MAD-based refit. Relative residuals matter because a training sweep
   spans orders of magnitude: minimising absolute error optimises the largest candidates and lets
   the small ones absorb any relative error.
-- `check_latency_rank` requires rank 4 and names the axes to vary when it is not reached;
+- `check_latency_rank` requires rank 4 and names the axes to vary when it is not reached.
   `--allow-rank-deficient` lowers the check. The memory design is `[activation_bytes, 1]` and
   requires rank 2.
 - Each entry records `max_step_dispersion` and `median_step_dispersion` alongside the usual fit
@@ -296,7 +296,7 @@ training_cost:
   extrapolate: []
 ```
 
-Dtypes and `distributed_optimizer` may be omitted when the artifact holds a single value for them;
+Dtypes and `distributed_optimizer` may be omitted when the artifact holds a single value for them.
 `from_artifact` infers it and raises when the artifact holds several. An unknown name in
 `extrapolate` raises at construction rather than silently enabling nothing.
 
@@ -329,14 +329,14 @@ What it prices, and where its input comes from:
 
 | term | source |
 |---|---|
-| `gemm_fwd`, `gemm_bwd` | the `gemm` table; backward includes dgrad and wgrad, whose `(n, k)` slices differ from the forward's |
-| `attn_fwd`, `attn_bwd` | the `attention_training` table, both directions measured; THD over `cu_seqlens`, not the rollout `context_attention` table |
+| `gemm_fwd`, `gemm_bwd` | the `gemm` table. Backward includes dgrad and wgrad, whose `(n, k)` slices differ from the forward's |
+| `attn_fwd`, `attn_bwd` | the `attention_training` table, both directions measured. THD over `cu_seqlens`, not the rollout `context_attention` table |
 | `elementwise` | the `elementwise` table, including the `tensor_plumbing` kind |
 | `tp_collective` | `reduce_scatter` and `all_gather` from the `collective` table |
 | `pp_comm` | `p2p` per microbatch per boundary |
 | `bubble` | `(slots - num_microbatches)` idle slots at one stage-pass each |
-| `logits` | the `gemm` table, once per step; a missing dgrad slice is skipped rather than clamped onto a neighbour |
-| `optimizer` | the `optimizer_step` table over one rank's parameter shard; disable with `charge_optimizer=False` |
+| `logits` | the `gemm` table, once per step. A missing dgrad slice is skipped rather than clamped onto a neighbour |
+| `optimizer` | the `optimizer_step` table over one rank's parameter shard. Disable with `charge_optimizer=False` |
 
 Per-layer work is charged **per microbatch**, and only the bubble is charged per slot. Each slot
 is one pipeline stage's work, so a per-model multiplier is scaled by `1 / PP`. Attention is priced
@@ -346,7 +346,7 @@ for a ragged one.
 
 `decompose_microbatches` returns the terms as a dict, and `predict_microbatches` is defined as
 their sum, so the decomposition can never drift from the prediction. `predict` plans microbatches
-first; validation calls `predict_microbatches` with the plan the measured run actually executed,
+first. Validation calls `predict_microbatches` with the plan the measured run actually executed,
 so a planning disagreement is not folded into a composition error.
 `srl/cost/training/validate.py` scores it against training records with `score_composed_training`
 and reports MRE, signed mean, worst candidate, and mean per-term shares.

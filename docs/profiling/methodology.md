@@ -29,7 +29,7 @@ without re-running a sweep.
   much shorter warmup than the example does. The THD example deliberately shortens both.
 - `slice_warmup` returns the full series when it holds no more steps than the warmup would
   discard. A candidate is thereby never turned into an unmeasured one by an aggressive
-  `warmup_steps`; the contamination shows up as dispersion instead.
+  `warmup_steps`. The contamination shows up as dispersion instead.
 
 ---
 

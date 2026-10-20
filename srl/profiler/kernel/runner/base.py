@@ -20,14 +20,14 @@ arrives hours after the typo. `row()` moves that check to the point of construct
 A base class owning the iteration would need a hook for each of those, which is a template
 with three escape hatches: more coupling than the duplication it removes.
 
-**There is no tensor-lifetime helper, deliberately.** The obvious one -- a context manager taking
-the point's tensors and freeing them on exit -- cannot work: a callee cannot delete a caller's
+**There is no tensor-lifetime helper, deliberately.** The obvious one (a context manager taking
+the point's tensors and freeing them on exit) cannot work: a callee cannot delete a caller's
 names, so `del tensors` inside the manager drops only its own tuple reference and
 `torch.cuda.empty_cache()` would then run with the originals still live, reclaiming nothing. The
 sweeps are ordered largest-footprint first precisely so that a grid which will not fit fails in
 its first seconds, and that ordering depends on each point's memory actually being released, so a
 helper that silently did not free would defeat it. Each runner therefore keeps its explicit
-`del ...; torch.cuda.empty_cache()`, which is two lines and correct.
+`del` followed by `torch.cuda.empty_cache()` as two separate lines, which is correct.
 
 `collective.py` is not a `KernelRunner`. It launches torchrun (and ssh, across nodes) and
 aggregates JSON the child ranks wrote, so `time()` has nothing to time.
@@ -57,7 +57,7 @@ class KernelRunner:
     """One op family's measurement sweep: shared mechanism, family-specific loop.
 
     Frozen because a runner is constructed per sweep and read from a closure in every timed
-    lambda; a mutable `config` would let a point be timed under settings a later point changed.
+    lambda. A mutable `config` would let a point be timed under settings a later point changed.
     """
 
     model: ModelDescriptor
@@ -72,9 +72,9 @@ class KernelRunner:
                 tensors as default arguments rather than capturing them, so the callable holds
                 its own reference and the caller's `del` can free the originals.
             op_name (str | None): The op this point belongs to. When given, its
-                `graph_replayed` declaration selects the timing mode; when omitted, CUDA
-                events are used. Passing the name is how a family whose ops disagree -- the
-                two attention phases, the two GDN phases -- gets each one timed correctly.
+                `graph_replayed` declaration selects the timing mode. When omitted, CUDA
+                events are used. Passing the name is how a family whose ops disagree (the
+                two attention phases, the two GDN phases) gets each one timed correctly.
 
         Returns:
             float: Mean per-call latency in seconds.
@@ -101,7 +101,7 @@ class KernelRunner:
         Build one perf-table row, checked against the op's declared columns.
 
         Args:
-            op_name (str): A registered op name; supplies the expected column set.
+            op_name (str): A registered op name. Supplies the expected column set.
             latency_s (float): The measured latency, always the last column.
             **fields (Any): This row's slice and axis values.
 
@@ -127,7 +127,7 @@ class KernelRunner:
             if extra:
                 parts.append(f"unexpected {', '.join(extra)}")
             raise ValueError(
-                f"A {op_name} row has {'; '.join(parts)}. Expected exactly: "
+                f"A {op_name} row has {' and '.join(parts)}. Expected exactly: "
                 f"{', '.join(columns)}."
             )
         return row
@@ -144,10 +144,10 @@ class KernelRunner:
             tuple[Path, ...]: The written parquet paths.
 
         Raises:
-            NotImplementedError: Always; each family implements its own loop. See the module
+            NotImplementedError: Always. Each family implements its own loop. See the module
                 docstring for why this is not a template method.
         """
         raise NotImplementedError(
-            f"{type(self).__name__} must implement run(); see runner/base.py on why the loop "
+            f"{type(self).__name__} must implement run(). See runner/base.py on why the loop "
             f"is not inherited."
         )

@@ -514,7 +514,7 @@ def run_simulate(cfg: DictConfig) -> None:
 
     memory_mib = training.get("gpu_memory_mib", None)
     workload = build_workload(cfg.workload)
-    # None adopts the workload's own arity; an explicit value is checked against
+    # None adopts the workload's own arity. An explicit value is checked against
     # it by SimConfig, so a run against the wrong trace fails loudly.
     group_size = job.group_size if job.group_size is not None else workload.group_size
     preset = preset_config(cfg.policy)
@@ -600,7 +600,7 @@ def run_simulate(cfg: DictConfig) -> None:
     )
 
     # Only create the logs directory / JSONL files at all when telemetry
-    # logging is switched on; `log_telemetry=False` must not touch disk.
+    # logging is switched on. `log_telemetry=False` must not touch disk.
     # `log_exclude` drops individual streams, e.g. the large per-step ones a sweep never reads.
     log_exclude = [
         name.strip() for name in str(cfg.get("log_exclude", "") or "").split(",") if name.strip()
@@ -639,25 +639,15 @@ def run_simulate(cfg: DictConfig) -> None:
             percentage = count / result.n_consumed * 100
             print(f"    {staleness}: {count} requests ({percentage:.2f}%)")
 
-        # Staleness-constrained goodput: tokens from trajectories consumed with
-        # staleness_true <= S, per simulated second. `SimResult.scg` has always
-        # computed this but nothing printed it, so every comparison script
-        # re-derived it from logs/request.jsonl by hand -- six copies of the same
-        # arithmetic, and a metric nobody could see without opening a plot.
+        # SCG(S): tokens from trajectories consumed with staleness_true <= S, per
+        # simulated second. The last S equals `Throughput:` above by construction.
+        # The whole curve is printed because the optimal fleet shape is
+        # S-dependent, so a single S hides the trade being made.
         #
-        # Tokens rather than a trajectory count, so the row is directly comparable
-        # with `Throughput:` above: the last S equals it by construction, and the
-        # ratio at any lower S is the fraction of generated work that arrived fresh
-        # enough to train on.
-        #
-        # The whole curve rather than one number: the optimal fleet shape is
-        # S-dependent (measured: a configuration can gain 1.9x at S=0 while
-        # losing at S=2), so a single S hides exactly the trade being made.
-        #
-        # ⚠️ SCG is a RATE, so it is only comparable across runs that consumed the
-        # same number of trajectories. A run that ended early divides a smaller
-        # total by a smaller span and scores arbitrarily well. `Consumed:` above
-        # is printed first for that reason: check it matches before comparing.
+        # NOTE(claude): SCG is a rate, so it is only comparable across runs that
+        # consumed the same number of trajectories. A run that ended early divides
+        # a smaller total by a smaller span and scores arbitrarily well. Check
+        # `Consumed:` above matches before comparing.
         print("  SCG(S) = tokens from trajectories with staleness <= S, per second:")
         for staleness, value in sorted(result.scg_curve().items()):
             marker = "  <- policy.horizon" if staleness == preset.horizon else ""

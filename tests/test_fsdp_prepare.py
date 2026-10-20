@@ -228,8 +228,8 @@ def test_manifest_rejects_an_unknown_schema(tmp_path: Path):
 
 
 def test_rejects_multi_node_without_rendezvous(tmp_path: Path):
-    """torchrun fails with an opaque network error when master_addr/master_port are absent;
-    an early validation error names the missing argument instead."""
+    """torchrun fails with an opaque network error when master_addr/master_port are absent.
+    An early validation error names the missing argument instead."""
     with pytest.raises(ProfileValidationError, match="master_addr and master_port"):
         build_launch_command(
             _candidate(),
@@ -252,7 +252,7 @@ def test_rejects_out_of_range_node_rank(tmp_path: Path):
 
 
 def test_rejects_non_positive_nnodes(tmp_path: Path):
-    """nnodes=0 is meaningless; the divisibility message would be misleading."""
+    """nnodes=0 is meaningless. The divisibility message would be misleading."""
     with pytest.raises(ProfileValidationError, match="nnodes must be positive"):
         build_launch_command(_candidate(), tmp_path / "spec.json", nnodes=0)
 
@@ -278,7 +278,7 @@ def test_rejects_model_dict_without_path_key(tmp_path: Path):
         FsdpProfileConfig.from_dict(
             {
                 # "name" is accepted by model_descriptor_from_yaml as a checkpoint
-                # source, but "path" is what the child needs as model_path.  Without
+                # source, but "path" is what the child needs as model_path. Without
                 # "path" the old code silently used model.name (a label or resolved
                 # source string) as a filesystem path, hiding the misconfiguration.
                 "model": {"name": str(tmp_path)},

@@ -5,18 +5,18 @@ and `BatchDecodeWithPagedKVCacheWrapper`), using the KV layout vLLM would alloca
 
 FlashInfer's `plan()` performs host-side scheduling (indptr construction, tile splitting,
 work-item generation) that vLLM amortizes once per decode step across all attention layers
-in the model.  If `plan()` were inside the timed region, every FlashInfer sample would
-include a fixed host cost that vLLM distributes across N layers; the per-layer comparison
-would then overstate FlashInfer's latency relative to vLLM by up to N×.  Only `.run(...)`
+in the model. If `plan()` were inside the timed region, every FlashInfer sample would
+include a fixed host cost that vLLM distributes across N layers. The per-layer comparison
+would then overstate FlashInfer's latency relative to vLLM by up to N×. Only `.run(...)`
 belongs in the timed region.
 
 **KV cache layout alignment.**
 
 The KV cache tensor is allocated in FlashInfer's NHD layout
 (`[num_blocks, 2, page_size, num_kv_heads, head_dim]`), which matches the NHD layout
-`get_kv_cache_layout()` returns for this machine.  Because both backends use the same
+`get_kv_cache_layout()` returns for this machine. Because both backends use the same
 logical NHD layout, the two row sets differ by kernel behaviour and not by a memory-layout
-transpose.  The `get_kv_cache_layout()` call reaches `get_current_vllm_config()`, so it
+transpose. The `get_kv_cache_layout()` call reaches `get_current_vllm_config()`, so it
 must be placed inside a `set_current_vllm_config(...)` context (same vLLM-config as
 Task 11).
 """
@@ -94,7 +94,7 @@ def time_flashinfer_context_point(
     device = torch.device("cuda")
 
     blocks_per_req = math.ceil(seq_len / block_size)
-    # One extra block per request as a margin guard; block 0 is the null/padding block.
+    # One extra block per request as a margin guard. Block 0 is the null/padding block.
     num_blocks = blocks_per_req * batch_size + batch_size + 1
 
     # Allocate KV cache in FlashInfer NHD layout: [num_blocks, 2, page_size, num_kv_heads, head_dim].
@@ -224,11 +224,11 @@ def time_flashinfer_generation_point(
     dtype = torch_dtype(attn_dtype_str)
     device = torch.device("cuda")
 
-    # KV history is `step + 1` after this decode step.  Use max(step, 1) to avoid
+    # KV history is `step + 1` after this decode step. Use max(step, 1) to avoid
     # zero-length allocations when step == 0 in a generation sweep point.
     total_kv_per_req = max(step + 1, 1)
     blocks_per_req = math.ceil(total_kv_per_req / block_size)
-    # One extra block per request as a margin guard; block 0 is the null/padding block.
+    # One extra block per request as a margin guard. Block 0 is the null/padding block.
     num_blocks = blocks_per_req * batch_size + batch_size + 1
 
     # Allocate KV cache in FlashInfer NHD layout: [num_blocks, 2, page_size, num_kv_heads, head_dim].
@@ -391,7 +391,7 @@ def profile_flashinfer_attention(
     attn_dtype_str: str = config.measurement.dtype
     kv_cache_dtype_str: str = config.measurement.kv_cache_dtype
     # Both attention ops parse the same `attention:` subtree, so the block and window sizes are
-    # one value; they are read off the context op because the KV cache layout precedes both phases.
+    # one value. They are read off the context op because the KV cache layout precedes both phases.
     context_sweep = config.sweep("context_attention")
     generation_sweep = config.sweep("generation_attention")
     block_size: int = context_sweep.block_size
@@ -475,7 +475,7 @@ def profile_flashinfer_attention(
     # No generation table is written in that case, rather than an empty one: `PerfTableWriter`
     # refuses a table with no rows, and rightly so, since an empty table would satisfy a
     # downstream existence check while answering no query. The absent file makes a query
-    # raise a coverage error, which is the honest outcome -- the vLLM table is what the cost
+    # raise a coverage error, which is the honest outcome. The vLLM table is what the cost
     # model reads, and on this hardware vLLM's own selector picks FLASH_ATTN anyway.
     group_size = num_heads // num_kv_heads if num_kv_heads else 0
     skip_generation = group_size not in _FLASHINFER_DECODE_GROUP_SIZES
@@ -484,7 +484,7 @@ def profile_flashinfer_attention(
         srl_logger.warning(
             f"Skipping FlashInfer generation attention: GQA group size {group_size} "
             f"({num_heads} query heads to {num_kv_heads} KV heads at tp={tp}) has no "
-            f"compiled kernel; FlashInfer supports "
+            f"compiled kernel. FlashInfer supports "
             f"{sorted(_FLASHINFER_DECODE_GROUP_SIZES)}. Tensor parallelism shards both "
             "counts equally and cannot change the ratio. The vLLM generation table is "
             "unaffected and is what the cost model reads."

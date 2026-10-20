@@ -6,7 +6,7 @@
 #   verl's threshold is a sample-overage ratio, not a version count: it admits
 #   at most `int(B * (1 + threshold))` prompt groups between weight syncs
 #   (`VerlPolicy._configure`). So it is fractional, and its effect on observed
-#   staleness is indirect -- which is what this sweep measures.
+#   staleness is indirect, which is what this sweep measures.
 #
 # WHY job.max_staleness IS PINNED, NOT SWEPT
 #   The simulator stages `(job.max_staleness + 1) * B` groups ahead of the
@@ -31,7 +31,7 @@ if [[ -f "${SIMRL_ENV}" ]]; then
     source "${SIMRL_ENV}"
 fi
 
-# Pinned rather than `auto` so every point comes from one engine; see
+# Pinned rather than `auto` so every point comes from one engine. See
 # policy_cap_sweep.sh for the parity check behind choosing C++.
 export SIMRL_BACKEND="${SIMRL_BACKEND:-cpp}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4}"
@@ -89,7 +89,7 @@ rollout.router.max_waiting_after_preempt=1024 \
 rollout.router.reject_preempted_on_waiting=true \
 +log_exclude='instance,rollout_step'"
         bash "${ROOT_DIR}/examples/simulate/psrl_aligned.sh" > "${RUN_BASE}/thr${thr}.log" 2>&1
-        # Only `request.jsonl` is read; the rest is dead weight on a full quota.
+        # Only `request.jsonl` is read. The rest is dead weight on a full quota.
         rm -rf "${run_dir}/logs/instance" "${run_dir}/logs/rollout_step.jsonl"
     ) &
     pids+=("$!:${thr}")
@@ -107,7 +107,7 @@ done
 # native signal that reads like an engine bug, and silently mixes binaries
 # across points when it does not.
 if [[ "${SIMRL_BACKEND}" == "cpp" && "$(md5sum "${so}" | cut -d' ' -f1)" != "${so_md5_before}" ]]; then
-    echo "  ${so} changed during the sweep; points may come from different builds." >&2
+    echo "  ${so} changed during the sweep. Points may come from different builds." >&2
     failed=1
 fi
 (( failed == 0 )) || exit 1

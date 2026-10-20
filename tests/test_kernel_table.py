@@ -88,7 +88,7 @@ def test_distinct_dtypes_become_distinct_slices(tmp_path):
         ],
     )
     table = KernelTable.load(path, GEMM_OP)
-    # Each (dtype, n, k) becomes a separate slice; two distinct dtypes, same (n, k).
+    # Each (dtype, n, k) becomes a separate slice. Two distinct dtypes, same (n, k).
     assert table.slice_keys() == (("bfloat16", 4096, 4096), ("fp8", 4096, 4096))
     assert len(table.rows(("fp8", 4096, 4096))) == 1
 
@@ -103,7 +103,7 @@ def test_grid_derives_utility_from_sol(tmp_path):
     )
     table = KernelTable.load(path, GEMM_OP)
     # A SOL of exactly half the measurement means a utility of 0.5 everywhere.
-    # coords is now 1-D: (m,); the lambda scales SOL proportionally to m.
+    # coords is now 1-D: (m,). The lambda scales SOL proportionally to m.
     grid = table.grid(("bfloat16", 4096, 4096), lambda coords: 2.0e-4 * (coords[0] / 1024.0))
     assert grid.sample_count == 2
     assert grid.utility((1024.0,)) == pytest.approx(0.5)
@@ -290,7 +290,7 @@ def _write_generation_attn(path: Path, rows: list[dict]) -> Path:
 
 
 def test_grid_skips_non_positive_coordinate_rows_and_counts_the_rest(tmp_path):
-    # A generation-attention table with a step=0 row must not crash grid(); the step=0
+    # A generation-attention table with a step=0 row must not crash grid(). The step=0
     # row is excluded from the UtilityGrid while all positive-step rows are included.
     path = _write_generation_attn(
         tmp_path / "generation_attention_perf.parquet",
@@ -304,5 +304,5 @@ def test_grid_skips_non_positive_coordinate_rows_and_counts_the_rest(tmp_path):
     table = KernelTable.load(path, GENERATION_ATTENTION_OP)
     slice_key = (8, 128, "bfloat16", "bfloat16", 16, 0)
     grid = table.grid(slice_key, lambda coords: 3.0e-5)
-    # Only the three positive-step rows are placed in the grid; step=0 is excluded.
+    # Only the three positive-step rows are placed in the grid. step=0 is excluded.
     assert grid.sample_count == 3

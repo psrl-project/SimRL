@@ -72,7 +72,7 @@ class ElementwiseKernelOp:
     fits_floor = True
     # Consumed only by the training model, and Megatron runs no CUDA graphs, so the launch
     # cost is genuinely on its critical path. `ComposedRollout` does not charge elementwise
-    # at all precisely because graph replay absorbs it there -- see `training_ops.py`.
+    # at all precisely because graph replay absorbs it there. See `training_ops.py`.
     graph_replayed = False
 
     def sol(
@@ -86,7 +86,7 @@ class ElementwiseKernelOp:
         """
         Return the roofline of one elementwise kernel call.
 
-        `n_elements` counts the elements *read*; the write is assumed equal, so the byte
+        `n_elements` counts the elements *read*. The write is assumed equal, so the byte
         traffic is `2 * n_elements * dtype_bytes`. That holds for all four kinds: rmsnorm and
         qk_norm read and write one tensor, rope reads and writes q and k, and silu_and_mul
         reads `2n` and writes `n` for a total of `3n` against the assumed `2n`: a 1.5x

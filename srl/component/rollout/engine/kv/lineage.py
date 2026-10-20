@@ -23,7 +23,7 @@ and the trace format stays untouched.
 **Known one-directional bias.** Two *different* prompts that happen to share
 leading full blocks hit in the real engine and miss here. On RL workloads
 distinct problems almost certainly differ at token 0, and every weight update
-clears the hash map anyway, so this is second order -- but it only ever
+clears the hash map anyway, so this is second order. It only ever
 under-reports hits, never over-reports. See `docs/reference/limitations.md`.
 """
 
@@ -39,8 +39,8 @@ def block_count(req: "Request", block_size: int) -> int:
     """How many full blocks this request's current context covers.
 
     The length `block_hashes` would return for the whole context, without
-    building the list. Callers that only need the extent -- a bound on which
-    blocks are cacheable -- ask for this instead.
+    building the list. Callers that only need the extent, a bound on which
+    blocks are cacheable, ask for this instead.
     """
     return (req.prompt_len + req.generated) // block_size
 

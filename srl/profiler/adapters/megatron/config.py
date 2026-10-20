@@ -176,7 +176,7 @@ class MegatronBridgeConfig:
         hardware = HardwareDescriptor.from_dict(value["hardware"])
         # Inference only runs when the YAML leaves both fields unset. It raises for an
         # architecture the recipe table does not hold, and naming the recipe explicitly is
-        # the documented way out of that -- which only works if the override is consulted
+        # the documented way out of that, but it only works if the override is consulted
         # first. Both fields are required together: a family without a name, or the reverse,
         # would pair an override with an inferred half and resolve a recipe neither asked
         # for.

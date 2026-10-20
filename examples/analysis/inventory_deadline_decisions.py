@@ -8,7 +8,7 @@ delay to the training pipeline ever prefer DEFER, and how large is that delay re
 
 The design's whole claim is that the cap emerges from the model, so a losing regime should show the
 model *seeing* the cost and choosing differently. A losing regime that shows the model pricing every
-option as indistinguishable would instead mean the model cannot see the cost at all -- a different
+option as indistinguishable would instead mean the model cannot see the cost at all, a different
 diagnosis with a different fix. This measures which one it is, by registering a recording subclass
 of the strategy so the run goes through the ordinary construction path and every decision is
 recorded without being altered.
@@ -147,9 +147,9 @@ def main() -> None:
             print(f"{line}  admissions={strat.admission_decisions}  placed={strat.places}  waited={strat.waits}")
             print(
                 f"{'':16}admission decisions chose DEFER on "
-                f"{strat.admission_waits}/{strat.admission_decisions}; "
-                f"forced (no DEFER option): {strat.admission_forced}; "
-                f"defer wins vs eps: {strat.admission_defer_wins}/{len(strat.deltas)}; "
+                f"{strat.admission_waits}/{strat.admission_decisions}, "
+                f"forced (no DEFER option): {strat.admission_forced}, "
+                f"defer wins vs eps: {strat.admission_defer_wins}/{len(strat.deltas)}, "
                 f"fleet active at that moment: median={statistics.median(strat.concurrency_at_admission):.0f} "
                 f"p90={_pct(strat.concurrency_at_admission, 0.90):.0f}"
             )
@@ -160,8 +160,8 @@ def main() -> None:
                     f"{'':16}placing minus waiting, nearest-buffer E (s, >0 means waiting is "
                     f"cheaper): p10={_pct(strat.deltas, 0.10):+.3f} "
                     f"median={statistics.median(strat.deltas):+.3f} "
-                    f"p90={_pct(strat.deltas, 0.90):+.3f}; "
-                    f"waiting wins on {len(positives)}/{len(strat.deltas)} decisions; "
+                    f"p90={_pct(strat.deltas, 0.90):+.3f}, "
+                    f"waiting wins on {len(positives)}/{len(strat.deltas)} decisions, "
                     f"eps~{mean_eps:.3f}s"
                 )
         print()

@@ -2,7 +2,7 @@
 
 This is a state machine, not a cost model. It fits no coefficient, reads no
 artifact, and has no domain gate. `srl/cost/rollout/kv_cache.py` answers
-*how many blocks exist*; this package answers *who holds them and what can
+*how many blocks exist*. This package answers *who holds them and what can
 hit*. The only interface between the two is the `kv_blocks` integer.
 
 Every mutating method takes a `Recorder` (see `..undo`), because

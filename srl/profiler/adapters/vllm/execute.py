@@ -126,7 +126,7 @@ class _StartupGate:
             return True
         srl_logger.warning(
             f"[vllm-profile] Waited {self._timeout:.0f}s for a startup slot before "
-            f"{label}; launching it alongside the server still booting."
+            f"{label}. Launching it alongside the server still booting."
         )
         return False
 
@@ -170,15 +170,15 @@ def _run_vllm_job(
     released = threading.Event()
 
     def release_startup() -> None:
-        # Invoked on readiness and again when the shard exits; release exactly once.
+        # Invoked on readiness and again when the shard exits. Release exactly once.
         if holds_permit and not released.is_set():
             released.set()
             gate.release()
 
     srl_logger.info(
         f"[vllm-profile] Starting {label} on GPUs {','.join(job.gpu_ids)}"
-        f"{f' port {job.port}' if job.port is not None else ''}; "
-        f"logs: {job.log_path}"
+        f"{f' port {job.port}' if job.port is not None else ''}. "
+        f"Logs: {job.log_path}"
     )
     try:
         with job.log_path.open(log_mode) as log_handle:
@@ -315,7 +315,7 @@ def run_vllm_sweep(
     max_parallel: int | str | None = None,
     visible_devices: Sequence[str] | None = None,
 ) -> Path:
-    """Run one phase; retained as a compatibility wrapper."""
+    """Run one phase. Retained as a compatibility wrapper."""
     run_vllm_profiles(
         config,
         [phase],

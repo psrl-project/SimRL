@@ -1,7 +1,7 @@
 """GPU specifications backing speed-of-light latency and utility normalization.
 
 Utility is `SOL(shape, spec) / measured_latency`, so every number here scales every
-prediction made against that GPU. Values are vendor-published dense peaks; a kernel
+prediction made against that GPU. Values are vendor-published dense peaks, and a kernel
 reaching 60% of them is normal and a utility above ~1.2 means the SOL formula is
 missing work rather than that the hardware exceeded spec.
 """
@@ -182,7 +182,7 @@ def load_gpu_spec(slug: str, *, path: str | Path | None = None) -> GpuSpec:
     Load one GPU spec by slug.
 
     Args:
-        slug (str): Directory slug or raw device name; normalized via `gpu_slug`.
+        slug (str): Directory slug or raw device name. Normalized via `gpu_slug`.
         path (str | Path | None): Alternate specs YAML. Defaults to the bundled file.
 
     Returns:

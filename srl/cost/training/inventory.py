@@ -5,7 +5,7 @@ rather than assumed. For Qwen3-8B at TP1/PP1/DP8 the allocator reported
 `param_data` at 15.256 GiB and `grad_data` at 30.513 GiB: exactly `2p` and `4p`
 with no data-parallel division, while the fp32 master shard was 3.814 GiB, exactly
 `4p/DP`. The gradient buffer is the reduce-scatter *source*, so every rank holds it
-at full local size; only optimizer state is sharded.
+at full local size. Only optimizer state is sharded.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ def heaviest_stage_parameters(
     neither is a transformer layer. A uniform `parameter_count / (tp * pp)` therefore
     understates the stage that carries one of them, and peak memory is set by the
     worst stage. Measured at PP=4 on Qwen3-8B, the uniform assumption predicted
-    15.26 GiB of static state where the heaviest rank held 19.32 GiB; accounting for
+    15.26 GiB of static state where the heaviest rank held 19.32 GiB. Accounting for
     the embedding brings the prediction to 17.57 GiB.
 
     Tensor parallelism splits every tensor, including the embedding, so it divides the

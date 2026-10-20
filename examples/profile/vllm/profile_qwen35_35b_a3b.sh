@@ -7,7 +7,7 @@
 #   buys little per token. This 35B MoE has three properties that change that:
 #     * Only 3B parameters active per token (256 experts, 8 active): small active
 #       FLOP per token relative to the total weight footprint that TP must shard.
-#     * Only 10 of 40 layers are full-attention (every 4th); the other 30 are
+#     * Only 10 of 40 layers are full-attention (every 4th). The other 30 are
 #       linear/SSM, so the context-growth term is carried by a quarter of the stack.
 #     * num_kv_heads=2 with head_dim=256: KV cache is ~1/8 of Qwen3-8B's per token,
 #       so higher in-flight counts are feasible before admission throttles.

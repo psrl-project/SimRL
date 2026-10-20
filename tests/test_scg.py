@@ -21,7 +21,7 @@ from srl.simulator.config import SimResult
 def _make_request(rid: int, v_min: int, v_max: int, consume_version: int) -> Request:
     """Build a minimal consumed Request with the given staleness parameters."""
     req = Request(rid=rid, prompt_len=10, target_len=20, v_traj=v_min)
-    # staleness_true = consume_version - v_min; staleness_reported = consume_version - v_max
+    # staleness_true = consume_version - v_min. staleness_reported = consume_version - v_max
     # Simulate having generated tokens under v_min (and optionally v_max)
     req.add_tokens(v_min, 10)
     if v_max != v_min:
@@ -54,7 +54,7 @@ def test_scg_partial():
         + [_make_request(i + 6, 0, 0, 3) for i in range(4)]  # staleness 3
     )
     result = _make_result(reqs, 10.0)
-    # 6 x 10 tokens = 60 over 10 s; all 10 x 10 = 100 over 10 s
+    # 6 x 10 tokens = 60 over 10 s. All 10 x 10 = 100 over 10 s
     assert result.scg(1) == pytest.approx(6.0)
     assert result.scg(3) == pytest.approx(10.0)
     assert result.scg_count(1) == pytest.approx(0.6)

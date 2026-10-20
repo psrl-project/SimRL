@@ -103,14 +103,14 @@ def _nccl_call(op: str, tensor: Any, *, rank: int, world_size: int) -> Any:
     if op == "broadcast":
         return lambda: dist.broadcast(tensor, src=0)
     if op == "reduce_scatter":
-        # Input is world_size shards; output is this rank's reduced shard.
+        # Input is world_size shards. Output is this rank's reduced shard.
         shards = [torch.empty_like(tensor) for _ in range(world_size)]
         return lambda: dist.reduce_scatter(tensor, shards)
     if op == "all_gather":
         gathered = [torch.empty_like(tensor) for _ in range(world_size)]
         return lambda: dist.all_gather(gathered, tensor)
     if op == "p2p":
-        # Rank 0 sends to rank 1 and rank 1 receives; every other rank idles. Timed on
+        # Rank 0 sends to rank 1 and rank 1 receives, and every other rank idles. Timed on
         # rank 0, so only the send side is recorded, which is what a pipeline stage
         # boundary costs the upstream stage.
         peer = 1 % world_size
@@ -174,7 +174,7 @@ def _measure(
             nodes, where vLLM refuses the group, so only the control latency is recorded.
 
     Returns:
-        list[dict[str, Any]]: Rank 0's rows; empty on every other rank.
+        list[dict[str, Any]]: Rank 0's rows. Empty on every other rank.
     """
     rows: list[dict[str, Any]] = []
     warmup = int(spec["warmup_iterations"])

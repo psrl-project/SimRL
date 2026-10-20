@@ -13,7 +13,7 @@ SimRL 在某种*陈旧度策略*（staleness policy）下模拟 rollout/训练�
 本文位于 `docs/design/`，该目录不会进入 Sphinx 构建（`docs/conf.py:54`）；
 它是一份工作笔记，而不是已发布文档。
 
-简而言之：**引用最广泛的几个系统——verl 的同步模式、AReaL 和 SkyRL——都把陈旧度参数
+简而言之：**引用最广泛的几个系统（verl 的同步模式、AReaL 和 SkyRL）都把陈旧度参数
 实现为“尚未消费的工作量上限”，而不是“任一样本的年龄上限”。** 但这并非所有系统的共同
 做法。在所调研的十二个系统中，有七个确实实施了真正的逐样本年龄限制，其中一个
 （prime-rl）甚至会在生成尚未完成时，针对仍在进行中的工作实施该限制。这个设计空间
@@ -80,7 +80,7 @@ Trinity-RFT 这一行来自委派给其他 agent 的调查，本文如实保留�
 
 ### 4.1 共同结构
 
-引用最广泛的三个系统——AReaL、SkyRL 和 verl——都用同一类不等式控制准入；
+引用最广泛的三个系统（AReaL、SkyRL 和 verl）都用同一类不等式控制准入；
 OpenRLHF 则实现了它的退化形式。记：
 
 - $A(t)$：累计已准入且已完成的单元数；
@@ -256,7 +256,7 @@ self.staleness_samples = len(self.active_tasks) + await self.message_queue_clien
 如果队头恰好是新鲜样本，被丢弃的就会是该新鲜样本。
 
 在租约类系统中，verl 对参数语义的描述最诚实。`staleness_threshold: float = 0.1`，
-README 将其定义为“允许使用的陈旧样本的最大比例”——它表示比例，而不是年龄。
+README 将其定义为“允许使用的陈旧样本的最大比例”：它表示比例，而不是年龄。
 
 verl 在训练时同样不按年龄过滤。逐样本标签 `min_global_steps` /
 `max_global_steps` 在 `verl/trainer/ppo/v1/agent_loop_tq.py:191` 引入，注释写道：
@@ -291,12 +291,12 @@ if global_steps - prompt_global_steps.get(uid, global_steps) + 1 > self.max_off_
 这里的 `+1` 把准入当轮也算进去。若每个训练轮次只做一次更新，`drop` 的 staleness
 上限是 `max_off_policy_threshold - 1`。`parameter_sync_step > 1` 会在同一个
 `global_steps` 内连续做多次取样和更新，把 batch 拆成共用同一个版本的多个
-minibatch——它不会放大这个上限；把它折算进去后，保守上界是
+minibatch，它不会放大这个上限；把它折算进去后，保守上界是
 `parameter_sync_step * max_off_policy_threshold - 1`。
 
 `wait` 只在某个仍在生成的 group 达到阈值时阻塞取样（`replay_buffer.py:541-556`），
 给它留出完成的时间；已经完成、超过阈值的 group 永远不会被淘汰。本轮没取走的已完成
-group 并未丢失——下一轮取样会优先选择更早准入的 group，所以它会是下一轮第一个被
+group 并未丢失：下一轮取样会优先选择更早准入的 group，所以它会是下一轮第一个被
 取走的，此时它又多陈旧了一个版本。`wait` 自己的测试
 （`tests/trainer/ppo/v1/test_replay_buffer_on_cpu.py:676-691`）印证了这一点：在没有
 仍在生成的 group 时，一个已完成、超过阈值的 group 仍会被返回。
@@ -506,7 +506,7 @@ NeMo-RL（`NVIDIA-NeMo/RL`）把陈旧度暴露为可插拔策略。它使用一
 
 **真实系统的默认值是 `in_order`**（`single_controller_utils/config.py`：
 `sampler: SamplerConfig = Field(default_factory=InOrderSamplerConfig)`），不是
-`windowed`——这里需要明确说出来，因为 `windowed` 在 L1、L2、L3 三层都有动作，篇幅上
+`windowed`。这里需要明确说出来，因为 `windowed` 在 L1、L2、L3 三层都有动作，篇幅上
 得到的讨论最多，容易让人误以为它是默认值。
 
 其中，`in_order` 只表示流水线深度；`windowed` 则是纯年龄窗口，并提供显式的
@@ -555,7 +555,7 @@ queue 本身无界，所以一个已经在运行的 trajectory 仍能完成并�
 
 | 系统 | 参数 | 类型 | 支持小数 | 实际约束 | 执行方式 |
 |---|---|---|---|---|---|
-| slime | *无* | — | — | 流水线形状 | 结构性；版本只用作排序键 |
+| slime | *无* | 无 | 无 | 流水线形状 | 结构性；版本只用作排序键 |
 | OpenRLHF | `async_queue_size` | `int` = 1 | 否 | 未完成工作量 | 信号量；不记录版本 |
 | Trinity-RFT | `sync_offset`、`max_inflight_batches` | `int` = 0 / 2 | 否 | 深度 + 工作量 | 结构性；记录版本但不比较 |
 | AReaL | `max_head_offpolicyness` | `int` = 0 | 否 | 未消费工作量 | 信用租约；在 loss 中修正年龄；无 L2 |
@@ -595,7 +595,7 @@ prime-rl 和 NeMo-RL 的 `windowed` sampler 都会取消已经开始、但不可
 
 SimRL 的价值恰好体现在这里。响应式取消仍要支付取消点之前全部生成工作的成本；
 它只能减少沉没成本，不能消除沉没成本。若要在*准入时*判断哪些请求在完成时仍会新鲜，
-就需要预测完成时间分布——模拟器能够提供这种信息，而在线系统很难低成本获得。
+就需要预测完成时间分布，模拟器能够提供这种信息，而在线系统很难低成本获得。
 
 各系统明确给出了两种彼此冲突的设计理由：
 
@@ -609,7 +609,7 @@ SimRL 的价值恰好体现在这里。响应式取消仍要支付取消点之�
 
 上文调研的十二个系统中，有十一个现在在 `srl/policy/` 下都有对应的
 `StalenessPolicy`（`srl/policy/registry.py` 的 `POLICY_REGISTRY` 恰好列出十二项，
-但其中一项是 `psrl`——SimRL 自己的基线策略，并非被调研的外部系统，所以是
+但其中一项是 `psrl`，SimRL 自己的基线策略，并非被调研的外部系统，所以是
 “十二项注册，十一个调研系统”，不是“十二个调研系统都有”）。唯一的例外是
 Trinity-RFT：它在 synchroniser 层跟踪 `model_version`，却从不把版本附加到单条
 experience 上，因此没有逐样本的量可供策略挂钩（参见上文对它的“结构性”分类）。
@@ -621,14 +621,14 @@ experience 上，因此没有逐样本的量可供策略挂钩（参见上文对
   `accepted + running` 项，并声明不存在 L2。策略文档称它“不限制单个样本的年龄”是
   正确的；更准确的说法是，AReaL 中根本不存在任何逐样本年龄检查。
 - `RollPolicy` 的消费下限和由 `on_publish` 触发的 GC 对应真实的上游机制，并非模拟
-  中的自由发挥——包括 RLVR pipeline 配置强制要求的 `r >= 1.0` 下限，而这个模拟器
+  中的自由发挥，包括 RLVR pipeline 配置强制要求的 `r >= 1.0` 下限，而这个模拟器
   目前并未在自己构造 `RollPolicy` 时对此做断言。这也解释了为什么把 SCG 实验绑定到
   `policy=roll` 后，会暴露其他策略隐藏的浪费 token：ROLL 是本次调研中会丢弃过龄
   工作的几个系统之一，也是本项目最先实现的一个。
 - `DressagePolicy`（`srl/policy/dressage.py`）已经把窗口的 key 设为每个 group 最后
   一个可训练 token 的版本（`last_version = max(req.v_max for req in group)`），并且
   在每次 L3 丢弃时已经会发放一个补采样额度（`replacement_groups_on_drop` 返回
-  `len(groups)`）——这两点都与上文修正后的真实系统行为一致。本文此前的版本曾错误
+  `len(groups)`），这两点都与上文修正后的真实系统行为一致。本文此前的版本曾错误
   地认为 Dressage 丢弃后不会重采样；实际上它会，而这个策略在这次修正之前就已经正确
   建模了这一点。
 - 忠实的 **SkyRL** 策略应当是去掉 `+1` 的 `areal`，再加一个不改变行为的违规计数器；
@@ -639,7 +639,7 @@ experience 上，因此没有逐样本的量可供策略挂钩（参见上文对
   形状加准入水位，而不是任何版本比较。
 - `PrimeRLPolicy` 把一个固定的 inflight 上限与一个 dispatch-lag 准入闸门结合起来，
   再加上共享的 `CancelBelowVersion`/`VersionWindow` 原语，分别用于取消进行中任务和
-  清扫 ready pool——这正是本文过去认为“无法实现”的“租约加响应式取消”组合。
+  清扫 ready pool，这正是本文过去认为“无法实现”的“租约加响应式取消”组合。
 - 值得采用 prime-rl 把陈旧度拆分为生成时间与排队时间的做法，作为一个上报指标：它
   能区分“请求本身很慢”和“请求等待过久”，而当前单一的陈旧度数字把二者混在一起。
   `StalenessReport` 还没有做这个拆分。

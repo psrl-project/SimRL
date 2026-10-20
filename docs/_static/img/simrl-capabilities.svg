@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1046" viewBox="0 0 1600 1046" role="img"><title>What you can do with SimRL</title>
+<style>@font-face{font-family:"Kalam";src:url("../../../../blog/figure-style/fonts/Kalam-Regular.ttf");font-weight:400}@font-face{font-family:"Kalam";src:url("../../../../blog/figure-style/fonts/Kalam-Bold.ttf");font-weight:700}@font-face{font-family:"LXGW WenKai";src:url("../../../../blog/figure-style/fonts/LXGWWenKai-Regular.ttf");font-weight:400}@font-face{font-family:"LXGW WenKai";src:url("../../../../blog/figure-style/fonts/LXGWWenKai-Regular.ttf");font-weight:700}</style>
+<rect width="1600" height="1046" fill="#FFFFFF"/>
+<text x="60" y="90" font-size="54" font-weight="700" fill="#252B31"><tspan x="60.00" font-family="Kalam">What you can do with SimRL</tspan></text>
+<text x="60" y="129" font-size="30" font-weight="400" fill="#657079"><tspan x="60.00" font-family="Kalam">Simulate a framework, design a deployment, predict at runtime, research policies.</tspan></text>
+<rect x="60" y="150" width="720" height="400" rx="4.5" fill="#E8F1FC"/>
+<text x="88" y="205" font-size="36" font-weight="700" fill="#436B9E"><tspan x="88.00" font-family="Kalam">A</tspan></text>
+<text x="126" y="207" font-size="36" font-weight="700" fill="#252B31"><tspan x="126.00" font-family="Kalam">Simulate frameworks</tspan></text>
+<text x="88" y="254" font-size="28" font-weight="400" fill="#657079"><tspan x="88.00" font-family="Kalam">10+ RL systems, one control plane</tspan></text>
+<rect x="88" y="286" width="144" height="70" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="116.5" y="331.0" font-size="27" font-weight="400" fill="#252B31"><tspan x="116.50" font-family="Kalam">Dataset</tspan></text>
+<rect x="262" y="286" width="144" height="70" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="295.5" y="332.0" font-size="27" font-weight="400" fill="#252B31"><tspan x="295.50" font-family="Kalam">Rollout</tspan></text>
+<path d="M 237 321.0 Q 247.00 321.00 257 321.0" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 257 321.0 Q 250.49 324.73 243.98271230483525 328.45320206765604" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 257 321.0 Q 250.49 317.27 243.98271230483525 313.54679793234396" fill="none" stroke="#657079" stroke-width="2"/>
+<rect x="436" y="286" width="144" height="70" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="474.5" y="328.5" font-size="27" font-weight="400" fill="#252B31"><tspan x="474.50" font-family="Kalam">Queue</tspan></text>
+<path d="M 411 321.0 Q 421.00 321.00 431 321.0" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 431 321.0 Q 424.49 324.73 417.9827123048353 328.45320206765604" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 431 321.0 Q 424.49 317.27 417.9827123048353 313.54679793234396" fill="none" stroke="#657079" stroke-width="2"/>
+<rect x="610" y="286" width="144" height="70" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="654.0" y="331.0" font-size="27" font-weight="400" fill="#252B31"><tspan x="654.00" font-family="Kalam">Train</tspan></text>
+<path d="M 585 321.0 Q 595.00 321.00 605 321.0" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 605 321.0 Q 598.49 324.73 591.9827123048352 328.45320206765604" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 605 321.0 Q 598.49 317.27 591.9827123048352 313.54679793234396" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 86 436 Q 169.50 401.00 253 366" fill="none" stroke="#436B9E" stroke-width="3"/>
+<path d="M 253 366 Q 248.44 371.95 243.8759263998081 377.9059346940205" fill="none" stroke="#436B9E" stroke-width="3"/>
+<path d="M 253 366 Q 245.56 365.08 238.11348070569363 364.15838568091885" fill="none" stroke="#436B9E" stroke-width="3"/>
+<text x="86" y="476" font-size="24" font-weight="700" fill="#436B9E"><tspan x="86.00" font-family="Kalam">L1  Admission</tspan></text>
+<path d="M 314 436 Q 370.20 400.51 427 366" fill="none" stroke="#A2662D" stroke-width="3"/>
+<path d="M 427 366 Q 423.43 372.60 419.8588989356118 379.1910831847955" fill="none" stroke="#A2662D" stroke-width="3"/>
+<path d="M 427 366 Q 419.50 366.26 412.00898408177403 366.51907777788585" fill="none" stroke="#A2662D" stroke-width="3"/>
+<text x="314" y="474" font-size="24" font-weight="700" fill="#A2662D"><tspan x="314.00" font-family="Kalam">L2  Runtime</tspan></text>
+<path d="M 540 436 Q 570.88 401.33 601 366" fill="none" stroke="#387F70" stroke-width="3"/>
+<path d="M 601 366 Q 599.53 373.36 598.0669645718888 380.7104487755284" fill="none" stroke="#387F70" stroke-width="3"/>
+<path d="M 601 366 Q 593.91 368.46 586.8288848424464 370.9172650113" fill="none" stroke="#387F70" stroke-width="3"/>
+<text x="540" y="476" font-size="24" font-weight="700" fill="#387F70"><tspan x="540.00" font-family="Kalam">L3  Filtering</tspan></text>
+<text x="88" y="521" font-size="21" font-weight="400" fill="#657079"><tspan x="88.00" font-family="Kalam">verl · AReaL · SkyRL · ROLL · slime · OpenRLHF</tspan></text>
+<text x="88" y="551" font-size="21" font-weight="400" fill="#657079"><tspan x="88.00" font-family="Kalam">TRL · NeMo-RL · Dressage · prime-rl · PSRL</tspan></text>
+<rect x="820" y="150" width="720" height="400" rx="4.5" fill="#FFF1DA"/>
+<text x="848" y="205" font-size="36" font-weight="700" fill="#A2662D"><tspan x="848.00" font-family="Kalam">B</tspan></text>
+<text x="886" y="207" font-size="36" font-weight="700" fill="#252B31"><tspan x="886.00" font-family="Kalam">Design a deployment</tspan></text>
+<text x="848" y="254" font-size="28" font-weight="400" fill="#657079"><tspan x="848.00" font-family="Kalam">Pick the GPU split and the parallelism</tspan></text>
+<rect x="856" y="342" width="48" height="48" rx="4.5" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<rect x="915" y="342" width="48" height="48" rx="4.5" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<rect x="974" y="342" width="48" height="48" rx="4.5" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<rect x="1033" y="342" width="48" height="48" rx="4.5" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<rect x="1092" y="342" width="48" height="48" rx="4.5" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<rect x="1151" y="342" width="48" height="48" rx="4.5" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<rect x="1210" y="342" width="48" height="48" rx="4.5" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<rect x="1269" y="342" width="48" height="48" rx="4.5" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<rect x="850" y="332" width="292" height="68" rx="4.5" fill="none" stroke="#A2662D" stroke-width="3"/>
+<rect x="1149" y="332" width="178" height="68" rx="4.5" fill="none" stroke="#387F70" stroke-width="3"/>
+<text x="854" y="307" font-size="26" font-weight="700" fill="#A2662D"><tspan x="854.00" font-family="Kalam">rollout</tspan></text>
+<text x="1151" y="306" font-size="26" font-weight="700" fill="#387F70"><tspan x="1151.00" font-family="Kalam">training</tspan></text>
+<path d="M 850 428 Q 1084.00 427.46 1318 428" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 1318 428 Q 1311.49 431.73 1304.9827123048353 435.45320206765604" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 1318 428 Q 1311.49 424.27 1304.9827123048353 420.54679793234396" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 850 428 Q 856.51 424.27 863.0172876951648 420.54679793234396" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 850 428 Q 856.51 431.73 863.0172876951648 435.45320206765604" fill="none" stroke="#657079" stroke-width="2"/>
+<text x="854" y="459" font-size="22" font-weight="400" fill="#657079"><tspan x="854.00" font-family="Kalam">more GPUs here means fewer there</tspan></text>
+<text x="854" y="517" font-size="26" font-weight="700" fill="#657079"><tspan x="854.00" font-family="Kalam">rollout: TP</tspan></text>
+<text x="854" y="552" font-size="26" font-weight="700" fill="#657079"><tspan x="854.00" font-family="Kalam">training: TP · PP · DP · EP · CP</tspan></text>
+<rect x="60" y="596" width="720" height="400" rx="4.5" fill="#EAF4EF"/>
+<text x="88" y="651" font-size="36" font-weight="700" fill="#387F70"><tspan x="88.00" font-family="Kalam">C</tspan></text>
+<text x="126" y="653" font-size="36" font-weight="700" fill="#252B31"><tspan x="126.00" font-family="Kalam">Predict at runtime</tspan></text>
+<text x="88" y="700" font-size="28" font-weight="400" fill="#657079"><tspan x="88.00" font-family="Kalam">Load shifts, so scale the fleet</tspan></text>
+<rect x="104" y="762" width="160" height="92" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="120.5" y="815.5" font-size="27" font-weight="400" fill="#252B31"><tspan x="120.50" font-family="Kalam">live system</tspan></text>
+<rect x="340" y="762" width="250" height="92" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="360" y="807" font-size="27" font-weight="700" fill="#252B31"><tspan x="360.00" font-family="Kalam">forecast</tspan></text>
+<text x="360" y="843" font-size="23" font-weight="400" fill="#657079"><tspan x="360.00" font-family="Kalam">ETA · KV · step</tspan></text>
+<path d="M 270 808.0 Q 302.00 808.36 334 808.0" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 334 808.0 Q 327.49 811.73 320.9827123048353 815.4532020676561" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 334 808.0 Q 327.49 804.27 320.9827123048353 800.5467979323439" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 590.0 808.0 Q 596.00 808.00 602.0 808.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 612.0 808.0 Q 618.00 808.00 624.0 808.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 628.0 808.0 Q 628.00 814.00 628.0 820.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 628.0 830.0 Q 628.00 836.00 628.0 842.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 628.0 852.0 Q 628.00 858.00 628.0 864.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 628.0 874.0 Q 628.00 880.00 628.0 886.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 628.0 896.0 Q 628.00 902.00 628.0 908.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 628.0 918.0 Q 628.00 924.00 628.0 930.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 628.0 932.0 Q 622.00 932.00 616.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 606.0 932.0 Q 600.00 932.00 594.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 584.0 932.0 Q 578.00 932.00 572.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 562.0 932.0 Q 556.00 932.00 550.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 540.0 932.0 Q 534.00 932.00 528.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 518.0 932.0 Q 512.00 932.00 506.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 496.0 932.0 Q 490.00 932.00 484.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 474.0 932.0 Q 468.00 932.00 462.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 452.0 932.0 Q 446.00 932.00 440.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 430.0 932.0 Q 424.00 932.00 418.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 408.0 932.0 Q 402.00 932.00 396.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 386.0 932.0 Q 380.00 932.00 374.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 364.0 932.0 Q 358.00 932.00 352.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 342.0 932.0 Q 336.00 932.00 330.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 320.0 932.0 Q 314.00 932.00 308.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 298.0 932.0 Q 292.00 932.00 286.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 276.0 932.0 Q 270.00 932.00 264.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 254.0 932.0 Q 248.00 932.00 242.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 232.0 932.0 Q 226.00 932.00 220.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 210.0 932.0 Q 204.00 932.00 198.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 188.0 932.0 Q 186.00 932.00 184.0 932.0" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 184.0 932 Q 183.92 896.00 184.0 860" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 184.0 860 Q 187.73 866.51 191.45320206765604 873.0172876951648" fill="none" stroke="#A2662D" stroke-width="2"/>
+<path d="M 184.0 860 Q 180.27 866.51 176.54679793234394 873.0172876951648" fill="none" stroke="#A2662D" stroke-width="2"/>
+<text x="210.0" y="974" font-size="25" font-weight="700" fill="#A2662D"><tspan x="210.00" font-family="Kalam">move engines · change TP</tspan></text>
+<rect x="820" y="596" width="720" height="400" rx="4.5" fill="#FBECE9"/>
+<text x="848" y="651" font-size="36" font-weight="700" fill="#B75348"><tspan x="848.00" font-family="Kalam">D</tspan></text>
+<text x="886" y="653" font-size="36" font-weight="700" fill="#252B31"><tspan x="886.00" font-family="Kalam">Auto research</tspan></text>
+<text x="848" y="700" font-size="28" font-weight="400" fill="#657079"><tspan x="848.00" font-family="Kalam">Is kv-cache aware routing better here?</tspan></text>
+<rect x="1082.0" y="746" width="196" height="68" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="1104.5" y="787.0" font-size="25" font-weight="400" fill="#252B31"><tspan x="1104.50" font-family="Kalam">proposal agent</tspan></text>
+<rect x="918.0" y="898" width="196" height="68" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="932.5" y="939.0" font-size="25" font-weight="400" fill="#252B31"><tspan x="932.50" font-family="Kalam">validation agent</tspan></text>
+<rect x="1246.0" y="898" width="196" height="68" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="1268.5" y="939.0" font-size="25" font-weight="400" fill="#252B31"><tspan x="1268.50" font-family="Kalam">analysis agent</tspan></text>
+<path d="M 1134.5 822.2 Q 1056.2 857.0 1061.5 889.8" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 1061.485374085755 889.8428240180808 Q 1056.77 884.01 1052.0547679022075 878.1781908472161" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 1061.485374085755 889.8428240180808 Q 1064.13 882.82 1066.7710391534551 875.8049557756412" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 1126.0 932.0 Q 1180.0 977.4 1234.0 932.0" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 1234.0 932.0 Q 1231.41 939.04 1228.8264400738763 946.0795695136892" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 1234.0 932.0 Q 1226.62 933.33 1219.2387588970164 934.6656633507608" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 1298.5 889.8 Q 1303.8 857.0 1225.5 822.2" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 1225.485374085755 822.1571759819192 Q 1232.95 821.40 1240.4086048722081 820.6415299499388" fill="none" stroke="#657079" stroke-width="2"/>
+<path d="M 1225.485374085755 822.1571759819192 Q 1229.92 828.21 1234.3469153582018 834.2597825721012" fill="none" stroke="#657079" stroke-width="2"/>
+</svg>

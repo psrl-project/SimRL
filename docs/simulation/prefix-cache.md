@@ -50,7 +50,7 @@ problems almost always differ at token 0, and a weight update clears the hash ma
 - **Counters.** `queries` and `hits` count blocks, not tokens. `computed_blocks` walks a
   request's hashes and stops at the first miss, because a miss means content diverged and
   later blocks must not be reused. `peek_hit_tokens` answers the same question without
-  touching the counters; routing strategies and the forecast use it.
+  touching the counters. Routing strategies and the forecast use it.
 - **Full hits.** On a full hit the last block is handed back, so at least one token is still
   computed, because the model must run one token to produce logits. This fires whenever a
   prompt is a whole number of blocks.
@@ -91,7 +91,7 @@ hashes, so nothing can hit. It is a data state rather than a second code path.
 ## KV capacity
 
 `rollout.kv_blocks` is the pool size in blocks and the denominator of every reported
-`kv_cache_usage`. The default of 100000 is a placeholder; leave it and the simulated KV
+`kv_cache_usage`. The default of 100000 is a placeholder. Leave it and the simulated KV
 curve is not comparable with a measured one. Setting `rollout.kv_cache_sizing.model_path`
 replaces it with the capacity a real vLLM engine would allocate (`resolve_kv_blocks` in
 `srl/cli/main.py`):
@@ -99,7 +99,7 @@ replaces it with the capacity a real vLLM engine would allocate (`resolve_kv_blo
 | `probe` | Method | Needs a GPU |
 |---|---|---|
 | `true` (default) | `probe_kv_capacity` starts a real vLLM engine on a cache miss and reuses the answer, cached in `~/.cache/srl/kv_capacity.json` and keyed on the checkpoint fingerprint, TP, memory budget, `max_model_len`, dtype, GPU name, vLLM version, block size, `max_num_batched_tokens` and `max_num_seqs` | yes, on a miss |
-| `false` | arithmetic over `config.json` and the checkpoint's weight size (`kv_blocks_from_memory`); honest only for a dense model, because vLLM's peak activation and non-torch memory are measured at startup and a hybrid model's page alignment cannot be reconstructed | no |
+| `false` | arithmetic over `config.json` and the checkpoint's weight size (`kv_blocks_from_memory`). Honest only for a dense model, because vLLM's peak activation and non-torch memory are measured at startup and a hybrid model's page alignment cannot be reconstructed | no |
 
 The engine parameters are read from the run rather than configured twice:
 `max_model_len = job.max_prompt_length + job.max_output_length` (32768 when either is

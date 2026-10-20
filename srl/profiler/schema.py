@@ -88,7 +88,7 @@ class Parallelism:
         if self.ep > 1 and self.dp > 1 and self.world_size % expert_mesh:
             raise ProfileValidationError(
                 f"world_size ({self.world_size}) must be divisible by "
-                f"ep * pp ({self.ep} * {self.pp} = {expert_mesh}); "
+                f"ep * pp ({self.ep} * {self.pp} = {expert_mesh}). "
                 "Megatron derives expert data parallelism from that quotient."
             )
 
@@ -383,7 +383,7 @@ class RankMemory:
 
 
 # Pipeline schedule identifiers a training payload may carry. `1f1b` is Megatron's
-# interleaved-free pipeline schedule; `fsdp` marks a backend with no pipeline at all,
+# interleaved-free pipeline schedule. `fsdp` marks a backend with no pipeline at all,
 # where the schedule axis degenerates rather than taking another value.
 TRAINING_SCHEDULES = frozenset({"1f1b", "fsdp"})
 
@@ -494,7 +494,7 @@ class ProfileRecord:
     def __post_init__(self) -> None:
         if self.schema_version != SCHEMA_VERSION:
             raise ProfileValidationError(
-                f"Unsupported schema_version {self.schema_version!r}; expected {SCHEMA_VERSION!r}."
+                f"Unsupported schema_version {self.schema_version!r}. Expected {SCHEMA_VERSION!r}."
             )
         expected_type = "rollout" if isinstance(self.payload, RolloutPayload) else "training"
         if self.record_type != expected_type:

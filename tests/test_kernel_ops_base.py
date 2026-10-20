@@ -100,7 +100,7 @@ def test_ops_in_on_a_missing_directory_yields_nothing(isolated_registry, tmp_pat
 
 
 def test_ops_in_ignores_a_parquet_with_no_registered_op(isolated_registry, tmp_path):
-    """A stray table must not crash discovery; the coverage test in Task 9 catches real gaps."""
+    """A stray table must not crash discovery. The coverage test in Task 9 catches real gaps."""
     register_op(_FakeOp("known", "f"))
     (tmp_path / "known_perf.parquet").write_bytes(b"")
     (tmp_path / "mystery_perf.parquet").write_bytes(b"")
@@ -129,7 +129,7 @@ def test_the_registry_import_does_not_load_torch():
 
 
 def test_the_table_module_no_longer_exports_a_schema_type():
-    """TableSchema is absorbed into KernelOp; leaving an alias invites two sources of truth."""
+    """TableSchema is absorbed into KernelOp. Leaving an alias invites two sources of truth."""
     import srl.cost.kernel.table as table_module
 
     for name in (

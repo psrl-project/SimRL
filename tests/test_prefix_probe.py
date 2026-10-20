@@ -77,7 +77,7 @@ class TestParsing:
     def test_reads_the_prometheus_total_suffix(self):
         """Prometheus exposes a counter registered as `x` under the sample name
         `x_total`, so the scraped name differs from the registered one. This is
-        a real sample captured from a live vLLM 0.26 server; matching only the
+        a real sample captured from a live vLLM 0.26 server. Matching only the
         unsuffixed name made the reader report the counters as absent."""
         text = (
             'vllm:prefix_cache_queries_total{engine="0",model_name="Qwen3-8B"} 7445.0\n'

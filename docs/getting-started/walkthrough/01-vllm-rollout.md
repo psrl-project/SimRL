@@ -57,7 +57,7 @@ re-measuring.
 
 With several GPUs visible, TP=1 points are sharded across them and benchmarked concurrently,
 each shard with its own port, experiment directory, and scheduler log. The shards benchmark in
-parallel but boot at most `run.max_concurrent_startups` at a time (the example config sets 8;
+parallel but boot at most `run.max_concurrent_startups` at a time (the example config sets 8,
 the code default is 1), because simultaneous imports of torch, vLLM, and a checkpoint from
 shared storage can exceed `server_ready_timeout`.
 
@@ -79,7 +79,7 @@ thousands of independent (batch shape, latency) observations. That is why a shor
 fit a few coefficients well.
 
 Collection truncates a run at its first preemption. Once the KV cache fills, vLLM evicts a
-request and later re-prefills its prompt plus the tokens it had generated; from then on the
+request and later re-prefills its prompt plus the tokens it had generated. From then on the
 running requests no longer share one age, so `ctxsum` describes no later step. Keep
 `max-concurrency * (input + output)` inside the KV cache or the tail of that point is lost.
 
@@ -167,7 +167,7 @@ attention term applied to `prefill` and `mixed` steps and the decode term to `de
 `--validation-fraction` defaults to 0.0 for rollout fits, so `validation_metrics.n_samples:
 0` means nothing was held out and the MRE above is in-sample. Pass for example
 `--validation-fraction 0.2` for a split that is grouped by run, so repeats of one point
-cannot leak across it; on the same data that gave a held-out MRE of 1.958% over 8202 samples
+cannot leak across it. On the same data, this gave a held-out MRE of 1.958% over 8202 samples
 (the training MRE moves to 6.076% because the split changes what is trained on).
 {doc}`../../reference/validation` lists which models on this project have a genuine split.
 

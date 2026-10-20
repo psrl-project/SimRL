@@ -138,7 +138,7 @@ class StalenessPolicy(ABC):
         """Commit policy state when a staged group first reaches an instance.
 
         Called exactly once per prompt group, immediately after its first
-        response is placed. The whole group is admitted atomically; siblings
+        response is placed. The whole group is admitted atomically. Siblings
         may remain staged in the router until instance capacity is available.
         """
 

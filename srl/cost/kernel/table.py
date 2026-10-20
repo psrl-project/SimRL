@@ -78,7 +78,7 @@ class KernelTable:
             # unexplained model defect. Refusing is the only safe reading.
             raise KernelCoverageError(
                 f"Perf table {source} is missing columns: {', '.join(missing)}. The table "
-                f"predates the current {op.name!r} schema; re-measure it with "
+                f"predates the current {op.name!r} schema. Re-measure it with "
                 f"`srl-profile kernels run --family {op.family}` rather than reading it "
                 f"with assumed values."
             )

@@ -3,7 +3,7 @@ The dense Llama-style family: four fused projections plus a vocabulary projectio
 
 These four shapes are what an inference engine runs, not what HuggingFace declares. HF keeps
 `q_proj`, `k_proj`, and `v_proj` separate and `gate_proj`/`up_proj` separate, giving seven 2-D
-weights per layer; vLLM fuses them into `QKVParallelLinear` and `MergedColumnParallelLinear`,
+weights per layer. vLLM fuses them into `QKVParallelLinear` and `MergedColumnParallelLinear`,
 giving four. Verified against both local checkpoints: summing HF's row counts reproduces these
 `n` values exactly, so this is the engine's shape rather than an approximation of HF's.
 
@@ -138,7 +138,7 @@ class DenseLlamaFamily:
 DENSE_LLAMA_FAMILY = DenseLlamaFamily()
 
 # Every architecture here was checked against its real module graph, or shares a block shape with
-# one that was. Qwen3 and Qwen2 are verified on local checkpoints; Llama and Mistral run the same
+# one that was. Qwen3 and Qwen2 are verified on local checkpoints. Llama and Mistral run the same
 # dense gated pre-norm block.
 for _architecture in (
     "Qwen3ForCausalLM",

@@ -47,7 +47,7 @@ architecture, not of a topology choice.
 `profile_flashinfer_attention` now detects this, warns, and skips the generation phase
 rather than letting it abort the sweep after the context phase has already been measured.
 No FlashInfer `generation_attention` table exists for this model, and a query against one
-raises a coverage error — which is the honest outcome. It costs the cost model nothing:
+raises a coverage error, which is the honest outcome. It costs the cost model nothing:
 **vLLM's own selector picks `FLASH_ATTN` on this H20 regardless**, so the `vllm` rows are
 the kernels a real server runs, and those are what `AttentionQuery` reads by default. The
 FlashInfer context table is still measured and is still only a "what would a backend switch
@@ -55,7 +55,7 @@ buy" diagnostic.
 
 **No `q_norm`/`k_norm`.** `_has_qk_layernorm` returns False for a Qwen2 config, so the
 elementwise grid omits the two narrow per-head RMSNorm kernels Qwen3 pays for. Nothing to
-configure; it falls out of the checkpoint.
+configure. It falls out of the checkpoint.
 
 ## Kernel profiling
 
@@ -65,7 +65,7 @@ TP=2 bash examples/profile/kernel/profile_deepseek_r1_distill_qwen_14b.sh all
 ```
 
 Configs: `kernel/deepseek_r1_distill_qwen_14b_h20_tp{1,2}.yaml`. TP1 carries the rollout
-families; TP2 adds `attention_training` and `optimizer`, because tp=2 is the degree the
+families. TP2 adds `attention_training` and `optimizer`, because tp=2 is the degree the
 training sweep runs at. One `collective` sweep covers world sizes 2, 4 and 8 from its own
 `topologies` block, so there are no tp=4/tp=8 configs.
 
@@ -75,12 +75,12 @@ adjustment despite the larger model.
 
 Three grids are model-specific and must stay in sync with the training sweep:
 
-- `attention_training.num_heads: [5, 10, 20, 40]` — the per-rank query head counts this
+- `attention_training.num_heads: [5, 10, 20, 40]`, the per-rank query head counts this
   model's 40 heads actually produce at tp=8/4/2/1. Not the powers of two a 32-head model
-  gives; listing 32 or 16 would write rows keyed on a head count no query can reach.
+  gives. Listing 32 or 16 would write rows keyed on a head count no query can reach.
 - `optimizer.param_counts` includes `1651673088` and `2040956928`, the two shards the
-  tp=2/pp=4 mesh really produces. A pipeline does not split parameters evenly — the first
-  and last stages also carry the embedding and LM head — so dividing 14.77B by 8 gives
+  tp=2/pp=4 mesh really produces. A pipeline does not split parameters evenly: the first
+  and last stages also carry the embedding and LM head, so dividing 14.77B by 8 gives
   1.846B, a count **no rank has**. Both values were read from
   `rank_memory[].local_parameter_count` in a profiled run.
 - `gemm.token_counts` (tp2) lists the non-power-of-two packed totals the THD grid reaches,
@@ -88,23 +88,23 @@ Three grids are model-specific and must stay in sync with the training sweep:
 
 ### Holdout gate, TP1, `--fraction 1.0`
 
-Reported at full fraction deliberately; see `kernel/README.md` on why `--fraction 0.2`
+Reported at full fraction deliberately. See `kernel/README.md` on why `--fraction 0.2`
 flatters the surface. The `vllm` rows are the ones the cost model reads.
 
 | op | backend | points | MRE | p90 | Qwen3-8B MRE |
 |---|---|---|---|---|---|
 | `gemm` | vllm | 104 | **3.21%** | 8.94% | 3.91% |
-| `all_gather` | vllm | 96 | 3.42% | 8.31% | — |
-| `broadcast` | vllm | 96 | 4.25% | 9.77% | — |
-| `reduce_scatter` | vllm | 96 | 4.57% | 13.58% | — |
+| `all_gather` | vllm | 96 | 3.42% | 8.31% | n/a |
+| `broadcast` | vllm | 96 | 4.25% | 9.77% | n/a |
+| `reduce_scatter` | vllm | 96 | 4.57% | 13.58% | n/a |
 | `all_reduce` | vllm | 96 | 5.20% | 12.52% | 6.01% (tp2) |
 | `elementwise` | vllm | 65 | 5.29% | 16.40% | 5.01% |
 | `context_attention` | vllm | 59 | 6.15% | 19.48% | 5.74% |
 | `generation_attention` | vllm | 72 | 8.73% | 22.88% | 6.63% |
 | `context_attention` | flashinfer | 59 | 8.94% | 26.33% | 9.87% |
-| `generation_attention` | flashinfer | — | n/a (group_size 5) | — | 6.01% |
+| `generation_attention` | flashinfer | n/a | n/a (group_size 5) | n/a | 6.01% |
 
-The surface tracks the Qwen3-8B baseline op for op; GEMM is better. Every dispatched
+The surface tracks the Qwen3-8B baseline op for op, and GEMM is better. Every dispatched
 collective is inside or near the 5% gate. The two attention rows above it are the same ones
 `kernel/README.md` already documents as above target there, with the same cause (grid
 density at small shapes against a dispatch floor), so this is not a new regression. The
@@ -166,11 +166,11 @@ measures to. Measured peak is 52 GiB of a 95 GiB card.
 `infer_bridge_recipe` previously knew only Qwen3 and computed its recipe name as
 `f"qwen3_{round(params / 1e9)}b"`. That arithmetic names recipes that do not exist:
 Megatron-Bridge spells sub-billion sizes `600m` and `1p7b`, and it ships `qwen25_14b` but no
-`qwen2_14b`, so a 14.77B Qwen2 checkpoint would have resolved to a `qwen2_15b` nobody wrote
-— failing inside the torchrun child, after the candidate had already paid for distributed
+`qwen2_14b`, so a 14.77B Qwen2 checkpoint would have resolved to a `qwen2_15b` nobody wrote,
+failing inside the torchrun child, after the candidate had already paid for distributed
 setup. It is now an explicit table keyed on `model_type` with an 8% size tolerance, and
 `model_family_name` / `model_recipe_name` in the YAML override it (both together, or
-neither). This checkpoint resolves to `qwen25_14b`; Qwen3-8B still resolves to `qwen3_8b`.
+neither). This checkpoint resolves to `qwen25_14b`, and Qwen3-8B still resolves to `qwen3_8b`.
 
 Qwen2 and Qwen2.5 share one HuggingFace `model_type` and nothing in `config.json` separates
 them, so size is the only discriminator. That is sufficient here: the two generations'
@@ -198,7 +198,7 @@ srl-regress training --latency-model hydraulis --memory-model hydraulis \
     --output outputs/cost/deepseek_r1_distill_qwen_14b/training_hydraulis.json
 ```
 
-All 24 candidates succeeded; none OOM'd, so `allow_incomplete: true` was not exercised.
+All 24 candidates succeeded. None OOM'd, so `allow_incomplete: true` was not exercised.
 
 | | 14B TP2/PP4 | Qwen3-8B TP2/PP3 |
 |---|---|---|
@@ -220,8 +220,8 @@ Both coefficients are larger than the 8B fit's, in the right direction but by mo
 FLOP counting alone predicts. PP4 against PP3 puts the same 12 layers on a stage in both
 cases, so the per-stage work ratio comes from width only: 1.43x for the linear projections
 and 1.25x for attention. Measured, `token_cost` is 1.80x and the quadratic 2.00x. The gap is
-unexplained here and worth knowing before these coefficients are read as physical constants
-— plausible causes are lower kernel efficiency at this model's shapes and the full-recompute
+unexplained here and worth knowing before these coefficients are read as physical constants.
+Plausible causes are lower kernel efficiency at this model's shapes and the full-recompute
 forward being charged differently, but neither was isolated. What the numbers do support is
 the fit's conditioning and its in-domain accuracy, not a claim that the coefficients are
 transferable across architectures.
@@ -248,11 +248,11 @@ topology.
 **The tp=1 decode tail will truncate, and that is expected.** 27.5 GiB of weights plus
 0.1875 MiB per KV token leaves about 309k tokens at `gpu-memory-utilization: 0.9`, where
 `max-concurrency: 64` at 1024 + 8192 wants 590k. Collection truncates such a point at its
-first preemption and warns with the run name and dropped step count; the retained prefix
+first preemption and warns with the run name and dropped step count. The retained prefix
 stays valid because every request in it still shares one age, which is what `ctxsum`
 assumes. Treat the concurrency-64 decode row as covering fewer context values than the
 concurrency-16 row rather than as an equal sample. Qwen3-8B reaches 501k on the same grid,
-so it crosses the same boundary later — a difference of degree, not a new failure mode.
+so it crosses the same boundary later, a difference of degree, not a new failure mode.
 
 At tp=2 the pooled cache reaches about 767k tokens and no truncation is expected. A dropped
 -step warning there is a finding about that topology, not the known tp=1 limit.
@@ -271,7 +271,7 @@ and dropped 560, 3457 and 4899, and at tp=2 nothing truncated at all.
 ### End-to-end validation: `kernels validate`
 
 The holdout gate asks whether single-kernel interpolation is self-consistent. This asks the
-harder question — whether summing those kernels reproduces a real vLLM engine iteration.
+harder question of whether summing those kernels reproduces a real vLLM engine iteration.
 Run with `--min-samples 1` so prefill and mixed are scored rather than dropped, and against
 the `vllm` rows, which are the kernels the server actually ran.
 
@@ -283,7 +283,7 @@ the `vllm` rows, which are the kernels the server actually ran.
 
 TP1 lands in the same band as the Qwen3-8B reference, prefill better and decode marginally
 worse. Median ratios are 0.99-1.02 at TP1, so the composed model is not biased in either
-direction — the error is spread, not a systematic offset.
+direction. The error is spread, not a systematic offset.
 
 TP2 is 1.2-3x worse per phase, with median ratios drifting to 0.96 on prefill and mixed: a
 slight *under*-prediction. The likely cause is that TP2 adds a per-layer `all_reduce` to
@@ -303,8 +303,8 @@ srl-regress rollout --model psrl \
 # distserve additionally needs --hidden-size 5120 --intermediate-size 13824
 ```
 
-Replaying every one of the ~49k measured iterations back through `predict()` — not the
-fitter's own self-report — gives per-phase MRE:
+Replaying every one of the ~49k measured iterations back through `predict()`, not the
+fitter's own self-report, gives per-phase MRE:
 
 | model | prefill | decode | mixed |
 |---|---|---|---|
@@ -321,9 +321,9 @@ Qwen3-8B's psrl baseline is 5.16% overall, so TP1 here is better and TP2 compara
 control. Their reported `r_squared` is 0.28 with a *lower* MRE of 2.45%, which looks like a
 contradiction and is the tell: a handful of very expensive steps dominate the sum of squares
 while the bulk of cheap decode steps dominate the mean relative error. The ~50% prefill
-error is the mechanism — `A_p` fits to 3.58e-07 against the 8B's 3.40e-08, a factor of 10.5
-— and it bites on the 65536-token chunked-prefill steps, which really do take 7.5 s at TP2
-(verified against the raw records; the model under-predicts them at 3.8 s rather than
+error is the mechanism. `A_p` fits to 3.58e-07 against the 8B's 3.40e-08, a factor of 10.5,
+and it bites on the 65536-token chunked-prefill steps, which really do take 7.5 s at TP2
+(verified against the raw records. The model under-predicts them at 3.8 s rather than
 inventing a large number). `distserve` shares roofline's prefill term and so shares the
 failure, byte for byte.
 
@@ -365,7 +365,7 @@ The first local attempt at the TP2 sweep OOM'd, and the cause was another sessio
 Qwen3.5-35B-A3B on GPUs 0-3 of the same host. The TP1 collective tables and the TP2 GEMM
 table from that window were **discarded and re-measured**, because a kernel timing taken
 beside someone else's model is contention rather than hardware, and nothing in the output
-would have said so — the tables would simply have been slow.
+would have said so. The tables would simply have been slow.
 
 `nvidia-smi` alone is not enough when a sweep is between points and the GPU reads idle.
 Check for live compute processes:

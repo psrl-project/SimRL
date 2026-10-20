@@ -130,7 +130,7 @@ class TrainingCostConfig:
     # Token budget per rank for the token_budget mode. verl's default is 10240.
     max_tokens_per_rank: int | None = None
     # Which profiled FSDP mesh to answer for. A cell is a measurement of one mesh, so an
-    # artifact spanning several shard degrees cannot infer the choice; null lets a
+    # artifact spanning several shard degrees cannot infer the choice. Null lets a
     # single-mesh artifact infer it. parallelism.dp must equal shard * replicate.
     shard_size: int | None = None
     replicate_size: int | None = None
@@ -264,17 +264,15 @@ class RouterConfig:
     `small_id` is arrival order, and it is the default because it is the only
     one of the three that does not make the result depend on how much of the
     dataset happens to be staged. A length key reorders the queue, so widening
-    ingress changes which request is placed: measured over staged widths of
-    3, 8 and 32 batches under `short_length`, the mean prompt length of the
-    first 48 admissions moved 92.5 -> 86.7 -> 85.0. The length keys remain
-    available for studying that effect deliberately.
+    ingress changes which request is placed. The length keys remain available
+    for studying that effect deliberately.
     """
     queue_window: int = 32
     """Queued requests a ranking strategy chooses among per placement.
 
     Only a strategy implementing `rank_queued` reads it. The default keeps the
-    cost of a placement bounded when a backlog reaches several hundred requests;
-    a strategy ordering the whole backlog needs it at least that wide.
+    cost of a placement bounded when a backlog reaches several hundred requests.
+    A strategy ordering the whole backlog needs it at least that wide.
     """
     max_concurrent_seqs_per_instance: int = 0
     """Router-side cap on requests one instance may hold. 0 disables the gate.
@@ -317,7 +315,7 @@ class RolloutConfig:
 
     Defaults to True because real vLLM does: a default that disagrees with the
     simulated system is a silent bias. Turning it off leaves the pool doing
-    block accounting and simply records no hashes, so nothing can hit; it is a
+    block accounting and simply records no hashes, so nothing can hit. It is a
     data state rather than a second code path.
     """
     max_concurrency: int | None = None

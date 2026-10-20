@@ -58,7 +58,7 @@ class _FloorProbeOp:
         return SolComponents(math_s=0.0, memory_s=coords[0] * 1e-15, floor_s=floor_s)
 
     def parse_sweep(self, value: dict[str, Any]) -> Any:
-        """Reject sweeps; this op is never measured on a GPU."""
+        """Reject sweeps. This op is never measured on a GPU."""
         raise NotImplementedError("floor_probe is a test fixture and has no sweep.")
 
     def table_columns(self) -> tuple[str, ...]:
@@ -66,7 +66,7 @@ class _FloorProbeOp:
         return self.slice_columns + self.axis_columns + ("latency_s",)
 
     def measure(self, model: Any, config: Any, *, writer_factory: Any) -> tuple[Any, ...]:
-        """Reject measurement; this op is never measured on a GPU."""
+        """Reject measurement. This op is never measured on a GPU."""
         raise NotImplementedError("floor_probe is a test fixture and is never measured.")
 
 

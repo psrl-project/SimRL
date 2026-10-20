@@ -11,8 +11,8 @@ Measured on H20 for Qwen3-8B at tp=2 (16 query heads, 4 KV heads, head_dim 128):
 | 12288 | 4.556 ms | 7.540 ms | 1.65 |
 | 22528 | 15.113 ms | 24.058 ms | 1.59 |
 
-Two differences compound. The rollout table is vLLM's own prefill kernel over a BSHD batch;
-training runs `DotProductAttention(qkv_format="thd")` over one packed row with `cu_seqlens`.
+Two differences compound. The rollout table is vLLM's own prefill kernel over a BSHD batch.
+Training runs `DotProductAttention(qkv_format="thd")` over one packed row with `cu_seqlens`.
 And the rollout sweep's grid is `(batch_size, seq_len)` where a packed training microbatch is
 always `batch_size=1` with `seq_len` equal to the whole pack, so every training query landed
 at the edge of the measured surface.
@@ -41,7 +41,7 @@ mandatory for THD (plain `causal` raises) and selects a different kernel path.
 
 **A `.post1` wheel silently disables the whole thing**, which is how this was nearly
 mismeasured a second time. TE reads flash-attn's version from package metadata and gates on
-`required <= version <= max`; PEP 440 orders `2.8.3.post1` *above* `2.8.3`, so a wheel
+`required <= version <= max`. PEP 440 orders `2.8.3.post1` *above* `2.8.3`, so a wheel
 matching the upper bound exactly is rejected as too new and TE falls back to
 `UnfusedDotProductAttention` without raising. The first measurement of this op ran on that
 fallback. `adapters/megatron/launch.py:_normalize_flash_attn_version` is the existing fix and
@@ -58,7 +58,7 @@ from ..sol import SolComponents
 from .base import register_op
 
 # Mask types THD supports. `padding_causal` is what Megatron passes and what TE requires for
-# a packed layout; `padding` covers a non-causal pack. Plain `causal` is absent because
+# a packed layout. `padding` covers a non-causal pack. Plain `causal` is absent because
 # `DotProductAttention.forward` asserts against it when `qkv_format="thd"`.
 TRAINING_MASK_TYPES: tuple[str, ...] = ("padding_causal", "padding")
 
@@ -238,7 +238,7 @@ class TrainingAttentionBackwardOp(_TrainingAttentionOp):
 
     @property
     def flop_multiplier(self) -> float:
-        """Return the backward's work relative to the forward; measured ratio 2.24-2.42."""
+        """Return the backward's work relative to the forward. Measured ratio 2.24-2.42."""
         return _BACKWARD_FLOP_MULTIPLIER
 
 

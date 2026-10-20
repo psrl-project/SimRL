@@ -63,7 +63,7 @@ class TrainingCandidate:
                 "global_batch_size must equal MBS * DP * num_microbatches, "
                 f"got {self.global_batch_size} != {expected}."
             )
-        # Only BSHD gives each sequence its own padded row; a THD pack is one sample.
+        # Only BSHD gives each sequence its own padded row. A THD pack is one sample.
         if self.packing != "thd" and len(self.sequence_shape) != self.micro_batch_size:
             raise ProfileValidationError(
                 "sequence_shape must contain one length per microbatch sequence."
@@ -150,8 +150,8 @@ def enumerate_training_candidates(
         expert_parallel_sizes: Expert-parallel degrees for a mixture-of-experts block.
             Leave None for `[1]`, which is the only valid value for a dense model.
 
-            EP does not consume ranks of its own -- Megatron carves the expert groups out
-            of the data-parallel dimension -- so it never changes `mesh_size`. It does
+            EP does not consume ranks of its own (Megatron carves the expert groups out
+            of the data-parallel dimension), so it never changes `mesh_size`. It does
             change the experts each rank owns and the all-to-all volume, which is why it
             is a cell key rather than a free dimension. Megatron requires `ep * pp` to
             divide the mesh (the launcher pins expert tensor parallelism to 1), and a combination that does not is dropped here rather

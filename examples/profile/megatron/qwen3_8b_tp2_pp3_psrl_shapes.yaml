@@ -14,7 +14,7 @@
 # coefficients under-predict one by a third and over-predict the other.
 #
 # What has already been ruled out:
-#   - artifact choice: BSHD vs THD was a real bug, fixed; THD took loopback from
+#   - artifact choice: BSHD vs THD was a real bug, fixed. THD took loopback from
 #     +60.1% to +1.9%, and left baseline at -32.5%.
 #   - unfused attention: the `raw/` tree is fused (collect+refit reproduces the
 #     shipped coefficients to four significant figures).
@@ -30,14 +30,14 @@
 #
 # So the profiler and PSRL disagree about throughput at a shape the profiler has
 # already measured. The existing sweep only ever measured 4096, 12288, 20648 and
-# 22528 tokens per microbatch; the ~9.5-10k band both runs actually live in was
+# 22528 tokens per microbatch. The ~9.5-10k band both runs actually live in was
 # always reached by interpolation. This config measures that band directly, at
 # the microbatch counts the runs really use.
 #
 # Acceptance, registered before measuring. At nmb=64, tok/mb=9476, 1 seq:
 #   - if the profiler reproduces ~183 us/token, the fitted form is interpolating
 #     across a real non-linearity between 4096 and 12288, and the fix is these
-#     points plus possibly a different token term;
+#     points plus possibly a different token term.
 #   - if it reproduces ~123 us/token, the profiler and PSRL genuinely differ at
 #     an identical shape, the cost model is not at fault, and the next step is to
 #     instrument PSRL's `update_actor` directly rather than profile further.
@@ -77,7 +77,7 @@ search_space:
   tensor_parallel_sizes: [2]
   pipeline_parallel_sizes: [3]
   data_parallel_sizes: [1]
-  # 64 is the baseline's real count; 4 anchors the cheap end so a slope through
+  # 64 is the baseline's real count. 4 anchors the cheap end so a slope through
   # the new token band is measurable without paying for 64 microbatches twice.
   # 256 is the loopback's real count and the only point outside the old sweep.
   num_microbatches: [4, 64, 256]

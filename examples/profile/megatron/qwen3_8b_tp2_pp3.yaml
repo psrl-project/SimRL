@@ -52,7 +52,7 @@ environment:
 # sequence length while the fitted form is linear plus a quadratic token term,
 # covering 11264 outright is worth the two extra candidates.
 # The baseline itself runs 64 microbatches, which is what
-# qwen3_8b_tp2_pp3_nmb64.yaml measures; collect both into this tree so the fit
+# qwen3_8b_tp2_pp3_nmb64.yaml measures. Collect both into this tree so the fit
 # sees {1, 4, 64} and the real count is in-domain rather than an 11x stretch.
 search_space:
   tensor_parallel_sizes: [2]

@@ -267,7 +267,7 @@ def _plot_phase_curves(
     ax.set_xlabel(x_name)
     ax.set_ylabel("latency_s")
     ax.set_title(
-        f"{phase}: x={x_name}, y=actual latency; "
+        f"{phase}: x={x_name}, y=actual latency, "
         "fitted lines grouped by request_count"
     )
     ax.grid(True, alpha=0.25)

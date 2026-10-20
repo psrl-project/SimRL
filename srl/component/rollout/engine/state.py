@@ -66,7 +66,7 @@ class InstanceLoad:
 
     What a TP-aware routing strategy ranks on. Carried on the load snapshot rather
     than looked up from a plan so a strategy stays a pure function of what it is
-    shown, and so instance -- not group -- is the unit of placement.
+    shown, and so instance, not group, is the unit of placement.
     """
 
     @property

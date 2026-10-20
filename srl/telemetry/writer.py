@@ -1,7 +1,7 @@
 """High-level, schema-owning telemetry writer for one simulation run.
 
-`Simulator` should never format a JSONL record or pick a stream name itself;
-it just calls the methods below with the values it already computed. This
+`Simulator` should never format a JSONL record or pick a stream name itself.
+It just calls the methods below with the values it already computed. This
 class owns:
 
 - the four stream schemas (`instance/*`, `rollout_step`, `train`, `request`),

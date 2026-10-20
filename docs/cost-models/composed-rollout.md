@@ -43,13 +43,13 @@ rollout_cost:
 | field | meaning |
 |---|---|
 | `parallelism.tp` | Tensor-parallel degree of the simulated engine. `ComposedRollout` raises if it disagrees with the degree its `ModelOps` was built for, because `ModelOps` decides both the sharded GEMM shapes and whether a communication term is emitted. `pp`, `dp` and `cp` are accepted and unused. |
-| `kernel_table_root` | The directory that **contains** `kernel/`; tables resolve at `{kernel_table_root}/kernel/{gpu}/`. |
+| `kernel_table_root` | The directory that **contains** `kernel/`. Tables resolve at `{kernel_table_root}/kernel/{gpu}/`. |
 | `gpu` | GPU slug selecting the subdirectory. It must match the recorded device. |
 | `model_path` | HuggingFace checkpoint. The architecture is read here to derive each step's GEMM shapes, head counts and, for a hybrid model, its layer kinds. |
 | `attention_backend` | `vllm`, `flashinfer`, or empty. Empty uses the database default, the backend vLLM's own selector picks, which is what a server ran. Overriding it compares against kernels that never ran. |
 | `utility_surface` | `pchip` (default) or `shepard`. |
 | `decode_integration_stride` | Steps between lattice nodes in the decode segment integrator. |
-| `saturation_step_threshold` | Per-request KV depth at which the closed-form decode advance is enabled. The default disables it; see below. |
+| `saturation_step_threshold` | Per-request KV depth at which the closed-form decode advance is enabled. The default disables it. See below. |
 
 `kernel_table_root`, `gpu` and `model_path` are required. The example script wires this from
 `ROLLOUT_MODEL=composed`, `KERNEL_ROOT`, `GPU` and `MODEL_PATH`.
@@ -73,11 +73,11 @@ step = sum over projections   (layers * gemm latency)              # plus the lo
   charges launch floor per tiny GEMM and is badly wrong in the other direction.
 - **Attention.** `context_attention` and `generation_attention` are queried per layer, and each
   is multiplied by its **own** layer count. A dense model has `attention_layers = num_layers` and
-  `gdn_layers = 0`; a hybrid model such as Qwen3.5-35B-A3B runs softmax attention on 10 of its 40
+  `gdn_layers = 0`. A hybrid model such as Qwen3.5-35B-A3B runs softmax attention on 10 of its 40
   layers and a gated delta net on the other 30, and charging all 40 as one kind is a fourfold
   error either way. The per-layer cost is
-  - for prefill: `batch_size = prefill_ctx^2 / sum_l2`, `seq_len = sum_l2 / prefill_ctx`;
-  - for decode: `batch_size = request_count`, `step = ctxsum / request_count`;
+  - for prefill: `batch_size = prefill_ctx^2 / sum_l2`, `seq_len = sum_l2 / prefill_ctx`.
+  - for decode: `batch_size = request_count`, `step = ctxsum / request_count`.
   - for a mixed step: both terms, summed.
 - **Mean-extent rule.** `sum_l2` is the sum of squared attention extents and `prefill_ctx` their
   plain sum, so the prefilling set's weighted mean extent is `sum_l2 / prefill_ctx` and its count
@@ -87,7 +87,7 @@ step = sum over projections   (layers * gemm latency)              # plus the lo
 - **Collectives.** At `tp > 1`, `ModelOps.comm_queries` adds two all-reduces per layer, after the
   attention output projection and after the MLP down projection, with the message sized
   `tokens * hidden * dtype bytes`. They are priced from the `vllm` table, which times vLLM's own
-  dispatcher; `nccl` is the control. At `tp = 1` the query list is empty. See
+  dispatcher. `nccl` is the control. At `tp = 1` the query list is empty. See
   {doc}`../profiling/tensor-parallel`.
 - **GDN.** Priced separately from softmax attention because its cost function is different: the
   chunked prefill is varlen and linear in the packed token total, and the recurrent decode has no
@@ -103,7 +103,7 @@ step = sum over projections   (layers * gemm latency)              # plus the lo
 **Elementwise is measured but not summed.** Rope, norms, activations and `tensor_plumbing` have a
 perf table, and `ComposedRollout` deliberately does not add them. The measured GEMM and attention
 latencies were collected from a real server whose elementwise kernels ran between them, so that
-wall-clock time is already absorbed into the fitted utility values; adding a separate term would
+wall-clock time is already absorbed into the fitted utility values. Adding a separate term would
 double-count it. The table exists for `ComposedTraining`, which runs without CUDA graphs and
 therefore pays the cost genuinely. A test pins the omission, and the fuzzier argument for it is
 that adding the term has been observed to move every phase's error and every median ratio away
@@ -112,7 +112,7 @@ from 1 rather than toward it. Re-measure before wiring it in.
 ## Decode segments and the lattice integrator
 
 A decode segment is a run of `k` steps at a fixed batch with no prefill mixed in and no request
-entering or leaving. Fitted models integrate it in closed form ({doc}`rollout`); a kernel sum is
+entering or leaving. Fitted models integrate it in closed form ({doc}`rollout`). A kernel sum is
 not `max(F, alpha + beta * k)`, so `ComposedRollout` integrates numerically.
 
 The obvious integrator, one query per step, is exact but costly. Sampling at a stride and
@@ -183,7 +183,7 @@ srl-profile kernels validate \
     --output /tmp/validate-pchip.json
 ```
 
-Pass `--min-samples 1` to score prefill and mixed as well as decode; at the default of 20 a
+Pass `--min-samples 1` to score prefill and mixed as well as decode. At the default of 20 a
 typically decode-dominated baseline has no bucket that deep for the other two phases, and the tool
 warns about each phase it dropped. Score against the `vllm` tables, which are the kernels the
 server ran. The bucketing rules and the report fields are on {doc}`../profiling/kernels`.

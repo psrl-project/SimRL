@@ -142,7 +142,7 @@ def evaluate_holdout(
     Args:
         table (KernelTable): Loaded perf table for one `(op_name, backend)`.
         op_name (str): The op identifier matching the table's schema.
-        backend (str): Backend label; used in the result and to select the dispatch floor.
+        backend (str): Backend label. Used in the result and to select the dispatch floor.
         gpu_spec (GpuSpec): Hardware spec for the SOL computation.
         fraction (float): Fraction of bracketed points to hold out, in (0, 1]. Defaults to
             the full set: a subset can report a far better surface than exists.
@@ -270,7 +270,7 @@ def holdout_report(
 
     Args:
         root (str | Path): Directory holding `{gpu}/{family}/{backend}/{version}/`.
-        gpu (str): GPU slug or device name; also selects the bundled spec.
+        gpu (str): GPU slug or device name. Also selects the bundled spec.
         gpu_spec (GpuSpec | None): Hardware spec for SOL. Defaults to the bundled
             spec for `gpu`.
         fraction (float): Fraction of bracketed points to hold out.

@@ -48,7 +48,7 @@ def _full_attention_layer_count(config: dict, total_layers: int) -> int:
 
     Equals ``total_layers`` for a pure-attention model. A hybrid model declaring
     ``full_attention_interval`` holds a KV cache only in its full-attention
-    layers; charging all of them overstates capacity by that interval.
+    layers. Charging all of them overstates capacity by that interval.
     """
     interval = config.get("full_attention_interval")
     if interval is None:
@@ -186,7 +186,7 @@ def parameter_bytes_from_checkpoint(model_path: str | Path) -> int | None:
     is the largest subtraction in the KV budget and a configured constant
     silently survives a model change. `metadata.total_size` is the materialized
     size in the checkpoint's own dtype, so it already covers MoE expert weights.
-    None when there is no index file; the caller may still pass a count.
+    None when there is no index file. The caller may still pass a count.
 
     Args:
         model_path: Directory holding the checkpoint, or its `config.json`.

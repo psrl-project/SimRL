@@ -51,7 +51,7 @@ class _FakeModelOps:
     # `ComposedRollout` charges each attention kind by ITS OWN layer count, because a
     # hybrid model runs softmax attention on some layers and a gated delta net on the
     # rest. This fake is a dense model, so every layer is softmax attention and the
-    # gated-delta count is zero -- the degenerate case the split must reduce to.
+    # gated-delta count is zero. That is the degenerate case the split must reduce to.
     attention_layers = 2
     gdn_layers = 0
 
@@ -71,7 +71,7 @@ class _FakeModelOps:
         return tuple(pairs)
 
     def comm_queries(self, token_count: int):
-        """Return no collectives; this fixture is tp=1."""
+        """Return no collectives. This fixture is tp=1."""
         return ()
 
     def attention_query(self, phase: str, *, batch_size: int, seq_len: int = 1, step: int = 0, backend=None):
@@ -102,7 +102,7 @@ def test_the_op_is_registered_in_its_own_family():
 
 
 def test_the_kinds_share_one_schema_because_they_share_one_sol_shape():
-    """All four are pure bandwidth; only the bytes touched differ, which n_elements carries."""
+    """All four are pure bandwidth. Only the bytes touched differ, which n_elements carries."""
     assert ELEMENTWISE_OP.slice_columns == ("dtype", "op_kind")
     assert ELEMENTWISE_OP.axis_columns == ("n_elements",)
     assert set(ELEMENTWISE_KINDS) == {
@@ -112,7 +112,7 @@ def test_the_kinds_share_one_schema_because_they_share_one_sol_shape():
         "qk_norm",
         # Not a model kernel: the dtype conversions, contiguity fixes and concatenations a
         # real Megatron step issues around TE's fused modules. Shares the schema because it
-        # shares the roofline (read a tensor, write a tensor); what makes it its own kind is
+        # shares the roofline (read a tensor, write a tensor). What makes it its own kind is
         # that its count comes from a trace rather than from the architecture.
         "tensor_plumbing",
     }
@@ -186,7 +186,7 @@ def test_the_composed_model_does_not_add_an_elementwise_term():
 
     Utility is SOL/measured, and the measured GEMM and attention latencies came from a server
     already running these kernels between them, so a separate term double-counts. If this test
-    fails, someone wired an extra term into predict(); read the spec's elementwise section
+    fails, someone wired an extra term into predict(). Read the spec's elementwise section
     before changing this assertion.
 
     The assertion is behavioural: a spy records the `op_name` of every query one `predict()`
@@ -228,7 +228,7 @@ def test_the_composed_model_source_never_mentions_elementwise():
 
     source = inspect.getsource(ComposedRollout)
     assert "elementwise" not in source.lower(), (
-        "ComposedRollout appears to price elementwise ops; that double-counts work already "
+        "ComposedRollout appears to price elementwise ops. That double-counts work already "
         "inside the fitted GEMM and attention utilities."
     )
     assert not hasattr(ComposedRollout, "_elementwise_seconds")

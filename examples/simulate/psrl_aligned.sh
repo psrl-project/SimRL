@@ -3,8 +3,8 @@
 #
 # Every number below is transcribed from the run being matched:
 #   psrl/examples/dapo_trainer/qwen3_8b_megatron_simulate.sh
-# and the three things that cannot be read off a script -- the workload lengths,
-# the KV capacity, and the training cost -- come from the run's own logs and a
+# and the three things that cannot be read off a script (the workload lengths,
+# the KV capacity, and the training cost) come from the run's own logs and a
 # profile of its exact mesh. The two files describe one system, so a knob moved
 # there has to move here too.
 #
@@ -68,9 +68,9 @@ export TOKEN_BUDGET="${TOKEN_BUDGET:-12800}"
 # This knob lives in psrl's coordinator, not in the engine, so it belongs on the
 # router: it decides eligibility before a request is offered, and a rejected
 # request dwells in the router queue instead of the instance's own waiting queue.
-# At 1024 it never binds here -- a step routes 32*8=256 requests across 2
-# instances -- so it is transcribed for fidelity rather than for its effect.
-# Lower it to study a per-instance residency limit; `ACTIVE_CAP=50` caps each
+# At 1024 it never binds here, since a step routes 32*8=256 requests across 2
+# instances, so it is transcribed for fidelity rather than for its effect.
+# Lower it to study a per-instance residency limit. `ACTIVE_CAP=50` caps each
 # instance at 50 resident (waiting + running) requests.
 export ACTIVE_CAP="${ACTIVE_CAP:-50}"
 # vLLM's own max_num_seqs. psrl leaves it at the engine default, which is 1024
@@ -78,7 +78,7 @@ export ACTIVE_CAP="${ACTIVE_CAP:-50}"
 export MAX_CONCURRENCY="${MAX_CONCURRENCY:-1024}"
 # vLLM's preemption_notification_threshold: instance queue depth past which a
 # preempted request is handed back to the router and may be re-placed elsewhere.
-# Empty leaves every preemption local, which is what the matched run does -- its
+# Empty leaves every preemption local, which is what the matched run does. Its
 # 2122 preemptions all requeue in place. This is the only path by which work
 # crosses instances mid-generation, so setting it changes migration, not just
 # queueing, and each migration pays a full re-prefill of the reclaimed context.
@@ -136,7 +136,7 @@ export KV_MODEL_PATH="${KV_MODEL_PATH:-${MODEL_PATH}}"
 export KV_GPU_MEMORY_UTILIZATION="${KV_GPU_MEMORY_UTILIZATION:-0.9}"
 
 # The log-prob forward pass, priced as a FLOP-derived fraction of the same fitted
-# training step. The real run measures 82.31 s per step here; the simulation
+# training step. The real run measures 82.31 s per step here. The simulation
 # currently prices it 11.2% low, which is tracked separately from the step itself.
 export RECOMPUTE_MODEL="${RECOMPUTE_MODEL:-training_forward}"
 
@@ -151,7 +151,7 @@ export MODEL_PATH
 export OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/outputs/simulate/psrl_aligned}"
 # This batch packs more tokens into a training microbatch than the TP2/PP3 sweep
 # covers, and the activation footprint follows. Every exceedance is recorded in
-# the telemetry rather than hidden; see docs/simulation/domain-gates.
+# the telemetry rather than hidden. See docs/simulation/domain-gates.
 # Four features exceed the sweep here, all for the same reason: more prompts
 # means more and longer microbatches than were profiled.
 #   tokens              per-microbatch token count
@@ -162,7 +162,7 @@ export OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/outputs/simulate/psrl_aligned}"
 # 1F1B stage occupancy each). `sum_squared_tokens` is the worst: it is the
 # attention term itself, so a 2.4x exceedance is 2.4x of the part of the fit
 # that is genuinely quadratic. Treat this run's *training* time as indicative
-# only; its rollout numbers are in domain and are the point of the comparison.
+# only. Its rollout numbers are in domain and are the point of the comparison.
 export EXTRAPOLATE="${EXTRAPOLATE:-[tokens,activation_bytes,pipeline_slots,sum_squared_tokens]}"
 # Appended, not assigned: a caller studying one knob passes it in EXTRA_OVERRIDES,
 # and overwriting here discarded it silently. Every arm then ran the default

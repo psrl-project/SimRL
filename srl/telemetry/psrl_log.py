@@ -18,7 +18,7 @@ field names the simulator uses (`num_running_reqs`, `num_waiting_reqs`,
 - **Two clocks.** The JSONL sinks stamp UTC, the Python text logs stamp naive
   local time. `infer_utc_offset_hours` recovers the offset.
 - **Training phases.** The simulator logs `recompute_time`, `train_time` and
-  `sync_time` as one record; PSRL scatters the same three across a controller
+  `sync_time` as one record. PSRL scatters the same three across a controller
   log and the per-rank train worker logs, as begin/end markers.
 
 Nothing here writes to the PSRL directory: it is opened read-only.
@@ -496,14 +496,10 @@ def extract_workload_trace(
     models as the only thing under test.
 
     The lengths come from `route_trace.log`'s `pop` events, **not** from the
-    trajectory dumps. The dumps record the final training sample, which is
-    truncated to the response cap, so their longest entry is exactly 10240 on
-    the DAPO baseline. The engine generated more than that: 242 of 398
-    never-interrupted requests emitted over 10240 tokens, each landing exactly
-    on `max_prompt_length + max_output_length - prompt_len` (a 90-token prompt
-    produced 11174). Sourcing from the dumps therefore understated generation
-    by roughly 900 tokens per request and made the simulated first batch finish
-    at 342.6 s against a measured 386.6 s.
+    trajectory dumps. The dumps record the final training sample, truncated to
+    the response cap, while the engine can generate past that cap before a
+    request is interrupted. Sourcing from the dumps therefore understates
+    generation.
 
     A request interrupted by a weight update pops twice, and its
     `response_tokens` is cumulative across iterations, so the final pop already
@@ -511,7 +507,7 @@ def extract_workload_trace(
 
     Grouping is not recorded in the trace, so requests are chunked in id order
     into groups of `group_size`. That reproduces the length *distribution* and
-    the group *arity* exactly, which is what the simulator consumes; it does not
+    the group *arity* exactly, which is what the simulator consumes. It does not
     reproduce which prompt each response belonged to.
 
     Args:

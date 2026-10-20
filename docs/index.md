@@ -10,6 +10,50 @@ sd_hide_title: true
 :align: center
 :::
 
+SimRL models the asynchronous rollout/training loop. You can simulate how a framework behaves, design
+a deployment before buying it, predict at runtime, and run auto research on scheduling policies.
+
+:::{image} /_static/img/simrl-capabilities.png
+:alt: What you can do with SimRL
+:width: 100%
+:align: center
+:::
+
+## What you can do with SimRL
+
+::::{grid} 1 2 2 4
+:gutter: 3
+
+:::{grid-item-card} Simulate frameworks
+:link: simulation/policies
+
+More than ten typed presets, each reimplementing one real system's admission, runtime and filtering
+logic. Does PSRL stay latency-bound while verl's overage queue fills up?
+:::
+
+:::{grid-item-card} Design a deployment
+:link: cost-models/index
+
+GPU splits between rollout and training, instance counts, TP/PP/DP/EP. On 32 GPUs, is 20/12 with
+TP2 rollout better than 16/16 with TP4?
+:::
+
+:::{grid-item-card} Predict at runtime
+:link: simulation/routing
+
+Placement and finish times from a snapshot of the live system. Rollout load spikes, so how many
+engines can move to training without stalling the next batch?
+:::
+
+:::{grid-item-card} Auto research
+:link: simulation/index
+
+A proposal agent designs a policy, a validation agent simulates it, an analysis agent writes the
+lesson back. Is `kv_cache_aware` routing better than `throughput_balance` on this workload?
+:::
+
+::::
+
 ## What SimRL is
 
 SimRL answers questions of the form *"I have Qwen3-8B on eight H20s, rollout and

@@ -9,8 +9,8 @@ here must reproduce exactly. A change means the binding changed.
 
 `generation_attention` moved from CUDA-event timing to graph replay, because vLLM replays a
 FULL captured graph for decode batches and therefore never pays the per-call python dispatch
-that event timing was charging. The old table was flat at ~70 us from step 0 to 16384 -- a
-256x range of KV work priced identically, which is the signature of a measurement dominated
+that event timing was charging. The old table was flat at ~70 us from step 0 to 16384. A
+256x range of KV work priced identically is the signature of a measurement dominated
 by dispatch. It now reads 12.6 us at step 0 rising to 91.8 us at 32768, and scales with batch
 too (22.6 us to 646 us from batch 1 to 64 at step 4096).
 
@@ -58,7 +58,7 @@ pytestmark = pytest.mark.skipif(
 _HOLDOUT = {
     ("gemm", "vllm"): (3.91, 64),
     ("context_attention", "vllm"): (6.46, 59),
-    # 6.63 when this table was event-timed and flat; see the module docstring for why a
+    # 6.63 when this table was event-timed and flat. See the module docstring for why a
     # higher surface-fit error on physically correct data is the expected direction.
     ("generation_attention", "vllm"): (11.55, 72),
     ("context_attention", "flashinfer"): (10.08, 59),
@@ -72,7 +72,7 @@ _VALIDATE_PCHIP = {
     "prefill": (3.84, 29),
     # 0.48 before the context-phase shape was read from `sum_l2` rather than
     # `n_tokens / request_count`. These five buckets are all near-uniform prompt
-    # batches, where the two agree to within a token; the new form is what makes
+    # batches, where the two agree to within a token, and the new form is what makes
     # a resume sharing a step with a large decode batch price correctly.
     "mixed": (0.56, 5),
 }
@@ -114,7 +114,7 @@ def test_composed_model_accuracy_has_not_moved():
 
 @pytest.mark.parametrize("backend", sorted(_FLOORS))
 def test_fitted_floors_have_not_moved(backend):
-    """Floors are keyed by op name after this refactor; the values must not change."""
+    """Floors are keyed by op name after this refactor. The values must not change."""
     from srl.cost.kernel.floor import load_floors
 
     backend_dir = _TABLES / "h20" / "attention" / backend

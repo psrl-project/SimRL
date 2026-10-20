@@ -109,7 +109,7 @@ class TestGemmShapesTp1:
     def test_qkv_proj_shape(self):
         model = _qwen35_descriptor()
         shapes = {s.name: s for s in QWEN35_MOE_FAMILY.gemm_shapes(model, tensor_parallel=1)}
-        # (16 + 2*2) * 256 = 5120 rows; 2048 cols
+        # (16 + 2*2) * 256 = 5120 rows, 2048 cols
         assert shapes["qkv_proj"].n == (16 + 2 * 2) * 256
         assert shapes["qkv_proj"].k == 2048
 
@@ -131,14 +131,14 @@ class TestGemmShapesTp1:
         """gate_up_proj width = 2 * moe_inter * experts_per_tok, not 2 * moe_inter * num_experts."""
         model = _qwen35_descriptor()
         shapes = {s.name: s for s in QWEN35_MOE_FAMILY.gemm_shapes(model, tensor_parallel=1)}
-        # 2 * 512 * 8 = 8192 rows; 2048 cols
+        # 2 * 512 * 8 = 8192 rows, 2048 cols
         assert shapes["expert_gate_up"].n == 2 * 512 * 8
         assert shapes["expert_gate_up"].k == 2048
 
     def test_expert_down_shape(self):
         model = _qwen35_descriptor()
         shapes = {s.name: s for s in QWEN35_MOE_FAMILY.gemm_shapes(model, tensor_parallel=1)}
-        # 2048 rows; 512 * 8 = 4096 cols
+        # 2048 rows, 512 * 8 = 4096 cols
         assert shapes["expert_down"].n == 2048
         assert shapes["expert_down"].k == 512 * 8
 
@@ -183,7 +183,7 @@ class TestGemmShapesTensorParallel:
         assert tp2["expert_gate_up"].n == tp1["expert_gate_up"].n // 2
 
     def test_router_is_not_sharded_at_tp2(self):
-        """Every rank needs the full routing decision; no sharding."""
+        """Every rank needs the full routing decision. No sharding."""
         model = _qwen35_descriptor()
         tp1 = {s.name: s for s in QWEN35_MOE_FAMILY.gemm_shapes(model, tensor_parallel=1)}
         tp2 = {s.name: s for s in QWEN35_MOE_FAMILY.gemm_shapes(model, tensor_parallel=2)}

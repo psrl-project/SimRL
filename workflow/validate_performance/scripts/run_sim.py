@@ -50,7 +50,7 @@ def workspace() -> Path:
     """
     value = os.environ.get("SIMRL_WORKSPACE")
     if not value:
-        raise RuntimeError("SIMRL_WORKSPACE is not set; export it to the workspace directory.")
+        raise RuntimeError("SIMRL_WORKSPACE is not set. Export it to the workspace directory.")
     path = Path(value)
     if not path.is_dir():
         raise RuntimeError(f"SIMRL_WORKSPACE={value!r} is not a directory.")

@@ -2,8 +2,8 @@
 # Run one simulation with a fully configured cost model.
 #
 # Every concern is handled in a dedicated conf/ file, which this script sources
-# in order. Each conf/ file reads env vars and sets one array of Hydra overrides;
-# this script concatenates them and passes them to srl.cli.main.
+# in order. Each conf/ file reads env vars and sets one array of Hydra overrides.
+# This script concatenates them and passes them to srl.cli.main.
 #
 # QUICKSTART (14B with Megatron training, psrl rollout):
 #   MODEL_PATH=... \
@@ -14,7 +14,7 @@
 #   KV_MODEL_PATH="$MODEL_PATH" \
 #   bash examples/simulate/simulate.sh
 #
-# ENV VARS  (all optional; override any default)
+# ENV VARS  (all optional, override any default)
 # -----------------------------------------------
 #   ROLLOUT_MODEL        psrl | distserve | roofline | composed  (default: psrl)
 #   ROLLOUT_ARTIFACT     path to the fitted rollout artifact
@@ -40,7 +40,7 @@
 #
 #   KV_MODEL_PATH        path to the checkpoint for KV sizing (omit = use kv_blocks literal)
 #   KV_GPU_MEMORY_UTILIZATION   (default: 0.9)
-#   KV_GPU_MEMORY_MIB           (default: 97871 — one H20)
+#   KV_GPU_MEMORY_MIB           (default: 97871, one H20)
 #   KV_PROBE             true | false  start vLLM to measure KV capacity (default: true)
 #   KV_NON_KV_OVERHEAD_BYTES    KV_PROBE=false only: the non-KV footprint the
 #                               arithmetic path cannot derive (default: 0). A
@@ -48,13 +48,13 @@
 #
 #   RECOMPUTE_MODEL      training_forward | analytical | (empty = fixed 0)
 #                        training_forward reads the model's geometry from the
-#                        training artifact; there is nothing per-model to set.
+#                        training artifact. There is nothing per-model to set.
 #   RECOMPUTE_TIME_PER_TOKEN                              (fixed)
 #   RECOMPUTE_MODEL_PARAMS / PEAK_FLOPS / OVERHEAD_FACTOR (analytical)
 #
 #   N_VERSIONS           training steps to simulate (default: 20)
 #   BATCH_SIZE           prompt groups per step (default: 256)
-#   GROUP_SIZE           responses per prompt; empty reads from workload
+#   GROUP_SIZE           responses per prompt, empty reads from workload
 #   N_INSTANCES          rollout engine count (default: 4)
 #   MAX_PROMPT_LENGTH    (default: 2048)
 #   MAX_OUTPUT_LENGTH    (default: 16384)
@@ -100,7 +100,7 @@ GPU="${GPU:-h20}"
 ROLLOUT_TP="${ROLLOUT_TP:-1}"
 
 # ── source the five concern files ─────────────────────────────────────────────
-# Each sets one array of Hydra overrides; we concatenate them below.
+# Each sets one array of Hydra overrides. We concatenate them below.
 # shellcheck source=conf/rollout.sh
 source "${CONF_DIR}/rollout.sh"
 # shellcheck source=conf/workload.sh

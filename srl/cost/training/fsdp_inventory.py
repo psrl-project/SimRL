@@ -21,13 +21,13 @@ Physical layout under FSDP2
 ----------------------------
 The FSDP launcher builds the module in the **master dtype** (`optimizer_state_dtype`)
 so that AdamW's `exp_avg`/`exp_avg_sq` buffers inherit the same dtype as the
-parameters they track: a bf16 module cannot carry fp32 optimizer state.  That means
+parameters they track: a bf16 module cannot carry fp32 optimizer state. That means
 there is exactly **one** resident parameter copy on device, sized by the master dtype.
 
 `MixedPrecisionPolicy(param_dtype=compute_dtype)` creates a narrow compute copy used
-for the all-gather during forward and backward.  With `reshard_after_forward=True`
+for the all-gather during forward and backward. With `reshard_after_forward=True`
 that copy is freed after each layer, so it is **transient** and is not part of the
-static pool counted here.  Contrast this with Megatron's mixed-precision layout, where
+static pool counted here. Contrast this with Megatron's mixed-precision layout, where
 the narrow parameters are resident at full local size and a separate fp32 master lives
 alongside them as a distinct tensor.
 
@@ -41,7 +41,7 @@ dtype conventions
 
 `gradient_dtype` sizes the resident sharded gradient buffer.
 
-`parameter_dtype` is the transient all-gathered compute dtype.  It is exposed via
+`parameter_dtype` is the transient all-gathered compute dtype. It is exposed via
 `compute_element_bytes` for diagnostics but is NOT included in `total_bytes`.
 """
 
@@ -57,14 +57,14 @@ class FsdpInventory:
     """Break down per-rank static state bytes under FSDP2.
 
     The resident parameter shard is sized by the master dtype (`optimizer_state_dtype`),
-    not by `parameter_dtype`.  There is no separate master-weight tensor because the
+    not by `parameter_dtype`. There is no separate master-weight tensor because the
     module is built in the master dtype from the start: see module docstring for the
     physical reasoning.
 
     `compute_element_bytes` records the per-element byte width of the transient
-    all-gathered compute copy.  It is a per-element width stored for diagnostics
+    all-gathered compute copy. It is a per-element width stored for diagnostics
     (e.g. peak activation accounting) so callers cannot mistake it for a resident
-    contribution; it does not feed into `total_bytes`.  It is deliberately excluded
+    contribution, and it does not feed into `total_bytes`. It is deliberately excluded
     from `total_bytes` because `reshard_after_forward=True` frees the all-gathered
     compute copy after each transformer block, making it transient rather than part
     of the static resident pool.
@@ -77,7 +77,7 @@ class FsdpInventory:
     # Stored for diagnostics (e.g. peak activation accounting) but is NOT part of total_bytes
     # because the compute copy is freed per layer under reshard_after_forward=True.
     compute_element_bytes: int
-    # Bytes moved to host memory by CPUOffloadPolicy.  Tracked rather than dropped so
+    # Bytes moved to host memory by CPUOffloadPolicy. Tracked rather than dropped so
     # a prediction can explain why an offloaded cell needs less device memory.
     offloaded_bytes: float = 0.0
 
@@ -113,24 +113,24 @@ def fsdp_inventory(
     """
     Compute per-rank static state bytes under FSDP2.
 
-    Every term is divided by the world size.  `world_size` is the whole mesh, both its
+    Every term is divided by the world size. `world_size` is the whole mesh, both its
     shard and replicate extents: replication duplicates a shard across rows rather than
     widening it, so a rank's share depends only on how many ranks there are in total.
 
     Physical layout
     ~~~~~~~~~~~~~~~
     The launcher builds the module in `optimizer_state_dtype` (the master dtype) because
-    AdamW moments must share dtype with the tensors they track.  There is therefore one
+    AdamW moments must share dtype with the tensors they track. There is therefore one
     resident parameter copy, sized by the master dtype rather than by
     `parameter_dtype`.
 
-    There is no second, separate master-weight tensor.  Megatron keeps one because its
-    module resides in the narrow dtype and the master is a separate fp32 buffer.  FSDP2
+    There is no second, separate master-weight tensor. Megatron keeps one because its
+    module resides in the narrow dtype and the master is a separate fp32 buffer. FSDP2
     has no such buffer: the module itself is already the master.
 
     The transient all-gathered compute copy produced by
     `MixedPrecisionPolicy(param_dtype=parameter_dtype)` with `reshard_after_forward=True`
-    is freed after each layer.  It is NOT counted here; `compute_element_bytes` is exposed
+    is freed after each layer. It is NOT counted here. `compute_element_bytes` is exposed
     for downstream activation accounting only.
 
     Consequently `total_bytes` is invariant to `parameter_dtype`: changing the compute
@@ -139,8 +139,8 @@ def fsdp_inventory(
     Contrast with Megatron
     ~~~~~~~~~~~~~~~~~~~~~~
     Megatron holds a full-size fp32 gradient buffer as the reduce-scatter source, so
-    every rank holds it whole.  FSDP2 reduce-scatters per layer into already-sharded
-    gradients; no full-size buffer exists anywhere.  Reusing the Megatron inventory for
+    every rank holds it whole. FSDP2 reduce-scatters per layer into already-sharded
+    gradients. No full-size buffer exists anywhere. Reusing the Megatron inventory for
     FSDP would overstate memory by roughly twofold.
 
     `optimizer_offload`

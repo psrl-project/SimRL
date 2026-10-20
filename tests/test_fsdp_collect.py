@@ -275,7 +275,7 @@ def test_collect_round_trips_the_measured_smoke_sidecar(tmp_path: Path):
 def test_validate_observed_mesh_raises_when_absent_on_success(tmp_path: Path):
     """A successful run without observed_mesh cannot be verified and must be rejected.
 
-    The cell key is keyed on topology; silently accepting an unverifiable record would
+    The cell key is keyed on topology, so silently accepting an unverifiable record would
     contaminate the wrong cost-model cell with no indication that the topology was never
     cross-checked.
     """
@@ -288,7 +288,7 @@ def test_validate_observed_mesh_raises_when_absent_on_success(tmp_path: Path):
 
 
 def test_validate_observed_mesh_tolerates_absent_key_when_allow_incomplete(tmp_path: Path):
-    """A partial sweep may not have reached mesh-recording yet; incomplete mode must pass."""
+    """A partial sweep may not have reached mesh-recording yet. Incomplete mode must pass."""
     config = _config(tmp_path, allow_incomplete=True)
     candidate = _candidate()
     sidecar = _sidecar(candidate)
@@ -300,7 +300,7 @@ def test_validate_observed_mesh_tolerates_absent_key_when_allow_incomplete(tmp_p
 
 
 def test_validate_observed_mesh_tolerates_absent_key_on_non_success_run(tmp_path: Path):
-    """An OOM or failed run may have died before writing the sidecar; the record is still wanted."""
+    """An OOM or failed run may have died before writing the sidecar. The record is still wanted."""
     config, candidate = _config(tmp_path), _candidate()
     # Stage without a sidecar (launcher died before writing srl_metrics.json).
     _, run_dir = prepare_fsdp_candidate(config, candidate)

@@ -6,7 +6,7 @@
 "won"), which means its wins were routing/load-balancing compensating for loose admission where
 training had slack, not evidence the placement rule itself is good. This isolates that: clamp
 `inventory_deadline` to the same hard `cap=48` the static arms use (an engine-level
-`max_concurrent_seqs_per_instance`, independent of strategy -- see `forecast_accuracy.py`'s
+`max_concurrent_seqs_per_instance`, independent of strategy, see `forecast_accuracy.py`'s
 `regime.cap` -> `max_concurrent_seqs_per_instance`), so all three arms admit at the same rate, and
 only placement differs. If `inventory_deadline@cap48` beats `cap_lpt48` here, the placement logic
 has a real contribution and reworking admission into a rate decision is worth doing. If it does not,

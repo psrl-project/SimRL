@@ -44,7 +44,7 @@ on an empty instance, and returns `False` when a configured limit refuses it.
 
 Each weight version owns one min-heap, and dispatch tries versions oldest first. The version
 key is `v_traj`, the rollout version stamped at staging. Unadmitted staged groups are
-re-layered to the new rollout version at every publish that changed it; admitted work keeps
+re-layered to the new rollout version at every publish that changed it. Admitted work keeps
 its history. Inside a version, `rollout.router.sort_key` orders requests:
 
 | `sort_key` | Order |
@@ -75,7 +75,7 @@ srl rollout.n_instances=4 rollout.router.strategy=length_aware \
 | `kv_cache_aware` | largest `free_blocks - committed_blocks`. Queued requests have allocated nothing yet, so raw free blocks cannot tell a full instance from an empty one | none |
 | `prefix_aware` | the instance with the largest prefix hit for this request, unless the hit covers at most `cache_threshold` of its context or the fleet is imbalanced, in which case fewest requests | `cache_threshold` (0.3), `balance_abs_threshold` (64), `balance_rel_threshold` (1.5) |
 | `throughput_balance` | smallest predicted step-time increase from `InstanceView.step_time_delta`, which calls the rollout cost model | none |
-| `length_aware` | orders whole groups by their longest predicted member and places by predicted load | `order` (`lpt`; `fifo`, `lpt`, `spt`), `balance` (`load`; `count`, `load`), `window_groups` (0), `kv_watermark` (0.0), `length_model` (`oracle`), `length_model_args` |
+| `length_aware` | orders whole groups by their longest predicted member and places by predicted load | `order` (default `lpt`, one of `fifo`, `lpt`, `spt`), `balance` (default `load`, one of `count`, `load`), `window_groups` (0), `kv_watermark` (0.0), `length_model` (`oracle`), `length_model_args` |
 | `inventory_deadline` | forecasts the training pipeline, see below | see below |
 
 `imbalanced` in `prefix_aware` means the load gap exceeds both the absolute and the relative
@@ -100,7 +100,7 @@ Two independent decisions share one length prediction.
 Reordering can change which trajectories are trained on, because consumption takes the
 first groups to finish. Ranking the whole backlog starves whichever end of the length
 distribution it ranks last. `window_groups` serves groups in consecutive blocks of that many
-in arrival order and reorders only inside a block; one training batch of groups is the
+in arrival order and reorders only inside a block. One training batch of groups is the
 natural size. A comparison across orderings should also report tokens per consumed group.
 
 The `LengthPredictor` (`srl/forecast/length.py`) is `oracle`, which reads the trace's
@@ -116,7 +116,7 @@ duck-typed, so a strategy implements what it needs.
 | Hook | Called | Implemented by |
 |---|---|---|
 | `narrow_candidates(req, candidates, context)` | after the admission gate, returns indices that stay eligible | none built in |
-| `allow_version_bypass(req, context)` | when a version's head cannot be placed; true lets dispatch try the next version | none built in (`inventory_deadline` returns false) |
+| `allow_version_bypass(req, context)` | when a version's head cannot be placed. True lets dispatch try the next version | none built in (`inventory_deadline` returns false) |
 | `select_context(req, candidates, context)` | instead of `select`, with the clock and fleet TP range | `inventory_deadline` |
 | `rank_queued(window, now)` | per placement, over the first `queue_window` heap-ordered requests of one version | `length_aware` |
 | `pick_queued(window, views)` | per placement, over the whole version layer, instead of `rank_queued` | `inventory_deadline` |
@@ -150,14 +150,14 @@ eligibility only.
 
 `rollout.max_concurrency` is a different limit: vLLM's `max_num_seqs` inside the engine. The
 `rollout.admission_control.*` flags are engine-side gates inside `add_request`
-(`reject_if_kv_full`, `reject_if_waiting`, `reject_if_running_full`); all default to false
+(`reject_if_kv_full`, `reject_if_waiting`, `reject_if_running_full`). All default to false
 because KV capacity is the scheduler's constraint, which the engine already enforces by
 leaving a request that does not fit on its own waiting queue.
 
 A request that no candidate can take stays queued. Without `allow_version_bypass`, a blocked
 head stops dispatch for all newer versions. After every successful placement dispatch
 restarts at the oldest version. A group-sticky pin (`enable_group_sticky`) pins a group's
-responses to the instance that took the first one; it is soft, falling through to the full
+responses to the instance that took the first one. It is soft, falling through to the full
 candidate set when the pinned instance cannot help, and it is released when the group is
 consumed or dropped.
 
@@ -168,10 +168,10 @@ are block counts and nothing else in the attempt varies with time. So `Router.di
 called only at committed points and never inside a speculative engine event (it asserts
 that no instance has an open undo log):
 
-- on entry to the engine loop;
+- on entry to the engine loop.
 - after a `REQUEST_COMPLETE` commits and frees blocks, when the queue is non-empty or
-  ingress credits remain;
-- after a cross-instance preemption has been reclaimed;
+  ingress credits remain.
+- after a cross-instance preemption has been reclaimed.
 - after staging new groups, including the batch opened by a publish.
 
 A decode segment only grows blocks, so it triggers nothing. A segment ends at the first
@@ -229,7 +229,7 @@ srl policy=psrl rollout.n_instances=4 \
 ```
 
 Requirements, both enforced by the code: the policy must be `psrl`, because
-`SchedulingRuntime.inventory()` raises `TypeError` for any other policy; and the Python
+`SchedulingRuntime.inventory()` raises `TypeError` for any other policy, and the Python
 engine must be used, because the strategy writes `deadline_buffer` on each request. The
 strategy is marked `python_engine_only`, so `auto` picks that engine and `SIMRL_BACKEND=cpp`
 is rejected.
@@ -240,7 +240,7 @@ is rejected.
 |---|---|
 | `forecast/snapshot.py` | read-only value types: `Resident`, `Arrival`, `Interrupt`, `InstanceState` (built from a live `NativeInstance` or `CppInstance`, so it works on either backend) |
 | `forecast/drain.py` | `InstanceForecast`: replays one instance to get every completion time, peak KV blocks and a `kv_overflow` flag |
-| `forecast/fleet.py` | `FleetForecast`: the same for all instances; `fold_member`, `placement_order`, `chain_buffers` |
+| `forecast/fleet.py` | `FleetForecast`: the same for all instances, plus `fold_member`, `placement_order`, `chain_buffers` |
 | `forecast/pipeline.py` | `PipelineForecast`, `Pipeline`, `TrainState`, `compare` |
 | `forecast/plan.py` | `PlanSession`: one dispatch burst, evaluated incrementally |
 | `forecast/length.py` | `LengthPredictor` (`oracle`, `noisy_oracle`) |
@@ -278,7 +278,7 @@ groups (`-inf` for an empty buffer). The floor ignores `new_groups` on purpose, 
 counting a candidate's own reservation would charge it for filling a buffer.
 
 **Comparison.** `compare(a, b, eps)` walks the two `train_end_floor` vectors left to right
-over their shared prefix and returns the first difference larger than `eps`; two infinite
+over their shared prefix and returns the first difference larger than `eps`. Two infinite
 values of the same sign tie. A decision that barely moves the nearest buffer is therefore
 judged on the next one. The tolerance is not transitive. The strategy uses
 `eps = eps_frac * cycle`.
@@ -332,7 +332,7 @@ Passed through `rollout.router.strategy_args`.
 | `window_groups` | 32 | staged groups per reordering block |
 | `kv_watermark` | 0.0 | KV-peak admission watermark, below |
 | `lookahead_defer` | false | price DEFER_GROUP as admission at `defer_until` on the reduced fleet |
-| `throughput_margin_frac` | 0.0 | smallest decode-throughput gain that justifies an admission; 0 disables, ignored when `defer` is false |
+| `throughput_margin_frac` | 0.0 | smallest decode-throughput gain that justifies an admission. 0 disables, ignored when `defer` is false |
 
 ### KV-peak admission watermark
 
@@ -345,6 +345,6 @@ the only feasibility bar.
 
 It applies to admission only, never to routing an already-admitted member, which holds a
 buffer reservation and must go somewhere. It checks the instance that would take the first
-member; the group's remaining members are placed afterwards by soonest finish and are
+member. The group's remaining members are placed afterwards by soonest finish and are
 subject to `kv_overflow` only. This is a different quantity from `length_aware`'s
 `kv_watermark`, which compares committed blocks now, with no growth, to the pool.

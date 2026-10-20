@@ -69,7 +69,7 @@ void FreeBlockList::remove(KvBlock* block, UndoLog& log) {
   log.record(FreeListRelink{this, block, prev, next});
 }
 
-// NullRecorder overloads — identical mutations, no journaling.
+// NullRecorder overloads, identical mutations, no journaling.
 KvBlock* FreeBlockList::popleft(NullRecorder&) {
   auto* block = head_.next_free;
   if (!block || block == &tail_) {

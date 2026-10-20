@@ -224,7 +224,7 @@ def _selected_backend() -> str:
     Read from TE's own module-level `_attention_backends` dict, which is where the
     dispatcher records its decision. Two alternatives were rejected: the `DotProductAttention`
     instance holds `flash_attention`, `fused_attention` and `unfused_attention` submodules
-    unconditionally, so their presence proves nothing about which one ran; and re-deriving
+    unconditionally, so their presence proves nothing about which one ran, and re-deriving
     the choice through `get_attention_backend` means reconstructing its parameters by hand,
     which is the error that produced the "cuDNN on Hopper+" claim in the first place (a probe
     built with `causal` rather than `padding_causal` reports every backend unavailable).

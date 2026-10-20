@@ -117,7 +117,7 @@ def test_wgrad_shapes_are_derived_from_forward_projections(model):
     #
     # These expectations were (n_fwd, m, k_fwd) until 2026-10-05, matching a bug in
     # gemm_wgrad_shapes. The FLOP count is identical either way because the product is
-    # symmetric, so neither the code nor this test could catch it by cost; the test below
+    # symmetric, so neither the code nor this test could catch it by cost. The test below
     # pins the convention against F.linear's actual output shape instead.
     sweep = GemmSweep(token_counts=(64, 1024), logits_request_counts=(1, 64))
     shapes = gemm_wgrad_shapes(model, sweep, tensor_parallel=1)
@@ -134,7 +134,7 @@ def test_the_wgrad_triple_produces_the_weight_gradients_own_shape():
 
     This is the check that would have caught the swapped triple. A wgrad row must, when
     run as the table's own call, produce a tensor the shape of the weight it gradients.
-    FLOPs cannot distinguish the orderings; output shape can.
+    FLOPs cannot distinguish the orderings. Output shape can.
     """
     import torch
 
@@ -237,7 +237,7 @@ def test_gemm_runner_writes_a_loadable_table(tmp_path, model):
     expected = len(gemm_all_shapes(model, config.sweep("gemm"), tensor_parallel=1))
     assert table.row_count == expected
     assert expected == 24
-    # With per-(n,k) slicing each projection's rows live in a distinct slice; sample one.
+    # With per-(n,k) slicing each projection's rows live in a distinct slice. Sample one.
     latencies_qkv = dict(table.rows(("bfloat16", 6144, 4096)))
     assert all(value > 0.0 for value in latencies_qkv.values())
     assert latencies_qkv[(1024.0,)] > latencies_qkv[(64.0,)]

@@ -18,7 +18,7 @@ def _require(model: Any, key: str) -> int:
     value = model.extra.get(key)
     if value is None:
         raise ProfileValidationError(
-            f"Gated-delta-net profiling needs {key!r} from the checkpoint config; this model "
+            f"Gated-delta-net profiling needs {key!r} from the checkpoint config. This model "
             f"does not declare it, so it is probably not a hybrid-attention architecture."
         )
     return int(value)

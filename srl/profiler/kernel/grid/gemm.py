@@ -198,13 +198,9 @@ def gemm_wgrad_shapes(
     convention, the output rows are `n_f`, the output columns are `k_f`, and the contracted
     length is the token count, so the row is `(n_f, k_f, tokens)`.
 
-    NOTE(claude): This emitted `(n_f, tokens, k_f)` until 2026-10-05, which is a different
-    slice whenever `tokens != k_f`. The FLOP count is identical because the product is
-    symmetric, so the error could not show up as an implausible cost; it showed up as a
-    lookup into the wrong `(n, k)` slice. Verified against `F.linear`: at `o_proj` tp=2
-    (`n_f=4096, k_f=2048`) the old triple produces a `[4096, 4096]` output where `dW` is
-    `[4096, 2048]`. Two of Qwen3-8B's four projections were affected, `o_proj` and
-    `down_proj`, the two whose `k_f` is not `hidden_size`.
+    NOTE(claude): The swapped triple `(n_f, tokens, k_f)` is a different slice whenever
+    `tokens != k_f`, with an identical FLOP count since the product is symmetric, so the
+    bug surfaces as a lookup into the wrong `(n, k)` slice rather than an implausible cost.
 
     Only the per-layer projections are included. The logits projection is inference-
     only and has no wgrad.
@@ -237,7 +233,7 @@ def gemm_all_shapes(
 
     All four families go into one table, which is what lets a training step and an
     inference step read the same surface. Dgrad is included because per-`(n, k)` slicing
-    made the swapped pair a distinct slice; see `gemm_dgrad_shapes`.
+    made the swapped pair a distinct slice. See `gemm_dgrad_shapes`.
 
     Args:
         model (ModelDescriptor): Architecture read from the checkpoint.

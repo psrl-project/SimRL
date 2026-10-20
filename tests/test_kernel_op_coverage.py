@@ -45,8 +45,8 @@ modules = sorted(
 assert modules, "found no op modules under ops/"
 registered = sorted({op.__class__.__module__.rsplit(".", 1)[-1] for op in base.OP_REGISTRY.values()})
 assert registered == modules, (
-    f"ops/ holds {modules} but only {registered} registered; "
-    f"an op module is missing from ops/__init__.py"
+    f"ops/ holds {modules} but only {registered} registered. "
+    f"An op module is missing from ops/__init__.py"
 )
 print("covered")
 """
@@ -161,11 +161,11 @@ class _WidgetProbeOp:
     fits_floor = False
 
     def sol(self, spec, *, slice_key, coords, floor_s=0.0):
-        """Never called; the parser only reads `family`."""
+        """Never called. The parser only reads `family`."""
         raise NotImplementedError("widget_probe is a parser fixture.")
 
     def parse_sweep(self, value):
-        """Never called; the parser only reads `family`."""
+        """Never called. The parser only reads `family`."""
         raise NotImplementedError("widget_probe is a parser fixture.")
 
     def table_columns(self):
@@ -173,13 +173,13 @@ class _WidgetProbeOp:
         return self.slice_columns + self.axis_columns + ("latency_s",)
 
     def measure(self, model, config, *, writer_factory):
-        """Never called; the parser only reads `family`."""
+        """Never called. The parser only reads `family`."""
         raise NotImplementedError("widget_probe is a parser fixture.")
 
 
 @pytest.mark.skipif(not _TABLES.is_dir(), reason="Measured perf tables are machine-local.")
 def test_every_measured_parquet_has_a_registered_op():
-    """An unregistered table is silently skipped by every report; that must be a failure."""
+    """An unregistered table is silently skipped by every report. That must be a failure."""
     stems = set()
     for parquet in (_TABLES / "h20").glob("*/*/*/*_perf.parquet"):
         stem = parquet.stem

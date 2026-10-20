@@ -62,7 +62,7 @@ class PerfTableWriter:
         Write one op's perf table.
 
         Args:
-            op_name (str): A registered op name; selects the family directory and the
+            op_name (str): A registered op name. Selects the family directory and the
                 expected columns.
             rows (Sequence[Mapping[str, Any]]): One mapping per measured shape, carrying
                 exactly the op's slice and axis columns plus `latency_s`.
@@ -93,7 +93,7 @@ class PerfTableWriter:
                 if extra:
                     parts.append(f"unexpected {', '.join(extra)}")
                 raise ValueError(
-                    f"Row {index} of a {op_name} perf table has {'; '.join(parts)}. "
+                    f"Row {index} of a {op_name} perf table has {' and '.join(parts)}. "
                     f"Expected exactly: {', '.join(op.table_columns())}."
                 )
         columns = {name: [row[name] for row in rows] for name in op.table_columns()}

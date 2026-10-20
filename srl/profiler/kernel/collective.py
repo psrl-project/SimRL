@@ -304,7 +304,7 @@ def profile_collective(
     same communicator.
 
     Args:
-        model (ModelDescriptor): Unused; message sizes are swept directly rather than
+        model (ModelDescriptor): Unused. Message sizes are swept directly rather than
             derived from the architecture, because the five collectives do not carry the
             same size at the same token count. Kept for the `KernelOp.measure` signature.
         config (KernelProfileConfig): `collective.topologies`, `collective.message_bytes`,
@@ -385,6 +385,6 @@ def profile_collective(
             # misattribute the kernel. Across nodes, vLLM disables its custom all-reduce and
             # symmetric memory outright, so no op has a dispatched path.
             srl_logger.info(
-                f"No vllm-dispatched rows for {op}; only the nccl control table is written."
+                f"No vllm-dispatched rows for {op}. Only the nccl control table is written."
             )
     return tuple(written)

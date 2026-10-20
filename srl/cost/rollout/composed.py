@@ -55,7 +55,7 @@ Known limitation. A mixed step (prefill and decode tokens in the same batch) is
 approximated as context attention plus generation attention at the step's batch size, because
 only the two pure phases were measured. Against the five buckets the six real mixed iterations
 form, it deviates by 0.48%. But those are all near-uniform batches, which is exactly the regime
-the mean-prompt-length assumption is built for; a chunked-prefill step is not that shape, and
+the mean-prompt-length assumption is built for. A chunked-prefill step is not that shape, and
 because attention is quadratic in sequence length, spreading one request's 4096-token chunk
 across the batch understates its context term severalfold. So this is the model's largest
 uncharacterised approximation despite the small figure. Measuring mixed batches directly is the
@@ -101,7 +101,7 @@ known-inaccurate one. The accuracy table against the real vLLM TP=1 baseline:
   kind is a ~4x error either way.
 - `_expert_weight_seconds` adds the grouped expert GEMM's weight read. A 64-token step
   activates 221 of 256 experts and must stream all their weights from HBM, 51.8 GiB against
-  the 1.9 GiB an `m=token_count` GEMM query implies -- about 16 ms of a 29 ms step, and the
+  the 1.9 GiB an `m=token_count` GEMM query implies, about 16 ms of a 29 ms step and the
   single largest missing term in the model.
 
 **Prefill over-predicts by ~1.4x, and the cause is a per-call floor that this model makes
@@ -109,11 +109,11 @@ dominant rather than anything new.** The dispatch floor is not peculiar to GDN: 
 batch 1, softmax context attention is also flat, 68.9 us at 128 tokens and 72.0 us at 512,
 before it starts scaling. Every family in this tree has one, which is why `floor_s` exists.
 
-What changes is the arithmetic. GDN's floor is 595 us -- 8.6x softmax attention's -- and it is
+What changes is the arithmetic. GDN's floor is 595 us, 8.6x softmax attention's, and it is
 paid on 30 layers instead of 10, so the floor term alone claims 17.9 ms against a measured
 4.24 ms step. On a dense model the same mechanism is 69 us x 36 layers = 2.5 ms inside an
 ~8 ms step, about 30% and comfortably inside the noise the utility fit absorbs. DeepSeek-14B's
-prefill validates at 2.82% MRE with a median ratio of 0.994, so the dense path is sound; this
+prefill validates at 2.82% MRE with a median ratio of 0.994, so the dense path is sound. This
 is not a general inability to price prefill.
 
 So the floor is genuine in isolation (verified: 30 chained calls still cost 490 us each, and a
@@ -122,8 +122,8 @@ either) and cannot be genuine in situ, because 30 of them do not fit inside the 
 contains them. The engine runs these layers back-to-back on one stream with warmed autotuner
 state, where a standalone benchmark pays a launch and tail per call.
 
-Fixing it properly means measuring the GDN layer in situ -- an engine-level probe that counts
-the real per-layer cost inside a vLLM forward -- not tuning the floor until prefill agrees.
+Fixing it properly means measuring the GDN layer in situ, an engine-level probe that counts
+the real per-layer cost inside a vLLM forward, rather than tuning the floor until prefill agrees.
 Two dead ends worth not repeating: switching the measured kernel from `fla` to the FlashInfer
 one vLLM actually dispatches made the standalone floor *larger* (368 -> 595 us), and
 amortising the expert weight read over each expert's token share improved prefill from 118%
@@ -228,7 +228,7 @@ class ComposedRollout(RolloutCostModel):
                 `ops` was built for, since `ops` is what decides whether a comm term is
                 emitted.
             stride (int): Steps between decode-segment lattice nodes.
-            attention_backend (str | None): Backend override; `None` uses the backend vLLM's
+            attention_backend (str | None): Backend override. `None` uses the backend vLLM's
                 own selector picks, which is what a prediction should reflect.
             saturation_step_threshold (int): Minimum per-request KV depth (ctxsum / n_d) above
                 which the segment uses the closed-form advance instead of the lattice integrator.
@@ -288,7 +288,7 @@ class ComposedRollout(RolloutCostModel):
 
         Overrides the base class to add the bounded memo. `advance_to` calls
         `_step_time_estimate` and `_engine_step` in sequence on the same batch
-        state, so both resolve to an identical `RolloutWorkload`; the second call is free.
+        state, so both resolve to an identical `RolloutWorkload`, and the second call is free.
         """
         workload = RolloutWorkload.from_step(n_tokens, t2, ctxsum, n_reqs, prefill_ctx)
         return self._cached_predict(workload)
@@ -440,7 +440,7 @@ class ComposedRollout(RolloutCostModel):
         self._attention_memo.clear()
 
     def _expert_weight_seconds(self, token_count: int) -> float:
-        """Return the extra time to stream activated experts' weights from HBM; 0 if dense.
+        """Return the extra time to stream activated experts' weights from HBM (0 if dense).
 
         The grouped expert GEMM reads every routed expert's weights whatever its token share,
         while the `m=token_count` query above charges only `experts_per_tok` copies. At
@@ -450,7 +450,7 @@ class ComposedRollout(RolloutCostModel):
 
         Charged in full rather than amortised over each expert's token share, which was
         tried and is the worse trade. Dividing by `tokens_per_expert` is physically the right
-        story for prefill -- a 256-token step measures 4.24 ms, admitting only 15.8 GiB of
+        story for prefill: a 256-token step measures 4.24 ms, admitting only 15.8 GiB of
         traffic at 4 TB/s against this term's 60 GiB, so the weights plainly do stay resident
         across the tokens sharing them. But at decode that divisor is 2.3 rather than 1 (64
         tokens x topk 8 spread over 221 experts), and applying it moved decode from 10.2% to
@@ -461,7 +461,7 @@ class ComposedRollout(RolloutCostModel):
         docstring records alongside the GDN floor that shares the blame.
 
         Priced at the device's own bandwidth rather than through a measured table, because no
-        measured GEMM row carries more than one weight copy -- which is also why this cannot
+        measured GEMM row carries more than one weight copy, which is also why this cannot
         live in `gemm_sol` without corrupting the utility surface that normalises those rows.
         """
         # `getattr` rather than a direct call: `_ops` is a protocol satisfied by test

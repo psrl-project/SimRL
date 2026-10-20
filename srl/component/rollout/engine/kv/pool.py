@@ -90,7 +90,7 @@ class BlockPool:
 
         Raises:
             ValueError: If fewer than `n` blocks are free. The caller is
-                expected to have checked capacity; overcommitting the pool
+                expected to have checked capacity. Overcommitting the pool
                 would silently invent memory the engine does not have.
         """
         if n > self.num_free_blocks:
@@ -102,7 +102,7 @@ class BlockPool:
             block = self._free.popleft(recorder)
             # Evict before taking the reference, and let `_maybe_evict` record
             # the hash it drops. Rollback unwinds newest-first, so the reference
-            # is released before the hash comes back -- the exact reverse of the
+            # is released before the hash comes back, the exact reverse of the
             # order here.
             self._maybe_evict(block, recorder)
             block.incr_ref()
@@ -174,14 +174,14 @@ class BlockPool:
                 block.block_hash = block_hash
                 self._hash_to_block[block_hash] = block
                 # The block held no hash a line ago, so the inverse is to clear
-                # it. `changed` unwinds the map; this unwinds the block itself.
+                # it. `changed` unwinds the map. This unwinds the block itself.
                 recorder.record(_HashAssigned(block))
 
     def reset_hashes(self, recorder: Recorder) -> None:
         """Empty the hash map, leaving occupancy untouched.
 
         This is vLLM's `reset_prefix_cache`, which a weight update triggers via
-        PSRL's `pull_model`. Blocks a live request still holds stay held; they
+        PSRL's `pull_model`. Blocks a live request still holds stay held. They
         simply stop being addressable by content.
         """
         if not self._hash_to_block:
@@ -203,8 +203,8 @@ class BlockPool:
         # siblings racing to cache the same prompt block leave the loser holding
         # its hash while the map names the winner. Re-inserting unconditionally
         # resurrected the loser's pair on rollback, making a key addressable
-        # that had been absent before the event. The block's own hash is
-        # restored either way -- it is cleared either way.
+        # that had been absent before the event. Regardless of branch, the
+        # block's own hash is cleared during eviction and restored on rollback.
         if self._hash_to_block.get(evicted_hash) is block:
             recorder.record(_HashMapEntry(self._hash_to_block, evicted_hash, block))
             self._hash_to_block.pop(evicted_hash, None)
@@ -221,9 +221,8 @@ class _RefIncremented:
 
     The refcount is reversed by decrementing rather than by restoring a captured
     value, which is what lets several references taken within one event unwind
-    independently. Capturing instead meant one keyed `(ref_cnt, _block_hash)`
-    snapshot per touched block per event -- 12.4 million of them in a
-    16-instance run.
+    independently. Capturing instead would mean one keyed
+    `(ref_cnt, _block_hash)` snapshot per touched block per event.
     """
 
     __slots__ = ("_block",)
@@ -282,11 +281,11 @@ class _HashMapEntry:
 
     Both sides, because eviction clears both: `_hash_to_block.pop` and
     `block.reset_hash()`. `block_hash`'s setter refuses to overwrite, so the
-    block is cleared first -- a later entry in the same event may already have
+    block is cleared first. A later entry in the same event may already have
     assigned a new hash to this very block, and unwinding has to pass through
     that state rather than collide with it.
 
-    Recorded only when the map actually named this block; see `_maybe_evict`.
+    Recorded only when the map actually named this block. See `_maybe_evict`.
     """
 
     __slots__ = ("_mapping", "_key", "_block")

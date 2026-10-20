@@ -146,13 +146,13 @@ class ModelOps:
 
         Equal to `num_layers` for a dense model. On a hybrid model it is
         `num_layers // full_attention_interval`, and the remainder run a gated delta net
-        instead -- 10 of 40 on Qwen3.5-35B-A3B.
+        instead. On Qwen3.5-35B-A3B that is 10 of 40 layers.
         """
         return self._attention_layers
 
     @property
     def gdn_layers(self) -> int:
-        """Return how many layers run a gated delta net; 0 for a dense model."""
+        """Return how many layers run a gated delta net (0 for a dense model)."""
         return self._gdn_layers
 
     @property
@@ -237,7 +237,7 @@ class ModelOps:
 
         Args:
             token_count (int): Tokens the projections run over. In decode this equals the
-                request count; in prefill it is the total prompt token count.
+                request count. In prefill it is the total prompt token count.
             request_count (int): Sequences in the batch. The logits projection runs over this
                 many tokens, because vLLM computes logits only for each sequence's last
                 token.
@@ -250,22 +250,9 @@ class ModelOps:
         for op in self._projection_ops:
             if op.name.startswith("expert_") and self._num_experts:
                 # One query per layer, not one per activated expert. The real kernel is a
-                # GROUPED gemm: a single launch covers every expert the step routes to, so
-                # the launch cost occurs once per layer.
-                #
-                # Decomposing it per expert was tried and is badly wrong in the other
-                # direction: at 64 tokens the step activates 221 experts, each becoming an
-                # `m=2` GEMM whose measured cost is almost entirely launch floor (10.45 us),
-                # so 40 layers x 221 experts charged 92 ms against a real 29 ms step and
-                # pushed decode MRE from 43% to 450%.
-                #
-                # The genuine term this form still misses is WEIGHT traffic. A grouped GEMM
-                # reads every activated expert's weights from HBM -- 1536 MiB per layer at 64
-                # tokens against the 48 MiB this shape implies -- which is ~16 ms of the real
-                # 29 ms decode step. Fixing that belongs in the GEMM SOL, as a weight-read
-                # term scaled by `_activated_experts`, not in the query shape: the shape has
-                # to stay one the sweep measured. Recorded as a known limitation rather than
-                # papered over; see `docs/composed-rollout.md`.
+                # GROUPED gemm: a single launch covers every expert the step routes to.
+                # This form omits expert weight-read traffic, which `expert_weight_bytes`
+                # prices separately. See `docs/composed-rollout.md` for the known gap.
                 queries.append((GemmQuery(m=token_count, n=op.n, k=op.k), self._num_layers))
                 continue
             queries.append((GemmQuery(m=token_count, n=op.n, k=op.k), self._num_layers))
@@ -284,11 +271,10 @@ class ModelOps:
 
         Measured consequence on Qwen3.5-35B-A3B: a 64-token decode step activates 221 of 256
         experts, so the real traffic is 1536 MiB per layer against the 48 MiB the query
-        implies -- about 16 ms of a 29 ms step, which is most of the gap the composed model
-        showed before this term existed.
+        implies.
 
         Kept out of `gemm_sol` on purpose. That function also normalises MEASURED rows into
-        utility, and every measured row is a dense GEMM with one weight copy; adding an
+        utility, and every measured row is a dense GEMM with one weight copy. Adding an
         expert multiplier there would corrupt the interpolation surface rather than only the
         prediction. Kept out of the query shape too, because a shape the sweep never measured
         raises `KernelCoverageError`, and decomposing into one GEMM per expert overcharges by
@@ -339,8 +325,8 @@ class ModelOps:
 
         At decode it is ~1 by construction (64 tokens x topk 8 over 221 experts is 2.3), so
         the weight read is charged almost in full. At a 4096-token prefill it is 128, so the
-        same read costs a 128th as much per step -- which is what the measured 4.24 ms
-        256-token step requires, since the unamortised figure exceeds the device's total
+        same read costs a 128th as much per step. That matches the measured 4.24 ms
+        256-token step, since the unamortised figure exceeds the device's total
         traffic budget for that step.
 
         Args:
@@ -364,7 +350,7 @@ class ModelOps:
         is what auxiliary-loss training optimises for.
 
         This matters because it is the weight-read multiplier. At one token only `k` experts
-        are read; by 64 tokens almost every expert is, so the expert weight traffic grows 28x
+        are read. By 64 tokens almost every expert is, so the expert weight traffic grows 28x
         over that range while a per-token shape would call it constant.
 
         Args:
@@ -395,7 +381,7 @@ class ModelOps:
 
         Args:
             token_count (int): Tokens the all-reduce covers. In decode this equals the request
-                count; in prefill it is the total prompt token count.
+                count. In prefill it is the total prompt token count.
 
         Returns:
             tuple[tuple[CommQuery, int], ...]: `(query, multiplier)` pairs, empty at
@@ -428,9 +414,9 @@ class ModelOps:
         Args:
             phase (str): `context` or `generation`.
             batch_size (int): Sequences attending.
-            seq_len (int): Context-phase sequence length; must stay 1 for generation.
-            step (int): Generation-phase KV depth; must stay 0 for context.
-            backend (str | None): Backend override; `None` selects the database default.
+            seq_len (int): Context-phase sequence length. Must stay 1 for generation.
+            step (int): Generation-phase KV depth. Must stay 0 for context.
+            backend (str | None): Backend override. `None` selects the database default.
 
         Returns:
             AttentionQuery: Ready to pass to `KernelDatabase.query_attention`.

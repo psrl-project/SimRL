@@ -2,7 +2,7 @@
 #
 # WHY THIS MODEL, AND WHAT IS DIFFERENT ABOUT IT
 #   Qwen3-8B is dense, 32 heads, head_dim 128, and on H20 its attention is already
-#   bandwidth-bound enough that sharding it across ranks buys little -- which is why
+#   bandwidth-bound enough that sharding it across ranks buys little, which is why
 #   TP concentration measured as a null result there. This checkpoint changes three
 #   things at once that bear on that question:
 #     * MoE: 256 experts, 8 active per token (`moe_intermediate_size` 512). Only
@@ -61,7 +61,7 @@ serve:
       pipeline-parallel-size: 1
       # At tp=1, 67 GiB of weights leaves only ~18 GiB for KV and Mamba caches on
       # a 95 GiB H20. The SSM linear-attention layers each need one Mamba cache block
-      # per concurrent sequence; with ~395 blocks available, max_num_seqs=1024 is
+      # per concurrent sequence. With ~395 blocks available, max_num_seqs=1024 is
       # unreachable. 300 fits within the measured block budget with margin.
       max-num-seqs: 300
 
@@ -72,7 +72,7 @@ bench:
     seed: 42
 
 # Identical grid to tp2/tp4. Prefill varies prompt length and concurrency because it
-# is one shot per request; decode walks context across steps so one long output per
+# is one shot per request. Decode walks context across steps so one long output per
 # (input, concurrency) suffices.
 phases:
   prefill:

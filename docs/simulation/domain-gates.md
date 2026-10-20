@@ -22,7 +22,7 @@ Each fitted artifact entry records, per feature, the range of values it was fitt
 (`feature_ranges`). A query inside the range is **interpolation** and always allowed. A
 query outside it is **extrapolation** and raises `TrainingOutOfDomainError` naming the
 feature, the value and the range, unless that feature is listed in `training_cost.extrapolate`.
-A feature the artifact did not record is not checked; refitting restores the gate.
+A feature the artifact did not record is not checked. Refitting restores the gate.
 
 ```bash
 srl training_cost=fsdp training_cost.artifact_path=... \
@@ -66,13 +66,13 @@ defaults in `srl/config/defaults/training_cost/fsdp.yaml` and `hydraulis.yaml`.
 ## Cell lookup
 
 Coefficients are stored per cell, a combination of mesh and discrete selectors that was
-profiled independently. A query that matches no cell raises; it is never answered from a
+profiled independently. A query that matches no cell raises. It is never answered from a
 neighbour. A fit averaged across topologies describes none of them: the communication
 pattern changes with the mesh, so a fallback would silently calibrate to the wrong one.
 
 `fsdp`
 : A cell is one measured mesh. `shard_size` and `replicate_size` pick it, and
-  `training_cost.parallelism.dp` must equal `shard_size * replicate_size`; any other `dp` is
+  `training_cost.parallelism.dp` must equal `shard_size * replicate_size`. Any other `dp` is
   refused, because the mesh never enters the fitted form and the static memory pool scales
   as `1 / dp`. The schedule must be `fsdp` and `activation_recompute` must equal the cell's.
   Selectors are `shard_size`, `replicate_size`, `optimizer`, `optimizer_offload`,
@@ -129,7 +129,7 @@ identical by construction. For larger microbatches they separate only if a micro
 lengths, and that depends on the order the balanced partitioner leaves sequences in.
 `token_budget` equals them only when the budget is small enough that every group holds one
 sequence, or when the groups it forms happen to be uniform. Identical results from two modes
-are therefore a property of the input shape and not evidence that a mode is unwired; if you
+are therefore a property of the input shape and not evidence that a mode is unwired. If you
 believe padding matters in your system, vary `micro_batch_size` and the length spread
 before drawing a conclusion.
 
@@ -143,7 +143,7 @@ startup or early.
 | `job.batch_size < 1`, `group_size < 1` | must be at least 1 |
 | `job.group_size` differs from the workload's | group size does not match the workload |
 | `SIMRL_UNDOABLE_EVENTS` lacks `request_complete` | completions must be speculative |
-| a request needs more KV blocks than an instance owns | it can never be admitted; the pool is too small for `prompt_len + target_len` |
+| a request needs more KV blocks than an instance owns | it can never be admitted. The pool is too small for `prompt_len + target_len` |
 | `rollout_cost=composed` without `kernel_table_root`, `gpu`, `model_path` | each is required |
 | `rollout_cost=psrl` without `artifact_path` | required |
 | `recompute_cost=training_forward` with no artifact descriptor and no checkpoint path | the geometry cannot be read, and it is never defaulted |

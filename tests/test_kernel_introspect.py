@@ -102,7 +102,7 @@ def test_a_wrong_declared_shape_is_caught():
         def gemm_shapes(self, model, *, tensor_parallel):
             from srl.profiler.kernel.grid.shape import GemmShape
 
-            # qkv_proj is off by one row; everything else is right.
+            # qkv_proj is off by one row. Everything else is right.
             return (
                 GemmShape("qkv_proj", 6145, 4096),
                 GemmShape("o_proj", 4096, 4096),
@@ -143,7 +143,7 @@ def test_fuse_scales_the_two_expert_projections_on_different_axes():
     """
     A per-token expert shape multiplies rows for gate_up and the contraction for down.
 
-    The module graph holds ONE expert's slice; the family declares the work of all
+    The module graph holds ONE expert's slice. The family declares the work of all
     `num_experts_per_tok` of them as a single GEMM. Which dimension carries the factor
     differs between the two projections, and getting it backwards reports a mismatch for a
     family that is right:
@@ -177,7 +177,7 @@ def test_fuse_reads_expert_stacks_and_the_router_from_a_moe_layer():
     256 experts are 93% of Qwen3.5-35B-A3B's parameters and they are stored as plain 3-D
     `nn.Parameter` stacks, not `nn.Linear`. A verifier that only walked 2-D module weights
     could not see them at all, so `verify-shapes` would pass a family that priced them
-    wrongly -- which is exactly how a 1.8x error in `qkv_proj` survived until this gate
+    wrongly, which is exactly how a 1.8x error in `qkv_proj` survived until this gate
     could reach a MoE layer.
     """
     import torch

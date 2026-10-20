@@ -60,8 +60,8 @@ LAD: dict[str, dict] = {
 """The same knobs re-swept on top of the KV admission gate (wm=0.6).
 
 The original sweep above found `eps` acting as an admission throttle whose correct sign flipped
-across regimes -- but that was measured with no gate. If the watermark has taken over the throttle
-role, `eps` should now be a pure comparison tolerance (eps0 harmless or even free); if it still
+across regimes, but that was measured with no gate. If the watermark has taken over the throttle
+role, `eps` should now be a pure comparison tolerance (eps0 harmless or even free). If it still
 flips sign, the design genuinely needs both knobs. `wm06_wg0` checks whether the arrival-block
 bound still matters once the gate bounds concurrency."""
 
@@ -185,8 +185,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["run", "report"])
     parser.add_argument("grid", choices=sorted(GRIDS))
-    parser.add_argument("--points", nargs="*", default=None, help="Point names; default all in the grid.")
-    parser.add_argument("--knobs", nargs="*", default=None, help="Knob names; default all.")
+    parser.add_argument("--points", nargs="*", default=None, help="Point names. Default all in the grid.")
+    parser.add_argument("--knobs", nargs="*", default=None, help="Knob names. Default all.")
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
     if args.command == "run":

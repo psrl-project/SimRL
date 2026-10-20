@@ -410,7 +410,7 @@ def test_fit_floors_report_empty_when_no_attention(tmp_path):
 
 
 def test_fit_floors_report_skips_gemm_family(tmp_path):
-    """GEMM parquets do not get fitted; only attention dirs produce floors.json."""
+    """GEMM parquets do not get fitted. Only attention dirs produce floors.json."""
     gemm_dir = tmp_path / "h20" / "gemm" / "vllm" / _VERSION
     gemm_dir.mkdir(parents=True, exist_ok=True)
     # Write a fake gemm parquet (not read during floor fitting).
@@ -456,7 +456,7 @@ def test_floors_are_read_once_per_backend_not_once_per_query(tmp_path, monkeypat
 
 
 def test_a_query_does_not_scan_the_filesystem(tmp_path, monkeypatch):
-    """listdir on every query made one attention query 2337 us; the interpolation is 17 us."""
+    """listdir on every query made one attention query 2337 us. The interpolation is 17 us."""
     import os
 
     from srl.cost.kernel.database import AttentionQuery, KernelDatabase

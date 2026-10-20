@@ -111,7 +111,7 @@ def test_per_token_slope_matches_the_measured_thirty_six_layer_slope():
     Measured peak allocated bytes fit 624403 bytes per token at 36 layers.
 
     Solving the 2-layer and 36-layer slopes jointly put the layer coefficient at
-    1.0006, so the layer term is analytic; the remainder is the calibrated loss-path
+    1.0006, so the layer term is analytic. The remainder is the calibrated loss-path
     overhead on the logits.
     """
     geometry = _qwen3_8b_geometry()
@@ -256,7 +256,7 @@ def test_pipeline_stages_are_not_uniform():
     stage and the output projection on the last, and neither is a transformer layer.
     Peak memory is set by the worst stage, so a uniform share understates it. Measured
     at PP=4 on Qwen3-8B, assuming uniform predicted 24.33 GiB where the heaviest rank
-    held 27.81 GiB; accounting for the embedding brings it to 27.81 GiB.
+    held 27.81 GiB. Accounting for the embedding brings it to 27.81 GiB.
     """
     parallelism = TrainingParallelism(tp=1, pp=4, dp=2, cp=1)
     uniform = QWEN3_8B_PARAMS / 4
@@ -339,11 +339,11 @@ def test_peak_pipeline_stage_is_insensitive_to_microbatch_count():
     """
     Under 1F1B the warmup depth and the logits sit on opposite pipeline ends.
 
-    The first stage keeps up to `pp` microbatches in flight but holds no logits; the
+    The first stage keeps up to `pp` microbatches in flight but holds no logits. The
     last stage holds the logits but backpropagates each microbatch immediately, so its
     warmup depth is one. The worst stage is therefore the larger of the two, and for a
     large vocabulary that is the last one regardless of microbatch count. Measured at
-    PP=4, the peak rank read 27.81 GiB for both one and four microbatches; scaling the
+    PP=4, the peak rank read 27.81 GiB for both one and four microbatches. Scaling the
     peak stage's checkpoints by the in-flight count would have predicted 0.56 GiB of
     difference.
     """

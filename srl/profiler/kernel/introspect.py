@@ -44,7 +44,7 @@ _PASSTHROUGH: dict[str, str] = {
     "down_proj": "mlp.down_proj",
     # Mixture-of-experts. The router's weight hangs off a bare module, and the expert stacks
     # are 3-D parameters that `_linear_shapes` reports as their per-expert 2-D slice.
-    # The router is an `nn.Linear` named `mlp.gate`; `_linear_shapes` keys 2-D weights by
+    # The router is an `nn.Linear` named `mlp.gate`. `_linear_shapes` keys 2-D weights by
     # their MODULE name, so the suffix carries no `.weight`.
     "router": "mlp.gate",
     "shared_down": "mlp.shared_expert.down_proj",
@@ -57,12 +57,12 @@ _PASSTHROUGH: dict[str, str] = {
 # The two expert projections scale along different axes, which is the subtle part:
 #
 #   gate_up: each expert produces its own `2 * moe_inter` rows from the same hidden vector,
-#            so the fused GEMM stacks ROWS -- (topk * 2 * moe_inter, hidden).
+#            so the fused GEMM stacks ROWS: (topk * 2 * moe_inter, hidden).
 #   down:    each expert maps its own `moe_inter` activations back to the same `hidden`
-#            rows, so the fused GEMM widens the CONTRACTION -- (hidden, topk * moe_inter).
+#            rows, so the fused GEMM widens the CONTRACTION: (hidden, topk * moe_inter).
 #
 # Both are the same FLOP count (8 x 2048 x 512 == 2048 x 4096 here), which is why pricing is
-# unaffected either way; the axis matters only for this comparison to be meaningful.
+# unaffected either way. The axis matters only for this comparison to be meaningful.
 _DECLARED_MULTIPLES: dict[str, tuple[str, int]] = {
     "expert_gate_up": ("mlp.experts.gate_up_proj", 0),
     "expert_down": ("mlp.experts.down_proj", 1),
@@ -111,10 +111,10 @@ def _linear_shapes(model: Any) -> dict[str, tuple[int, int]]:
       hangs off a bare module (`mlp.gate.weight`).
     - 3-D expert stacks held as plain parameters (`mlp.experts.gate_up_proj` is
       `[num_experts, 2 * moe_inter, hidden]`). Reported as the per-expert 2-D slice with the
-      expert count stripped, since that is the GEMM a token actually runs; the declared
+      expert count stripped, since that is the GEMM a token actually runs. The declared
       shape multiplies it by `num_experts_per_tok` separately.
 
-    Without the 3-D case the 256 experts -- 93% of this model's parameters -- are invisible
+    Without the 3-D case the 256 experts (93% of this model's parameters) are invisible
     to the gate, and `verify-shapes` would pass a family that priced them wrongly.
     """
     shapes: dict[str, tuple[int, int]] = {}
@@ -223,7 +223,7 @@ def verify_shapes(
     config = AutoConfig.from_pretrained(str(model_path))
     # A multimodal checkpoint nests the language backbone's architecture under
     # `text_config`, and the wrapper class reads fields like `vocab_size` off the top level
-    # where they do not exist -- building it raises
+    # where they do not exist. Building it raises
     # `AttributeError: 'Qwen3_5MoeConfig' object has no attribute 'vocab_size'`. The rollout
     # model is the text backbone, so descend to it, which is the same choice
     # `hf._flatten_text_config` makes on the descriptor side.
@@ -254,14 +254,14 @@ def verify_shapes(
         for shape in family.gemm_shapes(descriptor, tensor_parallel=tensor_parallel)
     }
 
-    # Which layer to compare against. A homogeneous model has one answer; a hybrid model
+    # Which layer to compare against. A homogeneous model has one answer. A hybrid model
     # has two kinds of layer and the family describes only one of them.
     #
     # Qwen3.5-35B-A3B interleaves 10 full-attention layers among 30 gated delta-net layers
     # (`full_attention_interval: 4`), and `families_moe` declares the full-attention block:
     # a GDN layer holds `linear_attn.in_proj_*` instead of `self_attn.{q,k,v,o}_proj`, so
     # comparing against layer 0 reports every declared shape as "observed absent" and the
-    # real question -- whether the attention layers match -- goes unanswered.
+    # real question, whether the attention layers match, goes unanswered.
     #
     # So the reference is the first layer that carries the declared shape names, and the
     # heterogeneity check then runs over layers of that kind only. A model whose

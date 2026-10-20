@@ -46,10 +46,10 @@ and each block names its family with `name`.
 
 | `name` | Parameters | Shape |
 |---|---|---|
-| `fixed` | `lo` | every length equal to `lo`; the default prompt block |
+| `fixed` | `lo` | every length equal to `lo`, the default prompt block |
 | `uniform` | `lo`, `hi` | flat between the bounds, inclusive |
-| `normal` | `mu`, `sigma`, `lo`, `hi` | Gaussian, rounded; draws below `lo` raised to `lo`, above `hi` clipped to `hi` |
-| `lognormal` | `mu`, `sigma`, `lo`, `hi` | right-skewed; `mu` and `sigma` are in log space; `lo` defaults to 1 |
+| `normal` | `mu`, `sigma`, `lo`, `hi` | Gaussian, rounded. Draws below `lo` raised to `lo`, above `hi` clipped to `hi` |
+| `lognormal` | `mu`, `sigma`, `lo`, `hi` | right-skewed. `mu` and `sigma` are in log space. `lo` defaults to 1 |
 | `bimodal` | `short_len`, `long_len`, `long_frac` | two point masses, the shape for a truncated distribution |
 | `powerlaw` | `alpha`, `lo`, `hi` | heavy tail, inverse-CDF sampled and clipped to `[lo, hi]` |
 
@@ -118,8 +118,8 @@ srl workload=bimodal \
     workload.prompt.lo=75 workload.prompt.hi=1024
 ```
 
-`short_len` is the body, near the median of the untruncated responses; `long_len` is the cap
-where the point mass sits; `long_frac` is the truncated fraction. The prompt block is switched
+`short_len` is the body, near the median of the untruncated responses. `long_len` is the cap
+where the point mass sits. `long_frac` is the truncated fraction. The prompt block is switched
 from `fixed` to `normal` with the measured mean and a loose spread. `bimodal.yaml` ships the
 prompt as `fixed` with `lo: 512, hi: 512`, so `mu` and `sigma` need the `+`, and `hi` must be
 raised or the inherited 512 clips every prompt.
@@ -143,7 +143,7 @@ srl workload=dapo_trace \
 
 `workload.trace.path` is required (`workload.trace.path is required when workload.source is
 trace` otherwise). `workload.trace.n_groups` is `0` to read every group, or a positive cap for
-a quick smoke run. The trace is read in file order; once the run has issued every request it
+a quick smoke run. The trace is read in file order. Once the run has issued every request it
 wraps around to the first group, and because the sequence is group-ordered, wraparound
 restarts on a group boundary. `batch_size=64` with 8 responses per group consumes 64 prompts
 (512 responses) per training step.
@@ -164,7 +164,7 @@ It draws log-lengths from a normal and solves the location so the mean survives 
 larger), and `--rho` is the share of log-length variance that belongs to the prompt rather than
 the sample, so that a hard prompt makes all of its responses long. It also takes `--group-size`
 (default 8), `--prompt-median`, `--prompt-sigma`, and `--seed`. The result loads with
-`workload=dapo_trace`; its header marks `"provenance": "synthetic-dispersed"`.
+`workload=dapo_trace`. Its header marks `"provenance": "synthetic-dispersed"`.
 
 ```{toctree}
 :maxdepth: 2

@@ -1,7 +1,7 @@
 """Shared CUDA timing helpers for direct kernel profilers.
 
 The one module under `utils/` that imports `torch` at module scope. It is reached only from
-`runner/`, which is already on the GPU path; `grid/` and `sweep/` must not import it.
+`runner/`, which is already on the GPU path. `grid/` and `sweep/` must not import it.
 
 ## Two timing modes, and why the choice is per-family rather than global
 
@@ -16,10 +16,10 @@ replays, so the host cost is paid at capture and excluded from every timed itera
 Neither is universally right. The correct mode is the one matching how the stack that will
 be simulated runs that kernel, which was read off a live engine rather than assumed. A
 Qwen3.5-35B-A3B server resolves `cudagraph_mode=FULL_AND_PIECEWISE` (the v1 default) and
-captures two sets of graphs at startup, 51 sizes each:
+captures two sets of graphs at startup:
 
-- `(decode, FULL)` -- the entire forward pass, attention and GDN included, in one graph.
-- `(mixed prefill-decode, PIECEWISE)` -- graphs around the ops in `splitting_ops`, with
+- `(decode, FULL)`: the entire forward pass, attention and GDN included, in one graph.
+- `(mixed prefill-decode, PIECEWISE)`: graphs around the ops in `splitting_ops`, with
   those ops themselves left outside for flexibility.
 
 So the dispatch cost a kernel pays depends on the PHASE, not only on the family. Decode
@@ -27,38 +27,22 @@ replays a captured graph and pays none of it. Prefill and mixed batches run the 
 and GDN ops eagerly, and do pay it. Megatron's training step runs eager throughout, so a
 graph-timed row would under-report a launch cost genuinely on its critical path.
 
-Measured on H20 (2026-10-08), the gap is only large enough to change a table for one family.
-Ratios of event-timed to graph-replayed latency at each family's smallest swept shape:
-
-| family | worst event/graph | median | mode |
-|---|---|---|---|
-| gemm | 2.78x | 1.05x | event |
-| elementwise | 2.15x | 1.15x | event |
-| attention | 6.12x | 1.04x | event, see below |
-| gdn_context | **8.58x** (491 us event, 57 us graph) | - | graph |
-| gdn_decode | **26.5x** (27.8 us event, 1.0 us device) | - | graph |
-
-GEMM and elementwise sit below 1x against profiler device time across most of their grids,
-the signature of a device-bound kernel: the host runs ahead and the events bracket real work.
-
-GDN is the opposite because FlashInfer dispatches it through the CUTLASS DSL, which
+GDN is graph-timed because FlashInfer dispatches it through the CUTLASS DSL, which
 re-marshals every tensor argument in Python on each call (`generate_execution_args` plus a
-`from_dlpack` -> `mark_layout_dynamic` -> `_c_pointers` chain per tensor). That is ~425 us of
-interpreter work per call at 128 tokens against 57 us of kernels, and it was large enough to
-charge 17.9 ms of dispatch across 30 GDN layers into a real 4.24 ms step.
+`from_dlpack` -> `mark_layout_dynamic` -> `_c_pointers` chain per tensor), and that
+interpreter cost dominates the kernel's own device time at small shapes.
 
-**Attention is a known, deliberately unconverted case.** Its decode rows show the same
-pattern -- 67 us event against 15 us replayed, 4.5x, clustered exactly at the fitted ~70 us
-floor -- and capture was verified to produce identical results, so converting it is
+**Attention is a known, deliberately unconverted case.** It shows the same host-bound pattern
+at decode, and capture was verified to produce identical results, so converting it is
 mechanically possible. It is not done because the evidence does not yet say which number is
-right: decode replays a FULL graph and would want the 15 us, while prefill and mixed batches
-run attention eagerly outside the piecewise graph and would want the 67 us. One table cannot
-serve both, and the composed model reads one table for all phases. Converting attention
-wholesale would fix decode and break prefill by the same factor. The honest fix is a
-phase-aware table, which is a schema change, not a timing-helper change.
+right: decode replays a FULL graph and would want the replayed value, while prefill and mixed
+batches run attention eagerly outside the piecewise graph and would want the event-timed
+value. One table cannot serve both, and the composed model reads one table for all phases.
+Converting attention wholesale would fix decode and break prefill by the same factor. The
+honest fix is a phase-aware table, which is a schema change, not a timing-helper change.
 
-A graph launch is not free: replaying a single trivial kernel costs 2.74 us against 3.48 us
-eager. That is below every shape in these grids but would matter for a sub-microsecond op.
+A graph launch is not free, but the cost is below every shape in these grids and would only
+matter for a sub-microsecond op.
 """
 
 from __future__ import annotations
@@ -103,7 +87,7 @@ def time_cuda_call(
     Time one no-argument callable on the current CUDA device.
 
     Measures the device only while the device is the slower side. For a kernel whose host
-    dispatch costs more than its device work this returns the host issue rate instead; use
+    dispatch costs more than its device work this returns the host issue rate instead. Use
     `time_cuda_graph_replay` for those. See the module docstring for which families are
     which, and for the measurements behind that split.
 
@@ -168,7 +152,7 @@ def time_cuda_graph_replay(
     """
     if warmup_iterations <= 0:
         raise ValueError(
-            "time_cuda_graph_replay needs at least one warmup iteration; capturing a cold "
+            "time_cuda_graph_replay needs at least one warmup iteration. Capturing a cold "
             "kernel records its autotuning path instead of its steady state."
         )
     for _ in range(warmup_iterations):

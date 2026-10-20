@@ -6,7 +6,7 @@ do that would still produce the right numbers, so nothing fails: the cost is inv
 someone profiles the run. These tests are what make it visible.
 
 **Asserted per module, by walking the directories.** The earlier version of this file named two
-modules explicitly, which could not notice a third that started importing torch -- and the
+modules explicitly, which could not notice a third that started importing torch, and the
 layering introduced several. Discovering the module list from the filesystem means a new grid or
 sweep is covered the moment it is added, and a `tests/` change is never needed to extend the
 guarantee.
@@ -37,7 +37,7 @@ _TORCH_FREE_FILES = (
 )
 
 # The measurement side. Its loops import torch inside `run()`, so the aggregate package is
-# itself cheap to import; the probe below pins that rather than assuming it.
+# itself cheap to import. The probe below pins that rather than assuming it.
 _GPU_DIRECTORIES = ("runner",)
 
 
@@ -123,7 +123,7 @@ def test_every_op_can_reach_its_runner():
     This is the check a rename needs, and it has to read the *real* statements rather than a
     hand-kept list beside them: a list would resolve while the body it claims to mirror stayed
     stale. `parse_sweep` is exercised by every config test, but `measure` only runs during a real
-    sweep, so a bad module path there surfaces on a GPU after the grid is built -- or on a
+    sweep, so a bad module path there surfaces on a GPU after the grid is built, or on a
     cluster, after a cross-node rendezvous.
 
     Verified by mutation: rewriting one op's `measure` import back to the old `profiler.kernels`
@@ -192,7 +192,7 @@ print(f"resolved {checked}")
 
 
 def test_the_package_root_exports_only_the_config():
-    """The 28-name lazy table is gone; callers name the module they want.
+    """The 28-name lazy table is gone. Callers name the module they want.
 
     A wide root is what the PEP 562 `__getattr__` existed to make safe, and keeping both the
     layering and the lazy table would leave two reachable paths to every symbol.

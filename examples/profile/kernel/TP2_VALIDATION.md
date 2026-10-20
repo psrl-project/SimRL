@@ -46,7 +46,7 @@ measured step took almost exactly twice the predicted time, and the data contrad
 At depth 1,089 the ordering is correct (16 requests cost less than 32). At depth 8,960 half the
 batch takes nearly double the time, at twice the total KV. No cost model should reproduce that,
 and TP=1's same batch range scores 0.9960. The four TP=2 servers shared 8 GPUs and one CephFS
-mount; the reqs=16 server (GPUs 2,3) degraded partway through its run. Corroborating: reqs=4, 16
+mount, and the reqs=16 server (GPUs 2,3) degraded partway through its run. Corroborating: reqs=4, 16
 and 32 all show max/median latency ratios of 7.5x-20x within a bucket, against 1.5x-1.6x at
 reqs=48/64.
 
@@ -69,7 +69,7 @@ ratio is **below** 1.0 (0.9648 / 0.9720 / 0.9766): the model slightly *under*-pr
 reqs >= 32 the ratio is 0.9707 with the collective contributing 13.1% of the step, so an
 unmodelled overlap saving of that size would have shown up as a ratio near 1.13, not 0.97.
 
-This does not prove overlap is absent; it proves it is not the dominant term at this degree. The
+This does not prove overlap is absent. It proves it is not the dominant term at this degree. The
 collective is still timed in isolation and that remains an unquantified approximation.
 
 ## Collective term size, and the cost of the original mistake
@@ -100,7 +100,7 @@ custom-vs-NCCL distinction is real (measured, `torch.distributed.all_reduce` is 
 server dispatches) but at TP=2 on H20 it is worth ~1pp of end-to-end MRE, not the dominant error.
 Where it does bite is the per-kernel holdout as world size grows: the NCCL control reaches 10.66%
 MRE at world_size 8 against 9.30% for the dispatched table, having *beaten* it at world_size 2.
-(These world_size 8 figures were corrected on 2026-10-04; the previously published
+(These world_size 8 figures were corrected on 2026-10-04. The previously published
 24.80% / 7.56% came from a holdout report that predates the tables it scores. See the
 warning in `docs/profiling/tensor-parallel.md`.)
 
@@ -189,7 +189,7 @@ does. At 4096 tokens and above both tp=2 runs agree closely (0.718 and 0.713 of 
 expected 1.4-1.6x speedup. So the offset is confined to the small-token, single-request corner.
 
 **This is a measurement artifact in six buckets, not a missing model term.** A genuine fixed
-per-step cost would appear at every request count and in both tp=2 runs; it appears in neither.
+per-step cost would appear at every request count and in both tp=2 runs. It appears in neither.
 The likely mechanism is that `reqs=1` points set `num-prompts: 1`, so the recorded iteration is a
 single isolated request whose measured span picks up server-side work that a steady stream amortises
 :  and the serial run, having booted a fresh server for the whole phase, is the configuration where
@@ -336,7 +336,7 @@ so they cannot share a mechanism:
   model: at `reqs=1` the composed sum slightly *exceeds* what vLLM measures. Note what vLLM measures
   there: 8.4x more KV changes the step by only 1.09x (tp=1: 1.11x), against 3.27x at `reqs=64`. A
   single-request decode step is dominated by per-step overhead and the GPU work is nearly invisible,
-  so summing kernels over-counts. Re-measuring will not change this; it is the known small-batch
+  so summing kernels over-counts. Re-measuring will not change this. It is the known small-batch
   limitation, and the fix would be a model term, not a better baseline.
 
 The practical consequence: `reqs=1` prefill is worth re-measuring and `reqs=1` decode is not.

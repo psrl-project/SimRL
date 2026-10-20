@@ -2,18 +2,18 @@
 
 The floor is a fitted hyperparameter: it is the value of `floor_s` in
 `max(floor_s, roofline_work)` that minimises the held-out mean relative error
-(MRE) over the full bracketed set.  A pure roofline sets `floor_s = 0`, which
+(MRE) over the full bracketed set. A pure roofline sets `floor_s = 0`, which
 causes large errors in the dispatch-limited regime where the GPU finishes the
 kernel work faster than the Python/dispatch path can schedule the next call.
 
 The fitting procedure is a coarse scan over `CANDIDATE_FLOORS_US` followed by
-reading the minimiser.  The MRE-vs-floor curve is unimodal in practice, so a
-scan finds the global minimum.  Running 2 ops × 12 candidates costs roughly
+reading the minimiser. The MRE-vs-floor curve is unimodal in practice, so a
+scan finds the global minimum. Running 2 ops × 12 candidates costs roughly
 a second at the grid sizes used in practice (H20 + Qwen3-8B TP=1), so this is
 cheap enough to run as part of the profiling workflow.
 
 Which ops get a floor is the op's own decision, read from `op.fits_floor`, so a
-new floor-taking op is fitted here with no edit to this module.  GEMM declares
+new floor-taking op is fitted here with no edit to this module. GEMM declares
 `fits_floor = False` and is skipped.
 
 Results are written to `floors.json` **inside the version directory**
@@ -72,7 +72,7 @@ def fit_floors(
     Args:
         version_dir (Path): The `{root}/{gpu}/{family}/{backend}/{version}/` directory.
         backend (str): Backend label (e.g. `vllm`, `flashinfer`).
-        gpu (str): GPU slug or device name; also selects the bundled spec when
+        gpu (str): GPU slug or device name. Also selects the bundled spec when
             `gpu_spec` is None.
         gpu_spec (GpuSpec | None): Hardware spec for SOL. Defaults to the bundled
             spec for `gpu`.
@@ -183,7 +183,7 @@ def load_floors(
 
     Args:
         version_dir (Path): The version directory that should contain `floors.json`.
-        backend (str): Backend label; used in messages and to select the fallback.
+        backend (str): Backend label. Used in messages and to select the fallback.
         warn_missing (bool): When True, a missing file logs a warning and returns the
             hardcoded fallback. A second warning is logged for each floor-taking op in
             `version_dir` the fallback has no entry for, because such an op takes a zero
@@ -204,7 +204,7 @@ def load_floors(
         if warn_missing:
             fallback = dict(FALLBACK_FLOORS_S.get(backend, {}))
             srl_logger.warning(
-                f"No floors.json in {version_dir}; falling back to hardcoded FALLBACK_FLOORS_S "
+                f"No floors.json in {version_dir}, falling back to hardcoded FALLBACK_FLOORS_S "
                 f"for backend {backend!r} (fitted for H20, may be wrong for other hardware or "
                 f"backend versions). Run srl-profile kernels fit-floor to generate it."
             )
@@ -257,7 +257,7 @@ def fit_floors_report(
 
     Args:
         root (str | Path): Directory holding `{gpu}/{family}/{backend}/{version}/`.
-        gpu (str): GPU slug or device name; also selects the bundled spec.
+        gpu (str): GPU slug or device name. Also selects the bundled spec.
         gpu_spec (GpuSpec | None): Hardware spec for SOL. Defaults to the bundled spec.
         candidates_us (tuple[float, ...]): Floor candidates in microseconds.
         seed (int): Random seed for reproducible sampling.

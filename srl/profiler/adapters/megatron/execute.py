@@ -31,7 +31,7 @@ def run_bridge_candidate(
         dry_run: Write the spec and command without executing.
         resume: Skip a candidate whose run directory already holds a result.
         nnodes: Nodes the candidate's mesh spans. A mesh larger than one host's GPU count
-            needs this -- Qwen3.5-35B-A3B cannot fit a trainable mesh on eight GPUs, so its
+            needs this: Qwen3.5-35B-A3B cannot fit a trainable mesh on eight GPUs, so its
             sweep runs at 16.
         node_rank: This host's index in `[0, nnodes)`. Every host runs the same command with
             its own rank.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# conf/rollout.sh — rollout cost model configuration
+# conf/rollout.sh: rollout cost model configuration
 # Sourced by simulate.sh. Sets COST_OVERRIDES.
 # Inputs: ROLLOUT_MODEL, ROLLOUT_ARTIFACT, KERNEL_ROOT, MODEL_PATH, GPU, ROLLOUT_TP
 
@@ -24,7 +24,7 @@ if [[ "${ROLLOUT_MODEL}" == "composed" ]]; then
         if [[ "${KERNEL_ROOT}" != *"tp${ROLLOUT_TP}"* ]]; then
             echo "ROLLOUT_TP=${ROLLOUT_TP} but KERNEL_ROOT does not name that degree:" >&2
             echo "  ${KERNEL_ROOT}" >&2
-            echo "GEMM shapes are sharded at sweep time; point KERNEL_ROOT at kernel_tp${ROLLOUT_TP}." >&2
+            echo "GEMM shapes are sharded at sweep time. Point KERNEL_ROOT at kernel_tp${ROLLOUT_TP}." >&2
             exit 1
         fi
     fi

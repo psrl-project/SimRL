@@ -525,7 +525,7 @@ class TestComputedBlocks:
         first = _req(rid=1, prompt_len=150, source_group_id=42)
         mgr.allocate(first, n_tokens=150, hit_blocks=[])
         mgr.computed_blocks(_req(rid=2, prompt_len=150, source_group_id=42))
-        assert mgr.queries == 9, "only the sibling queried; allocate does not"
+        assert mgr.queries == 9, "Only the sibling queried. Allocate does not."
         assert mgr.hits == 9
 
     def test_disabled_caching_never_hits(self):

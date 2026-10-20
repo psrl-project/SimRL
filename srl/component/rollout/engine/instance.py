@@ -54,7 +54,7 @@ class NativeInstance:
         """Tensor-parallel degree this instance runs at.
 
         Recorded here rather than derived from the cost model because only
-        ComposedRollout carries a TP degree; the fitted models do not. A TP-aware
+        ComposedRollout carries a TP degree. The fitted models do not. A TP-aware
         router reads it, and `DynamicParallelFleet` keys instance reuse on it.
         """
         self.enable_prefix_caching = enable_prefix_caching
@@ -284,7 +284,7 @@ class NativeInstance:
                 blocked = True
                 continue
             if self.kv.allocate(r, n_tokens=1, hit_blocks=[], recorder=self._recorder) is None:
-                # The `grows`/`free` test above approximates pool capacity; the
+                # The `grows`/`free` test above approximates pool capacity. The
                 # pool itself is the authority, so skip rather than advance past
                 # what it granted.
                 blocked = True
@@ -506,9 +506,9 @@ class NativeInstance:
         #
         # Only the *increments* may be computed from `prefilled`. The intercept
         # must come from the pool, because prefix sharing makes a sum over
-        # `blocks_for(prefilled)` an over-estimate -- 896 against a real 134 in
-        # the GRPO shape. Using it drives `k` to 0, preempts, lets the request
-        # back in, and livelocks with the pool three-quarters empty.
+        # `blocks_for(prefilled)` an over-estimate. Using it drives `k` to 0,
+        # preempts, lets the request back in, and livelocks with the pool
+        # mostly empty.
         #
         # The increments stay valid because sharing is fixed at the prompt:
         # siblings diverge from their first generated token, so every block a
@@ -698,10 +698,8 @@ class NativeInstance:
         k_done, _ = advance.next_completion([r.remaining for r in self.running])
         k_kv = self._kv_exhaustion_steps()
         # `_kv_exhaustion_steps` reports the first step that *overflows*, so the
-        # last step that fits is one fewer. The old accounting could advance into
-        # the overflow and detect it afterwards, because occupancy was recomputed
-        # from `prefilled`; the pool is authoritative now, so the segment has to
-        # stop short and preempt instead.
+        # last step that fits is one fewer. The pool is authoritative, so the
+        # segment has to stop short and preempt instead of advancing into overflow.
         kv_bound = k_kv is not None and k_kv <= k_done
         k = max(0, k_kv - 1) if kv_bound else k_done
 
@@ -784,8 +782,8 @@ class NativeInstance:
         taken and the recorder stays `NULL_RECORDER` throughout, so KV pool and
         free-list mutations carry zero undo bookkeeping cost.
 
-        Use this when the caller knows it will commit this event unconditionally
-        — i.e., the event type is not in the undoable set. A later
+        Use this when the caller knows it will commit this event unconditionally,
+        i.e., the event type is not in the undoable set. A later
         `_undo_and_align` that encounters an instance in this state will skip it
         (nothing to undo) and tolerate its clock being ahead of the alignment
         target.
@@ -950,16 +948,14 @@ class NativeInstance:
         """Whether the pool is too full for the batch to make progress.
 
         A request sitting exactly on a block boundary needs a new block for its
-        next token; one mid-block does not. So with no free blocks the step's
+        next token. One mid-block does not. So with no free blocks the step's
         decode throughput is only the mid-block requests, and the boundary ones
         are stalled.
 
         The test is whether the pool actually refused a decode token, not
         whether some request *could* need one. Asking the latter makes a full
         pool look deadlocked whenever any resident sits on a block boundary,
-        which at 175 running has probability 1.0: it fired on 96% of the
-        plateau's prefill steps, every one of which decoded 93-182 tokens.
-        Each false positive preempted a request, which is the oscillation.
+        causing false-positive preemptions and oscillation.
 
         `_decode_running_once` already reports the real answer, since it is the
         code that asks the pool for those blocks.
@@ -970,7 +966,7 @@ class NativeInstance:
             r.prompt_len + r.generated - r.prefilled > 0 for r in self.waiting
         )
         # A full pool with nothing waiting is still stalled if every running
-        # request needs a block it cannot get; preemption is the only way out.
+        # request needs a block it cannot get. Preemption is the only way out.
         return self._last_decode_blocked and (prefill_blocked or len(self.running) > 1)
 
     def _preempt_for_progress(self) -> list[Request]:

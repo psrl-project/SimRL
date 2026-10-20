@@ -44,8 +44,8 @@ def record_request(req: Request, recorder: Recorder) -> None:
     """Register one request's mutable state, once per event.
 
     `segments` is append-only except for its last entry, which is incremented in
-    place, so the length alone is not enough -- hence the extra entry. This is
-    the same correction the original hand-written snapshot made.
+    place, so the length alone is not enough. The tail's value needs its own
+    captured entry too.
     """
     recorder.record_attrs_once(("req", id(req)), req, *_REQUEST_FIELDS)
     recorder.record_once(("segs", id(req)), lambda: TruncateList.capture(req.segments))

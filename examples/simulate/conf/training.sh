@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# conf/training.sh — training cost model configuration
+# conf/training.sh: training cost model configuration
 # Sourced by simulate.sh. Sets TRAINING_OVERRIDES.
 # Inputs: TRAINING_ARTIFACT, TRAINING_BACKEND, TRAINING_TP, TRAINING_PP, TRAINING_DP,
 #         TRAINING_CP, TRAINING_LATENCY_S, MICRO_BATCH_SIZE, ACTIVATION_RECOMPUTE,
@@ -11,7 +11,7 @@ TRAINING_OVERRIDES=(
     training_cost.latency_s="${TRAINING_LATENCY_S}"
 )
 if [[ -z "${TRAINING_ARTIFACT}" ]]; then
-    return 0  # nothing more to do; caller keeps the fixed-latency default
+    return 0  # nothing more to do, caller keeps the fixed-latency default
 fi
 
 if [[ ! -f "${TRAINING_ARTIFACT}" ]]; then
@@ -32,7 +32,7 @@ if ! python3 "${CONF_DIR}/check_training_artifact.py" \
 fi
 
 if [[ "${TRAINING_BACKEND}" == "fsdp" ]]; then
-    # Read the mesh the artifact was fitted on; guessing would silently pin to a
+    # Read the mesh the artifact was fitted on. Guessing would silently pin to a
     # wrong topology or raise TrainingOutOfDomainError.
     if [[ -z "${TRAINING_DP:-}" ]]; then
         TRAINING_DP="$(python3 - "${TRAINING_ARTIFACT}" <<'PYDP'
@@ -66,7 +66,7 @@ PYDP
         TRAINING_OVERRIDES+=( training_cost.max_tokens_per_rank="${MAX_TOKENS_PER_RANK}" )
     fi
 else
-    # Hydraulis: (TP, PP) is the measured cell. TP is required; PP is derived.
+    # Hydraulis: (TP, PP) is the measured cell. TP is required, and PP is derived.
     TRAINING_OVERRIDES=(
         training_cost=hydraulis
         training_cost.artifact_path="${TRAINING_ARTIFACT}"

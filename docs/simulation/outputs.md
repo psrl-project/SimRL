@@ -37,7 +37,7 @@ needs the `in_place` pause mode.
 is directly comparable with `Throughput`: the row for the largest S equals it by
 construction, and the ratio at a lower S is the fraction of generated work that arrived
 fresh enough. It is a **rate**, so it is comparable across runs only if they consumed the
-same number of responses; check `Consumed` first, because a run that ended early divides a
+same number of responses. Check `Consumed` first, because a run that ended early divides a
 smaller total by a smaller span. `SimResult` also provides `scg_count(s)` and
 `scg_w(weight)`.
 
@@ -80,8 +80,8 @@ Re-running into the same `output_dir` replaces `logs/`. `run.log` is always writ
 | `+log_exclude='instance,rollout_step'` | suppresses streams by name or prefix (`instance` covers every `instance/N`) at the source, without building their records. For sweeps whose analysis reads only `request.jsonl` |
 
 All logging is **commit-only**: records are written when state is committed, never for an
-event that may still be undone. The writer is `SimTelemetry` (`srl/telemetry/writer.py`);
-streams have no enforced schema beyond what it writes.
+event that may still be undone. The writer is `SimTelemetry` (`srl/telemetry/writer.py`).
+Streams have no enforced schema beyond what it writes.
 
 ## Streams
 
@@ -89,7 +89,7 @@ streams have no enforced schema beyond what it writes.
 
 | Field | Meaning |
 |---|---|
-| `t`, `start`, `end`, `dt` | `start` is when the step began; `end` is the clock after publish, including `sync_cost.weight_load_time` when the served version changed; `dt = end - start` |
+| `t`, `start`, `end`, `dt` | `start` is when the step began. `end` is the clock after publish, including `sync_cost.weight_load_time` when the served version changed. `dt = end - start` |
 | `version` | the training version this step produced |
 | `n_groups`, `group_size`, `n_reqs` | the consumed batch |
 | `total_tokens` | trained tokens, using the trainer's per-axis caps, not generated tokens |
@@ -108,7 +108,7 @@ One record per event. `event` is the discriminator.
 
 | `event` | Emitted when |
 |---|---|
-| `enqueue` | a group is staged in the router; no policy capacity is used |
+| `enqueue` | a group is staged in the router. No policy capacity is used |
 | `admit` | the group's first member is placed, once for every member of the group |
 | `complete` | the engine finishes a response |
 | `consume` | a training batch takes it |
@@ -124,7 +124,7 @@ defined are `null`: `consume_version` and both staleness values until `consume`,
 
 | Field | Meaning |
 |---|---|
-| `v_traj` | rollout version stamped when the group was admitted; unadmitted staged requests are rebased until then |
+| `v_traj` | rollout version stamped when the group was admitted. Unadmitted staged requests are rebased until then |
 | `v_min`, `v_max` | oldest and newest weight version that produced any token |
 | `num_preemptions` | times the engine evicted it |
 | `num_aborts` | times a publish (abort mode) or a router reclaim released its KV |
@@ -235,13 +235,13 @@ editing the converter. Three conversions need more than a rename:
 
 - **Rollout versus validation replicas.** Both write the same stats files and the rows carry no
   role. The role is in the `DPLBStatCollector_{role}_I{n}.log` file names, which is what
-  `--role` selects on; `--instances 0,2` overrides it. Filtering on "all rows are zero"
+  `--role` selects on. `--instances 0,2` overrides it. Filtering on "all rows are zero"
   would drop a genuinely idle rollout replica, so it is not used.
 - **Two clocks.** The JSONL sinks stamp UTC and the text logs stamp naive local time. The
   offset is the gap between the last text-log line and the last stats sample, rounded to the
   quarter-hour grid real offsets live on. The end of the run is used because the controller
   logs for minutes before the engines come up. Override with `--utc-offset-hours`.
-- **Training phases.** The simulator logs one record with three durations; PSRL scatters begin
+- **Training phases.** The simulator logs one record with three durations. PSRL scatters begin
   and end markers across the controller log and per-rank worker logs. Ranks are unioned, the
   earliest begin and the latest end, since the block claims the interval during which the
   trainer was busy.
@@ -280,7 +280,7 @@ training cost that no script reveals.
 
 - In a real run the waiting and total-request lines coincide, because the engine reports no
   waiting requests and queueing happens in the router. The simulator queues in the router
-  too, so both sides draw the router row, which is the right place to compare backlog; the
+  too, so both sides draw the router row, which is the right place to compare backlog. The
   simulated engine-side queue holds only work an instance has accepted.
 - The router queue is global and is not attributed to instances.
 - With the default `recompute_cost` of `fixed` at `0.0`, a simulated band has no `recompute`

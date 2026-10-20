@@ -50,15 +50,15 @@ def main() -> int:
     kv = os.environ.get("SIMRL_KV_CACHE")
     report["kv_cache"] = kv
     if not kv:
-        warnings.append("SIMRL_KV_CACHE is unset; every run re-probes KV capacity.")
+        warnings.append("SIMRL_KV_CACHE is unset. Every run re-probes KV capacity.")
     elif not Path(kv).is_file():
-        warnings.append(f"SIMRL_KV_CACHE={kv} does not exist yet; the first run will probe and write it.")
+        warnings.append(f"SIMRL_KV_CACHE={kv} does not exist yet. The first run will probe and write it.")
 
     dirty = [line for line in _git("status", "--porcelain").splitlines() if "srl/" in line]
     report["git_head"] = _git("rev-parse", "--short", "HEAD")
     report["dirty_srl_files"] = dirty
     if dirty:
-        warnings.append("Uncommitted changes under srl/; record them, the baseline is this same tree.")
+        warnings.append("Uncommitted changes under srl/. Record them, the baseline is this same tree.")
 
     report["blocking"] = blocking
     report["warnings"] = warnings

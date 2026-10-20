@@ -42,8 +42,8 @@ def _balanced_partitions(lengths: list[int], count: int) -> list[list[int]]:
     Partition indices into `count` groups of similar workload.
 
     Greedy longest-processing-time (LPT): sort by descending workload, then assign
-    each item to the currently lightest group via a min-heap.  This approximates
-    verl's partitioner rather than reproducing it exactly; the two can disagree on
+    each item to the currently lightest group via a min-heap. This approximates
+    verl's partitioner rather than reproducing it exactly. The two can disagree on
     the same workload proxy.
     """
     import heapq
@@ -150,17 +150,17 @@ class MicrobatchPlanner:
         The count is `ceil(total_tokens / budget)`, capped at one sequence per
         microbatch. This reproduces verl exactly: `rearrange_micro_batches` computes
         `min(num_groups, ceildiv(total_seqlen, max_token_len))` and then balances
-        that many groups by workload. Validated against both matched PSRL runs --
+        that many groups by workload. Validated against both matched PSRL runs:
         15 of 15 steps agree with the microbatch count the engine's own progress
         bar reports (44, 51, 46, 52, 51, 45, 52, 43, 48, 47 at batch 8, and
         189, 187, 174, 184, 171 at batch 32).
 
         `micro_batch_size` is deliberately ignored. verl reads it only on the
-        static path (`use_dynamic_bsz=False`); under dynamic batching the budget
+        static path (`use_dynamic_bsz=False`). Under dynamic batching the budget
         alone decides, so raising the count to `ceil(len / micro_batch_size)`
         invents microbatches the engine never runs. With the usual
-        `ppo_micro_batch_size_per_gpu=1` that meant one sequence per microbatch --
-        64 instead of 48 on the batch-8 run -- and the step is charged per
+        `ppo_micro_batch_size_per_gpu=1` that meant one sequence per microbatch
+        (64 instead of 48 on the batch-8 run), and the step is charged per
         pipeline slot, so the error went straight into the predicted latency.
 
         Token budget is a target, not a guarantee: a single sequence longer than

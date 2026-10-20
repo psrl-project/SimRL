@@ -110,7 +110,7 @@ def test_attention_rows_are_rejected_against_the_gemm_op(tmp_path):
 
 
 def test_a_context_row_is_rejected_by_the_generation_op(tmp_path):
-    """Context carries `isl` and generation carries `step`; one shared row type hid that."""
+    """Context carries `isl` and generation carries `step`. One shared row type hid that."""
     row = {
         "batch_size": 4,
         "num_heads": 32,

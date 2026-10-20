@@ -55,7 +55,7 @@ def test_forward_gemm_queries_charge_one_per_projection_per_layer():
 
 
 def test_full_recompute_doubles_the_forward_gemms_but_not_the_backward_ones():
-    """`CheckpointFunction.backward` replays the forward; it does not replay the backward."""
+    """`CheckpointFunction.backward` replays the forward. It does not replay the backward."""
     plain = dict(_ops(recompute="none").forward_gemm_queries(4096))
     recomputed = dict(_ops(recompute="full").forward_gemm_queries(4096))
     assert set(plain) == set(recomputed)
@@ -183,7 +183,7 @@ def test_the_attention_side_elementwise_kernels_see_the_full_sequence():
         (query.op_kind, query.n_elements)
         for query, _ in ops.elementwise_queries(token_count)
     }
-    # 32 heads / tp=2 = 16 query heads; 8 kv heads / tp=2 = 4; head_dim 128.
+    # 32 heads / tp=2 = 16 query heads. 8 kv heads / tp=2 = 4. head_dim 128.
     assert ("rotary_embedding", token_count * 16 * 128) in queries
     assert ("rotary_embedding", token_count * 4 * 128) in queries
     assert ("qk_norm", token_count * 16 * 128) in queries
@@ -203,7 +203,7 @@ def test_swiglu_is_charged_over_the_tensor_parallel_sharded_intermediate():
 
 
 def test_a_model_without_qk_layernorm_is_charged_no_per_head_norms():
-    """Qwen3 applies `q_norm`/`k_norm`; earlier architectures do not.
+    """Qwen3 applies `q_norm`/`k_norm`. Earlier architectures do not.
 
     Charging them unconditionally would add two kernels per layer to every model, and
     `qk_norm` is the most expensive kind per element (122.9 us against `rms_norm`'s 40.8 us
@@ -288,7 +288,7 @@ def test_attention_passes_counts_only_the_forward_shaped_passes():
 
 
 def test_the_logits_gemm_runs_over_every_token_and_only_once_per_step():
-    """Inference computes one logit row per request; training computes all of them."""
+    """Inference computes one logit row per request. Training computes all of them."""
     token_count = 12288
     queries = _ops().logits_queries(token_count)
     assert all(multiplier == 1 for _, multiplier in queries)

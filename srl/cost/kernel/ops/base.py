@@ -5,7 +5,7 @@ Op-specific knowledge used to be spread across ten sites: a SOL function in `sol
 column-contract dataclass in `table.py`, a query dataclass and an `isinstance` branch in
 `database.py`, a second SOL binding in `holdout.py`, a phase map in `floor.py`, a writer method
 in `measurements.py`, a sweep field in `config.py`, a profiler entry point, and a CLI branch.
-The count was the visible symptom; the defect was that `database._sol` and
+The count was the visible symptom. The defect was that `database._sol` and
 `holdout._make_sol_fn` were two independent implementations of the same binding, and drift
 between them would silently change utility on one side of the holdout round trip: the exact
 quantity the accuracy gate measures.
@@ -43,13 +43,13 @@ class KernelOp(Protocol):
     Decides which timing helper the runner uses, and it is a property of the op rather than
     of the family because vLLM's default `cudagraph_mode=FULL_AND_PIECEWISE` splits the two
     phases: a decode batch replays one FULL graph covering the whole forward pass, while
-    prefill and mixed batches run piecewise, with every op named in `splitting_ops` -- which
-    includes both softmax attention and GDN -- left outside the graph and dispatched eagerly.
+    prefill and mixed batches run piecewise, with every op named in `splitting_ops` (including
+    both softmax attention and GDN) left outside the graph and dispatched eagerly.
 
     So `generation_attention` and `gdn_decode` are graph-replayed and `context_attention` and
     `gdn_context` are not, even though each pair shares a sweep, a backend, and a family.
     Timing a graph-replayed op with CUDA events charges the simulator a per-call python
-    dispatch cost the engine never pays; timing an eager op by graph replay hides one it
+    dispatch cost the engine never pays. Timing an eager op by graph replay hides one it
     does. See `profiler/kernel/utils/timing.py` for the measurements behind each setting.
     """
 
@@ -139,7 +139,7 @@ def ops_for_family(family: str) -> tuple[KernelOp, ...]:
         family (str): Family directory name, e.g. `attention`.
 
     Returns:
-        tuple[KernelOp, ...]: Sorted by op name; empty when the family has no ops.
+        tuple[KernelOp, ...]: Sorted by op name. Empty when the family has no ops.
     """
     return tuple(sorted((op for op in OP_REGISTRY.values() if op.family == family), key=lambda op: op.name))
 
@@ -155,13 +155,13 @@ def ops_in(version_dir: str | Path) -> tuple[KernelOp, ...]:
 
     Replaces parsing an op name out of a parquet stem at each discovery site. A parquet with
     no registered op is skipped rather than raising, because a stray file must not break a
-    report; `tests/test_kernel_op_coverage.py` is what fails on a genuinely unregistered op.
+    report. `tests/test_kernel_op_coverage.py` is what fails on a genuinely unregistered op.
 
     Args:
         version_dir (str | Path): A `{root}/{gpu}/{family}/{backend}/{version}/` directory.
 
     Returns:
-        tuple[KernelOp, ...]: Sorted by op name; empty when the directory is absent.
+        tuple[KernelOp, ...]: Sorted by op name. Empty when the directory is absent.
     """
     directory = Path(version_dir)
     if not directory.is_dir():

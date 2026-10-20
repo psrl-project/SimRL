@@ -6,10 +6,10 @@ their dimensions". Kept separate from `runner/` for two reasons:
 - The cost path imports `grid/gemm.py` and `grid/attention.py` to build its *queries*, and must
   not pay a 4.2-second GPU-stack import to do it.
 - The arithmetic becomes testable. `grid/elementwise.py`'s element counts are derived a second
-  time in `cost/training/training_ops.py` on the query side; while they lived inside the timing
+  time in `cost/training/training_ops.py` on the query side. While they lived inside the timing
   loop the only way to compare the two was to run a sweep on a GPU.
 
-Every module here must stay free of `torch` and `vllm`;
+Every module here must stay free of `torch` and `vllm`.
 `tests/test_kernel_package_imports.py` enforces it per module, so a new grid that reaches for a
 tensor helper fails immediately rather than slowing every simulator run.
 

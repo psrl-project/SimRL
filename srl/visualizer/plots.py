@@ -26,14 +26,56 @@ from ..telemetry.store import JsonlStore  # noqa: E402
 
 _INSTANCE_PREFIX = "instance/"
 
+# Categorical hues (blue/orange/aqua) and the blue sequential ramp, from the
+# dataviz skill's validated palette -- CVD-checked with
+# scripts/validate_palette.js rather than hand-picked. Blue marks
+# system/infrastructure state (training phases, KV occupancy); orange marks
+# queued request volume; aqua marks in-flight request volume. The aqua slot's
+# contrast-vs-surface WARN is relieved by the legend every panel already
+# carries (a visible direct label), per the skill's mitigation rule.
+_BLUE = "#2a78d6"
+_BLUE_LIGHT = "#6da7ec"
+_BLUE_DARK = "#104281"
+_ORANGE = "#eb6834"
+_AQUA = "#1baf7a"
+# Recessive ink for meta-annotations (timestamp markers) that should recede
+# behind the data series rather than compete with them.
+_MUTED_INK = "#898781"
+# A neutral background highlight, not a data color, so it stays outside the
+# categorical palette and is shared verbatim by every plot that shades the
+# training window.
+_TRAIN_WINDOW_SHADE = "navajowhite"
+
+_FIG_DPI = 170
+
+plt.rcParams.update(
+    {
+        "font.size": 13,
+        "axes.titlesize": 15,
+        "axes.labelsize": 13,
+        "xtick.labelsize": 12,
+        "ytick.labelsize": 12,
+        "legend.fontsize": 12,
+        "figure.titlesize": 18,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.edgecolor": "#c3c2b7",
+        "axes.grid": True,
+        "grid.color": "#e1e0d9",
+        "grid.linewidth": 0.6,
+        "grid.linestyle": "-",
+        "lines.linewidth": 2.0,
+    }
+)
+
 # The training block, in the order the phases actually run. `Simulator._train`
 # only sums the three durations and never orders them, so the order here is the
 # one a real PSRL run exhibits: log-prob recomputation, then the optimizer step,
 # then the weight push. Lightest to darkest, so the block reads left to right.
 _TRAIN_PHASES = (
-    ("recompute_time", "recompute", "lightsteelblue"),
-    ("train_time", "train", "steelblue"),
-    ("sync_time", "sync", "midnightblue"),
+    ("recompute_time", "recompute", _BLUE_LIGHT),
+    ("train_time", "train", _BLUE),
+    ("sync_time", "sync", _BLUE_DARK),
 )
 
 # Applied only when a fleet is heterogeneous. Darker with higher degree, so the
@@ -52,7 +94,7 @@ class SimPlotter:
     Args:
         store: The store holding the run's telemetry streams.
         output_dir: Directory the PNGs are written to.
-        time_label: X-axis label. The default suits a simulation; a store
+        time_label: X-axis label. The default suits a simulation. A store
             converted from a real run should say so, since its axis is
             measured wall-clock rather than simulated time.
     """
@@ -131,7 +173,7 @@ class SimPlotter:
         fig, ax = plt.subplots(figsize=(10, 3))
         ax.text(0.5, 0.5, title, ha="center", va="center", transform=ax.transAxes)
         ax.set_axis_off()
-        fig.savefig(path, dpi=150)
+        fig.savefig(path, dpi=_FIG_DPI)
         plt.close(fig)
         return path
 
@@ -158,7 +200,7 @@ class SimPlotter:
         fig, axes = plt.subplots(
             len(heights),
             1,
-            figsize=(12, 2 + 2.6 * n + (1.2 if gateway_rows else 0.0)),
+            figsize=(10, 2 + 2.6 * n + (1.2 if gateway_rows else 0.0)),
             sharex=True,
             gridspec_kw={"height_ratios": heights},
         )
@@ -172,15 +214,14 @@ class SimPlotter:
         # band itself is split into phases.
         for ax in [*([gateway_ax] if gateway_ax is not None else []), *axes]:
             for start, end in intervals:
-                ax.axvspan(start, end, color="navajowhite", alpha=0.35, zorder=0)
+                ax.axvspan(start, end, color=_TRAIN_WINDOW_SHADE, alpha=0.35, zorder=0)
 
         if gateway_ax is not None:
             ts = [r["t"] for r in gateway_rows]
             queue = [r["queue_len"] for r in gateway_rows]
-            gateway_ax.step(ts, queue, where="post", color="darkorange", zorder=2)
-            gateway_ax.fill_between(ts, queue, step="post", color="darkorange", alpha=0.25, zorder=1)
+            gateway_ax.step(ts, queue, where="post", color=_ORANGE, zorder=2)
+            gateway_ax.fill_between(ts, queue, step="post", color=_ORANGE, alpha=0.25, zorder=1)
             gateway_ax.set_ylabel("router\nqueue")
-            gateway_ax.grid(True, alpha=0.3)
 
         drawn_phases: dict[str, str] = {}
         for spans in phase_blocks:
@@ -190,7 +231,7 @@ class SimPlotter:
         train_ax.set_yticks([])
         train_ax.set_ylabel("train")
 
-        # Shading shows duration; these markers identify the exact event that
+        # Shading shows duration. These markers identify the exact event that
         # starts each training step. Labels live on one row only to keep the
         # instance panels readable, while the vertical line crosses every row.
         marker_axes = [*([gateway_ax] if gateway_ax is not None else []), *axes]
@@ -198,7 +239,7 @@ class SimPlotter:
             for ax in marker_axes:
                 ax.axvline(
                     start,
-                    color="saddlebrown",
+                    color=_MUTED_INK,
                     linestyle=":",
                     linewidth=0.7,
                     alpha=0.55,
@@ -214,8 +255,8 @@ class SimPlotter:
                 rotation_mode="anchor",
                 ha="right",
                 va="top",
-                fontsize=6,
-                color="saddlebrown",
+                fontsize=9,
+                color=_MUTED_INK,
                 transform=label_ax.get_xaxis_transform(),
                 zorder=4,
             )
@@ -229,7 +270,6 @@ class SimPlotter:
                 loc="upper right",
                 bbox_to_anchor=(0.99, 0.995),
                 ncol=len(drawn_phases),
-                fontsize=8,
                 frameon=False,
             )
 
@@ -247,10 +287,10 @@ class SimPlotter:
                 total = [r["num_running_reqs"] + r["num_waiting_reqs"] for r in rows]
                 kv = [r.get("kv_cache_usage", 0.0) for r in rows]
 
-                ax.step(ts, total, where="post", color="darkorange", label="request_num", zorder=2)
-                ax.step(ts, running, where="post", color="seagreen", label="running_request_num", zorder=2)
+                ax.step(ts, total, where="post", color=_ORANGE, label="request_num", zorder=2)
+                ax.step(ts, running, where="post", color=_AQUA, label="running_request_num", zorder=2)
                 ax.set_ylabel("# requests")
-                ax.legend(loc="upper left", fontsize=8)
+                ax.legend(loc="upper left")
 
                 # KV is interpolated, not stepped: a committed decode segment
                 # covers many steps with no event in between, and every running
@@ -260,22 +300,25 @@ class SimPlotter:
                 # discontinuities (abort on weight update) are logged as two
                 # samples at the same `t`, so they still render vertical.
                 kv_ax = ax.twinx()
-                kv_ax.fill_between(ts, kv, color="lightskyblue", alpha=0.4, zorder=1)
+                kv_ax.fill_between(ts, kv, color=_BLUE, alpha=0.3, zorder=1)
                 kv_ax.set_ylim(0, 1)
-                kv_ax.set_ylabel("KV util")
+                kv_ax.set_ylabel("KV util", color=_BLUE)
+                # Tinted to match its own fill, since a second y-axis is only
+                # self-explanatory if its scale visibly belongs to one series.
+                kv_ax.spines["right"].set_visible(True)
+                kv_ax.spines["right"].set_color(_BLUE)
+                kv_ax.tick_params(axis="y", colors=_BLUE)
             tp = tp_by_instance.get(iid)
             if tp is None:
-                ax.set_title(f"instance {iid}", fontsize=10)
+                ax.set_title(f"instance {iid}")
             else:
                 # Coloured only when heterogeneous, so the homogeneous case does
                 # not look busier than it is.
                 ax.set_title(
-                    f"instance {iid}  —  TP{tp} ({tp} GPU{'s' if tp > 1 else ''})",
-                    fontsize=10,
+                    f"instance {iid}: TP{tp} ({tp} GPU{'s' if tp > 1 else ''})",
                     color=_TP_COLOURS.get(tp, "black") if heterogeneous else "black",
                     fontweight="bold" if heterogeneous else "normal",
                 )
-            ax.grid(True, alpha=0.3)
 
         if heterogeneous:
             # The per-row titles say what each instance is. This says how the
@@ -286,12 +329,12 @@ class SimPlotter:
             )
             total_gpus = sum(tp for tp in tp_by_instance.values() if tp is not None)
             fig.suptitle(
-                f"Instance Load — heterogeneous fleet: {shape}  ({total_gpus} GPUs)"
+                f"Instance Load, heterogeneous fleet: {shape} ({total_gpus} GPUs)"
             )
 
         inst_axes[-1].set_xlabel(self.time_label)
         fig.tight_layout()
-        fig.savefig(path, dpi=150)
+        fig.savefig(path, dpi=_FIG_DPI)
         plt.close(fig)
         return path
 
@@ -334,7 +377,7 @@ class SimPlotter:
 
         for ax, iid in zip(axes, instance_ids):
             for start, end in intervals:
-                ax.axvspan(start, end, color="navajowhite", alpha=0.35, zorder=0)
+                ax.axvspan(start, end, color=_TRAIN_WINDOW_SHADE, alpha=0.35, zorder=0)
             inst_rows = by_instance.get(iid, [])
             mixed = [r for r in inst_rows if r["phase"] == "mixed"]
             decode = [r for r in inst_rows if r["phase"] == "decode"]
@@ -348,13 +391,12 @@ class SimPlotter:
                 s=8, alpha=0.6, color="steelblue", label="decode segment dt", zorder=2,
             )
             ax.set_ylabel("step dt (s)")
-            ax.set_title(f"instance {iid}", fontsize=10)
-            ax.legend(loc="upper left", fontsize=8)
-            ax.grid(True, alpha=0.3)
+            ax.set_title(f"instance {iid}")
+            ax.legend(loc="upper left")
 
         axes[-1].set_xlabel(self.time_label)
         fig.tight_layout()
-        fig.savefig(path, dpi=150)
+        fig.savefig(path, dpi=_FIG_DPI)
         plt.close(fig)
         return path
 
@@ -405,7 +447,7 @@ class SimPlotter:
         ax.legend()
         ax.grid(True, axis="y", alpha=0.3)
         fig.tight_layout()
-        fig.savefig(path, dpi=150)
+        fig.savefig(path, dpi=_FIG_DPI)
         plt.close(fig)
         return path
 
@@ -429,7 +471,7 @@ class SimPlotter:
         ax.set_title("Request Durations (color = output length)")
         fig.colorbar(sc, ax=ax, label="Output Tokens")
         fig.tight_layout()
-        fig.savefig(path, dpi=150)
+        fig.savefig(path, dpi=_FIG_DPI)
         plt.close(fig)
         return path
 
@@ -453,7 +495,7 @@ class SimPlotter:
         ax.set_ylabel(f"Completions / {window_size}s")
         ax.set_title("Throughput Over Time")
         fig.tight_layout()
-        fig.savefig(path, dpi=150)
+        fig.savefig(path, dpi=_FIG_DPI)
         plt.close(fig)
         return path
 
@@ -502,7 +544,7 @@ class SimPlotter:
         SCG(S) is a non-decreasing step function of the integer staleness budget S.
         The denominator is ``max(complete_time)`` over all consume rows, the same
         time axis ``plot_throughput`` uses, so the rates are directly comparable
-        across the two plots -- and the curve's last point equals the run's
+        across the two plots. The curve's last point equals the run's
         throughput by construction, since no trajectory is excluded there.
 
         Returns:
@@ -553,7 +595,7 @@ class SimPlotter:
         ax.set_xticks(xs)
         ax.grid(True, axis="y", alpha=0.3)
         fig.tight_layout()
-        fig.savefig(path, dpi=150)
+        fig.savefig(path, dpi=_FIG_DPI)
         plt.close(fig)
         return path
 

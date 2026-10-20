@@ -323,7 +323,7 @@ class TestThePoolNeverOvercommits:
 
         With caching off nothing is shared, so the pool's occupancy must equal
         the per-request sum at every step. Reverting either the prefill or the
-        decode guard makes this drift by 9 blocks; the 8-request shapes happen to
+        decode guard makes this drift by 9 blocks. The 8-request shapes happen to
         be immune, which is why the count and capacity matter here.
         """
         inst = _inst(kv_blocks=500, max_concurrency=1024, enable_prefix_caching=False)
@@ -406,8 +406,8 @@ class TestExhaustionAccountsForSharing:
     Its increments are residue-bucketed differences of `blocks_for`, which stay
     correct under sharing because decode only ever grows *private* blocks. Its
     intercept has to come from the pool. Summing `blocks_for(prefilled)` instead
-    over-counts a shared prompt by the group size -- 896 against a real 134 for
-    eight siblings -- which reports exhaustion immediately, preempts, lets the
+    over-counts a shared prompt by the group size (896 against a real 134 for
+    eight siblings), which reports exhaustion immediately, preempts, lets the
     request back in, and livelocks with the pool nearly empty.
     """
 
@@ -531,8 +531,8 @@ class TestAFullPoolStillMakesProgress:
             if inst.advance_one_event(version=0) is None:
                 break
         assert len(inst.completed) == admitted, (
-            f"stalled with {len(inst.running)} running and {len(inst.waiting)} waiting; "
-            f"a pool-bound workload must run in waves rather than deadlock"
+            f"stalled with {len(inst.running)} running and {len(inst.waiting)} waiting. "
+            f"A pool-bound workload must run in waves rather than deadlock"
         )
 
     def test_the_batch_never_collapses_to_a_single_request(self):
@@ -578,7 +578,7 @@ class TestAFullPoolStillMakesProgress:
                     f"the next decode step cannot advance them"
                 )
         assert len(inst.completed) == 188, (
-            f"only {len(inst.completed)} of 188 finished; a pool-bound batch must "
+            f"only {len(inst.completed)} of 188 finished. A pool-bound batch must "
             f"drain in waves rather than stall"
         )
 
@@ -636,7 +636,7 @@ class TestAFullPoolStillMakesProgress:
                 break
         assert inst.n_preemptions > 0, "a pool-bound batch has to preempt to advance"
         assert len(inst.completed) == 188, (
-            f"only {len(inst.completed)} of 188 finished; the stall was never broken"
+            f"only {len(inst.completed)} of 188 finished. The stall was never broken"
         )
 
     def test_a_pool_with_room_admits_everything_at_once(self):
@@ -732,7 +732,7 @@ class TestUndoJournalComposesOverManyMutations:
     snapshotting node links, so an event that mutates the same node repeatedly
     must unwind through every step. These drive a pool under real pressure,
     where one event preempts several requests and each eviction both unlinks and
-    appends -- the case a single keyed capture per node could get wrong.
+    appends, which is the case a single keyed capture per node could get wrong.
     """
 
     def test_a_preempting_event_restores_the_pool_exactly(self):

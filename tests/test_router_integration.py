@@ -132,7 +132,7 @@ class TestPlacementTimeAdmission:
         sim = _sim(cfg, policy=policy)
 
         assert sim._stage() == 4
-        # One response was placed; the cap strands the rest in the router. The
+        # One response was placed. The cap strands the rest in the router. The
         # default group_size is 1, so a placement commits exactly one response.
         assert len(sim.router) == 3
         assert sim.n_admitted == 1

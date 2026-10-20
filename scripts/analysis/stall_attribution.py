@@ -6,7 +6,7 @@ max_staleness` the moment it is admitted (`policy/psrl.py:155`), and a buffer
 only becomes consumable once every one of its entries is occupied
 (`peek_batch:205`). The staleness invariant (`check_invariants:281`) then
 guarantees nothing is ever dropped for being late. So a late trajectory does
-not pay a staleness penalty the way it does under verl -- it stalls the trainer,
+not pay a staleness penalty the way it does under verl. It stalls the trainer,
 in wall clock, one second for one second. That is a different objective, and it
 is only worth building a scheduler for if the stall is both large and caused by
 something a scheduler can move.
@@ -23,13 +23,13 @@ Three numbers decide that, and they have to be read together:
                       these buys nothing, so the split comes before any design.
   makespan ratio      last completion over median completion inside one batch.
                       Near 1 says the step is bulk-bound and every request
-                      matters equally; large says one straggler sets the pace
+                      matters equally. Large says one straggler sets the pace
                       and there is a specific thing to rescue.
 
 The trainer timeline comes from the `train` stream, whose records carry `start`
 and `end` per step, so an inter-step gap is a stall by construction rather than
 by inference. Residency comes from the per-instance streams, which snapshot
-`running_len` and `waiting_len` keyed by rid at every engine event; a request in
+`running_len` and `waiting_len` keyed by rid at every engine event. A request in
 neither is still in the router queue and is reported as a third state, because
 conflating "queued at the fleet" with "queued at an instance" would hide the
 case where admission, not the engine, is holding the batch up.
@@ -166,7 +166,7 @@ def analyse(run: str) -> dict | None:
                 "ratio": times[-1] / times[len(times) // 2] if times[len(times) // 2] else 0.0,
                 # How close the batch's last completion is to the trainer
                 # starting. Near zero means that completion is what unblocked
-                # it; a large negative means the trainer was held by something
+                # it. A large negative means the trainer was held by something
                 # other than this batch finishing.
                 "slack_to_start": rec["start"] - times[-1],
                 "stall_before": rec["start"] - lo,

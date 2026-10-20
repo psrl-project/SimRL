@@ -15,10 +15,10 @@ groups, and a rollout model never has to be fitted for a training model to be us
 
 | Hydra default (`rollout_cost=`) | Kind | Fitted from | Needs `artifact_path` |
 |---|---|---|---|
-| `roofline` | fitted | vLLM JSONL | no; YAML constants are defaults |
+| `roofline` | fitted | vLLM JSONL | no. YAML constants are defaults |
 | `psrl` | fitted | vLLM JSONL | yes |
-| `distserve` | fitted | vLLM JSONL, via a roofline calibration | no; YAML constants are defaults |
-| `composed` | kernel sum | kernel parquet tables | no; needs `kernel_table_root`, `gpu`, `model_path` |
+| `distserve` | fitted | vLLM JSONL, via a roofline calibration | no. YAML constants are defaults |
+| `composed` | kernel sum | kernel parquet tables | no. Needs `kernel_table_root`, `gpu`, `model_path` |
 
 `composed` ignores `artifact_path` even though its YAML file carries the key, because there is no
 regression to load. `psrl` requires one.
@@ -43,7 +43,7 @@ There is also a **kernel-composed training latency model**, `ComposedTraining` i
 `srl/cost/training/composed.py`. It sums measured kernels like `ComposedRollout` does, carries no
 coefficients, and can be paired with `HydraulisMemoryModel` for memory. It is a library class
 rather than a Hydra default, so it is constructed in Python and scored through
-`srl/cost/training/validate.py`; it is not selectable as `training_cost=composed` and is not
+`srl/cost/training/validate.py`. It is not selectable as `training_cost=composed` and is not
 exposed by `srl-regress`. {doc}`training-megatron` describes it and its per-term decomposition.
 
 ## Which regress subcommand applies
@@ -90,7 +90,7 @@ sizes would describe none of them, so there is no nearest-neighbour fallback.
 `feature_ranges` become prediction-time gates. A query outside a recorded range raises
 `TrainingOutOfDomainError` unless that feature is named in `training_cost.extrapolate`, and a
 permitted extrapolation is always recorded in the estimate's diagnostics. Hydraulis latency pools
-pipeline degrees into one entry per TP group and derives PP from the topology; FSDP memory does
+pipeline degrees into one entry per TP group and derives PP from the topology. FSDP memory does
 not pool, because its peak depends on which stage is in flight. The full schema is in
 {doc}`../reference/schemas`.
 

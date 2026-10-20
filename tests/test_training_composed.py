@@ -6,8 +6,8 @@ or twice. A stub database makes each of those checkable without a measured table
 returning a known constant per family so the composition's own structure is what the
 assertions see.
 
-`tests/test_training_composed_accuracy.py` scores the real tables against real step times;
-this file is about structure and runs anywhere.
+`tests/test_training_composed_accuracy.py` scores the real tables against real step times.
+This file is about structure and runs anywhere.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ class _StubDatabase:
         self.calls: list[tuple[str, object]] = []
 
     def query_gemm(self, query: GemmQuery) -> float:
-        # The logits wgrad is the slice the measured table genuinely lacks; this models it
+        # The logits wgrad is the slice the measured table genuinely lacks. This models it
         # so the skip path is exercised rather than assumed.
         if self._missing_logits_dgrad and query.k > 100_000:
             raise KernelCoverageError("stub: no slice for the logits wgrad")
@@ -183,7 +183,7 @@ def test_the_bubble_is_a_named_term_costing_pp_minus_one_idle_slots():
 
     It is a separate term rather than folded into the per-layer costs because the two scale
     differently: compute goes as the microbatch count, the bubble as `pp - 1`. Tracing
-    showed the bubble is not an abstraction — it appears on the GPU as
+    showed the bubble is not an abstraction. It appears on the GPU as
     `ncclDevKernel_SendRecv` blocking at the boundary, 2.859 s across 2 calls for a 48 MiB
     handoff, which is 35 MB/s on a 450 GB/s link.
     """
@@ -199,7 +199,7 @@ def test_the_bubble_is_a_named_term_costing_pp_minus_one_idle_slots():
 
 
 def test_per_step_terms_are_not_multiplied_by_the_slot_count():
-    """Logits and the optimizer run once per step; the per-layer terms run once per slot."""
+    """Logits and the optimizer run once per step. The per-layer terms run once per slot."""
     model, _ = _model()
     parallelism = TrainingParallelism(tp=2, pp=3, dp=1)
     one = model.decompose_microbatches(_plan(4096), parallelism)
@@ -262,7 +262,7 @@ def test_splitting_a_pack_lowers_the_attention_term_but_not_the_gemm_term():
 def test_repeated_sequence_lengths_are_charged_once_with_a_multiplier():
     """Four 3072-token sequences are one table lookup times four, not four lookups.
 
-    The table read is identical either way; collapsing them keeps the query count
+    The table read is identical either way. Collapsing them keeps the query count
     independent of the pack's sequence count, which matters for a 64-sequence pack.
     """
     ops = TrainingOps(_MODEL, tensor_parallel=2, recompute="full")
@@ -333,7 +333,7 @@ def test_attention_reads_its_own_measured_table_in_each_direction():
     """Backward is a separate table, not a multiple of forward.
 
     The measured bwd/fwd ratio is 2.24-2.42 and drifts with sequence length, so no scalar
-    is right; `ComposedTraining` previously used 1.0 and understated the term. With unit
+    is right. `ComposedTraining` previously used 1.0 and understated the term. With unit
     costs per direction, the forward is charged twice (recompute replays it) and the
     backward once, so `attn_fwd == 2 * attn_bwd` here. The point of the assertion is that
     the two come from *different* queries: a composition reading the forward table for both
@@ -399,7 +399,7 @@ def test_tp1_contributes_no_collective_term():
 
 
 def test_predict_plans_the_workload_and_agrees_with_the_planned_entry_point():
-    """`predict` is the abstract interface; `predict_microbatches` is what validation uses."""
+    """`predict` is the abstract interface. `predict_microbatches` is what validation uses."""
     model, _ = _model()
     workload = TrainingWorkload(
         sequence_lengths=(4096,) * 4, micro_batch_size=1, recompute="full"

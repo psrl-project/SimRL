@@ -31,12 +31,12 @@ def test_latency_is_the_last_table_column():
 
 
 def test_gemm_takes_no_fitted_floor():
-    """GEMM is compute- or bandwidth-limited, not dispatch-limited; its MRE is 3.91%."""
+    """GEMM is compute- or bandwidth-limited, not dispatch-limited. Its MRE is 3.91%."""
     assert GEMM_OP.fits_floor is False
 
 
 def test_sol_reproduces_the_free_function_it_delegates_to(spec):
-    """The op must not re-derive the roofline; it binds the existing formula to a slice."""
+    """The op must not re-derive the roofline. It binds the existing formula to a slice."""
     slice_key = ("bfloat16", 24576, 4096)
     coords = (128.0,)
     expected = gemm_sol(spec, m=128, n=24576, k=4096, dtype="bfloat16")
@@ -56,7 +56,7 @@ def test_a_floor_argument_is_ignored_rather_than_applied(spec):
 
 
 def test_sol_reads_n_and_k_from_the_slice_not_the_coords(spec):
-    """m is the only axis; n and k are categorical, so they must come from slice_key."""
+    """m is the only axis. n and k are categorical, so they must come from slice_key."""
     coords = (64.0,)
     small = GEMM_OP.sol(spec, slice_key=("bfloat16", 4096, 4096), coords=coords).latency_s
     large = GEMM_OP.sol(spec, slice_key=("bfloat16", 24576, 4096), coords=coords).latency_s

@@ -228,7 +228,7 @@ class TestFallbackArithmetic:
 
 
 class TestHybridLayerCount:
-    """Only full-attention layers hold a KV cache; the rest hold mamba state."""
+    """Only full-attention layers hold a KV cache. The rest hold mamba state."""
 
     def test_qwen35_counts_ten_of_forty(self, tmp_path):
         config = {

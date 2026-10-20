@@ -21,7 +21,7 @@ struct BlockHash {
 
 struct BlockHashHasher {
   size_t operator()(const BlockHash& h) const {
-    // FNV-1a inspired mix — simple and effective for 3 small integers.
+    // FNV-1a inspired mix, simple and effective for 3 small integers.
     size_t seed = static_cast<size_t>(h.is_shared);
     seed ^= std::hash<int>{}(h.id) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
     seed ^= std::hash<int>{}(h.index) + 0x9e3779b9 + (seed << 6) + (seed >> 2);

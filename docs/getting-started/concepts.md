@@ -70,7 +70,7 @@ The kernel path has no artifact: `ComposedRollout` reads measured parquet tables
 
 A *cell* is one distinct (parallelism, selector) combination that was profiled and fitted
 independently. `CostArtifact.entry_for` requires exactly one match and raises `KeyError`
-otherwise; it never falls back to a neighbour.
+otherwise. It never falls back to a neighbour.
 
 This is deliberate. A fit pooled over TP=1 and TP=4 would produce one set of coefficients
 that describes neither: per-rank token cost falls with TP while communication cost appears.
@@ -119,7 +119,7 @@ Every kernel op in `srl/cost/kernel/ops/` declares two column tuples:
 - **`axis_columns`**: columns interpolated along inside a slice.
 
 The split reflects physics. Interpolating between two token counts of the same GEMM shape is
-meaningful; blending a `(4096, 4096)` GEMM with a `(151936, 4096)` GEMM is not, because they
+meaningful. Blending a `(4096, 4096)` GEMM with a `(151936, 4096)` GEMM is not, because they
 may select different tile sizes.
 
 | Op | `slice_columns` | `axis_columns` |
@@ -133,7 +133,7 @@ may select different tile sizes.
 
 `world_size` is a slice column for collectives because a 2-rank and an 8-rank ring run
 different schedules over different links. The registered ops are listed by
-`srl.cost.kernel.ops.base.families()`; {doc}`../development/kernel-ops` explains how to add one.
+`srl.cost.kernel.ops.base.families()`. {doc}`../development/kernel-ops` explains how to add one.
 
 ---
 
@@ -181,7 +181,7 @@ A *group* is the set of responses that share a prompt (`group_id`). `job.batch_s
 **groups** per training step, and `job.group_size` is the responses per group, so one step
 consumes `batch_size * group_size` responses. GRPO and DAPO advantages normalise rewards
 within a group, so group boundaries must survive in the workload. A parametric workload has
-`group_size` 1; only a joint trace carries real groups. See {doc}`../workload/index`.
+`group_size` 1. Only a joint trace carries real groups. See {doc}`../workload/index`.
 
 A *policy preset* is the typed config for one asynchronous-RL system, selected with
 `policy=<name>`: `areal`, `dressage`, `nemo_rl`, `openrlhf`, `prime_rl`, `psrl`, `roll`,

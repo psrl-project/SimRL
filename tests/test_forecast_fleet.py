@@ -266,7 +266,7 @@ class TestChainingProperty:
     def test_new_groups_fill_every_buffer_not_only_the_nearest(self):
         """A hypothetical admission that reserves into buffer 1, not buffer 0, must still show there.
 
-        Buffer 0 is already full from a real resident; staleness 0 forces the hypothetical group at
+        Buffer 0 is already full from a real resident, so staleness 0 forces the hypothetical group at
         version 1 to reserve into buffer 1 and nowhere else. If `chain_buffers` dropped `new_groups`
         after its first evaluation, this buffer would report `inf` forever despite the one group it
         needs being fully known up front.

@@ -6,10 +6,10 @@ have a corrupted pool. These tests compare the *whole* internal state across an
 undo instead: LRU order, per-block refcounts and hashes, the hash map, the held
 map, and the counters compared against `vllm:prefix_cache_*`.
 
-The scenarios are driven to where the interesting cases live -- an
-oversubscribed pool, so events preempt; siblings sharing a prompt, so refcounts
-exceed one; and weight-update aborts, which reset the hash map. Each is run with
-prefix caching both on and off.
+The scenarios are driven to where the interesting cases live. An oversubscribed
+pool makes events preempt. Siblings sharing a prompt push refcounts above one.
+Weight-update aborts reset the hash map. Each is run with prefix caching both on
+and off.
 
 These were written after a performance rework replaced several state snapshots
 with inverse-operation journals. They are the check that rework is held to:
@@ -110,13 +110,13 @@ def _loaded_instance(seed: int, kv_blocks: int, caching: bool) -> NativeInstance
 def test_every_undo_restores_the_whole_pool(kv_blocks, caching):
     """Swept rather than spot-checked, and asserted after *every* event.
 
-    An undo that is subtly wrong -- a block returned to the wrong free-list
-    slot, a refcount restored once when it was taken twice -- shows up only in
+    An undo that is subtly wrong (a block returned to the wrong free-list
+    slot, a refcount restored once when it was taken twice) shows up only in
     some pool states, so the sweep is what makes the check meaningful.
 
     `hash_map` is included. It was excluded while `MappingKeysAdded` popped
     overwritten keys instead of restoring them, and while `_HashMapEntry`
-    resurrected pairs the map never held; with both fixed, the whole state
+    resurrected pairs the map never held. With both fixed, the whole state
     round-trips and there is nothing left to carve out.
     """
     inst = _loaded_instance(seed=kv_blocks, kv_blocks=kv_blocks, caching=caching)
@@ -172,7 +172,7 @@ def test_undo_never_makes_a_hash_addressable_that_was_not():
             }
             assert not gained, (
                 f"undo at step {step} (kv_blocks={kv_blocks}) made "
-                f"{sorted(map(str, gained))} addressable; the map did not hold "
+                f"{sorted(map(str, gained))} addressable. The map did not hold "
                 f"them before the event"
             )
             if inst.advance_one_event(version=step % 3) is None:
@@ -228,7 +228,7 @@ def test_repeated_undo_of_the_same_event_is_stable(caching):
     """Advance and roll back the same state repeatedly.
 
     A journal that restored a *captured* value would be stable here by
-    construction; one that replays inverse operations is stable only if each
+    construction. One that replays inverse operations is stable only if each
     entry is applied exactly once, so this is where a double-apply shows up.
     """
     inst = _loaded_instance(seed=7, kv_blocks=400, caching=caching)

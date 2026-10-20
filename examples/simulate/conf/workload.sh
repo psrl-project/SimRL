@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# conf/workload.sh — workload distribution overrides
+# conf/workload.sh: workload distribution overrides
 # Sourced by simulate.sh. Sets DIST_OVERRIDES.
 # Inputs: WORKLOAD, DIST_FILE, SCRIPT_DIR
 

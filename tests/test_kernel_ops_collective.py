@@ -1,6 +1,6 @@
 """The collective ops: ring-cost SOL, topology in the slice, and a real query_comm.
 
-Every assertion from the single-op version of this file is preserved; the signature changes
+Every assertion from the single-op version of this file is preserved. The signature changes
 are mechanical (`slice_key` gains `nodes`, `CommQuery` gains `op` and `nodes`). The added
 tests cover the four new ops and the node-boundary term.
 """
@@ -76,7 +76,7 @@ def test_sol_follows_the_ring_all_reduce_cost(spec):
 
 
 def test_the_ring_factor_grows_with_world_size_but_stays_below_two(spec):
-    """2*(N-1)/N is 1.0 at N=2 and approaches 2 as N grows; it must never exceed it."""
+    """2*(N-1)/N is 1.0 at N=2 and approaches 2 as N grows. It must never exceed it."""
     message_bytes = 1 << 20
     previous = 0.0
     for world_size in (2, 4, 8, 16):
@@ -115,7 +115,7 @@ def test_broadcast_and_p2p_do_not_scale_with_world_size(spec, op):
 
 
 def test_a_single_rank_all_reduce_costs_no_transfer(spec):
-    """At world_size 1 there is no collective; only the floor can bind."""
+    """At world_size 1 there is no collective. Only the floor can bind."""
     got = ALL_REDUCE_OP.sol(spec, slice_key=("bfloat16", 1, 1), coords=(1.0e6,), floor_s=5.0e-6)
     assert got.memory_s == 0.0
     assert got.latency_s == pytest.approx(5.0e-6, rel=1e-12)
@@ -251,7 +251,7 @@ def test_a_comm_query_rejects_more_nodes_than_ranks():
 
 
 def test_query_comm_no_longer_raises_unconditionally(tmp_path):
-    """It raised on every call as a placeholder; now it must reach the table machinery.
+    """It raised on every call as a placeholder. Now it must reach the table machinery.
 
     Asserted behaviourally rather than by greping the method body: `query_comm` delegates to the
     shared `_price`, so the names `_grid` and `_sol` no longer appear in it. What proves it

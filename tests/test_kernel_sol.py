@@ -235,7 +235,7 @@ def test_floor_binds_when_work_is_negligible(spec):
 
 
 def test_floor_does_not_affect_large_shapes(spec):
-    # At large batch/step the roofline work dominates; a tiny floor must be ignored.
+    # At large batch/step the roofline work dominates. A tiny floor must be ignored.
     result_no_floor = generation_attention_sol(
         spec,
         batch_size=64,
@@ -258,7 +258,7 @@ def test_floor_does_not_affect_large_shapes(spec):
         kv_cache_dtype="bfloat16",
         floor_s=floor,
     )
-    # The large-shape roofline must dominate; adding the floor changes nothing.
+    # The large-shape roofline must dominate. Adding the floor changes nothing.
     assert result_with_floor.latency_s == pytest.approx(result_no_floor.latency_s)
     assert result_with_floor.memory_s > floor
 
@@ -273,7 +273,7 @@ def test_gemm_sol_has_no_floor_field_and_default_is_zero(spec):
 
 
 def test_context_attention_floor_binds_at_tiny_shapes(spec):
-    # batch=1, seq_len=1: both halves are tiny; floor must dominate.
+    # batch=1, seq_len=1: both halves are tiny. Floor must dominate.
     floor = 32e-6  # vLLM context floor
     result = context_attention_sol(
         spec,

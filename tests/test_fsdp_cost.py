@@ -75,7 +75,7 @@ def _record(
         static + MICROBATCH_SLOPE * num_microbatches + ACTIVATION_SLOPE * tokens
     )
     # `peak_reserved` defaults to `allocated + 1`, an affine shift both regressions absorb
-    # exactly, producing a tie at r²=1.0.  Pass an explicit value to break that tie.
+    # exactly, producing a tie at r²=1.0. Pass an explicit value to break that tie.
     reserved = peak_reserved if peak_reserved is not None else allocated + 1
     return ProfileRecord(
         record_type="training",
@@ -228,7 +228,7 @@ def test_fit_memory_nmb_only_drives_coefficient_and_not_token_term():
     coefficients = entry.coefficients
     # The fit must recover the microbatch slope and drive the token slope to approximately zero.
     assert coefficients["microbatch_slope"] == pytest.approx(nmb_only_slope, rel=0.05)
-    # The activation slope is driven near zero by the non-negative constraint; the threshold
+    # The activation slope is driven near zero by the non-negative constraint. The threshold
     # is 0.1% of the microbatch slope so a collapsed token term cannot pass as a real signal.
     assert coefficients["activation_slope"] < nmb_only_slope * 0.001
     # The validation r² must be positive since the microbatch signal is strong and clean.
@@ -322,20 +322,20 @@ def _records_discriminating(*, noisy_target: str, seed: int = 42) -> list[Profil
     """
     Build a record set where the two memory targets are NOT affine images of each other.
 
-    The existing `_records()` fixture sets `reserved = allocated + 1`.  That constant
+    The existing `_records()` fixture sets `reserved = allocated + 1`. That constant
     shift is an affine transform, so both linear regressions absorb it perfectly and both
-    candidates reach r²=1.0.  `test_memory_target_selection_is_recorded` therefore
+    candidates reach r²=1.0. `test_memory_target_selection_is_recorded` therefore
     passes even if the selection always returns a hardcoded answer: a tie makes the
     winner irrelevant.
 
     This helper breaks the tie by injecting large deterministic noise into one target
-    while keeping the other on a clean linear function of the memory features.  The
+    while keeping the other on a clean linear function of the memory features. The
     noise amplitude (3x the signal range) ensures the noisy target's r² is well below
     zero, making the winner unambiguous and the ordering checkable.
 
     The allocator invariant (`reserved_bytes >= allocated_bytes`) is preserved by always
     expressing the noisy target relative to the clean one in the direction that satisfies
-    it: when allocated is noisy, `allocated = clean - |noise|`; when reserved is noisy,
+    it: when allocated is noisy, `allocated = clean - |noise|`, and when reserved is noisy,
     `reserved = clean + |noise|`.
 
     The microbatch counts are chosen so that `num_microbatches` and `max_tokens` are NOT
@@ -344,7 +344,7 @@ def _records_discriminating(*, noisy_target: str, seed: int = 42) -> list[Profil
 
     Args:
         noisy_target (str): Which metric receives noise: ``"peak_allocated_bytes"`` or
-            ``"peak_reserved_bytes"``.  The other metric is a clean linear function.
+            ``"peak_reserved_bytes"``. The other metric is a clean linear function.
         seed (int): RNG seed for the noise so every run produces the same values.
     """
     if noisy_target not in ("peak_allocated_bytes", "peak_reserved_bytes"):
@@ -380,12 +380,12 @@ def _records_discriminating(*, noisy_target: str, seed: int = 42) -> list[Profil
     for idx, (length, num_mb) in enumerate(zip(lengths, microbatches_per_length)):
         clean = int(static + 800 * length)
         if noisy_target == "peak_allocated_bytes":
-            # Reserved is the clean signal; allocated is depressed by noise to preserve
+            # Reserved is the clean signal, and allocated is depressed by noise to preserve
             # the `reserved >= allocated` invariant while decorrelating it from length.
             reserved = clean
             allocated = clean - int(noise[idx])
         else:
-            # Allocated is the clean signal; reserved is inflated by noise to preserve
+            # Allocated is the clean signal, and reserved is inflated by noise to preserve
             # the `reserved >= allocated` invariant while decorrelating it from length.
             allocated = clean
             reserved = clean + int(noise[idx])
@@ -409,9 +409,9 @@ def test_memory_target_selection_prefers_reserved_when_allocated_is_noisy():
 
     The existing `test_memory_target_selection_is_recorded` cannot prove real selection
     because its fixture sets `reserved = allocated + 1`, an affine transform that both
-    linear fits absorb perfectly, yielding r²=1.0 for both candidates.  That tie always
+    linear fits absorb perfectly, yielding r²=1.0 for both candidates. That tie always
     resolves to `peak_allocated_bytes` by the stable `max` fallback, so a hardcoded
-    winner would pass that test.  Here the allocated metric is deliberately noisy so the
+    winner would pass that test. Here the allocated metric is deliberately noisy so the
     r² ordering contradicts the default fallback: only real data-driven selection picks
     the correct winner.
     """
@@ -438,7 +438,7 @@ def test_memory_target_selection_prefers_allocated_when_reserved_is_noisy():
 
     This is the direction that confirms the expected production outcome (allocated winning
     on real hardware, as the Megatron profiling found), but expressed as a data-driven
-    assertion rather than a default-fallback assertion.  Together with
+    assertion rather than a default-fallback assertion. Together with
     `test_memory_target_selection_prefers_reserved_when_allocated_is_noisy`, the pair
     proves that selection follows the r² evidence in both directions.
     """
@@ -520,7 +520,7 @@ def test_memory_prediction_is_compared_against_reserved():
     # Use (length, nmb) pairs that are NOT proportional so the three-column memory design
     # reaches rank 3. (512,1), (1024,1), (2048,2) keeps tokens varying while nmb only
     # changes once, giving independent columns.
-    # A fourth pair is added because the latency design is rank 4; the memory design this
+    # A fourth pair is added because the latency design is rank 4. The memory design this
     # test is about needs only rank 3 and is unaffected by the extra row.
     records = []
     for length, num_microbatches in zip((512, 1024, 2048, 4096), (1, 1, 2, 4)):
@@ -856,11 +856,11 @@ def test_null_extrapolate_rejects_out_of_range():
 
 
 def test_listed_feature_permits_that_feature_and_rejects_others():
-    """Listing one feature permits only that feature; unlisted features still raise."""
+    """Listing one feature permits only that feature. Unlisted features still raise."""
     artifact = FsdpTrainingCost.fit(_records(), validation_fraction=0.0)
     # The profiled range for num_microbatches is [1, 4] (from _records using 1, 2, 4).
     # We construct a workload whose num_microbatches is 8 (out of range) but whose tokens
-    # are in-range. Listing num_microbatches must let it through; tokens out-of-range must
+    # are in-range. Listing num_microbatches must let it through, and tokens out-of-range must
     # still raise when tokens is not listed.
     cost_nmb_only = FsdpTrainingCost.from_artifact(
         artifact,
@@ -998,6 +998,6 @@ def test_the_quadratic_term_sums_per_sequence_squares_not_the_packed_square():
     artifact = FsdpTrainingCost.fit(records, validation_fraction=0.0)
     entry = next(e for e in artifact.entries if e.selector["component"] == "latency")
     assert entry.coefficients["token_quadratic_cost"] == pytest.approx(quad_true, rel=0.05), (
-        "the fitted quadratic coefficient must match the Sum(s^2) ground truth; a mismatch "
+        "the fitted quadratic coefficient must match the Sum(s^2) ground truth. A mismatch "
         "means the design row squared the packed total instead"
     )

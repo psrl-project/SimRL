@@ -1,15 +1,15 @@
 """Profile attention through the backend vLLM's own selector picks, against a real paged KV cache.
 
-This module is the only place in the profiler that imports vLLM internals.  It is kept
+This module is the only place in the profiler that imports vLLM internals. It is kept
 isolated here so that every vLLM API bump only requires touching this file.
 
 Call sequence (established by direct experiment on 8x NVIDIA H20, vLLM 0.26.1.dev0):
 
 1. Everything must run inside `set_current_vllm_config(vllm_config)`.
-2. `slot_mapping` must be int64; `block_table_tensor` stays int32.
+2. `slot_mapping` must be int64. `block_table_tensor` stays int32.
 3. The mock attention layer needs the full scale set: `_q_scale`, `_k_scale`, `_v_scale`,
    `_prob_scale` (tensors) and `_q_scale_float`, `_k_scale_float`, `_v_scale_float` (floats).
-4. Q/K/V are flat `[num_tokens, num_heads, head_size]`; output is `[num_tokens, num_heads, head_size]`.
+4. Q/K/V are flat `[num_tokens, num_heads, head_size]`. Output is `[num_tokens, num_heads, head_size]`.
 5. For FA3 (`forward_includes_kv_cache_update = False`), the timed region is
    `do_kv_cache_update` then `forward`.
 """
@@ -57,7 +57,7 @@ def select_attention_backend(
         attn_dtype (str): Compute dtype string, e.g. `bfloat16`.
         kv_cache_dtype (str): KV cache element dtype string.
         block_size (int): Paged KV cache block size in tokens.
-        model_path (str): Path to a HuggingFace checkpoint; used only for `ModelConfig`.
+        model_path (str): Path to a HuggingFace checkpoint. Used only for `ModelConfig`.
 
     Returns:
         SelectedBackend: Resolved backend class, builder, impl, and source tag.
@@ -182,7 +182,7 @@ def time_attention_point(
     dtype = torch_dtype(attn_dtype_str)
     device = torch.device("cuda")
 
-    # Context phase: each request has `seq_len` tokens; generation phase has 1 query token.
+    # Context phase: each request has `seq_len` tokens. Generation phase has 1 query token.
     if phase == "context":
         query_len_per_req = seq_len
         total_kv_per_req = seq_len
@@ -193,7 +193,7 @@ def time_attention_point(
 
     num_tokens = batch_size * query_len_per_req
 
-    # Allocate the paged KV cache.  Use max(step, 1) to avoid zero-length allocations when
+    # Allocate the paged KV cache. Use max(step, 1) to avoid zero-length allocations when
     # step == 0 in a generation sweep point.
     kv_per_req_for_alloc = max(total_kv_per_req, 1)
     blocks_per_req = math.ceil(kv_per_req_for_alloc / block_size)
@@ -372,7 +372,7 @@ def _prepopulate_kv_history(
     # block_table[r, token_pos // block_size] = 1 + r * blocks_per_req + token_pos // block_size.
     # The slot for token `token_pos` of request `r` then simplifies to:
     #   slot = (1 + r*B + token_pos//bs) * bs + token_pos%bs = bs + r*B*bs + token_pos
-    # where B = blocks_per_req.  This lets us build the mapping with one arange broadcast
+    # where B = blocks_per_req. This lets us build the mapping with one arange broadcast
     # and a single host-to-device transfer per chunk, with zero .item() calls.
     blocks_per_req: int = block_table.shape[1]
     req_offsets = torch.arange(batch_size, dtype=torch.int64, device=device) * (blocks_per_req * block_size)
@@ -442,7 +442,7 @@ def profile_vllm_attention(
     attn_dtype_str: str = config.measurement.dtype
     kv_cache_dtype_str: str = config.measurement.kv_cache_dtype
     # Both attention ops parse the same `attention:` subtree, so the block and window sizes are
-    # one value; they are read off the context op because backend selection precedes both phases.
+    # one value. They are read off the context op because backend selection precedes both phases.
     context_sweep = config.sweep("context_attention")
     generation_sweep = config.sweep("generation_attention")
     block_size: int = context_sweep.block_size

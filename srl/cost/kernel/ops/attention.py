@@ -11,7 +11,7 @@ Both take a fitted floor. Real H20 data shows decode latency flat at ~70 us acro
 increase in KV work at batch 1, which is conclusive that the cost is `max(floor, work)` rather
 than `floor + work`. Placing the floor inside the max lifted the holdout gate from >20% MRE to
 under 10%. The floor is a property of the backend's dispatch path rather than the silicon, so
-its value is fitted per `(backend, version)` and stored beside the table; see `floor.py`.
+its value is fitted per `(backend, version)` and stored beside the table. See `floor.py`.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def _parse_attention_sweep(value: dict[str, Any]) -> Any:
     """Parse the shared `attention:` sweep subtree."""
     # Imported lazily: `srl.profiler.kernel.sweep` reaches the profiler package, and
     # a simulator run that only prices kernels must not load it. Four dots because this
-    # module is `srl.cost.kernel.ops.attention`; the torch-free check verifies the depth.
+    # module is `srl.cost.kernel.ops.attention`. The torch-free check verifies the depth.
     from ....profiler.kernel.sweep import AttentionSweep
 
     return AttentionSweep.from_dict(value)
@@ -131,7 +131,7 @@ class GenerationAttentionKernelOp:
     fits_floor = True
     # A decode batch replays one FULL graph spanning the whole forward pass, attention
     # included, so the engine pays no per-call dispatch here. Measured 67 us event-timed
-    # against 15 us replayed at batch 1 -- a 4.5x overcharge, repeated once per layer.
+    # against 15 us replayed at batch 1, a 4.5x overcharge repeated once per layer.
     graph_replayed = True
 
     def sol(

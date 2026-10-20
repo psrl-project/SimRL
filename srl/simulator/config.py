@@ -90,7 +90,7 @@ class SimConfig:
     group_size: int = 1
     """Responses sampled per prompt, the recipe's `rollout_n`.
 
-    Must equal `workload.group_size`. Only a trace carries real groups; the
+    Must equal `workload.group_size`. Only a trace carries real groups. The
     synthetic distributions produce one response per prompt.
     """
     staleness_horizon: int | None = None
@@ -113,7 +113,7 @@ class SimConfig:
     training_cp: int = 1
     training_micro_batch_size: int = 1
     training_max_tokens_per_microbatch: int | None = None
-    """Token budget per training microbatch; None groups by `training_micro_batch_size`.
+    """Token budget per training microbatch. None groups by `training_micro_batch_size`.
 
     Pass the already-multiplied budget: verl computes
     `max_token_len = ppo_max_token_len_per_gpu * sp_size`, and `sp_size` equals TP
@@ -195,7 +195,7 @@ class SimConfig:
     """Event types that get speculative undo in the engine loop.
 
     Default: all three → full speculation (current behavior, exact).
-    Fast mode: ``{"request_complete"}`` → only completions are speculative;
+    Fast mode: ``{"request_complete"}`` → only completions are speculative.
     PREEMPT and ITERATION_DONE are committed without snapshots, eliminating
     the dominant undo bookkeeping cost. ``request_complete`` must always be
     present.
@@ -204,7 +204,7 @@ class SimConfig:
     """Whether to log rollout/train/request telemetry via `SimTelemetry`.
 
     When False, no JSONL files are written even if a `store` is passed to
-    `Simulator`; this takes priority over `store`.
+    `Simulator`. This takes priority over `store`.
     """
 
     def __post_init__(self) -> None:
@@ -284,14 +284,11 @@ class SimResult:
     def scg(self, s: int) -> float:
         """Tokens from trajectories consumed with staleness_true <= s, per second.
 
-        **Why tokens rather than a trajectory count.** SCG is goodput, and the
-        useful work a training step receives is tokens, not trajectories: a
-        dispersed workload's trajectories differ in length by more than an order
-        of magnitude (measured p99/p50 = 4.6 on the long-context trace), so a
-        count weights a 700-token response the same as a 30000-token one. Tokens
-        also make this directly comparable with `throughput`, which is the same
-        quantity without the staleness filter -- their ratio is the fraction of
-        generated work that arrived fresh enough to use.
+        Tokens rather than a trajectory count, since SCG is goodput and
+        trajectories can vary enormously in length, so a count would weight a
+        short response the same as a long one. Tokens are also directly
+        comparable with `throughput`, the same quantity without the staleness
+        filter.
 
         Uses staleness_true (v_min of segments), not staleness_reported (v_max).
         The two differ on any trajectory interrupted by a weight update, and using

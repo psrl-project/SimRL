@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# conf/kv.sh — KV cache capacity overrides
+# conf/kv.sh: KV cache capacity overrides
 # Sourced by simulate.sh. Sets KV_OVERRIDES.
 # Inputs: KV_MODEL_PATH, KV_PROBE, KV_GPU_MEMORY_UTILIZATION, KV_GPU_MEMORY_MIB,
 #         ROLLOUT_TP, GPU, KV_NON_KV_OVERHEAD_BYTES

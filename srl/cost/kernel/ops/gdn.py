@@ -4,7 +4,7 @@ Gated delta net: the linear-attention layer a hybrid model uses for most of its 
 A separate family from `attention`, not a slice of it, because the two are different kernels
 with different cost functions. Qwen3.5-35B-A3B runs softmax attention on 10 of 40 layers and
 this on the other 30, so a cost model that priced every layer as softmax attention would
-overstate a long prompt by roughly `seq_len / chunk_size` -- at 32k tokens the SOL difference
+overstate a long prompt by roughly `seq_len / chunk_size`. At 32k tokens the SOL difference
 is 128x.
 
 The two ops here are also shaped differently from the two attention ops, in a way that is
@@ -56,7 +56,7 @@ def _parse_gdn_sweep(value: dict[str, Any]) -> Any:
     """Parse the shared `gdn:` sweep subtree."""
     # Imported lazily: the cost path prices kernels from parquet and must not load the
     # profiler package to do it. Four dots because this module is
-    # `srl.cost.kernel.ops.gdn`; `tests/test_kernel_package_imports.py` checks the depth.
+    # `srl.cost.kernel.ops.gdn`. `tests/test_kernel_package_imports.py` checks the depth.
     from ....profiler.kernel.sweep import GdnSweep
 
     return GdnSweep.from_dict(value)

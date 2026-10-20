@@ -117,7 +117,7 @@ def strategy() -> InventoryDeadline:
 
 class _FakeSession:
     """Hand-controlled option pricing, so `select_context`'s own logic is tested in isolation
-    from whether `PlanSession` prices an option correctly -- that is `test_forecast_plan.py`'s job.
+    from whether `PlanSession` prices an option correctly. That is `test_forecast_plan.py`'s job.
     """
 
     def __init__(self, members=(), staged_groups=None, deadlines=None, rollout_version=0, horizon=1):
@@ -231,7 +231,7 @@ class TestPickQueued:
         Without a bound, slowest-first search spans the whole staged backlog, which is the
         exact `length_aware` docstring warns against: it starves whichever end of the length
         distribution it ranks last. `window_groups=1` here means every group is its own block,
-        so arrival order -- not length -- must decide between groups 1 and 2.
+        so arrival order, not length, must decide between groups 1 and 2.
         """
         s = InventoryDeadline(length_model="oracle", window_groups=1)
         early_short = [member_request(10, 100, 50, group_id=1)]

@@ -2,7 +2,7 @@
 
 vLLM sizes its KV cache from memory left after weights, its own measured peak
 activation, non-torch allocations and CUDA graphs. The last three are observed
-during a profile run and cannot be derived from `config.json`; a hybrid
+during a profile run and cannot be derived from `config.json`. A hybrid
 attention/linear model additionally pads its mamba pages to the attention page,
 which is not reconstructible either. So the capacity is read from a real engine
 rather than estimated.
@@ -79,7 +79,7 @@ def checkpoint_fingerprint(model_path: str | Path) -> str:
     """Identify a checkpoint by its config and weight size, not its path.
 
     Moves when the weights or architecture change, which should invalidate a
-    cached capacity; stable across a copy to a new path, which should not.
+    cached capacity. Stable across a copy to a new path, which should not.
     """
     path = Path(model_path)
     if path.is_file():
@@ -105,7 +105,7 @@ def _load_cache(cache_path: Path) -> dict[str, dict]:
     try:
         raw = json.loads(cache_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        srl_logger.warning("KV capacity cache at %s is unreadable; ignoring it.", cache_path)
+        srl_logger.warning("KV capacity cache at %s is unreadable, ignoring it.", cache_path)
         return {}
     if raw.get("schema") != _CACHE_SCHEMA:
         return {}
@@ -225,7 +225,7 @@ def probe_kv_capacity(
 
 
     srl_logger.info(
-        "Probing real KV capacity for %s at tp=%d (loads the checkpoint; ~2-4 min). "
+        "Probing real KV capacity for %s at tp=%d (loads the checkpoint, ~2-4 min). "
         "Caching to %s.",
         model_path,
         tensor_parallel,

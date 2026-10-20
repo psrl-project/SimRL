@@ -8,7 +8,7 @@ from srl.cost.training.microbatch import BatchingMode, MicrobatchPlanner, verl_w
 
 
 def test_verl_workload_matches_the_reference_proxy():
-    """verl balances on `24576 * L + L^2`; diverging would skew every predicted count."""
+    """verl balances on `24576 * L + L^2`. Diverging would skew every predicted count."""
     assert verl_workload(1000) == 24576 * 1000 + 1000**2
     assert verl_workload(2000) == 24576 * 2000 + 2000**2
 
@@ -16,7 +16,7 @@ def test_verl_workload_matches_the_reference_proxy():
 def test_pad_to_max_charges_for_the_padding():
     planner = MicrobatchPlanner(BatchingMode.PAD_TO_MAX)
     plan = planner.plan((100, 200, 300, 400), dp=2, micro_batch_size=2)
-    # Two ranks, each holds two sequences; micro_batch_size=2 fits both in one microbatch.
+    # Two ranks, each holds two sequences. micro_batch_size=2 fits both in one microbatch.
     assert len(plan) == 1
     # The longest sequence on the critical rank sets every slot's cost.
     assert plan[0].count == 2
@@ -28,14 +28,14 @@ def test_packed_no_pad_charges_only_real_tokens():
     plan = planner.plan((100, 200, 300, 400), dp=2, micro_batch_size=2)
     assert sum(item.sum_tokens for item in plan) < 400 * 2
     # LPT pairs the longest with the shortest, giving 400 + 100 on the critical rank
-    # against 300 + 200 on the other. Both total 500; the critical rank is the one
+    # against 300 + 200 on the other. Both total 500. The critical rank is the one
     # with the greater quadratic workload.
     assert plan[0].sum_tokens == 500
     assert plan[0].count == 2
 
 
 def test_packed_beats_padded_on_a_skewed_distribution():
-    """This is the 1.17x-to-4.34x measured gap; the plan must express it."""
+    """This is the 1.17x-to-4.34x measured gap. The plan must express it."""
     lengths = (10240, 10240, 900, 1100, 950, 1050, 800, 1200)
     padded = MicrobatchPlanner(BatchingMode.PAD_TO_MAX).plan(lengths, dp=2, micro_batch_size=4)
     packed = MicrobatchPlanner(BatchingMode.PACKED_NO_PAD).plan(lengths, dp=2, micro_batch_size=4)
@@ -68,7 +68,7 @@ def test_token_budget_is_deterministic():
 
 
 def test_token_budget_balances_rather_than_filling_greedily():
-    """LPT balances workload across microbatches; a greedy input-order fill does not."""
+    """LPT balances workload across microbatches. A greedy input-order fill does not."""
     planner = MicrobatchPlanner(BatchingMode.TOKEN_BUDGET, max_tokens_per_rank=2100)
     plan = planner.plan((2000, 100, 2000, 100), dp=1, micro_batch_size=4)
     # LPT pairs each long sequence with a short one, so both groups hold two.
@@ -117,7 +117,7 @@ def test_critical_rank_selected_by_workload_not_token_count():
 
     Rank A: 505 sequences of length 1: token count 505, workload 505*(24577) = 12,411,385.
     Rank B: 1 sequence of length 500: token count 500, workload 24576*500+500^2 = 12,538,000.
-    Token count picks rank A; workload picks rank B.  The plan must reflect rank B.
+    Token count picks rank A. Workload picks rank B. The plan must reflect rank B.
     """
     planner = MicrobatchPlanner(BatchingMode.PACKED_NO_PAD)
     lengths = tuple([1] * 505 + [500])
@@ -196,7 +196,7 @@ def test_pad_to_max_padding_is_per_microbatch_not_rank_wide():
     """A short sequence in one group must not be charged the rank-wide maximum."""
     planner = MicrobatchPlanner(BatchingMode.PAD_TO_MAX)
     # Two groups: first has [9176, 9176], second has [100, 100].
-    # With rank-wide padding both groups would charge 9176 tokens; with per-microbatch
+    # With rank-wide padding both groups would charge 9176 tokens. With per-microbatch
     # padding the second group charges only 100.
     lengths = (9176, 9176, 100, 100)
     plan = planner.plan(lengths, dp=1, micro_batch_size=2)
@@ -210,7 +210,7 @@ def test_pad_to_max_padding_is_per_microbatch_not_rank_wide():
 def test_token_budget_ignores_micro_batch_size():
     """Under dynamic batching the budget alone sets the count.
 
-    verl reads `micro_batch_size_per_gpu` only on the static path; with
+    verl reads `micro_batch_size_per_gpu` only on the static path. With
     `use_dynamic_bsz=True` `rearrange_micro_batches` computes
     `min(num_groups, ceildiv(total_seqlen, max_token_len))` and never raises the
     count to one sequence per microbatch. Raising it invents pipeline slots the
@@ -218,7 +218,7 @@ def test_token_budget_ignores_micro_batch_size():
     `ppo_micro_batch_size_per_gpu=1` that made a 48-microbatch step cost 64,
     which is where a 33% training overprediction came from.
 
-    Checked against ground truth on two PSRL runs -- the microbatch count the
+    Checked against ground truth on two PSRL runs: the microbatch count the
     engine's own progress bar reports agrees with `ceildiv` on 15 of 15 steps.
     """
     planner = MicrobatchPlanner(BatchingMode.TOKEN_BUDGET, max_tokens_per_rank=100_000)

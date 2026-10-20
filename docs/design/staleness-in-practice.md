@@ -9,29 +9,29 @@ records what the surveyed frameworks actually implement, with line-level citatio
 extracts the structure they share.
 
 This file lives under `docs/design/`, which is excluded from the Sphinx build
-(`docs/conf.py:54`) — it is a working note, not published documentation.
+(`docs/conf.py:54`). It is a working note, not published documentation.
 
-The short version: **the most widely-cited systems — verl's sync mode, AReaL, SkyRL —
+The short version: **the most widely-cited systems (verl's sync mode, AReaL, SkyRL)
 implement their staleness knob as a bound on the volume of unconsumed work, not on the age
 of any sample.** This is not universal. Of the twelve systems surveyed, seven do enforce a
 genuine per-sample age bound, and one (prime-rl) enforces it against in-flight work before
 the generation completes. The design space is better described by two axes than by a
-single "how strict" ordering; see “The two axes” below.
+single "how strict" ordering. See “The two axes” below.
 
 All claims below were verified by reading source, not documentation. Where a system's
 documentation or a field's help text contradicts its code, both are quoted and the
 discrepancy is stated. External repositories were pulled as tarballs from
-`codeload.github.com` at the revision cited; see "Reproducing this survey" below for the
+`codeload.github.com` at the revision cited. See "Reproducing this survey" below for the
 exact method.
 
 ## Sources surveyed
 
-Seven systems were read end-to-end for this document; five more were surveyed for their
+Seven systems were read end-to-end for this document. Five more were surveyed for their
 staleness knob only. verl's two modes ship in one repository but are unrelated
 mechanisms, so they are read and cited separately. Unless noted otherwise, revisions are
 as of 2026-10-10. verl v1, AReaL, ROLL, SkyRL, slime, Dressage, NeMo-RL, TRL, prime-rl and
 OpenRLHF were corrected on 2026-10-16 against the commits cited below (full detail in
-`publishing/源码复核记录.md`); ROLL, Dressage, TRL, prime-rl and NeMo-RL's specific
+`publishing/源码复核记录.md`). ROLL, Dressage, TRL, prime-rl and NeMo-RL's specific
 corrections for this document were independently re-fetched and re-checked again on
 2026-10-19.
 
@@ -51,12 +51,12 @@ corrections for this document were independently re-fetched and re-checked again
 | Trinity-RFT | `agentscope-ai/Trinity-RFT@main` | knob only, via sub-survey |
 
 The Trinity-RFT row was gathered by a delegated agent and is reported here with that
-provenance; it has not been re-read line by line and should be re-verified before being
+provenance. It has not been re-read line by line and should be re-verified before being
 cited in a paper.
 
 ## The common structure: an unconsumed-work lease
 
-The three most widely-cited systems — AReaL, SkyRL and verl — gate admission with the
+The three most widely-cited systems (AReaL, SkyRL and verl) gate admission with the
 same inequality, and OpenRLHF implements a degenerate case of it. Writing $A(t)$ for the
 cumulative count of admitted-and-completed units, $R(t)$ for units currently generating,
 $v(t)$ for the training version, $B$ for the training batch size and $S$ for the
@@ -88,7 +88,7 @@ uses it for KV-cache capacity, which is a different and simultaneously-active co
 The lease bounds the number of outstanding units, which by Little's law bounds the
 *mean* time a unit spends outstanding: $W = L/\lambda$ for arrival rate $\lambda$.
 Staleness, however, is a property of the *tail*. A single long-running request occupies
-one unit of the lease and keeps its slot indefinitely; the remaining $(S{+}1)B - 1$ units
+one unit of the lease and keeps its slot indefinitely. The remaining $(S{+}1)B - 1$ units
 continue to cycle fresh work through. Nothing in the inequality grows when that request
 ages, so nothing evicts it. When it finally completes, it is consumed and trained on at
 whatever version it happens to land in.
@@ -109,12 +109,12 @@ each weight sync.
 
 These coincide in steady state and diverge under stall. Under a training stall, AReaL's
 producer blocks cleanly, whereas verl keeps re-measuring and relies on its bounded
-hand-off queue, which evicts the **oldest** entry on overflow — so verl can shed exactly
+hand-off queue, which evicts the **oldest** entry on overflow, so verl can shed exactly
 the work closest to being consumed, precisely when it is most behind.
 
 ## Per-system instantiation
 
-### AReaL — credit lease
+### AReaL: credit lease
 
 `areal/infra/staleness_manager.py:109`:
 
@@ -139,7 +139,7 @@ comparison between a sample's generation version and the current version returns
 `deterministic_sampling` warning at `cli_args.py:3036`.
 
 AReaL has no L2 staleness control. A weight sync never interrupts in-flight generation
-on a staleness basis; the `running` count above moves to `accepted` only when the
+on a staleness basis. The `running` count above moves to `accepted` only when the
 request itself finishes.
 
 AReaL does use per-token versions, but in the **objective**, not in admission.
@@ -149,7 +149,7 @@ log-probabilities for decoupled PPO. Its `RejectionSamplingConfig` filters on *p
 divergence* (ratio/KL), not age. AReaL's position is therefore coherent: it does not gate
 on age because it corrects for age in the loss.
 
-### SkyRL — credit lease, with an explicit admission of the gap
+### SkyRL: credit lease, with an explicit admission of the gap
 
 `skyrl/train/fully_async_trainer.py:184`:
 
@@ -192,7 +192,7 @@ if cur_staleness > self.max_staleness_steps:                            # line 1
 ```
 
 The group is appended to the training batch at line 1041, *before* the check at line
-1061. The violation branch contains no `continue` and no removal — only a counter that
+1061. The violation branch contains no `continue` and no removal, only a counter that
 feeds the `async/staleness_violation_count` metric. SkyRL's documentation lists dropping
 and drop-and-resample as alternatives, both marked "not supported yet".
 
@@ -203,7 +203,7 @@ trade-off found in any of the six:
 > prefer proactive admission control to avoid wasted compute and simplify buffer
 > management.
 
-### verl (legacy sync mode) — occupancy lease
+### verl (legacy sync mode): occupancy lease
 
 `verl/experimental/fully_async_policy/fully_async_rollouter.py:431`:
 
@@ -222,12 +222,12 @@ weight sync the counter is re-measured rather than credited (`:475`):
 self.staleness_samples = len(self.active_tasks) + await self.message_queue_client.get_queue_size()
 ```
 
-The hand-off queue is a `deque(maxlen=...)` that `popleft()`s on overflow — FIFO
+The hand-off queue is a `deque(maxlen=...)` that `popleft()`s on overflow: FIFO
 eviction, which will discard a *fresh* sample if that is what sits at the head.
 
 verl is the most honest of the lease systems about what its knob means.
 `staleness_threshold: float = 0.1` and the README defines it as *"the maximum proportion
-of stale samples allowed to be used"* — a proportion, not an age. verl also never filters
+of stale samples allowed to be used"*: a proportion, not an age. verl also never filters
 by age at training time: the per-sample tags `min_global_steps` / `max_global_steps` are
 introduced in `verl/trainer/ppo/v1/agent_loop_tq.py:191` with the comment *"These tags
 are used for off-policy staleness control, if a trajectory spans too many global steps,
@@ -235,14 +235,14 @@ we need to filter it out"*, but their only non-test consumer is
 `detach_utils.py:151-159`, which computes `partial_ratio`, `max_partial_span` and
 `param_version_diversity` for logging. **No filter exists.**
 
-### verl v1 (`separate_async`) — step-clocked admission, a real age filter
+### verl v1 (`separate_async`): step-clocked admission, a real age filter
 
 Set via `trainer.v1.trainer_mode=separate_async`, this is an unrelated mechanism to the
 legacy sync mode above, in the same repository.
 
 **L1.** Admission tracks training progress, not an outstanding-work counter.
 `num_warmup_batches` (fractional) sets how many extra batches of prompts are admitted
-before training starts; every subsequent training round admits one more
+before training starts. Every subsequent training round admits one more
 `train_batch_size` on top of that
 (`verl/trainer/ppo/v1/trainer_base.py:624-651,1520-1527`, commit `5b550b0c`). With
 `train_batch_size=4, num_warmup_batches=1.5`: 6 prompts admitted at startup, 4 more at the
@@ -265,12 +265,12 @@ if global_steps - prompt_global_steps.get(uid, global_steps) + 1 > self.max_off_
 The `+1` counts the admission round itself. With one update per training round, `drop`'s
 staleness bound is `max_off_policy_threshold - 1`. `parameter_sync_step > 1` runs several
 sample-and-update cycles inside one `global_steps`, splitting the batch into minibatches
-that all share that single version — it does not scale the bound; a conservative upper
+that all share that single version. This does not scale the bound. A conservative upper
 bound folding it in is `parameter_sync_step * max_off_policy_threshold - 1`.
 
 `wait` blocks sampling while any *still-generating* group has reached the threshold
-(`replay_buffer.py:541-556`), giving it time to finish; already-finished groups past the
-threshold are never evicted. A finished group not drained this round is not lost — the
+(`replay_buffer.py:541-556`), giving it time to finish. Already-finished groups past the
+threshold are never evicted. A finished group not drained this round is not lost: the
 next round prioritises earlier-admitted groups first, so it is the first one sampled, now
 one version staler. `wait`'s own test
 (`tests/trainer/ppo/v1/test_replay_buffer_on_cpu.py:676-691`) confirms this: with no
@@ -278,11 +278,11 @@ groups still generating, an already-finished group past the threshold is still r
 
 **Analysis.** `drop` evicts before sampling and its bound folds cleanly into a per-token
 staleness ceiling, so it counts as a strict bound in this survey's terms. `wait` only ever
-blocks on in-flight work; it never removes an already-finished over-age group, so nothing
+blocks on in-flight work. It never removes an already-finished over-age group, so nothing
 stops one from eventually training at an arbitrarily late version. Setting
 `max_off_policy_threshold=None` disables both L3 strategies, leaving L1 as the only bound.
 
-### slime — no knob; staleness is structural
+### slime: no knob, staleness is structural
 
 slime has no staleness *parameter* at all, but it does gate admission on a watermark.
 The fully-async object-store worker converts a concurrency budget (concurrent responses
@@ -293,7 +293,7 @@ watermark: once either is full, admission pauses until training drains the queue
 64 concurrent responses, 8 per group and a prefetch factor of 1, that caps active
 generation at 8 groups and pauses admission once the completion queue also holds 8. The
 queue itself is unbounded, so an already-running trajectory can finish and push the queue
-past the watermark; only new admission is blocked. This bounds *how much unconsumed work
+past the watermark. Only new admission is blocked. This bounds *how much unconsumed work
 exists*, the same shape as AReaL/SkyRL/verl's lease, not the age of any one sample.
 
 `Sample.weight_versions` has five read sites in the repository: one metric, two *sort
@@ -311,11 +311,11 @@ preserved.
 
 Two incidental findings relevant to SimRL's cost models: slime's resume is
 budget-correct (`max_new_tokens -= response_length`), so it does not exhibit the
-fresh-budget-on-resume behaviour seen in PSRL; and with `flush-cache-interval <= 0` the
-KV survives the weight update in place, so partial rollout does **not** pay a re-prefill
+fresh-budget-on-resume behaviour seen in PSRL. With `flush-cache-interval <= 0`, the
+KV also survives the weight update in place, so partial rollout does **not** pay a re-prefill
 tax.
 
-### ROLL — pipeline depth plus a genuine age filter
+### ROLL: pipeline depth plus a genuine age filter
 
 ROLL is the first of the two systems that bounds age. Its knob is
 `async_generation_ratio: float = 0` (`roll/configs/base_config.py:552`), and it is used
@@ -364,13 +364,13 @@ else:
 
 with `math.ceil(self.async_generation_ratio)` setting the window edges. This is a real
 fractional staleness semantics: $S = 1.5$ means "one full step back, plus half a batch
-from two steps back." Note the asymmetry — the agentic `rollout_scheduler.py` path uses
+from two steps back." Note the asymmetry: the agentic `rollout_scheduler.py` path uses
 the same field in `range()` at line 277, which requires an integer and raises `TypeError`
 on a fractional value. The field is declared `float` with no `__post_init__` validation
 beyond `assert async_generation_ratio == 0 or generate_opt_level == 1`
 (`base_config.py:727`), so which behaviour you get depends on which scheduler runs.
 
-### Dressage — age as a first-class feature
+### Dressage: age as a first-class feature
 
 Dressage is built on slime and adds what its README calls **"True Staleness Control"**.
 That a framework built on slime found it necessary to add this, and to call it *true*, is
@@ -401,13 +401,13 @@ one with the highest `segment_index`, then reads that segment's own version
 (`dressage_end_token_version`). So `should_drop_group` is comparing each trajectory's
 **last-trainable-token version** against the cutoff, one comparison per trajectory in the
 group, not a raw scan over every observed segment. A trajectory whose first segment is
-ancient but whose last segment is recent passes; one whose own last segment has fallen
+ancient but whose last segment is recent passes. One whose own last segment has fallen
 behind does not, regardless of how recent its earlier segments were.
 
 Three design choices are worth noting:
 
 1. **Versions are tracked in observation order**, appended as encountered by
-   `observe_group` (`:111`) — never sorted, never subtracted. `keep_versions` counts
+   `observe_group` (`:111`), never sorted, never subtracted. `keep_versions` counts
    *distinct observed versions*, not steps. This is the only system in the survey where
    an integer type is semantically correct rather than an artefact of `range()`.
 2. **Drop granularity is the GRPO group**, deliberately: the documentation explains that
@@ -423,19 +423,19 @@ Three design choices are worth noting:
 
 Dressage also bounds *intra-trajectory* version mixing, which no other surveyed system
 does. Under partial rollout a single trajectory can be interrupted and resumed across
-weight updates; the proxy enforces `--max-partial-rollout-preempts` with
+weight updates. The proxy enforces `--max-partial-rollout-preempts` with
 `version_switches = max(0, version_span - 1)`, returning HTTP 502
 `partial_rollout_staleness_exceeded` when exceeded.
 
 The filter runs at batch-assembly time, so a stale group has already consumed GPU time
-before being dropped. The work is wasted, not prevented — the cost that SkyRL's
+before being dropped. The work is wasted, not prevented: the cost that SkyRL's
 admission-control rationale is explicitly trying to avoid.
 
 ## Other systems surveyed
 
 prime-rl, TRL and NeMo-RL below were read end-to-end against the commits in the sources
-table, same depth as the six systems above; they are kept in this section because each
-needed less narrative to cover. OpenRLHF's knob and enforcement path are verified;
+table, same depth as the six systems above. They are kept in this section because each
+needed less narrative to cover. OpenRLHF's knob and enforcement path are verified.
 Trinity-RFT carries the sub-survey provenance caveat noted above.
 
 **prime-rl** (`PrimeIntellect-ai/prime-rl`) enforces the strictest bound found.
@@ -469,26 +469,26 @@ and only ever propagated from the group to its individual samples afterward
 (`model_version=group.model_version`), never re-read from the live model version at
 generation completion. A group that takes several weight syncs to finish generating is
 staled against the version it started under, not the version current when it finally
-lands. Notably, its capacity knob is *derived from* the age knob — `max_inflight_tasks`
+lands. Notably, its capacity knob is *derived from* the age knob: `max_inflight_tasks`
 defaults to `max(max_staleness, 1) * samples_per_step` (the floor keeps `max_staleness=0`
 from zeroing out the rollout entirely, per the source comment next to it), on the stated
 rationale that generating more would be wasteful since the surplus would be discarded as
 stale. This is the inverse of the lease family's reasoning.
 
-**NeMo-RL** (`NVIDIA-NeMo/RL`) exposes staleness as a pluggable policy — a discriminated
+**NeMo-RL** (`NVIDIA-NeMo/RL`) exposes staleness as a pluggable policy: a discriminated
 union of `windowed`, `ready_first`, `weight_fifo` and `in_order` samplers, each with
 `max_staleness_versions: NonNegativeInt = 1`. **The real system's default is `in_order`**
 (`single_controller_utils/config.py`: `sampler: SamplerConfig =
-Field(default_factory=InOrderSamplerConfig)`), not `windowed` — worth stating explicitly,
+Field(default_factory=InOrderSamplerConfig)`), not `windowed`. This is worth stating explicitly,
 since `windowed` gets the most narrative attention here for having the most direct L1,
-L2 and L3 coverage. `in_order` is pure pipeline depth; `windowed` is a pure age window
+L2 and L3 coverage. `in_order` is pure pipeline depth. `windowed` is a pure age window
 with an explicit `should_abort_inflight()`. Backpressure knobs (`max_inflight_prompts`,
 `max_buffered_rollouts`) are kept deliberately separate from the staleness knobs. This is
 the closest external analogue to SimRL's own pluggable-policy design.
 
 **OpenRLHF** has `--train.async_queue_size: int = 1`, implemented as a literal counting
 semaphore. No per-sample version is recorded anywhere, so staleness is bounded only
-implicitly by queue depth — the degenerate lease, with $S$ fixed at the queue size.
+implicitly by queue depth: the degenerate lease, with $S$ fixed at the queue size.
 
 **Trinity-RFT** (`agentscope-ai/Trinity-RFT`) has `sync_offset: int = 0` (structural) and
 `max_inflight_batches: int = 2` (capacity). It tracks `model_version` carefully at the
@@ -500,17 +500,17 @@ pattern.
 
 | System | Knob | Type | Fractional | Bounds | Enforcement |
 |---|---|---|---|---|---|
-| slime | *(none)* | — | — | pipeline shape | structural; versions are sort keys |
-| OpenRLHF | `async_queue_size` | `int` = 1 | no | outstanding work | semaphore; no versions recorded |
-| Trinity-RFT | `sync_offset`, `max_inflight_batches` | `int` = 0 / 2 | no | depth + work | structural; versions never compared |
-| AReaL | `max_head_offpolicyness` | `int` = 0 | no | outstanding work | credit lease; age corrected in loss; no L2 |
-| verl (legacy) | `staleness_threshold` | `float` = 0.1 | **yes** | outstanding work | occupancy lease; FIFO drop on overflow |
-| verl v1 | `max_off_policy_threshold` | `int` = 8 | no | age (`drop`) or none (`wait`) | `drop` evicts before sampling; `wait` only blocks in-flight |
-| SkyRL | `max_staleness_steps` | `int` = 4 | un-validated | outstanding work | credit lease; violation logged, not acted on |
-| ROLL | `async_generation_ratio` | `float` = 0 | **yes** (RLVR path) | depth **and** age | GC + consumption floor; resamples |
-| Dressage | `..._keep_versions` | `int` = 0 | no | age (inter + intra) | drop at assembly; no resample |
-| TRL | `max_staleness` | `int` = 4 | no | age | drop at consume; capacity derived from it |
-| NeMo-RL | `max_staleness_versions` | `int` = 1 | no | age or depth (pluggable) | window evict; optional in-flight abort |
+| slime | *(none)* | n/a | n/a | pipeline shape | structural, versions are sort keys |
+| OpenRLHF | `async_queue_size` | `int` = 1 | no | outstanding work | semaphore, no versions recorded |
+| Trinity-RFT | `sync_offset`, `max_inflight_batches` | `int` = 0 / 2 | no | depth + work | structural, versions never compared |
+| AReaL | `max_head_offpolicyness` | `int` = 0 | no | outstanding work | credit lease, age corrected in loss, no L2 |
+| verl (legacy) | `staleness_threshold` | `float` = 0.1 | **yes** | outstanding work | occupancy lease, FIFO drop on overflow |
+| verl v1 | `max_off_policy_threshold` | `int` = 8 | no | age (`drop`) or none (`wait`) | `drop` evicts before sampling. `wait` only blocks in-flight |
+| SkyRL | `max_staleness_steps` | `int` = 4 | un-validated | outstanding work | credit lease, violation logged, not acted on |
+| ROLL | `async_generation_ratio` | `float` = 0 | **yes** (RLVR path) | depth **and** age | GC + consumption floor, resamples |
+| Dressage | `..._keep_versions` | `int` = 0 | no | age (inter + intra) | drop at assembly, no resample |
+| TRL | `max_staleness` | `int` = 4 | no | age | drop at consume, capacity derived from it |
+| NeMo-RL | `max_staleness_versions` | `int` = 1 | no | age or depth (pluggable) | window evict, optional in-flight abort |
 | prime-rl | `max_off_policy_steps` | `int` = 8 | no | work **and** age | **cancels in-flight** + capacity gate |
 
 ## The two axes
@@ -533,29 +533,29 @@ a sample* (a version difference).
 
 The populated upper-right cell is the important correction to the naive story. Bounding
 age *before* the compute is spent is possible, and prime-rl and NeMo-RL's `windowed`
-sampler both do it — by cancelling work that has already started but cannot finish in
+sampler both do it, by cancelling work that has already started but cannot finish in
 time. Note what this requires: the decision is made *reactively*, when a new weight
 version arrives and a still-running request is observed to have aged out. Neither system
-predicts at dispatch time whether a request will survive; they wait until it has
+predicts at dispatch time whether a request will survive. They wait until it has
 demonstrably failed to.
 
 That distinction is where SimRL has something to say. Reactive cancellation still
-pays for everything generated up to the cancellation point — the sunk cost is reduced,
+pays for everything generated up to the cancellation point: the sunk cost is reduced,
 not eliminated. Deciding at *admission* time which requests will still be fresh on
 completion requires a predicted completion-time distribution, which is exactly what a
 simulator provides and what a live system cannot cheaply obtain.
 
 The two rationales are stated explicitly by the systems themselves, and they conflict.
 SkyRL: *"We prefer proactive admission control to avoid wasted compute."* TRL derives its
-capacity cap from its age bound on the same reasoning, but in the opposite direction —
+capacity cap from its age bound on the same reasoning, but in the opposite direction,
 sizing the in-flight pool so that few samples *can* age out. Both are trying to avoid the
-same waste; they disagree about which quantity to fix.
+same waste. They disagree about which quantity to fix.
 
 ## Implications for SimRL
 
 Eleven of the twelve systems surveyed above now have a corresponding `StalenessPolicy`
 under `srl/policy/` (`POLICY_REGISTRY` in `srl/policy/registry.py` lists eleven, plus
-`psrl` for SimRL's own baseline — twelve entries total, not twelve-of-the-survey).
+`psrl` for SimRL's own baseline, twelve entries total, not twelve-of-the-survey).
 Trinity-RFT is the one exception: it tracks `model_version` at the synchroniser level
 but never attaches a version to an individual experience, so there is no per-sample
 quantity to key a policy on (see its "structural" classification above). The layered
@@ -565,10 +565,10 @@ needs a hook that does not exist yet" gap among the eleven that are implemented.
 
 - `ArealPolicy` (`srl/policy/areal.py`) reproduces AReaL's formula exactly, including the
   `accepted + running` term, and declares no L2. The policy documentation's claim that it
-  "does not bound individual sample age" is correct; the sharper statement is that no
+  "does not bound individual sample age" is correct. The sharper statement is that no
   per-sample age check exists anywhere in AReaL.
 - `RollPolicy`'s consumption floor and its `on_publish`-triggered GC correspond to real
-  upstream mechanisms, not modelling liberties — including the `r >= 1.0` floor the RLVR
+  upstream mechanisms, not modelling liberties, including the `r >= 1.0` floor the RLVR
   pipeline config enforces, which this simulator does not currently assert on its own
   `RollPolicy` construction. This also explains why binding SCG experiments to
   `policy=roll` surfaced wasted tokens that other policies hid: ROLL is one of several
@@ -576,23 +576,23 @@ needs a hook that does not exist yet" gap among the eleven that are implemented.
 - `DressagePolicy` (`srl/policy/dressage.py`) already keys its window on each group's
   last trainable token (`last_version = max(req.v_max for req in group)`) and already
   grants a replacement credit on every L3 drop (`replacement_groups_on_drop` returns
-  `len(groups)`) — both match the corrected real-system behaviour documented above. An
-  earlier draft of this document claimed Dressage does not resample after a drop; it
+  `len(groups)`), both match the corrected real-system behaviour documented above. An
+  earlier draft of this document claimed Dressage does not resample after a drop. It
   does, and the policy was already modelling that correctly before this correction.
 - A faithful **SkyRL** policy is `areal` without the `+1`, plus a violation counter that
-  does not alter behaviour; `SkyRLPolicy` implements exactly this.
+  does not alter behaviour. `SkyRLPolicy` implements exactly this.
 - `VerlV1Policy` implements the corrected `drop`/`wait` distinction above: `drop`'s
   threshold folds into a strict per-token bound, `wait` only blocks on still-generating
   work and is reported as not strict.
-- slime should not be modelled with an age-based policy at all; `SlimePolicy`'s bound
+- slime should not be modelled with an age-based policy at all. `SlimePolicy`'s bound
   comes from the loop-barrier shape plus the admission watermark documented above, not
   from any version comparison.
 - `PrimeRLPolicy` combines a flat inflight cap with a dispatch-lag admission gate, plus
   the shared `CancelBelowVersion`/`VersionWindow` primitives for the in-flight cancel and
-  ready-pool sweep respectively — the lease-plus-reactive-cancel combination this document
+  ready-pool sweep respectively, the lease-plus-reactive-cancel combination this document
   used to call unimplementable.
 - prime-rl's split of staleness into generation time versus queue time is worth adopting
-  as a reported metric; it distinguishes "the request was slow" from "the request waited",
+  as a reported metric. It distinguishes "the request was slow" from "the request waited",
   which the current single staleness figure conflates. `StalenessReport` does not yet
   make this split.
 

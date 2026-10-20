@@ -41,7 +41,7 @@ class GemmKernelOp:
     fits_floor = False
     # Shared by the rollout and training models, and the two disagree: a decode GEMM is
     # inside the FULL graph while a Megatron GEMM is not. Left event-timed because the
-    # stake does not justify splitting the table -- the gap is 1.68 us per call at m<=8
+    # stake does not justify splitting the table. The gap is 1.68 us per call at m<=8
     # (9.64 us event against 7.96 us amortised), about 0.47 ms across a 40-layer step,
     # and it vanishes above m=128 where the kernel is compute-bound. Contrast GDN decode,
     # where the same gap was 21.95 us per call.
@@ -62,7 +62,7 @@ class GemmKernelOp:
             spec (GpuSpec): Hardware the roofline is evaluated against.
             slice_key (tuple[Any, ...]): `(gemm_dtype, n, k)`.
             coords (tuple[float, ...]): `(m,)`.
-            floor_s (float): Ignored; `fits_floor` is False. Accepted so every op shares
+            floor_s (float): Ignored. `fits_floor` is False. Accepted so every op shares
                 one call signature.
 
         Returns:
@@ -78,7 +78,7 @@ class GemmKernelOp:
         """Parse the `gemm:` sweep subtree into a `GemmSweep`."""
         # Imported lazily: `srl.profiler.kernel.sweep` reaches the profiler package, and
         # a simulator run that only prices kernels must not load it. Four dots because this
-        # module is `srl.cost.kernel.ops.gemm`; Step 4 verifies the depth resolves.
+        # module is `srl.cost.kernel.ops.gemm`. Step 4 verifies the depth resolves.
         from ....profiler.kernel.sweep import GemmSweep
 
         return GemmSweep.from_dict(value)

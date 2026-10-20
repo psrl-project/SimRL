@@ -72,16 +72,16 @@ def parse_group_response(payload: dict[str, Any], group_id: int) -> RequestGroup
     for choice in choices:
         if choice.get("token_ids") is None:
             raise ValueError(
-                "Completions response is missing token_ids; "
-                "the request must set return_token_ids to true."
+                "Completions response is missing token_ids. "
+                "The request must set return_token_ids to true."
             )
     # All choices of a request share the same prompt, and vLLM echoes the identical
     # `prompt_token_ids` on each choice, so reading from the first choice is sufficient.
     prompt_token_ids = choices[0].get("prompt_token_ids")
     if prompt_token_ids is None:
         raise ValueError(
-            "Completions response is missing prompt_token_ids; "
-            "the request must set return_token_ids to true."
+            "Completions response is missing prompt_token_ids. "
+            "The request must set return_token_ids to true."
         )
     return RequestGroup(
         group_id=group_id,
@@ -216,7 +216,7 @@ def _partition_group_results(
             successes.append(result)
     if not successes:
         raise RuntimeError(
-            f"All {len(results)} group requests failed; no output to write."
+            f"All {len(results)} group requests failed. No output to write."
         )
     return successes
 
@@ -293,7 +293,7 @@ async def _send_group_requests(
     successes = _partition_group_results(list(raw), group_ids)
     if len(successes) < len(indexed_prompts):
         srl_logger.warning(
-            f"{len(successes)}/{len(indexed_prompts)} groups succeeded; "
+            f"{len(successes)}/{len(indexed_prompts)} groups succeeded. "
             f"{len(indexed_prompts) - len(successes)} failed and were skipped."
         )
     return successes

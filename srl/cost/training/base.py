@@ -26,8 +26,8 @@ class TrainingParallelism:
     pp: int = 1
     dp: int = 1
     cp: int = 1
-    # Expert parallelism. Not a factor of `world_size` -- Megatron carves the expert groups
-    # out of the data-parallel dimension -- but it IS part of the cell key, because two
+    # Expert parallelism. Not a factor of `world_size` (Megatron carves the expert groups
+    # out of the data-parallel dimension), but it IS part of the cell key, because two
     # candidates with the same mesh and different EP run different all-to-all traffic and
     # hold a different number of experts per rank. See `profiler/schema.Parallelism.ep`.
     ep: int = 1

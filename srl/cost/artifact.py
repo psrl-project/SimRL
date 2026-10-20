@@ -120,7 +120,7 @@ class CostArtifact:
     def __post_init__(self) -> None:
         if self.artifact_version != ARTIFACT_VERSION:
             raise ValueError(
-                f"Unsupported artifact_version {self.artifact_version!r}; expected {ARTIFACT_VERSION!r}."
+                f"Unsupported artifact_version {self.artifact_version!r}, expected {ARTIFACT_VERSION!r}."
             )
         if self.kind not in {"rollout", "training"}:
             raise ValueError(f"Unsupported artifact kind {self.kind!r}.")

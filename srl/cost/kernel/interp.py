@@ -3,7 +3,7 @@ Interpolate kernel utility over measured shapes.
 
 Utility (`SOL / measured_latency`) is interpolated rather than latency, because
 utility varies slowly while latency spans orders of magnitude across a sweep. All
-latency growth in a prediction comes from the SOL formula; this module only decides
+latency growth in a prediction comes from the SOL formula. This module only decides
 *how efficient* the kernel is at a shape. That is why a query past the measured
 frontier holds a transferred utility instead of extrapolating: extrapolating an
 efficiency is defensible, extrapolating a latency is not.

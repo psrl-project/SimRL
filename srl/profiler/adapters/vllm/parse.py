@@ -38,19 +38,15 @@ _MEASUREMENT_STOP_MARKERS = (
 # shorter step is an async-scheduling overlap artifact, not a measurement.
 _MIN_MEASURED_ELAPSED_MS = 1.0
 
-# The same claim, made per token rather than per step. The absolute floor above is
-# necessary but not sufficient: it only catches a step that is short in wall-clock terms,
-# while an overlap artifact on a *large* prefill lands just above it and still reports an
-# impossible rate. Measured on Qwen3.5-35B-A3B at tp=1, two steps survived collection at
-# 16128 tokens in 1.080 ms (14.9M tok/s) and 11317 tokens in 1.030 ms (11.0M tok/s); the
-# psrl fit then charged them a 424 ms prediction against a 1 ms "measurement", a 39178%
-# residual that dragged tp=1 prefill MRE to 813%.
+# The same claim, made per token rather than per step. The absolute floor above only
+# catches a step that is short in wall-clock terms, while an overlap artifact on a
+# large prefill can land just above it and still report an impossible rate.
 #
-# 1M tok/s is far above anything an H20 reaches (a real 16k-token prefill measures ~400 ms,
-# i.e. 40k tok/s) so this rejects artifacts without touching a single genuine step: the
-# Qwen3-8B and DeepSeek-14B sweeps have zero steps above it. It is deliberately not tuned
-# close to the real ceiling, because the quantity being rejected is off by two orders of
-# magnitude and a loose bound cannot discard data that matters.
+# 1M tok/s is far above anything an H20 reaches (a real 16k-token prefill is about
+# 40k tok/s), so this rejects artifacts without touching a genuine step: the
+# Qwen3-8B and DeepSeek-14B sweeps have zero steps above it. The bound is left loose
+# rather than tuned to the real ceiling because the rejected quantity is off by two
+# orders of magnitude.
 _MAX_MEASURED_TOKENS_PER_SECOND = 1_000_000.0
 
 
@@ -119,7 +115,7 @@ def parse_sweep_log(path: Path) -> dict[Path, list[_IterationDetail]]:
     """Parse a sweep log into per-result-file scheduler iteration timings."""
     if not path.exists():
         raise ProfileValidationError(
-            f"Missing vLLM sweep log {path}; scheduler iteration timing is required."
+            f"Missing vLLM sweep log {path}. Scheduler iteration timing is required."
         )
     observations: dict[Path, list[_IterationDetail]] = {}
     current_result: Path | None = None
@@ -189,7 +185,7 @@ def trusted_iterations(
     - **Unmeasured steps.** Async scheduling overlaps a step with its
       neighbours, so some steps report a sub-millisecond elapsed time that is
       a pipelining artifact rather than a forward pass. Those steps are
-      dropped individually; the surrounding steps remain valid.
+      dropped individually. The surrounding steps remain valid.
 
     Args:
         details: Scheduler steps of one benchmark run, in iteration order.
@@ -257,7 +253,7 @@ def payload_from_iteration(
 ) -> RolloutPayload | None:
     """Fill attention features from an equal-length synthetic scheduler step.
 
-    Callers must filter the run through `trusted_iterations` first; this
+    Callers must filter the run through `trusted_iterations` first. This
     function assumes every request shares `input_len` and `decode_ordinal`.
     """
     if input_len <= 0:

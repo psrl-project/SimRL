@@ -4,7 +4,7 @@ Produced by `examples/profile/kernel/dispatch_probe.py`, which reads the live
 `CudaCommunicator`'s own predicates rather than re-deriving vLLM's size thresholds.
 
 Message size for Qwen3-8B is `tokens * 4096 * 2` bytes. A decode step at batch 1-64 sits in
-**8 KiB - 512 KiB**; a prefill step reaches a few MiB.
+**8 KiB - 512 KiB**, and a prefill step reaches a few MiB.
 
 | KiB | world_size=2 | world_size=4 | world_size=8 |
 |---:|---|---|---|
@@ -36,7 +36,7 @@ two ranks (`CUSTOM_ALL_REDUCE_MAX_SIZES["9.0"]`), far above the 8-512 KiB a deco
 
 **NCCL symmetric memory never fires**, despite `VLLM_ALLREDUCE_USE_SYMM_MEM` defaulting on.
 `is_symmetric_memory_enabled()` also requires `VLLM_USE_NCCL_SYMM_MEM`, which defaults to 0.
-The `symm_mem` label in `collective.py` is therefore unreachable in this configuration; the
+The `symm_mem` label in `collective.py` is therefore unreachable in this configuration. The
 `torch_symm_mem` rows are the *torch* symmetric-memory communicator, a different backend.
 
 ## Corrections to the plan's assumptions

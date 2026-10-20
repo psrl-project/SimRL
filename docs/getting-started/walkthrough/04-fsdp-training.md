@@ -68,7 +68,7 @@ underlying flags are `--candidates PATH`, `--candidate-id ID | --index N`, `--dr
 already marked `success`, so it **re-runs OOM and failed ones**.
 
 **Smoke-test first.** `examples/profile/fsdp/qwen3_8b_smoke.yaml` builds a small model and
-finishes quickly; a long sweep is an expensive way to discover a path typo. A candidate's
+finishes quickly. A long sweep is an expensive way to discover a path typo. A candidate's
 `run.duration_s` is dominated by process startup (spawning eight ranks, importing torch,
 building the model, forming the NCCL group) and not by the retained steps, so reducing
 `max_steps` barely shortens a sweep. Compare `run.duration_s` with `sum(step_times_s)` in
@@ -107,11 +107,11 @@ An OOM record carries the full configuration and a reason, with no usable timing
 ```
 
 Status is decided by the marker files and nothing else. A rank that catches
-`torch.OutOfMemoryError` writes `oom_rank<N>.json`; if the process exits non-zero with no
+`torch.OutOfMemoryError` writes `oom_rank<N>.json`. If the process exits non-zero with no
 marker the candidate is `failed`, and a log that mentions "out of memory" does not change
 that. A false OOM could only raise the fitted memory floor, so the classification is
 deliberately strict. A candidate whose memory exhaustion surfaced some other way is `failed`
-and its lower bound is lost; {doc}`../../profiling/fsdp` has the classification rules.
+and its lower bound is lost. {doc}`../../profiling/fsdp` has the classification rules.
 
 A successful record's payload has the same shape as Megatron's, with one difference that
 matters:
@@ -226,13 +226,13 @@ target and degenerates, so the residual carries both `microbatch_slope * num_mic
 `activation_slope * max_tokens`, both non-negative.
 
 **The memory target is chosen per cell.** Both `peak_allocated_bytes` and `peak_reserved_bytes`
-are fitted and the better validation score wins; the stored `reserved_over_allocated` ratio
+are fitted and the better validation score wins. The stored `reserved_over_allocated` ratio
 lets an allocated-target prediction still be compared with device capacity, since an OOM is
 triggered by reserved bytes. In the fit above the 2 x 4 and 4 x 2 meshes selected reserved and
 the 8 x 1 mesh selected allocated.
 
 **A negative $r^2$ on a cell with OOM constraints is those constraints working.** The 2 x 4
-cell has 16 inequality constraints against 15 successes; they lift the intercept by about
+cell has 16 inequality constraints against 15 successes. They lift the intercept by about
 5.1e9 bytes above what the successes alone support, so the model over-predicts those successes
 by design and will not claim a workload fits when the OOM evidence says otherwise. The MRE
 describes the slope, which is what varies in real queries.
@@ -260,7 +260,7 @@ without `--allow-rank-deficient`). **`validation_is_in_sample: false`** with a n
 on memory entries that sit near the capacity edge, which says the sweep found the ceiling.
 
 Fitted independently per mesh, `token_cost` should come out near the same value on meshes that
-never saw each other's data. When it does, the regression recovered a physical quantity; when
+never saw each other's data. When it does, the regression recovered a physical quantity. When
 one cell drifts well away from the others, look at its sample count first.
 
 ## Use it
@@ -280,7 +280,7 @@ srl rollout_cost=roofline rollout_cost.artifact_path=outputs/cost/qwen3_8b/rollo
 
 Omitting `shard_size` on a multi-mesh artifact raises `Artifact has multiple shard_size values;
 select one explicitly.` `training_cost.parallelism.dp` (default 8 in `fsdp.yaml`) must equal
-`shard_size * replicate_size`; `dp=4` against the 8x1 cell raises `This FSDP cell was measured
+`shard_size * replicate_size`. `dp=4` against the 8x1 cell raises `This FSDP cell was measured
 on a 8x1 shard-by-replicate mesh, which is dp=8, so it cannot answer for dp=4`.
 `optimizer_offload`, `reshard_after_forward`, `activation_recompute`, `optimizer`, and the
 three dtypes must match a profiled cell too.
@@ -288,9 +288,9 @@ three dtypes must match a profiled cell too.
 `training_cost.batching_mode` has no counterpart in the Megatron path. Profiling measured
 uniform shapes, so how real trajectory lengths become microbatches is a simulate-time choice:
 
-- `pad_to_max` (default) pads each microbatch to its longest sequence and charges the pad tokens;
+- `pad_to_max` (default) pads each microbatch to its longest sequence and charges the pad tokens.
 - `token_budget` groups to `training_cost.max_tokens_per_rank` (verl's default is 10240), still
-  padded within a microbatch;
+  padded within a microbatch.
 - `packed_no_pad` concatenates with no pad tokens and charges the true token counts.
 
 All three can return identical results, and must at `micro_batch_size=1`, so agreement is not

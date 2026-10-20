@@ -78,7 +78,7 @@ def test_the_surface_choice_reaches_the_prediction():
 
 
 def test_tp_above_one_builds_now_that_the_all_reduce_op_exists():
-    """Replaces a test asserting tp>1 was rejected; the collective table removed that refusal.
+    """Replaces a test asserting tp>1 was rejected. The collective table removed that refusal.
 
     Construction only. This config points at the tp=1 tables, which cover neither the tp=2
     sharded GEMM shapes nor a collective, so a prediction raises a coverage error naming what

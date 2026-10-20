@@ -417,7 +417,7 @@ def test_holdout_zero_scorable_points_is_a_coverage_failure(
     monkeypatch,
     caplog,
 ) -> None:
-    """A 2-row GEMM table produces 0 scorable points; holdout must exit non-zero and log the coverage problem."""
+    """A 2-row GEMM table produces 0 scorable points. Holdout must exit non-zero and log the coverage problem."""
     import logging
 
     from srl.cost.kernel.hardware import load_gpu_spec

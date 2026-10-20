@@ -43,7 +43,7 @@ search_space:
   # A genuine axis, not a formality. The latency design row is `[1, nmb*tokens, nmb]`, so
   # at a fixed nmb the last column is collinear with the intercept and the design caps at
   # rank two while the model needs three. Two values make all three coefficients
-  # identifiable; a rank runs nmb identically-shaped microbatches with gradient
+  # identifiable. A rank runs nmb identically-shaped microbatches with gradient
   # accumulation, exactly as real FSDP training does.
   num_microbatches: [1, 2]
   gradient_checkpointing: [true]

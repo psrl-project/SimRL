@@ -44,7 +44,7 @@ def main() -> None:
     )
     logging.info("Decode latency: %.6f seconds.", decode_latency)
     logging.info(
-        "Training latency: %.6f seconds; peak memory: %d bytes.",
+        "Training latency: %.6f seconds, peak memory: %d bytes.",
         estimate.latency_s,
         estimate.peak_memory_bytes,
     )

@@ -51,8 +51,8 @@ def test_elementwise_dims_reads_the_architecture(model):
 def test_elementwise_points_cover_every_registered_kind(model):
     """A kind in `ELEMENTWISE_KINDS` with no grid point writes no row and the table is short.
 
-    The kinds are owned by `cost/kernel/ops/elementwise.py` precisely so the two cannot drift;
-    this is the assertion that notices if they do.
+    The kinds are owned by `cost/kernel/ops/elementwise.py` precisely so the two cannot drift.
+    This is the assertion that notices if they do.
     """
     points = elementwise_sweep_points(model, ElementwiseSweep(token_counts=(128,)))
     assert {point.op_kind for point in points} == set(ELEMENTWISE_KINDS)
@@ -83,10 +83,10 @@ def test_elementwise_n_elements_agree_with_the_cost_side_derivation(model):
     """The sweep and the query must size the same kernel from the same dimensions.
 
     `TrainingOps._elementwise_queries` builds `(op_kind, n_elements)` pairs from the same three
-    model dimensions. If the two formulas disagree, every query misses the measured grid and the
-    surface interpolates between points that describe a different kernel -- silently, because a
-    neighbouring point always exists. This is the check that extraction to `grid/` made possible;
-    before it, both halves of the comparison could only be obtained by running a sweep.
+    model dimensions. If the two formulas disagree, every query misses the measured grid, and the
+    surface silently interpolates between points that describe a different kernel because a
+    neighbouring point always exists. This is the check that extraction to `grid/` made possible.
+    Before it, both halves of the comparison could only be obtained by running a sweep.
 
     The two sides are **not** expected to be equal point-for-point, and the inequalities are the
     content of this test:
@@ -94,12 +94,12 @@ def test_elementwise_n_elements_agree_with_the_cost_side_derivation(model):
     - The sweep measures *one call per kind*. The cost side issues a query *per call a layer
       makes*, so `rms_norm` appears twice (input and pre-MLP), `rotary_embedding` twice (q and
       k, as separate queries), and `qk_norm` twice (q and k).
-    - The cost side shards by tensor parallelism; the sweep measures unsharded and the query
+    - The cost side shards by tensor parallelism. The sweep measures unsharded, and the query
       divides. At tp=1 the division is the identity, which is what makes the comparison below
       exact.
 
     What must hold is that every per-call count the cost side can ask for is expressible from the
-    sweep's dimensions -- i.e. the two agree on *what sizes each kernel*, which is the thing that
+    sweep's dimensions, i.e. the two agree on *what sizes each kernel*, which is the thing that
     drifts.
     """
     tokens = 4096
@@ -117,7 +117,7 @@ def test_elementwise_n_elements_agree_with_the_cost_side_derivation(model):
 
     # `rotary_embedding` and `qk_norm` are each issued twice by the cost side, once per head
     # group. The sweep times rope as the single fused call that rotates both, so its count is the
-    # *sum* of the two query terms; qk_norm is two separate calls, so the sweep's count is the
+    # *sum* of the two query terms. `qk_norm` is two separate calls, so the sweep's count is the
     # query-head term alone and the kv term reads the same surface at a smaller n_elements.
     query_term = tokens * dims.num_heads * dims.head_dim
     kv_term = tokens * dims.num_kv_heads * dims.head_dim
@@ -155,7 +155,7 @@ def test_optimizer_counts_are_deduplicated():
 
 
 def test_optimizer_refuses_an_empty_or_non_positive_grid():
-    """`from_dict` already rejects these; a directly-constructed sweep must not slip through."""
+    """`from_dict` already rejects these. A directly-constructed sweep must not slip through."""
     with pytest.raises(ProfileValidationError, match="empty"):
         optimizer_param_counts(OptimizerSweep(param_counts=()))
     with pytest.raises(ProfileValidationError, match="non-positive"):
