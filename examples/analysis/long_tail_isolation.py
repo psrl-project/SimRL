@@ -3,7 +3,7 @@
 
 `headroom_probe.py`'s points are all one lognormal per point (`cv` only reshapes a single mode).
 None of them separate "most groups are short enough that concurrency is never KV-bound" from "a
-rare group is long enough that an instance can host only a handful of them" -- the regime this
+rare group is long enough that an instance can host only a handful of them", the regime this
 module's author hypothesized actually has routing headroom: once a long-tail group reserves an
 entry several buffers ahead (via the staleness window), a scheduler that is blind to that
 reservation can keep piling fresh short arrivals onto the same instance, each one slowing the
@@ -12,8 +12,8 @@ long-tail group's decode and pushing its buffer's READY time out with it.
 This workload is bimodal at the group level (every member of a group shares its mode, matching
 GRPO's per-prompt correlation): `long_frac` of groups are near `length_cap`, the rest are a tight
 short mode. `kv_tokens_per_instance` is sized so only `max_long_per_instance` long groups' peak
-context fits per instance while short concurrency is nowhere near KV-bound, by construction --
-this is the scenario the design doc's `cv`/`mean` grid cannot reach.
+context fits per instance while short concurrency is nowhere near KV-bound, by construction.
+This is the scenario the design doc's `cv`/`mean` grid cannot reach.
 
 Usage:
     python examples/analysis/long_tail_isolation.py smoke
@@ -73,7 +73,7 @@ class TailPoint:
 
 def long_tail_workload(point: TailPoint, mod):
     """Build the bimodal `GroupedWorkload`: `point.long_frac` of groups are long-tail, correlated
-    across the group the way GRPO responses to one prompt are; the rest are a tight short mode.
+    across the group the way GRPO responses to one prompt are. The rest are a tight short mode.
     """
     n_groups = point.batch * (point.n_versions + point.staleness + 3)
     rng = np.random.default_rng(point.seed)
@@ -136,7 +136,7 @@ def build(point: TailPoint, cost_model, mod):
 
 
 def _smoke() -> None:
-    """Confirm the workload is well-formed and the sim completes. Reports no speedup -- only
+    """Confirm the workload is well-formed and the sim completes. Reports no speedup, only
     that `max_long_per_instance` is realized and the run finishes within the horizon."""
     fa = _load_forecast_accuracy()
     cost_model = fa._composed_cost_model()
@@ -150,11 +150,19 @@ def _smoke() -> None:
 
 
 def _sweep(values: list[int]) -> None:
-    """Run the same `TailPoint` at each `n_instances` in `values`, reporting span and completion."""
+    """Run the same `TailPoint` at each `n_instances` in `values`, reporting span and completion.
+
+    `batch` scales by the same factor as `n_instances` (both relative to the default `n_instances=2,
+    batch=32`), holding per-instance pressure constant instead of diluting it across more instances.
+    `max_long_per_instance` is left at its default since it is the per-instance KV budget the
+    workload is sized around, not total fleet load. Every `n` here must be a multiple of 2."""
     fa = _load_forecast_accuracy()
     cost_model = fa._composed_cost_model()
     for n in values:
-        point = TailPoint(name=f"sweep_n{n}", train_s=345.0, n_instances=n)
+        if n % 2 != 0:
+            raise ValueError(f"n_instances must be a multiple of 2 to scale batch exactly, got {n}.")
+        scale = n // 2
+        point = TailPoint(name=f"sweep_n{n}", train_s=345.0, n_instances=n, batch=32 * scale)
         sim, n_long, n_groups, kv_blocks = build(point, cost_model, fa)
         result = sim.run()
         print(
