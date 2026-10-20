@@ -43,8 +43,8 @@ CAP_GRID = (24, 32, 40, 48, 56, 64)
 """The sweep the static arms' cap is chosen from, fresh at every point."""
 
 WINDOW_GROUPS = 32
-"""One training batch. `psrl-scheduling-headroom.md`'s own LPT jobs all bound reordering this way;
-unbounded reordering starves one end of the length distribution and is not a fair comparison."""
+"""One training batch. `psrl-scheduling-headroom.md`'s own LPT jobs all bound reordering this way.
+Unbounded reordering starves one end of the length distribution and is not a fair comparison."""
 
 
 def _load_forecast_accuracy():
@@ -76,7 +76,7 @@ class Point:
     weight_load: float = 0.0
     rho: float = 0.6
     ours_args: dict = field(default_factory=dict)
-    """Strategy args for the gated `inventory_deadline_wm` arm; empty skips that arm."""
+    """Strategy args for the gated `inventory_deadline_wm` arm. Empty skips that arm."""
     eviction_strategy: str = "vllm_lru"
     """Eviction strategy for all arms at this point. Override to test deadline-aware eviction."""
 
@@ -284,10 +284,13 @@ def _run_point_worker(grid: str, point: Point) -> dict:
 
 
 def _run(args: argparse.Namespace) -> None:
-    out_dir = OUT_ROOT / args.grid
+    tag = f"n{args.n_instances}" if args.n_instances else "default"
+    out_dir = OUT_ROOT / args.grid / tag
     out_dir.mkdir(parents=True, exist_ok=True)
 
     todo = points(args.grid)
+    if args.n_instances:
+        todo = [dataclasses.replace(p, n_instances=args.n_instances) for p in todo]
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         rows = list(pool.map(_run_point_worker, [args.grid] * len(todo), todo))
 
@@ -297,7 +300,8 @@ def _run(args: argparse.Namespace) -> None:
 
 
 def _report(args: argparse.Namespace) -> None:
-    rows = json.loads((OUT_ROOT / args.grid / "results.json").read_text())
+    tag = f"n{args.n_instances}" if args.n_instances else "default"
+    rows = json.loads((OUT_ROOT / args.grid / tag / "results.json").read_text())
     header = (
         f"{'point':<20}{'arm':<20}{'cap':>5}{'span':>9}{'speedup':>9}{'tok/grp':>9}"
         f"{'conc':>7}{'peak':>6}{'preempt':>9}"
@@ -340,6 +344,10 @@ def main() -> None:
     parser.add_argument("command", choices=["run", "report"])
     parser.add_argument("grid", choices=sorted(GRIDS))
     parser.add_argument("--workers", type=int, default=6, help="Points to run concurrently.")
+    parser.add_argument(
+        "--n-instances", type=int, default=None,
+        help="Override every point's n_instances (default: each point's own value, 2).",
+    )
     args = parser.parse_args()
     if args.command == "run":
         _run(args)
