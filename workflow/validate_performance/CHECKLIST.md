@@ -9,10 +9,15 @@ Tick each item in order. An unticked item means the result is not reportable yet
 - [ ] Each arm runs the same workload: same model, TP, sequence lengths, batch, group size,
       staleness, and seed.
 - [ ] Static baselines are swept at every point, not carried over from another point.
+- [ ] When sweeping a resource count (instances, GPUs) to test a capacity-dependent hypothesis,
+      state whether the workload size is held fixed (tests dilution: more resources, same total
+      load) or scaled proportionally (tests the hypothesis at constant per-resource pressure, e.g.
+      `batch ∝ n_instances`). Holding the workload fixed while sweeping resources answers a
+      different question than the one usually being asked, and the two are easy to conflate.
 - [ ] `SIMRL_WORKSPACE` is exported and `scripts/preflight.py` exits 0. Its warnings are carried
       into the report.
 - [ ] `source "$SIMRL_WORKSPACE/env/simrl.sh"` ran.
-- [ ] `SIMRL_KV_CACHE=$HOME/.cache/dryrun/kv_capacity.json` is set when any run re-sizes KV.
+- [ ] `SIMRL_KV_CACHE=$HOME/.cache/srl/kv_capacity.json` is set when any run re-sizes KV.
 - [ ] The md5 of the simulator binary used is recorded, before and after the sweep.
 
 ## After each run

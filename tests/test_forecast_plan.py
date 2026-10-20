@@ -704,3 +704,74 @@ class TestPerformanceAtHeadroomScale:
         assert member_s < 0.4
         assert admission_s < 0.8
 
+
+class TestStripPriceCommitAssignment:
+    """`strip`/`price_assignment`/`commit_assignment`: the burst-planning primitives."""
+
+    def _two_instance_session(self):
+        model = cost()
+        state0 = bare_state(model, running=(resident(0, 2000, 500),))
+        state1 = bare_state(model, running=())
+        snapshot = make_snapshot({0: ((1, 0), (2, 0))}, num_entries=4, staleness=1)
+        train = TrainState(None, 0.0, 10.0, 1.0)
+        req1 = member_request(1, 100, 100, 300, group_id=1)
+        req2 = member_request(2, 100, 100, 300, group_id=2)
+        runtime = StubRuntime(
+            instance_states={0: state0, 1: state1}, snapshot=snapshot, train=train,
+            queued_requests={1: [req1], 2: [req2]}, inflight_requests=[req1, req2],
+        )
+        return PlanSession.build(runtime, ORACLE, horizon_buffers=1)
+
+    def test_strip_removes_a_tail_members_tentative_placement(self):
+        session = self._two_instance_session()
+        req = next(r for r in session.tail_order if r.rid == 1)
+        src = session.tail_assignment[1]
+        stripped = session.strip([req])
+        assert all(a.key != 1 for a in stripped.instances[src].arrivals)
+        assert any(a.key == 1 for a in session.fleet.instances[src].arrivals)
+
+    def test_price_assignment_on_the_same_instance_matches_the_baseline_pipeline(self):
+        session = self._two_instance_session()
+        req = next(r for r in session.tail_order if r.rid == 1)
+        target = session.tail_assignment[1]
+        priced = session.price_assignment([req], {1: target})
+        assert priced is not None
+        assert priced.train_end == session._baseline_pipeline().train_end
+
+    def test_price_assignment_returns_none_on_kv_overflow(self):
+        model = cost()
+        state = bare_state(model, running=(), kv_blocks=1)
+        snapshot = make_snapshot({0: ((1, 0),)}, num_entries=1, staleness=1)
+        train = TrainState(None, 0.0, 10.0, 1.0)
+        req = member_request(1, 100, 100, 50_000, group_id=1)
+        runtime = StubRuntime(
+            instance_states={0: state}, snapshot=snapshot, train=train,
+            queued_requests={1: [req]}, inflight_requests=[req],
+        )
+        session = PlanSession.build(runtime, ORACLE, horizon_buffers=1)
+        req = next(r for r in session.tail_order if r.rid == 1)
+        assert session.price_assignment([req], {1: 0}) is None
+
+    def test_commit_assignment_moves_the_member_and_drops_it_from_the_tail(self):
+        session = self._two_instance_session()
+        req = next(r for r in session.tail_order if r.rid == 1)
+        other = 1 if session.tail_assignment[1] == 0 else 0
+        session.commit_assignment([req], {1: other})
+        assert 1 not in session.tail_assignment
+        assert all(r.rid != 1 for r in session.tail_order)
+        assert any(a.key == 1 for a in session.fleet.instances[other].arrivals)
+
+    def test_commit_assignment_raises_on_kv_overflow(self):
+        model = cost()
+        state = bare_state(model, running=(), kv_blocks=1)
+        snapshot = make_snapshot({0: ((1, 0),)}, num_entries=1, staleness=1)
+        train = TrainState(None, 0.0, 10.0, 1.0)
+        req = member_request(1, 100, 100, 50_000, group_id=1)
+        runtime = StubRuntime(
+            instance_states={0: state}, snapshot=snapshot, train=train,
+            queued_requests={1: [req]}, inflight_requests=[req],
+        )
+        session = PlanSession.build(runtime, ORACLE, horizon_buffers=1)
+        req = next(r for r in session.tail_order if r.rid == 1)
+        with pytest.raises(ValueError, match="overflows KV"):
+            session.commit_assignment([req], {1: 0})
