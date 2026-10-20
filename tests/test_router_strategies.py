@@ -55,7 +55,6 @@ class TestRegistry:
             "throughput_balance",
             "length_aware",
             "inventory_deadline",
-            "burst_isolation",
         }
 
     def test_an_unknown_name_lists_the_known_ones(self):
