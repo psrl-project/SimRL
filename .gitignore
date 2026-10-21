@@ -275,3 +275,6 @@ deprecated/
 # Generated validation experiments
 workflow/validate/experiments/*.py
 !workflow/validate/experiments/smoke.py
+
+# Generated analysis experiments
+workflow/analysis/experiments/*.py

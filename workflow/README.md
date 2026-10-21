@@ -17,6 +17,19 @@ Each subfolder is one validation unit that can be handed to a subagent and run e
   the directory that holds `env/` next to the checkout. Never write an absolute path. A missing
   variable is an error, not a fallback.
 
+## Handoffs
+
+```
+main ──(change, control, points)──▶ validate ──▶ outputs/simulate/<exp>/summary.json
+main ──(summary.json [+ row ids])──▶ analysis ──▶ outputs/analysis/<exp>/<row>/{diagnosis.json, figures/, report.md}
+main reads the diagnosis, designs the next change, and goes back to validate
+```
+
+The two units never call each other. Each reads inputs the main session passes as a file path or
+row selection, and writes outputs under `outputs/` for the main session to read back. `validate`
+never knows `analysis` exists, and `analysis` never re-runs a sweep, it only replays rows it is
+given.
+
 ## Adding a unit
 
 1. Create `workflow/<unit>/SKILL.md` with the non-negotiable rules first, then the steps, then a
