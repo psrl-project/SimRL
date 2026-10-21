@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .critical_path import StepWait, decompose
+from .critical_path import StepWait, decompose, group_by_group_id
 from .pricer import SoloPricer
 from .timeline import RequestTimeline
 
@@ -71,9 +71,7 @@ def span_solo_all(
     Returns:
         Bound: The counterfactual span and `observed / bound`.
     """
-    by_group: dict[int, list[RequestTimeline]] = {}
-    for line in timelines.values():
-        by_group.setdefault(line.group_id, []).append(line)
+    by_group = group_by_group_id(timelines)
 
     clock = 0.0
     for step in steps_:
@@ -129,9 +127,7 @@ def span_tail_only(
     Returns:
         Bound: The counterfactual span and `observed / bound`.
     """
-    by_group: dict[int, list[RequestTimeline]] = {}
-    for line in timelines.values():
-        by_group.setdefault(line.group_id, []).append(line)
+    by_group = group_by_group_id(timelines)
 
     clock = 0.0
     for step in steps_:

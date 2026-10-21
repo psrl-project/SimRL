@@ -16,6 +16,14 @@ from .timeline import RequestTimeline
 _TIME_EPS = 1e-6
 
 
+def group_by_group_id(timelines: dict[int, RequestTimeline]) -> dict[int, list[RequestTimeline]]:
+    """Return every timeline bucketed by `group_id`, the shape every caller here groups batches by."""
+    by_group: dict[int, list[RequestTimeline]] = {}
+    for line in timelines.values():
+        by_group.setdefault(line.group_id, []).append(line)
+    return by_group
+
+
 @dataclass(frozen=True)
 class StepWait:
     """One training step, its idle time, and the request that bound it."""
@@ -74,9 +82,7 @@ def steps(store, timelines: dict[int, RequestTimeline]) -> list[StepWait]:
             whose batch holds no timeline (every member dropped) carries
             `binding_rid=None` and `wait_cause="unexplained"`.
     """
-    by_group: dict[int, list[RequestTimeline]] = {}
-    for line in timelines.values():
-        by_group.setdefault(line.group_id, []).append(line)
+    by_group = group_by_group_id(timelines)
 
     consumed_at: dict[int, list[int]] = {}
     for rec in store.iter("request"):
