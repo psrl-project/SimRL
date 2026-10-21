@@ -247,7 +247,7 @@ feature_ranges
     models refuse queries outside them unless extrapolation is named explicitly.
 
 slice column
-    A kernel-table column that must match exactly; never interpolated along.
+    A kernel-table column that must match exactly. It is never interpolated along.
 
 axis column
     A kernel-table column interpolated along inside a slice.
@@ -256,7 +256,7 @@ SOL (speed of light)
     The analytic roofline lower bound, `max(compute_time, memory_time)`.
 
 utility
-    `SOL / measured_latency`; the quantity the kernel interpolator learns.
+    `SOL / measured_latency`, the quantity the kernel interpolator learns.
 
 floor
     A per-call dispatch cost placed inside `max(compute, memory, floor)`. Fitted per backend

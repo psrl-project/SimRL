@@ -24,7 +24,7 @@ The seams are on-disk and versioned: `ProfileRecord` JSONL between adapters and 
 `CostArtifact` JSON or kernel parquet between fitters and the simulator. {doc}`../reference/schemas`
 defines all of them.
 
-:::{image} /_static/img/simrl-architecture.png
+:::{image} /_static/img/simrl-architecture-plain.png
 :alt: How SimRL is built
 :width: 100%
 :align: center

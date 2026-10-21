@@ -170,11 +170,10 @@ def build(out_dirs=None):
         draw_c(c)
         draw_d(c)
         c.save()
-        if out_dir.name == "assets":
-            # The README's own heading already says "What you can do with
-            # SimRL" right above the image, so the in-figure title there is
-            # a duplicate -- crop it for that embed only.
-            c.save_plain(146)
+        # Every embed (README, docs/index.md) sits right under its own
+        # heading saying "What you can do with SimRL", so the in-figure
+        # title would be a duplicate -- crop it for both.
+        c.save_plain(146)
 
 
 if __name__ == "__main__":

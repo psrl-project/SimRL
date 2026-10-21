@@ -23,7 +23,7 @@ flowchart TD
     ST --> SEL["strategy.select_context or select"]
     SEL --> ADD{"instance.add_request"}
     ADD -->|refused| STAY["stays queued"]
-    ADD -->|placed| COMMIT["first member: on_admit, ledger, v_traj; every member: on_route"]
+    ADD -->|placed| COMMIT["first member: on_admit, ledger, v_traj. Every member: on_route"]
 ```
 
 Three components are kept separate on purpose.

@@ -13,7 +13,7 @@ sd_hide_title: true
 SimRL models the asynchronous rollout/training loop. You can simulate how a framework behaves, design
 a deployment before buying it, predict at runtime, and run auto research on scheduling policies.
 
-:::{image} /_static/img/simrl-capabilities.png
+:::{image} /_static/img/simrl-capabilities-plain.png
 :alt: What you can do with SimRL
 :width: 100%
 :align: center
@@ -91,6 +91,12 @@ re-profiling.
 
 Install, learn the vocabulary, then follow the walkthrough from the first profiling
 command to a simulated run.
+:::
+
+:::{grid-item-card} Workload
+:link: workload/index
+
+Parametric distributions or a replayed trace, and the group semantics GRPO/DAPO need.
 :::
 
 :::{grid-item-card} Profiling

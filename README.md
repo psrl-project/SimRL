@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://srl.readthedocs.io"><img src="https://img.shields.io/badge/docs-latest-brightgreen.svg?style=flat" alt="Documentation"></a>
+  <a href="https://simrl.readthedocs.io/en/latest/"><img src="https://img.shields.io/badge/docs-latest-brightgreen.svg?style=flat" alt="Documentation"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License"></a>
   <a href="https://github.com/psrl-project/SimRL"><img src="https://img.shields.io/github/stars/psrl-project/SimRL?style=social" alt="GitHub stars"></a>
 </p>
@@ -48,7 +48,7 @@ Three concerns, three components, one documented seam between each pair:
 
 Each artifact is a JSON file, but it is only ever read once: `srl/cli/main.py` parses it into a Python cost-model
 object when a simulation starts, and every training/rollout step after that calls straight into that object's
-methods — no further file I/O during the run.
+methods, with no further file I/O during the run.
 
 The simulator engine has two interchangeable backends. The C++ engine runs by default. Set
 `SIMRL_BACKEND=native` for the Python reference engine. See
@@ -74,8 +74,8 @@ ACTIVE_CAP=0 bash examples/simulate/psrl_aligned.sh
 
 This reproduces the real PSRL run SimRL is aligned against (`qwen3_8b_megatron_simulate`: 160 prompt
 groups, 5 training steps, 2 rollout instances), with the router's per-instance residency cap disabled.
-`examples/simulate/psrl_aligned.sh` resolves or caches what it needs — the workload trace, the KV
-capacity, and the profiled training/rollout cost artifacts for this mesh — see the script for the exact
+`examples/simulate/psrl_aligned.sh` resolves or caches what it needs: the workload trace, the KV
+capacity, and the profiled training/rollout cost artifacts for this mesh. See the script for the exact
 knobs and how to point it at a different run. This is `instance_load.png`, one of the six plots the run
 writes out: router queue depth, the training phase band, and per-instance request/KV occupancy over the
 run's 5 versions.

@@ -127,7 +127,7 @@ linked with `{ref}` or a fragment. Two identical headings on one page collide.
 These are checkable:
 
 ```bash
-grep -rn ';' docs --include=*.md          # inspect each hit; code may contain semicolons
+grep -rn ';' docs --include=*.md          # inspect each hit, code may contain semicolons
 grep -rn '[—–]' docs --include=*.md
 grep -rn '/apdcephfs\|/home/\|/path/to' docs --include=*.md
 ```

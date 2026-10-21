@@ -15,9 +15,9 @@ srl-regress rollout --model roofline \
     --input  outputs/profile/qwen3_8b/vllm_tp1/profiles/vllm.jsonl \
     --output outputs/cost/qwen3_8b/rollout_roofline.json
 # --model accepts: roofline | psrl | distserve
-# --validation-fraction 0.0  default; set a fraction to reserve whole runs for validation
+# --validation-fraction 0.0  default, set a fraction to reserve whole runs for validation
 # --block-size 16            KV block size used in the prefill attention term
-# --hidden-size / --intermediate-size   distserve only; default to the checkpoint's values
+# --hidden-size / --intermediate-size   distserve only, default to the checkpoint's values
 ```
 
 The command reads the JSONL, keeps successful rollout records, groups them by `parallelism`,

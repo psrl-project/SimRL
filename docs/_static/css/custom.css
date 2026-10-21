@@ -1,5 +1,19 @@
 /* SimRL documentation theme overrides. */
 
+/* Homepage hero: the theme gives the logo, intro paragraph and capabilities
+   diagram no spacing of their own, so they crowd together with nothing to
+   mark where one ends and the next begins. */
+#simrl-documentation > a.image-reference {
+    display: block;
+    margin: 1.5rem auto;
+}
+
+#simrl-documentation > p {
+    text-align: center;
+    max-width: 42rem;
+    margin: 0 auto 2rem;
+}
+
 /* Wide tables (accuracy figures, config references) should not overflow. */
 table {
     display: table;

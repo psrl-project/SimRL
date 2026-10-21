@@ -129,11 +129,10 @@ def build(out_dirs=None):
             c.text(COL_X + 90, (top + bottom) / 2 - 2, label, 23, MUTED)
 
         c.save()
-        if out_dir.name == "assets":
-            # The README's own heading already says "How SimRL is built"
-            # right above the image, so the in-figure title there is a
-            # duplicate -- crop it for that embed only.
-            c.save_plain(146)
+        # Every embed (README, docs/development/architecture.md) is already
+        # framed by its own heading/prose, so the in-figure title would be
+        # a duplicate -- crop it for both.
+        c.save_plain(146)
 
 
 if __name__ == "__main__":

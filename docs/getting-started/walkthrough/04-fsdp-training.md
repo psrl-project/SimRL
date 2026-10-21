@@ -44,7 +44,7 @@ time (see below), so profile `true` separately if you need it.
 ```bash
 CFG=examples/profile/fsdp/qwen3_8b.yaml
 srl-profile fsdp generate --config $CFG
-srl-profile fsdp run      --config $CFG --index 0           # one candidate; see the wrapper below
+srl-profile fsdp run      --config $CFG --index 0           # one candidate, see the wrapper below
 srl-profile fsdp collect  --config $CFG
 
 srl-regress training --latency-model fsdp --memory-model fsdp \

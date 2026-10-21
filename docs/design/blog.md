@@ -136,7 +136,7 @@ staleness_capacity = (ofp + current_version + 1) * consumer_bs - sample_cnt
 
 下面是一个具体的例子：每个 batch 有 32 个 prompt、`max_head_offpolicyness=1`，初始时，准入额度是 `(2 + 0 + 1) × 32 = 96`。因此系统会迅速填充 96 个 `running` 的 prompt，这些 prompt 逐渐生成并标注为 `accecpted`。当第一次训练完成，模型更新后，`current_version` 增加 1，从而使得 `staleness_capacity` 增加 32，可以准入新的 prompt。
 
-**L2：** 无 staleness 控制。权重同步不会中断正在生成的请求；上面公式里的 `running` 只有在请求本身完成时才会转入 `accepted`，这个转移和权重版本的推进没有关系。
+**L2：** 无 staleness 控制。权重同步不会中断正在生成的请求。上面公式里的 `running` 只有在请求本身完成时才会转入 `accepted`，这个转移和权重版本的推进没有关系。
 
 **L3：** AReaL 会测量 token staleness，记录平均值、最小值、最大值和旧 token 占比。不过，这段[staleness 统计](https://github.com/areal-project/AReaL/blob/6cad8710bb5740a5480f8fba3a5970dd08638d01/areal/trainer/ppo/actor.py#L2065-L2115)不会移除超限 trajectory。
 
