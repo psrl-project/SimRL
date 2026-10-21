@@ -58,10 +58,12 @@ def run_single_request(tmp_path: Path) -> JsonlStore:
 
 
 def run_mixed(tmp_path: Path) -> JsonlStore:
-    """Two instances, one long group among shorts, publishes that abort, KV that preempts.
+    """One instance, one long group among shorts, publishes that abort, KV that preempts.
 
-    `kv_blocks` is sized so the long group's context plus a few shorts exceeds
-    the pool, which is what forces a preemption rather than merely allowing one.
+    A single instance forces the long group's residents and the short groups'
+    residents onto the same KV pool, so `kv_blocks` sized just above what the
+    long group alone needs leaves too little headroom for a concurrent short
+    resident, which is what forces a preemption rather than merely allowing one.
     """
     store = _store(tmp_path)
     groups = []
@@ -76,7 +78,7 @@ def run_mixed(tmp_path: Path) -> JsonlStore:
         group_size=2,
         staleness_horizon=1,
         n_versions=3,
-        n_instances=2,
+        n_instances=1,
         kv_blocks=(3000 + 64) // BLOCK_SIZE + 8,
         block_size=BLOCK_SIZE,
         token_budget=TOKEN_BUDGET,
