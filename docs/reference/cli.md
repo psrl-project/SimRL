@@ -2,7 +2,7 @@
 
 `pyproject.toml` installs seven console scripts. `srl` is a Hydra app and takes `key=value`
 overrides. The other six are argparse programs. Flags below were read from `--help` and from
-`srl/cli/*.py`. See {doc}`configuration` for every `srl` key.
+`srl/cli/*.py`. See {doc}`/reference/configuration` for every `srl` key.
 
 | Script | Entry point | Purpose |
 |---|---|---|
@@ -39,7 +39,7 @@ srl +log_exclude='instance,rollout_step'
 ```
 
 Hydra runs in struct mode, so a misspelt key such as `job.n_version=3` fails at composition
-instead of being accepted. The groups and keys are listed in {doc}`configuration`.
+instead of being accepted. The groups and keys are listed in {doc}`/reference/configuration`.
 
 ### What a run produces
 
@@ -50,7 +50,7 @@ change directory):
 | Path | Content |
 |---|---|
 | `run.log` | The `srl` logger's output at `log_level` |
-| `logs/` | Telemetry JSONL streams, only when `log_telemetry=true`. Re-running into the same `output_dir` replaces the directory. See {doc}`schemas` |
+| `logs/` | Telemetry JSONL streams, only when `log_telemetry=true`. Re-running into the same `output_dir` replaces the directory. See {doc}`/reference/schemas` |
 | `plots/` | The plots rendered from `logs/` |
 
 The process prints a summary to stdout: versions done, requests consumed and dropped, throughput,
@@ -84,9 +84,9 @@ key, so it takes the `+` form shown above.
 
 Any other value raises `ValueError`. The C++ module ships as
 `srl/_engine_cpp.cpython-312-x86_64-linux-gnu.so`, so `auto` falls back to Python on any other
-interpreter or platform until the module is rebuilt (see {doc}`../development/architecture`).
+interpreter or platform until the module is rebuilt (see {doc}`/development/architecture`).
 
-`srl` requires the `psrl` Python package at import time. See {doc}`limitations`.
+`srl` requires the `psrl` Python package at import time. See {doc}`/reference/limitations`.
 
 ---
 
@@ -160,7 +160,7 @@ under the table root by default) and exit non-zero when any row exceeds `--gate`
 no points. `holdout` warns when `--fraction` is below 1.0, because a sampled subset can flatter the
 surface. `validate` warns about a phase that `--min-samples` dropped entirely. Pass
 `--min-samples 1` to score a phase that has few iterations per bucket. The method behind both
-commands is on {doc}`validation`.
+commands is on {doc}`/reference/validation`.
 
 ### `srl-profile megatron` and `srl-profile fsdp`
 
@@ -240,7 +240,7 @@ Renders plots from an existing run without re-simulating.
 | `RUN_DIR` | required | The `output_dir` of a previous run |
 | `--logs-subdir` | `logs` | Directory under `RUN_DIR` that holds the JSONL streams |
 | `--plots-subdir` | `plots` | Directory under `RUN_DIR` to write into |
-| `--only` | all | One of `instance_load`, `rollout_step`, `staleness_distribution`, `request_timeline`, `throughput` |
+| `--only` | all six | One of `instance_load`, `rollout_step`, `staleness_distribution`, `request_timeline`, `throughput`, `scg_curve` |
 | `--time-label` | `Simulation Time (s)` | X-axis label. Match the real run's label for a side-by-side figure |
 
 ---
@@ -294,7 +294,7 @@ srl-workload {collect-groups,merge-shards,list-workers,check-shard,verify-collec
 ```
 
 Builds the joint `(prompt, n responses)` traces that `workload=dapo_trace` reads. See
-{doc}`../workload/trace-collection` for the procedure.
+{doc}`/pipeline/workload/trace-collection` for the procedure.
 
 ### `collect-groups`
 

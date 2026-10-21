@@ -22,8 +22,8 @@ How the pieces fit:
 - `srl --help` lists the options of each group. Entries ending in `_schema` are the ConfigStore
   nodes and are not meant to be selected.
 
-Behaviour behind these keys is described in {doc}`../simulation/policies`,
-{doc}`../simulation/routing`, {doc}`../simulation/domain-gates` and {doc}`../workload/index`.
+Behaviour behind these keys is described in {doc}`/pipeline/simulation/policies`,
+{doc}`/pipeline/simulation/routing`, {doc}`/pipeline/simulation/domain-gates` and {doc}`/pipeline/workload/index`.
 
 ---
 
@@ -44,7 +44,7 @@ Notes that the comments do not carry:
 `rollout.kv_blocks` and `rollout.kv_cache_sizing`
 : With `kv_cache_sizing.model_path` set, the block count comes from the model instead of the
   literal. `probe: true` starts a real vLLM engine on a cache miss and caches the answer (see
-  `srl-profile kv-probe` in {doc}`cli`). `probe: false` computes it from `config.json` and the
+  `srl-profile kv-probe` in {doc}`/reference/cli`). `probe: false` computes it from `config.json` and the
   checkpoint's safetensors index, which is only reliable for dense models. `max_model_len` is
   taken as `job.max_prompt_length + job.max_output_length` and is 32768 when either cap is null.
   The engine's dtype is `rollout_cost.dtype` when that key is appended and `bfloat16` otherwise.
@@ -158,7 +158,7 @@ memory exceeds it.
 the feature is listed in `extrapolate`. An unknown name in `extrapolate` raises at construction,
 and every permitted exceedance is recorded in the `train` stream's `extrapolation_notes`.
 
-`ComposedTraining` is not selectable through this group. See {doc}`limitations`.
+`ComposedTraining` is not selectable through this group. See {doc}`/reference/limitations`.
 
 ### `fixed`
 
@@ -268,7 +268,7 @@ underlying normal. `normal` takes `mu`, `sigma` and a lower bound `lo`. `powerla
 part of the distribution.
 
 With `source: trace` the run reads groups from a trace written by `srl-workload` (see
-{doc}`../workload/trace-collection`). The group arity comes from the trace.
+{doc}`/pipeline/workload/trace-collection`). The group arity comes from the trace.
 
 ```{literalinclude} ../../srl/config/defaults/workload/dapo_trace.yaml
 :language: yaml

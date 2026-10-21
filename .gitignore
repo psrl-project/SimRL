@@ -163,8 +163,7 @@ instance/
 # Sphinx documentation
 # =========================================================================
 docs/_build/
-docs/superpowers/
-docs/design
+notes/superpowers/
 
 
 # =========================================================================

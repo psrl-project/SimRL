@@ -13,13 +13,13 @@ attempt.
 
 | Stage | What it measures | Command | Produces |
 |---|---|---|---|
-| {doc}`00-first-simulation` | nothing, analytic defaults | `srl` | telemetry JSONL and plots |
-| {doc}`01-vllm-rollout` | vLLM scheduler iterations | `srl-profile vllm`, `srl-regress rollout` | `rollout_roofline.json` |
-| {doc}`02-kernels` | individual CUDA kernels | `srl-profile kernels` | parquet perf tables |
-| {doc}`03-megatron-training` | training steps under Megatron-Bridge | `srl-profile megatron`, `srl-regress training` | `training_hydraulis.json` |
-| {doc}`04-fsdp-training` | training steps under FSDP2 | `srl-profile fsdp`, `srl-regress training` | `training_fsdp.json` |
-| {doc}`05-workload-trace` | real prompt and response lengths | `srl-workload` | `joint.jsonl` |
-| {doc}`06-simulate` | nothing, reads the above | `srl` | telemetry JSONL and plots |
+| {doc}`/getting-started/walkthrough/00-first-simulation` | nothing, analytic defaults | `srl` | telemetry JSONL and plots |
+| {doc}`/getting-started/walkthrough/01-vllm-rollout` | vLLM scheduler iterations | `srl-profile vllm`, `srl-regress rollout` | `rollout_roofline.json` |
+| {doc}`/getting-started/walkthrough/02-kernels` | individual CUDA kernels | `srl-profile kernels` | parquet perf tables |
+| {doc}`/getting-started/walkthrough/03-megatron-training` | training steps under Megatron-Bridge | `srl-profile megatron`, `srl-regress training` | `training_hydraulis.json` |
+| {doc}`/getting-started/walkthrough/04-fsdp-training` | training steps under FSDP2 | `srl-profile fsdp`, `srl-regress training` | `training_fsdp.json` |
+| {doc}`/getting-started/walkthrough/05-workload-trace` | real prompt and response lengths | `srl-workload` | `joint.jsonl` |
+| {doc}`/getting-started/walkthrough/06-simulate` | nothing, reads the above | `srl` | telemetry JSONL and plots |
 
 The stages are independent apart from the last one. Stage 6 needs one rollout cost source
 (stage 1 or 2) and one training cost source (stage 3 or 4). Stage 5 is optional: a parametric
@@ -33,7 +33,7 @@ workload runs without it, but it cannot represent GRPO or DAPO groups.
 4. **How to tell it worked.** Which number to read, and what a wrong one looks like.
 
 Wall-clock figures are left out because they depend on the node, the checkpoint storage, and
-what else is running. {doc}`../../profiling/index` explains what dominates each sweep.
+what else is running. {doc}`/pipeline/profiling/index` explains what dominates each sweep.
 
 ## Before you start
 
@@ -44,10 +44,10 @@ export MODEL_PATH=/path/to/Qwen3-8B
 
 Every path below is relative to the repository root. The profiling configs read the
 checkpoint from `$MODEL_PATH` through OmegaConf interpolation, so no config file needs
-editing. {doc}`../installation` covers the environment itself.
+editing. {doc}`/getting-started/installation` covers the environment itself.
 
 The pages explain *how*. For *why* a pipeline is built the way it is, follow the links into
-{doc}`../../profiling/index` and {doc}`../../cost-models/index`.
+{doc}`/pipeline/profiling/index` and {doc}`/pipeline/cost-models/index`.
 
 ```{toctree}
 :maxdepth: 1

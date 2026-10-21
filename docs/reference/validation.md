@@ -175,7 +175,7 @@ across nodes, so there is no `vllm` row).
 | `p2p` | 3.44% |
 | `reduce_scatter` | 11.77% |
 
-Apart from `p2p`, these are less accurate than the intra-node rows above. See {doc}`limitations`.
+Apart from `p2p`, these are less accurate than the intra-node rows above. See {doc}`/reference/limitations`.
 
 ### `ComposedTraining` against Megatron THD steps
 

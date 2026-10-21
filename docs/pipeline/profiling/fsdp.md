@@ -2,7 +2,7 @@
 
 This page covers the FSDP2 / HSDP pipeline: how to configure and run a sweep, which axes must
 vary or the fit will refuse the data, and what lands on disk. The formulas are in
-{doc}`../cost-models/training-fsdp`. General measurement rules are in {doc}`methodology`.
+{doc}`/pipeline/cost-models/training-fsdp`. General measurement rules are in {doc}`/pipeline/profiling/methodology`.
 
 ## Commands
 
@@ -45,7 +45,7 @@ about. Use `--index` or `--candidate-id` to run one candidate instead.
 | `n_seqs_per_rank` | sequences per rank per microbatch, i.e. the micro-batch size |
 | `sequence_lengths` | tokens per sequence, every microbatch a rank runs is this shape |
 | `gradient_checkpointing` | pinned `true` in the example, matching the RL recipe |
-| `optimizer_offload` | pinned `false` in the example, see {doc}`../reference/limitations` |
+| `optimizer_offload` | pinned `false` in the example, see {doc}`/reference/limitations` |
 | `reshard_after_forward` | whether parameters are freed after each block's forward |
 
 `shard_size` and `replicate_size` are a two-dimensional HSDP mesh: parameters are sharded within
@@ -163,7 +163,7 @@ rendezvous failure, stays `failed`: widening the match would turn genuine networ
 memory bounds.
 
 `collect` decides OOM from the marker files, never from log text, for the reason
-{doc}`methodology` gives: a false OOM can only raise the fitted memory floor.
+{doc}`/pipeline/profiling/methodology` gives: a false OOM can only raise the fitted memory floor.
 
 Stale markers are deleted before a launch. If a re-run is killed after that deletion but before
 new markers are written, `status.json` still reads `oom` while `collect` reports `failed`. The
@@ -183,5 +183,5 @@ cell key including `shard_size` and `replicate_size`, refuses a record whose sch
 `fsdp`, whose `sequence_parallel` is not `1`, or whose `tp`/`pp`/`cp` are not 1, and checks that
 `shard_size * replicate_size` agrees with `dp`. `--validation-fraction` defaults to `0.2` and the
 split is by run. Memory fits both peak metrics and selects one per cell. See
-{doc}`../cost-models/training-fsdp` for that rule and for what the selected target means at
+{doc}`/pipeline/cost-models/training-fsdp` for that rule and for what the selected target means at
 predict time.

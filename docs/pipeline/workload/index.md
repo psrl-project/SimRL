@@ -18,14 +18,14 @@ care about the simulator's behaviour rather than a specific model's workload.
 prompt and response lengths from a real model on a real dataset. It preserves each prompt's
 length, all *n* of its response lengths, and the group boundary. Use it to reproduce a
 specific training job, and for anything involving group-relative advantage (GRPO, DAPO), which
-is meaningless without group boundaries. {doc}`trace-collection` covers how one is collected.
+is meaningless without group boundaries. {doc}`/pipeline/workload/trace-collection` covers how one is collected.
 
 The distinction that matters is **correlation and grouping**. Parametric distributions give
 you two independent marginals, so a long prompt is no more likely to produce a long response
 than a short one, and eight responses never share a prompt. A joint trace preserves both. Group
 boundaries also decide what the rest of the simulator can model: a group's responses are
 admitted and consumed together, and responses from one group share prompt blocks in the KV
-cache ({doc}`../simulation/prefix-cache`).
+cache ({doc}`/pipeline/simulation/prefix-cache`).
 
 A parametric workload's `group_size` is 1, so `job.batch_size` is both groups and responses.
 With a trace, `job.group_size` defaults to the trace's arity and an explicit value must match
@@ -88,7 +88,7 @@ the prompt and stop generation at that length.
 
 Every collected trace stores summary statistics in its header, so you can derive a
 parametric approximation without any fitting machinery. For Qwen3-8B on `dapo-math-17k` with
-a 10240-token cap, the reference trace in {doc}`trace-collection` recorded this response
+a 10240-token cap, the reference trace in {doc}`/pipeline/workload/trace-collection` recorded this response
 distribution:
 
 | Statistic | Value |

@@ -6,7 +6,7 @@ it failed. A run that measured the wrong thing tells you nothing at all. Each se
 states a rule, names the code that enforces it, and says what to check where the code cannot.
 
 Measured accuracy figures are not repeated here. They depend on a GPU, a model and a sweep that
-the repository does not carry, so {doc}`../reference/validation` owns the evidence and this page
+the repository does not carry, so {doc}`/reference/validation` owns the evidence and this page
 owns the method.
 
 ---
@@ -63,7 +63,7 @@ fitted intercept until the model would predict an OOM there too
   measures nothing.
 - A fit made only of successes can look good while being unsafe near capacity. A conservative
   intercept that makes the in-sample $r^2$ poor is the mechanism working, not a defect. See
-  {doc}`../cost-models/training-fsdp`.
+  {doc}`/pipeline/cost-models/training-fsdp`.
 
 **OOM is never inferred from a log.** `read_status` (`adapters/base/run.py`) classifies a
 candidate `oom` only when the launcher wrote an `oom_rank{N}.json` marker after catching the
@@ -83,8 +83,8 @@ from text in `run.log`:
   `out of memory` is classified as OOM, and the marker records `oom_source: nccl_alloc`. Any
   other `DistBackendError`, such as a timeout or a rendezvous failure, stays `failed`.
 
-Both write the same marker file, so the collector's rule stays one rule. See {doc}`megatron` and
-{doc}`fsdp`.
+Both write the same marker file, so the collector's rule stays one rule. See {doc}`/pipeline/profiling/megatron` and
+{doc}`/pipeline/profiling/fsdp`.
 
 `run` deletes stale markers before launching a candidate. If a re-run is then killed before it
 writes new ones, `status.json` still reads `oom` from the earlier attempt while the collector
@@ -126,7 +126,7 @@ bound of zero. The predictions stay accurate while the individual coefficients s
 physical per-token costs. A coefficient pinned at zero is a conditioning symptom, not a finding.
 
 THD packing is the remedy: shapes that share a token total but split it differently move
-$\sum_i s_i^2$ independently of $\sum_i s_i$. See `sequence_shapes` in {doc}`megatron`.
+$\sum_i s_i^2$ independently of $\sum_i s_i$. See `sequence_shapes` in {doc}`/pipeline/profiling/megatron`.
 
 ### The quadratic term is $\sum_i s_i^2$, and its value depends on the domain
 
@@ -177,13 +177,13 @@ the same way. A check that echoed the request back would pass unconditionally.
 
 **Timing mode must match how the engine runs the kernel.** Kernel ops declare
 `graph_replayed`. CUDA-event timing of a host-bound kernel measures the Python interpreter
-rather than the device. See {doc}`kernels`.
+rather than the device. See {doc}`/pipeline/profiling/kernels`.
 
 **Run on a node nobody else is using.** Kernel and collective timings are wall-clock sensitive
 and nothing in the output reveals that another job shared the node, even when `nvidia-smi` looks
 idle. For the same reason, collect any vLLM baseline whose figures will be quoted serially
 (`max_parallel: 1`), and treat a larger batch that measures *faster* than a smaller one at the
-same depth as the signature of contention rather than of an outlier. See {doc}`vllm`.
+same depth as the signature of contention rather than of an outlier. See {doc}`/pipeline/profiling/vllm`.
 
 ---
 

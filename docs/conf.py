@@ -43,13 +43,8 @@ myst_heading_anchors = 3
 source_suffix = {".md": "markdown", ".rst": "restructuredtext"}
 master_doc = "index"
 
-# `superpowers/` and `design/` hold AI scratch (specs, plans, working notes) that is
-# deliberately not part of the site. Without excluding them, Sphinx would try to build
-# every plan.
 exclude_patterns = [
     "_build",
-    "superpowers",
-    "design",
     "Thumbs.db",
     ".DS_Store",
 ]
@@ -73,9 +68,8 @@ html_theme_options = {
     "navigation_depth": 3,
     "show_nav_level": 1,
     "navbar_align": "left",
-    # Seven top-level toctree entries. Anything below that count is collapsed into a
-    # "More" dropdown, which hides half the site behind a menu.
-    "header_links_before_dropdown": 8,
+    # Four top-level sections: getting started, the pipeline, reference, development.
+    "header_links_before_dropdown": 5,
     "secondary_sidebar_items": ["page-toc"],
     "pygments_light_style": "default",
     "pygments_dark_style": "monokai",

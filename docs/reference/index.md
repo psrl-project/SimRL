@@ -6,13 +6,13 @@ today. Every page was written from the code, so when a page and the code disagre
 
 | Page | Contents |
 |---|---|
-| {doc}`cli` | The seven console scripts, their subcommands and flags, and the environment variables the code reads |
-| {doc}`configuration` | The `srl` Hydra app: config groups, every key, defaults, and how a preset becomes a policy |
-| {doc}`schemas` | `ProfileRecord`, `CostArtifact`, and the telemetry streams |
-| {doc}`validation` | How accuracy is measured, the gates, and the figures that reproduce from local data or pinned tests |
-| {doc}`limitations` | What the code does not do today |
+| {doc}`/reference/cli` | The seven console scripts, their subcommands and flags, and the environment variables the code reads |
+| {doc}`/reference/configuration` | The `srl` Hydra app: config groups, every key, defaults, and how a preset becomes a policy |
+| {doc}`/reference/schemas` | `ProfileRecord`, `CostArtifact`, and the telemetry streams |
+| {doc}`/reference/validation` | How accuracy is measured, the gates, and the figures that reproduce from local data or pinned tests |
+| {doc}`/reference/limitations` | What the code does not do today |
 
-Accuracy figures live on {doc}`validation` and nowhere else in the reference. Each one carries a
+Accuracy figures live on {doc}`/reference/validation` and nowhere else in the reference. Each one carries a
 sample count and says whether the samples were held out, because that decides what the number can
 be used for.
 

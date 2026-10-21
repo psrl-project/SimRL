@@ -1,9 +1,9 @@
 # Megatron training cost model (Hydraulis)
 
 This page documents the Hydraulis cost model fitted from Megatron-Bridge profiles
-({doc}`../profiling/megatron`): the latency decomposition, the memory formula, how fitting and
+({doc}`/pipeline/profiling/megatron`): the latency decomposition, the memory formula, how fitting and
 lookup work, and the composed alternative. Measurement rules are in
-{doc}`../profiling/methodology`. Accuracy is in {doc}`../reference/validation`.
+{doc}`/pipeline/profiling/methodology`. Accuracy is in {doc}`/reference/validation`.
 
 ## Latency model
 
@@ -75,7 +75,7 @@ The original Appendix C form folds the pipeline bubble into the workload feature
 `T_eff`. Those two columns are collinear by construction at uniform microbatch shape, so a
 quadratic term cannot be separated from a linear one. Separating the four costs above leaves each
 coefficient identifiable in principle. Whether they are well conditioned in practice is a separate
-question, and {doc}`../profiling/methodology` covers it: the two token columns stay highly
+question, and {doc}`/pipeline/profiling/methodology` covers it: the two token columns stay highly
 correlated on a grid that varies length without varying the packing structure, and a coefficient
 pushed to its bound of zero is a symptom of that, not a measurement.
 
@@ -201,9 +201,13 @@ cell fitted at one DP answers queries at another. Every other selector must matc
 unrecognised combination raises `KeyError` rather than falling back to a neighbour.
 
 `feature_ranges` gate the query: `tokens`, `pipeline_slots`, `sum_squared_tokens` and
-`micro_batch_size` for latency, `activation_bytes` and `profiled_dp` for memory. A value outside a
+`micro_batch_size` for latency, `activation_bytes` for memory. A value outside a
 recorded range raises `TrainingOutOfDomainError` unless the name is listed under
 `training_cost.extrapolate`. A permitted extrapolation is recorded in the estimate's diagnostics.
+
+`profiled_dp` is recorded in `feature_ranges` and can be named under `extrapolate`, but no
+prediction path compares a query against it. The memory model pools DP into one cell, so the
+degree a cell was fitted at does not constrain the queries it answers.
 
 ## Fitting
 
@@ -301,7 +305,7 @@ Dtypes and `distributed_optimizer` may be omitted when the artifact holds a sing
 `extrapolate` raises at construction rather than silently enabling nothing.
 
 The model supports CP=1 and the 1F1B schedule. VPP, interleaved 1F1B and non-uniform pipeline
-partitions are not modelled. Coverage gaps are listed in {doc}`../reference/limitations`.
+partitions are not modelled. Coverage gaps are listed in {doc}`/reference/limitations`.
 
 ## The kernel-composed alternative
 

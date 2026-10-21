@@ -59,6 +59,7 @@ making progress.
 │   ├── request.jsonl
 │   ├── rollout_step.jsonl
 │   ├── gateway.jsonl
+│   ├── buffer.jsonl
 │   └── instance/
 │       ├── 0.jsonl
 │       └── 1.jsonl
@@ -100,7 +101,7 @@ Streams have no enforced schema beyond what it writes.
 | `micro_batch_size`, `schedule`, `activation_recompute` | the workload descriptor priced |
 | `n_inflight`, `n_ready`, `n_pending` | requests generating, finished and ready, finished but waiting for their group, after the step |
 | `n_dropped_step` | requests dropped during this step |
-| `extrapolation_notes` | present only when a permitted extrapolation happened, see {doc}`domain-gates` |
+| `extrapolation_notes` | present only when a permitted extrapolation happened, see {doc}`/pipeline/simulation/domain-gates` |
 
 ### `request.jsonl`: request lifecycle
 
@@ -131,7 +132,7 @@ defined are `null`: `consume_version` and both staleness values until `consume`,
 | `num_reroutes` | placements after its first |
 | `reprefill_tokens` | context re-prefilled because of aborts and preemptions |
 | `prefix_hit_tokens` | prompt tokens skipped by the prefix cache, accumulated over resumptions |
-| `drop_reason` | `l2_cancel`, `l3_stale`, `span_cap`, `queue_overflow`, see {doc}`policies` |
+| `drop_reason` | `l2_cancel`, `l3_stale`, `span_cap`, `queue_overflow`, see {doc}`/pipeline/simulation/policies` |
 
 ### `rollout_step.jsonl`: engine steps
 
@@ -162,6 +163,25 @@ generated, prefilled)` is skipped.
 | `kv_cache_usage`, `kv_blocks_used` | occupancy against `rollout.kv_blocks` |
 | `total_ctx` | context summed over running requests |
 | `running_len`, `waiting_len` | per request id: `generated`, `target_len`, `ctx`, `prefilled`, `num_aborts` |
+
+### `buffer.jsonl`: staleness inventory
+
+One record per committed change to the policy's buffer inventory, written only for a policy that
+exposes `inventory_snapshot` (PSRL does, verl-legacy does not). Deduplicated like the `instance`
+and `gateway` streams.
+
+| Field | Meaning |
+|---|---|
+| `t` | time |
+| `train_version` | the version the trainer is assembling |
+| `rollout_version` | the version new trajectories are stamped with |
+| `buffers` | one entry per live buffer |
+
+Each `buffers` entry carries `buffer_id`, `ready_num_entries`, `n_occupied`, `n_reserved` and
+`reserved_group_ids`. A group id appearing in `reserved_group_ids` of buffer `b` has an entry
+held for it but has not finished generating, so buffer `b` cannot become READY until it does.
+`buffer_id - v_traj == staleness_horizon` means the reservation sits at its limit and cannot be
+moved to a later buffer.
 
 ### `gateway.jsonl`: router queue
 

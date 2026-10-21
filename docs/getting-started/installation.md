@@ -144,7 +144,7 @@ not resolve. Variables the code reads:
 
 The C++ engine runs by default. `SIMRL_BACKEND=auto` uses it when `srl._engine_cpp` imports and
 falls back to the Python engine otherwise. `SIMRL_BACKEND=native` forces the Python engine.
-{doc}`../simulation/backends` explains the two engines.
+{doc}`/pipeline/simulation/backends` explains the two engines.
 
 ---
 
@@ -157,7 +157,7 @@ make -C docs html
 
 The requirements are Sphinx, `pydata-sphinx-theme`, `myst-parser`, `sphinx-copybutton`,
 `sphinx-design`, and `sphinxcontrib-mermaid`. Output lands in `docs/_build/html/`.
-{doc}`../development/docs` describes the stricter `make -C docs strict` target.
+{doc}`/development/docs` describes the stricter `make -C docs strict` target.
 
 ---
 
@@ -169,4 +169,4 @@ srl policy=areal rollout_cost=roofline training_cost=fixed workload=uniform \
 ```
 
 A progress bar, a summary block, and files under `outputs/` mean the install works.
-{doc}`walkthrough/00-first-simulation` explains each of them.
+{doc}`/getting-started/walkthrough/00-first-simulation` explains each of them.

@@ -39,8 +39,16 @@ then provides three things:
 : how many prompt groups the dataset may stage before the first publish. It is a flow
   limit on dataset ingress, not a staleness bound, and it is deliberately independent of
   the policy's admission quota so that the candidate set the router orders does not change
-  with the policy. Each publish then adds `batch_size` credits, and policies that replace
-  dropped groups add more.
+  with the policy.
+
+  Two grants feed this window, and both stop at one cumulative ceiling. The seed is
+  `min(ingress_window_groups(batch_size), n_versions * batch_size)`. Each publish then asks
+  for another `batch_size`, and receives only what is left of the ceiling, so a late publish
+  can receive nothing. `n_versions * batch_size` is exactly what training will ever consume,
+  and a group staged past it is generated and then discarded. Policies that replace dropped
+  groups are outside this ceiling. Their replacement credit backfills a group the ceiling
+  already counted, so a GC-style policy can keep refilling its working set once the ceiling
+  is reached.
 
 There is no `job.max_staleness`. Change the bound through the preset's own field, for
 example `policy.staleness=1` for `psrl`.
@@ -164,6 +172,11 @@ Defaults are those of the dataclasses in `srl/config/policies/`. `B` is `job.bat
 Where `rollout.max_inflight` is honoured it caps concurrently generating prompt groups at
 that value. Presets that ignore it have their own caps, listed below.
 
+The **Initial ingress groups** column is the formula the preset declares. The seed actually
+granted is that value clamped to `n_versions * B`, the cumulative ceiling described under
+`ingress_window_groups` above. A five-version run at `B = 4` can never stage more than 20 groups
+whatever the column says.
+
 ## Per-system presets
 
 Fields are given with their defaults. Every preset also has `name`, which must equal the
@@ -196,7 +209,7 @@ lazily with `num_entries = ready_num_entries = batch_size`, `staleness`, and
 - `check_invariants` asserts every placement satisfies `buffer_id - generated_version <= staleness`.
 
 `inventory_snapshot` exposes the inventory read-only. The `inventory_deadline` router
-strategy needs it (see {doc}`routing`).
+strategy needs it (see {doc}`/pipeline/simulation/routing`).
 
 ### `areal`
 
@@ -364,5 +377,5 @@ cancels, so the pause mode is always `in_place`. `gc_dropped` counts the cancels
 5. Test the contract the way `tests/` does for the existing presets, including
    `check_invariants`.
 
-See {doc}`../development/index` for the surrounding workflow, and {doc}`outputs` for the
+See {doc}`/development/index` for the surrounding workflow, and {doc}`/pipeline/simulation/outputs` for the
 staleness report a policy's run produces.

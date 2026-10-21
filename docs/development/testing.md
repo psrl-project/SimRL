@@ -107,7 +107,7 @@ fresh clone they say so instead of passing vacuously or failing for a missing fi
 `tests/test_kernel_baseline_regression.py`, `tests/test_collective_baseline_regression.py`,
 `test_training_composed_accuracy.py` and `test_rollout_composed_tp2.py` pin accuracy figures with
 explicit tolerances. They exist to catch a change to the pricing pipeline, not to measure accuracy
-again. The figures and their counts are on {doc}`../reference/validation`.
+again. The figures and their counts are on {doc}`/reference/validation`.
 
 A re-sweep invalidates them. `latency_s` is wall-clock time, so two runs of identical code move a
 holdout MRE in the third decimal and can exceed a tight tolerance with no code change. After

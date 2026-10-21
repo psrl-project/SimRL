@@ -18,7 +18,7 @@ stores and what gets interpolated.
 |---|---|---|---|
 | table holds | measured `(shape -> latency)` | measured `(shape -> latency)` | measured `(shape -> latency)` |
 | interpolates | SOL-normalised utility | latency, via a random forest | SOL-normalised utility |
-| query | log2-space kNN with modified-Shepard weights | random-forest regression with grid-searched hyper-parameters | log2-space interpolation. Shepard by default, monotone cubic splines where the grid allows |
+| query | log2-space kNN with modified-Shepard weights | random-forest regression with grid-searched hyper-parameters | log2-space interpolation. Monotone cubic splines by default, Shepard where a grid is too coarse to spline |
 | past the measured range | hold the boundary utility | forest extrapolation | hold the boundary utility |
 | cross-hardware | in principle, through the target GPU's SOL | retrain per device | in principle, through the target GPU's SOL. Not yet validated |
 | source of shapes | analytic from the config | per-model profiling CSVs | analytic from the config, dispatched by an architecture family |
@@ -104,7 +104,7 @@ kernel.
 Which kernel a real server runs is not NCCL. The collective sweep therefore writes one table
 through vLLM's own dispatcher and one through `torch.distributed` as a control, so the cost of
 having chosen the wrong one is a number rather than an argument. This is covered on
-{doc}`../profiling/tensor-parallel`.
+{doc}`/pipeline/profiling/tensor-parallel`.
 
 ## What is still refused
 
@@ -156,7 +156,7 @@ into a communication-aware sum over microbatches. SimRL restructures it into fou
 terms: per-step overhead, per-token cost, per-microbatch overhead, and a quadratic attention
 term. The token terms are summed over the microbatches a stage runs plus a pipeline bubble, and
 scaled by the stage share. The FSDP model is the same row with the pipeline degenerating to
-`slots = num_microbatches`. See {doc}`training-megatron` and {doc}`training-fsdp`.
+`slots = num_microbatches`. See {doc}`/pipeline/cost-models/training-megatron` and {doc}`/pipeline/cost-models/training-fsdp`.
 
 ## Rollout cost structure: DistServe
 
@@ -165,7 +165,7 @@ prefill and decode attention costs explicitly and calibrates effective hardware 
 measured profiles rather than using vendor peaks. `srl/cost/rollout/distserve.py` is that
 calibration. The `roofline` model generalises the structure to one formula covering mixed batches,
 by summing a prefill term and a decode term, which the original formulation does not cover. See
-{doc}`rollout`.
+{doc}`/pipeline/cost-models/rollout`.
 
 ## Composed models and the prior art
 
@@ -173,4 +173,4 @@ The composed approach (sum measured kernels rather than fit an end-to-end curve)
 alternative to all of the above and is what lets SimRL price a new model or degree without a
 server sweep. Its lineage is the same kernel-table idea as aiconfigurator, with the FP32/utility
 normalisation kept and the whole engine iteration assembled from it. See
-{doc}`composed-rollout` and {doc}`../profiling/kernels`.
+{doc}`/pipeline/cost-models/composed-rollout` and {doc}`/pipeline/profiling/kernels`.

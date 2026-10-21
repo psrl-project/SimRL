@@ -3,11 +3,11 @@
 The vLLM pipeline measures end-to-end scheduler iterations from an official
 `vllm bench sweep serve` run. Its output is a JSONL file of `ProfileRecord` objects, one per
 scheduler iteration, which `srl-regress rollout` fits into a rollout cost model
-({doc}`../cost-models/rollout`). It is also the baseline that `srl-profile kernels validate`
-scores the kernel-composed model against ({doc}`kernels`).
+({doc}`/pipeline/cost-models/rollout`). It is also the baseline that `srl-profile kernels validate`
+scores the kernel-composed model against ({doc}`/pipeline/profiling/kernels`).
 
 Unlike the training pipelines, a server stays alive across many benchmark points, so the
-per-candidate process cost described on {doc}`index` does not apply.
+per-candidate process cost described on {doc}`/pipeline/profiling/index` does not apply.
 
 ## Commands
 
@@ -56,7 +56,7 @@ srl-regress rollout --model roofline \
 ```
 
 `--model` accepts `roofline`, `psrl` or `distserve`. The formulas are on
-{doc}`../cost-models/rollout`.
+{doc}`/pipeline/cost-models/rollout`.
 
 ### Probing KV capacity
 
@@ -221,7 +221,7 @@ ctxsum   = R * (L + 1 + k)
 $k$ is the engine's own iteration index minus the index of the first step that generated, so
 dropping an untrusted step in the middle of a run does not shift the ages of the steps after it.
 A **mixed** step carries both `sum_l2` and `ctxsum`. Features enter the cost models as described
-on {doc}`../cost-models/rollout`.
+on {doc}`/pipeline/cost-models/rollout`.
 
 ## Output layout
 
@@ -282,11 +282,11 @@ Records are `ProfileRecord` objects with `record_type: "rollout"`. The load-bear
 
 `software.backend_version` and `source_commit` are the pinned constants in
 `srl/profiler/adapters/vllm/config.py`, not a reading of the installed package. The full
-`ProfileRecord` schema is in {doc}`../reference/schemas`.
+`ProfileRecord` schema is in {doc}`/reference/schemas`.
 
 ## Baselines for validating the kernel model
 
-A baseline that will be used to score `ComposedRollout` (see {doc}`tensor-parallel`) has to be a
+A baseline that will be used to score `ComposedRollout` (see {doc}`/pipeline/profiling/tensor-parallel`) has to be a
 clean one:
 
 - Collect it serially (`run.max_parallel: 1`, `run.max_concurrent_startups: 1`, as in

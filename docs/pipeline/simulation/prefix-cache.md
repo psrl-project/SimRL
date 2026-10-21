@@ -8,7 +8,7 @@ where capacity comes from, and the closed-form exhaustion check the engine relie
 
 The code is `srl/component/rollout/engine/kv/` (`block.py`, `free_list.py`, `pool.py`,
 `manager.py`, `lineage.py`), with a line-for-line C++ port in
-`srl/component/rollout/engine_cpp/` (see {doc}`backends`).
+`srl/component/rollout/engine_cpp/` (see {doc}`/pipeline/simulation/backends`).
 
 ## How a block is identified
 
@@ -137,4 +137,4 @@ assignment, hash-map entries, free-list links, held-block lists, counters) is re
 a recorder, and a committed path passes a no-op recorder. Only the old values of what an
 event touched are stored, so the cost of an undo follows the work the event did, not the
 size of the pool. How events are made speculative and undone is described in
-{doc}`backends`.
+{doc}`/pipeline/simulation/backends`.

@@ -150,7 +150,7 @@ simulator reads it with `CostArtifact.load`.
 | `artifact_version` | str | `"1.0"`. Any other value raises |
 | `created_at` | str | ISO 8601 UTC |
 | `kind` | str | `rollout` or `training`. Anything else raises |
-| `model_type` | str | `roofline`, `psrl`, `distserve`, `hydraulis` or `fsdp` |
+| `model_type` | str | `roofline`, `psrl`, `distserve`, `hydraulis` or `fsdp`. `ComposedRollout` declares `composed`, but nothing writes an artifact of that type, because a kernel sum has no coefficients to record |
 | `profile_digest` | str | `sha256:` over the input JSONL |
 | `hardware` | dict | The profile's `HardwareDescriptor` fields. `gpu_count` is the list of distinct counts seen |
 | `model` | dict | The profile's `ModelDescriptor` fields |
@@ -278,7 +278,7 @@ tables. Each is a JSON list of the result dataclasses in `srl/cost/kernel/holdou
 name to `<run>/logs/<name>.jsonl`. A name containing `/` becomes a subdirectory. The store holds
 no history in memory, flushes every record, and skips any stream named by `log_exclude`. Only
 committed engine state is written, never an event that a speculative step may still undo. Plots and
-`srl-compare` read these files and nothing else. {doc}`../simulation/outputs` describes how to read
+`srl-compare` read these files and nothing else. {doc}`/pipeline/simulation/outputs` describes how to read
 them.
 
 | Stream | One row per | Main fields |
@@ -286,6 +286,7 @@ them.
 | `instance/<id>` | Change in an instance's occupancy | `t`, `instance_id`, `tp`, `num_running_reqs`, `num_waiting_reqs`, `kv_cache_usage`, `kv_blocks_used`, `total_ctx`, `running_len`, `waiting_len` |
 | `rollout_step` | Engine step record | `t`, `instance_id`, `phase`, `steps`, `n_prefill`, `n_prefill_hit`, `n_prefill_computed`, `n_decode`, `n_tokens`, `dt`, `saturated`, `saturated_steps` |
 | `gateway` | Change in the router queue | `t`, `queue_len`, `pending_request_num`, `running_request_num`, `queue_by_version`, `n_routed`, `n_reroutes`, `n_cross_instance_reroutes` |
+| `buffer` | Change in the staleness inventory | `t`, `train_version`, `rollout_version`, `buffers`, a list of `buffer_id`, `ready_num_entries`, `n_occupied`, `n_reserved` and `reserved_group_ids`. Written only by policies that keep an inventory |
 | `request` | Lifecycle event of a request | `t`, `event`, request identity and group fields, `admit_time`, `dispatch_time`, `complete_time`, `consume_version`, `prompt_len`, `target_len`, `generated`, `ctx`, `v_traj`, `v_min`, `v_max`, `staleness_true`, `staleness_reported`, `num_preemptions`, `num_aborts`, `num_reroutes`, `reprefill_tokens`, `prefix_hit_tokens`, `drop_reason`, `retry` |
 | `train` | Training step | `t`, `start`, `end`, `dt`, `version`, `n_groups`, `group_size`, `n_reqs`, `total_tokens`, `train_time`, `peak_memory_bytes`, the four training parallelism degrees, `micro_batch_size`, `schedule`, `activation_recompute`, `sync_time`, `recompute_time`, `n_inflight`, `n_ready`, `n_pending`, `n_dropped_step`, and `extrapolation_notes` when a gate was relaxed |
 

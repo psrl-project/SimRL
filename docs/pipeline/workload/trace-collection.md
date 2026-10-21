@@ -5,7 +5,7 @@ of its response lengths, and the group boundary tying them together. Collecting 
 running real inference, so it costs GPU time.
 
 Use this path when you need fidelity to a specific model and dataset, or when your algorithm
-computes group-relative advantage. {doc}`index` covers when a parametric distribution is the
+computes group-relative advantage. {doc}`/pipeline/workload/index` covers when a parametric distribution is the
 better choice.
 
 ---
@@ -13,7 +13,7 @@ better choice.
 ## What you need
 
 A HuggingFace checkpoint, a parquet dataset, one or more hosts with GPUs, and the pinned stack
-from {doc}`../getting-started/installation` (vLLM serves the model, `transformers` renders the
+from {doc}`/getting-started/installation` (vLLM serves the model, `transformers` renders the
 chat template, `pyarrow` reads the dataset, `aiohttp` sends requests).
 
 The dataset needs a `prompt` column of chat messages (`list[{"role", "content"}]`) and an
@@ -225,7 +225,7 @@ srl workload=dapo_trace \
 `workload.trace.n_groups=0` reads every group, and a positive value caps how many are loaded,
 which is useful for a quick smoke run. `job.batch_size` counts **groups**: with 8 responses per
 group, `batch_size=64` consumes 64 prompts (512 responses) per training step.
-{doc}`../getting-started/walkthrough/06-simulate` runs a trace against fitted cost models.
+{doc}`/getting-started/walkthrough/06-simulate` runs a trace against fitted cost models.
 
 ---
 
@@ -244,10 +244,10 @@ collect its own.
 
 **40.8% of responses hit the 10240-token cap.** That single number shapes how this workload
 behaves in simulation, and it is why a smooth two-parameter distribution cannot stand in for
-it. {doc}`index` shows the parametric approximation that can.
+it. {doc}`/pipeline/workload/index` shows the parametric approximation that can.
 
 Two modelling points apply to traces generally. The simulator holds lengths and provenance, not
 token ids, so responses of one group share prompt blocks in the KV cache but two different
-prompts never do ({doc}`../simulation/prefix-cache`). And a trace that is reconstructed from a
+prompts never do ({doc}`/pipeline/simulation/prefix-cache`). And a trace that is reconstructed from a
 real run's logs instead of collected here can have fabricated grouping, which
-{doc}`../reference/limitations` describes.
+{doc}`/reference/limitations` describes.

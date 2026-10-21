@@ -5,17 +5,17 @@ require touching the simulator or the CLI.
 
 | Extension point | Protocol | Registry | Page |
 |---|---|---|---|
-| Kernel op | `KernelOp` | `OP_REGISTRY` in `cost/kernel/ops/base.py` | {doc}`kernel-ops` |
-| Model family | `ModelFamily` | `FAMILY_REGISTRY` in `profiler/kernel/grid/families.py` | {doc}`model-families` |
-| Profiler adapter | `generate`, `run`, `collect` | none, selected by CLI backend name | {doc}`adapters-and-cost-models` |
-| Rollout cost model | `RolloutCostModel` | `ROLLOUT_MODEL_REGISTRY` | {doc}`adapters-and-cost-models` |
-| Training cost model | `TrainingCostModel` | `TRAINING_MODEL_REGISTRY` | {doc}`adapters-and-cost-models` |
-| Staleness policy | `StalenessPolicy` | `POLICY_REGISTRY` in `policy/registry.py` | {doc}`../simulation/policies` |
+| Kernel op | `KernelOp` | `OP_REGISTRY` in `cost/kernel/ops/base.py` | {doc}`/development/kernel-ops` |
+| Model family | `ModelFamily` | `FAMILY_REGISTRY` in `profiler/kernel/grid/families.py` | {doc}`/development/model-families` |
+| Profiler adapter | `generate`, `run`, `collect` | none, selected by CLI backend name | {doc}`/development/adapters-and-cost-models` |
+| Rollout cost model | `RolloutCostModel` | `ROLLOUT_MODEL_REGISTRY` | {doc}`/development/adapters-and-cost-models` |
+| Training cost model | `TrainingCostModel` | `TRAINING_MODEL_REGISTRY` | {doc}`/development/adapters-and-cost-models` |
+| Staleness policy | `StalenessPolicy` | `POLICY_REGISTRY` in `policy/registry.py` | {doc}`/pipeline/simulation/policies` |
 
 There is also a routing strategy protocol (`RoutingStrategy`, `STRATEGY_REGISTRY`) described in
-{doc}`../simulation/routing`.
+{doc}`/pipeline/simulation/routing`.
 
-{doc}`architecture` describes how the packages fit together: the three layers, the package tree,
+{doc}`/development/architecture` describes how the packages fit together: the three layers, the package tree,
 the dependency direction, the event loop and the two engine backends.
 
 ---
@@ -42,7 +42,7 @@ Two structural rules recur in this codebase:
 
 ## What to run
 
-{doc}`testing` covers the commands, the tests that skip without local data, the pinned accuracy
+{doc}`/development/testing` covers the commands, the tests that skip without local data, the pinned accuracy
 figures, and why a re-sweep invalidates them. In short:
 
 ```bash
@@ -52,7 +52,7 @@ ruff check .
 make -C docs strict
 ```
 
-{doc}`docs` covers this site: how to build it, where each fact lives, and the conventions the
+{doc}`/development/docs` covers this site: how to build it, where each fact lives, and the conventions the
 strict build enforces.
 
 ```{toctree}

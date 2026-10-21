@@ -6,7 +6,7 @@ responses belong to the same prompt.
 
 It is optional. A parametric distribution runs without it. But GRPO and DAPO normalise
 rewards within a group, and a parametric workload where every response is independent
-(`group_size` 1) cannot represent that. {doc}`../../workload/index` compares the two sources.
+(`group_size` 1) cannot represent that. {doc}`/pipeline/workload/index` compares the two sources.
 
 ## What it needs
 
@@ -57,7 +57,7 @@ BASE_PORT=8700 STARTUP_STAGGER_S=25
 
 `STARTUP_STAGGER_S` waits between worker launches so that concurrent loads of a multi-shard
 checkpoint from shared storage do not trip the readiness timeout. Each worker is the CLI
-`srl-workload collect-groups`. {doc}`../../workload/trace-collection` documents the script's
+`srl-workload collect-groups`. {doc}`/pipeline/workload/trace-collection` documents the script's
 steps, the flags, and the verification commands.
 
 ## What lands on disk
@@ -119,7 +119,7 @@ by construction, so no choice of parameters makes it fit.
 mass sits at exactly 10240, visible in the histogram as 3548 counts in the last bin against 223
 in the one before it.
 
-The closest parametric shape is `bimodal`, and {doc}`../../workload/index` shows how to set
+The closest parametric shape is `bimodal`, and {doc}`/pipeline/workload/index` shows how to set
 it from these statistics. There is deliberately **no distribution-fitting command**:
 estimating a family from a trace and then sampling from it discards the correlation and
 grouping that made the trace worth collecting. If you have a trace, replay it.
@@ -158,12 +158,12 @@ the cap is doing all the work and the trace mostly records your `MAX_TOKENS` set
 
 This trace tells you whether the fitted training domains are wide enough. The median sequence
 per response here is about 8800 tokens (prompt plus output) and the longest is 11133. The
-Megatron latency cell fitted in {doc}`03-megatron-training` covers `tokens` up to 8192, so the
+Megatron latency cell fitted in {doc}`/getting-started/walkthrough/03-megatron-training` covers `tokens` up to 8192, so the
 tail sits outside it, and the FSDP cells cover up to 16384.
 
-A query outside a fitted range is refused, not guessed. {doc}`06-simulate` shows the refusal
+A query outside a fitted range is refused, not guessed. {doc}`/getting-started/walkthrough/06-simulate` shows the refusal
 and how to permit a bounded extrapolation deliberately.
 
 ## Next
 
-{doc}`06-simulate` puts all of it together.
+{doc}`/getting-started/walkthrough/06-simulate` puts all of it together.

@@ -211,7 +211,7 @@ tokens, and requeues it locally. Which resident is a separate registry from rout
 
 A strategy returning `None` defers to the engine's default. `deadline_buffer` is stamped
 only by `inventory_deadline` at admission, so `latest_deadline` is meaningful only with it,
-and the stamp needs the Python engine, see {doc}`backends`.
+and the stamp needs the Python engine, see {doc}`/pipeline/simulation/backends`.
 
 ## `inventory_deadline`
 

@@ -30,7 +30,9 @@ flowchart LR
 One iteration of `Simulator.run` does the following.
 
 1. **Stage.** `_stage` turns ingress credits into whole prompt groups and enqueues them in
-   the router. Staging does not admit anything.
+   the router. Staging does not admit anything. Credits are granted at publish time and are
+   capped cumulatively at `n_versions * batch_size`, so staging stops once the run has staged
+   everything training will ever consume ({doc}`/pipeline/simulation/policies`).
 2. **Admit.** Router dispatch places a group's first response on an instance only if
    `policy.admit_quota(state)` covers a whole group. That placement commits the admission
    of the entire group (`on_admit`, ledger entry, `v_traj` stamped). Siblings may still
@@ -64,7 +66,7 @@ srl policy=verl workload=normal rollout_cost=roofline training_cost=fixed \
 
 `srl` is a Hydra application, so every key is an override. `srl --help` prints the config
 groups and the resolved defaults, and `srl --cfg job` prints the composed config. The full
-key list is in {doc}`../reference/configuration`. The example scripts under
+key list is in {doc}`/reference/configuration`. The example scripts under
 `examples/simulate/` wrap the same entry point: `simulate.sh` is the general launcher and
 `psrl_aligned.sh` transcribes one measured PSRL run.
 
@@ -80,8 +82,8 @@ key list is in {doc}`../reference/configuration`. The example scripts under
 `sync_cost` and `recompute_cost` are plain blocks in `simulate.yaml`, not groups. The
 structured schema for everything lives in `srl/config/schema.py`.
 
-The default policy is `psrl`. The cost models are documented in {doc}`../cost-models/index`
-and the workload sources in {doc}`../workload/index`.
+The default policy is `psrl`. The cost models are documented in {doc}`/pipeline/cost-models/index`
+and the workload sources in {doc}`/pipeline/workload/index`.
 
 ### Top-level blocks
 
@@ -90,7 +92,7 @@ and the workload sources in {doc}`../workload/index`.
 | `job` | `n_versions`, `batch_size` (groups per step), `group_size` (null reads it from the workload), `max_prompt_length`, `max_output_length` |
 | `rollout` | `n_instances`, `token_budget`, `kv_blocks` or `kv_cache_sizing`, `block_size`, `enable_prefix_caching`, `max_concurrency`, `max_inflight`, `admission_control`, `router`, `livelock_rounds` |
 | `sync_cost`, `recompute_cost` | the two small cost models described below |
-| `output_dir`, `log_telemetry`, `log_level` | where and whether to write, see {doc}`outputs` |
+| `output_dir`, `log_telemetry`, `log_level` | where and whether to write, see {doc}`/pipeline/simulation/outputs` |
 
 ## Things that most often surprise people
 
@@ -101,7 +103,7 @@ and the workload sources in {doc}`../workload/index`.
 2. **The staleness bound is a property of the policy preset, not of `job`.** There is no
    `job.max_staleness`. Each preset exposes its own knob (`psrl.staleness`,
    `areal.max_head_offpolicyness`, `trl.max_staleness`, ...) with a different meaning, and
-   some systems have no version bound at all. See {doc}`policies`.
+   some systems have no version bound at all. See {doc}`/pipeline/simulation/policies`.
 3. **`psrl` must be importable.** `srl.simulator` and `srl.forecast` import
    `psrl.workers.ps.staleness`, so the separate `psrl` package has to be installed even
    when another policy is selected. The editable install must use strict mode:
@@ -112,10 +114,10 @@ and the workload sources in {doc}`../workload/index`.
    output room. Training sees per-axis caps, so rollout can generate tokens that training
    never charges. See `clip_total_length` in `srl/simulator/config.py`.
 5. **A cost model refuses out-of-domain queries** instead of extrapolating. This is the
-   most common first-run failure. See {doc}`domain-gates`.
+   most common first-run failure. See {doc}`/pipeline/simulation/domain-gates`.
 6. **The C++ engine runs by default (`SIMRL_BACKEND=cpp`).** Some features only work on the
    Python engine. Those are marked `python_engine_only` and raise under `cpp` rather than
-   silently switching. See {doc}`backends`.
+   silently switching. See {doc}`/pipeline/simulation/backends`.
 
 ## Sync and recompute costs
 
@@ -142,11 +144,11 @@ Two small cost models are added to every training step.
 
 | Variable | Read in | Meaning |
 |---|---|---|
-| `SIMRL_BACKEND` | `srl/cli/main.py` | `cpp` (default), `auto`, `native`. See {doc}`backends` |
-| `SIMRL_UNDOABLE_EVENTS` | `srl/cli/main.py` | comma list of engine events that get speculative undo, default `request_complete,preempt,iteration_done`. See {doc}`backends` |
+| `SIMRL_BACKEND` | `srl/cli/main.py` | `cpp` (default), `auto`, `native`. See {doc}`/pipeline/simulation/backends` |
+| `SIMRL_UNDOABLE_EVENTS` | `srl/cli/main.py` | comma list of engine events that get speculative undo, default `request_complete,preempt,iteration_done`. See {doc}`/pipeline/simulation/backends` |
 
 Hydra's `+log_exclude='instance,rollout_step'` drops telemetry streams at the source, see
-{doc}`outputs`.
+{doc}`/pipeline/simulation/outputs`.
 
 ```{toctree}
 :maxdepth: 2

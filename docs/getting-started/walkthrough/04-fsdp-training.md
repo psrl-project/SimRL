@@ -1,6 +1,6 @@
 # Stage 4: FSDP2 training
 
-The same measurement as {doc}`03-megatron-training`, under a different backend. FSDP2 shards
+The same measurement as {doc}`/getting-started/walkthrough/03-megatron-training`, under a different backend. FSDP2 shards
 parameters, gradients, and optimizer state alike. Megatron's distributed optimizer shards the
 optimizer state only and keeps a full-size gradient buffer. The static memory footprints
 differ accordingly, which is why this is a separate model and not a reused one.
@@ -111,7 +111,7 @@ Status is decided by the marker files and nothing else. A rank that catches
 marker the candidate is `failed`, and a log that mentions "out of memory" does not change
 that. A false OOM could only raise the fitted memory floor, so the classification is
 deliberately strict. A candidate whose memory exhaustion surfaced some other way is `failed`
-and its lower bound is lost. {doc}`../../profiling/fsdp` has the classification rules.
+and its lower bound is lost. {doc}`/pipeline/profiling/fsdp` has the classification rules.
 
 A successful record's payload has the same shape as Megatron's, with one difference that
 matters:
@@ -236,7 +236,7 @@ cell has 16 inequality constraints against 15 successes. They lift the intercept
 5.1e9 bytes above what the successes alone support, so the model over-predicts those successes
 by design and will not claim a workload fits when the OOM evidence says otherwise. The MRE
 describes the slope, which is what varies in real queries.
-{doc}`../../cost-models/training-fsdp` has the derivation.
+{doc}`/pipeline/cost-models/training-fsdp` has the derivation.
 
 ## How to tell it worked
 
@@ -295,10 +295,10 @@ uniform shapes, so how real trajectory lengths become microbatches is a simulate
 
 All three can return identical results, and must at `micro_batch_size=1`, so agreement is not
 evidence that the wiring is wrong: balanced grouping puts similar lengths together, which flattens
-the padding difference a second time. {doc}`../../simulation/domain-gates` explains where the
-modes diverge, and {doc}`06-simulate` shows the full simulation.
+the padding difference a second time. {doc}`/pipeline/simulation/domain-gates` explains where the
+modes diverge, and {doc}`/getting-started/walkthrough/06-simulate` shows the full simulation.
 
 ## Next
 
-{doc}`05-workload-trace` measures what the request shapes actually look like, which is what
+{doc}`/getting-started/walkthrough/05-workload-trace` measures what the request shapes actually look like, which is what
 decides whether these fitted domains are wide enough.

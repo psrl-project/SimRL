@@ -34,7 +34,7 @@ regression to load. `psrl` requires one.
 | `fsdp` | fitted | FSDP JSONL | yes |
 
 `fixed`, `analytical` and `linear` carry hand-set constants, which is what makes
-{doc}`../getting-started/walkthrough/00-first-simulation` runnable without a GPU. The two fitted
+{doc}`/getting-started/walkthrough/00-first-simulation` runnable without a GPU. The two fitted
 models fall under `TRAINING_MODEL_REGISTRY` and are interchangeable only within their own backend:
 a `hydraulis` model fits records from Megatron-Bridge, and an `fsdp` model fits records from the
 FSDP launcher, and neither accepts the other's records.
@@ -44,7 +44,7 @@ There is also a **kernel-composed training latency model**, `ComposedTraining` i
 coefficients, and can be paired with `HydraulisMemoryModel` for memory. It is a library class
 rather than a Hydra default, so it is constructed in Python and scored through
 `srl/cost/training/validate.py`. It is not selectable as `training_cost=composed` and is not
-exposed by `srl-regress`. {doc}`training-megatron` describes it and its per-term decomposition.
+exposed by `srl-regress`. {doc}`/pipeline/cost-models/training-megatron` describes it and its per-term decomposition.
 
 ## Which regress subcommand applies
 
@@ -69,7 +69,7 @@ srl-regress training --latency-model {hydraulis|fsdp} --memory-model {hydraulis|
 
 The kernel pipeline has no regression. Its tables feed `ComposedRollout` and `ComposedTraining`
 directly, and its own accuracy is measured by `srl-profile kernels holdout` and
-`srl-profile kernels validate` ({doc}`../profiling/kernels`).
+`srl-profile kernels validate` ({doc}`/pipeline/profiling/kernels`).
 
 ## What a fitted artifact contains
 
@@ -92,7 +92,7 @@ sizes would describe none of them, so there is no nearest-neighbour fallback.
 permitted extrapolation is always recorded in the estimate's diagnostics. Hydraulis latency pools
 pipeline degrees into one entry per TP group and derives PP from the topology. FSDP memory does
 not pool, because its peak depends on which stage is in flight. The full schema is in
-{doc}`../reference/schemas`.
+{doc}`/reference/schemas`.
 
 Fitting defaults and the split:
 
@@ -109,7 +109,7 @@ Fitting defaults and the split:
 ## Accuracy
 
 Accuracy figures depend on the GPU, the model and the sweep, and are not derivable from this
-repository. {doc}`../reference/validation` owns them, states how each kind of evidence was
+repository. {doc}`/reference/validation` owns them, states how each kind of evidence was
 produced, and lists what can be reproduced today.
 
 ```{toctree}

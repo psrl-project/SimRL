@@ -39,24 +39,23 @@ docs/
 ├── Makefile, requirements.txt
 ├── index.md               Landing page and the top-level toctree
 ├── getting-started/       Installation, concepts, the staged walkthrough
-├── workload/              Trace collection
-├── profiling/             Profiling pipelines: vLLM, kernels, Megatron, FSDP, collectives
-├── cost-models/           Rollout, training and kernel models
-├── simulation/            Policies, routing, prefix cache, backends, outputs, domain gates
+├── pipeline/              The four stages, in the order data flows through them
+│   ├── index.md           Stage map and the contracts between stages
+│   ├── profiling/         vLLM, kernels, Megatron, FSDP, collectives
+│   ├── cost-models/       Rollout, training and kernel models
+│   ├── workload/          Trace collection and request shape
+│   └── simulation/        Policies, routing, prefix cache, backends, outputs, gates
 ├── reference/             CLI, configuration, schemas, validation, limitations
-├── development/           This section
-├── design/                Design notes. Excluded from the site
-└── superpowers/           Working notes. Excluded from the site
+└── development/           This section
 ```
 
-`exclude_patterns` in `docs/conf.py` drops `_build`, `superpowers` and `design`. The last two hold
-working notes that are not part of the published site and may not exist in a clone. Never
-Reference a page inside them with the doc role and never cite one as the source of a published
-figure.
+Working notes and AI plans live in `notes/` at the repository root, outside the built tree.
+They are not part of the published site and may not exist in a clone. Never reference a page
+inside them with the doc role and never cite one as the source of a published figure.
 
-Adding a section means creating its `index.md` with orientation content and a toctree, adding the
-section to the top-level toctree in `docs/index.md`, and adding the directory to `exclude_patterns`
-only if it is not meant to be read.
+Adding a section means creating its `index.md` with orientation content and a toctree, and adding
+the section to the toctree of the page that owns it. A stage belongs under `pipeline/`. Anything
+that is not read by a user belongs in `notes/`, not in `docs/`.
 
 ---
 
@@ -72,7 +71,7 @@ A page that is superseded should be deleted, not excluded. An excluded file leav
 on disk with a comment distinguishing them, and the comment is what goes stale next.
 
 Changing a console script or a config key means changing the page that documents it in the same
-change. {doc}`../reference/cli` and {doc}`../reference/configuration` are written from the code,
+change. {doc}`/reference/cli` and {doc}`/reference/configuration` are written from the code,
 not from memory.
 
 ---
@@ -97,11 +96,13 @@ broken one ships silently. The doc role is resolved at build time and fails the 
 it points at no page.
 
 ```markdown
-{doc}`kernel-ops`                       Same directory.
-{doc}`../reference/validation`          From this directory to another section.
+{doc}`/development/kernel-ops`                       Same directory.
+{doc}`/reference/validation`          From this directory to another section.
 ```
 
-The path is relative to the containing file and omits the `.md` suffix.
+The path is relative to the containing file and omits the `.md` suffix. Write it absolute from
+`docs/` instead, as above. Relative paths break silently the moment a page moves to another
+directory, and the move is what a restructure does.
 
 **`literalinclude` paths are relative to the containing file.** Include the YAML defaults from
 `docs/reference/configuration.md` as `../../srl/config/defaults/simulate.yaml`. The same path from

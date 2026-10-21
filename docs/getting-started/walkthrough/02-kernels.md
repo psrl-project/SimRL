@@ -126,7 +126,7 @@ vllm       2.11.0+cu128  NVIDIA H20  gemm     torch.nn.functional.linear  1  614
 exactly. The attention tables add `num_key_value_heads`, `head_dim`, `attn_dtype`,
 `kv_cache_dtype`, `block_size`, and `window_size` as the slice, with `num_heads`,
 `batch_size`, and `isl` (context) or `step` (generation) as the axes. Elementwise has `dtype`,
-`op_kind`, and `n_elements`. {doc}`../concepts` covers the slice-versus-axis distinction.
+`op_kind`, and `n_elements`. {doc}`/getting-started/concepts` covers the slice-versus-axis distinction.
 
 ### Where the swept shapes come from
 
@@ -153,7 +153,7 @@ of column is what you feel in practice:
 - an `(n, k)` that was never measured raises `KernelCoverageError`.
 
 So `m` is the cheap axis. **A different model changes every `(n, k)`, and so does a different
-TP degree**, since shapes are sharded at profiling time. {doc}`../../development/model-families`
+TP degree**, since shapes are sharded at profiling time. {doc}`/development/model-families`
 covers adding a family.
 
 `floors.json` holds the fitted per-call dispatch cost for each floor-taking op:
@@ -196,7 +196,7 @@ and `saturation_step_threshold`.
 What it interpolates is not latency but **utility**, the dimensionless ratio
 `SOL / measured_latency`, where SOL is the analytic roofline. Interpolating the narrow
 quantity and letting the analytic formula carry the orders of magnitude is what makes it
-generalise. {doc}`../../cost-models/composed-rollout` has the segment integrator and its
+generalise. {doc}`/pipeline/cost-models/composed-rollout` has the segment integrator and its
 limits.
 
 ## How to tell it worked
@@ -215,7 +215,7 @@ Each row reports `mre_percent`, `p90_percent`, `max_percent` with `worst_coords`
 `point_count`, `skipped_slices`, and `utility_min`/`utility_max`. A `point_count` of 0 is a
 coverage problem (a grid too sparse or degenerate to hold a point out), not an accuracy
 problem. On the tables above, `gemm [vllm]` scored 3.91% MRE over 64 held-out points and the
-attention families 6% to 12%. {doc}`../../profiling/kernels` owns the full table.
+attention families 6% to 12%. {doc}`/pipeline/profiling/kernels` owns the full table.
 
 Utility above roughly 1.2 means the SOL formula is missing work the kernel does, not that the
 GPU beat its spec. Generation attention staying below 0.5 says that kernel never approaches
@@ -232,7 +232,7 @@ prefill:  29 buckets, MRE 3.84%
 
 `--min-samples` (default 20) drops buckets with few iterations, and a phase that holds no
 bucket at that size is not scored at all. The command warns when that happens, and
-`--min-samples 1` scores everything. {doc}`../../reference/validation` owns the project's
+`--min-samples 1` scores everything. {doc}`/reference/validation` owns the project's
 accuracy figures.
 
 ## Tensor parallel needs its own tree
@@ -260,8 +260,8 @@ The `tp4` and `tp8` configs declare only the collective block.
 A tree swept at another degree does not price the wrong shapes silently: pointing a TP=2
 simulation at the TP=1 tree raises `KernelCoverageError: No gemm rows for slice
 ('bfloat16', 3072, 4096)` followed by the slices that were measured.
-{doc}`../../profiling/tensor-parallel` has the full account.
+{doc}`/pipeline/profiling/tensor-parallel` has the full account.
 
 ## Next
 
-{doc}`03-megatron-training` moves to the training side.
+{doc}`/getting-started/walkthrough/03-megatron-training` moves to the training side.

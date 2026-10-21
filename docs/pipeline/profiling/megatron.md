@@ -2,8 +2,8 @@
 
 This page covers the Megatron-Bridge training sweep: what the sweep axes mean, why SimRL owns
 the entry point, how to run it, what lands on disk, and what each sidecar file contains. The
-formulas fitted from that output are in {doc}`../cost-models/training-megatron`. General
-measurement rules, including warmup and the OOM-as-data contract, are in {doc}`methodology`.
+formulas fitted from that output are in {doc}`/pipeline/cost-models/training-megatron`. General
+measurement rules, including warmup and the OOM-as-data contract, are in {doc}`/pipeline/profiling/methodology`.
 
 ## Why SimRL owns the entry point
 
@@ -120,7 +120,7 @@ the other, so fit THD measurements for a verl-style step.
 ### Why the microbatch count must vary
 
 The shared latency row is `(1, weighted_tokens, weighted_slots, weighted_sum_squared_tokens)`
-and must reach rank 4 ({doc}`../cost-models/training-megatron`). At a fixed microbatch count the
+and must reach rank 4 ({doc}`/pipeline/cost-models/training-megatron`). At a fixed microbatch count the
 slot column is constant and collinear with the intercept, so any number of sequence lengths
 alone caps the design below the rank the fit needs. Use at least two microbatch counts, spaced
 widely, and at least three sequence lengths.
@@ -131,14 +131,14 @@ The fitted `feature_ranges` are hard out-of-domain gates unless a feature is lis
 `training_cost.extrapolate`. `tokens` is the **largest** microbatch, so one long sequence in a
 batch sets it. Extend the sequence axis to cover the token counts the simulator will request, or
 list the feature explicitly and accept the recorded extrapolation. See
-{doc}`../simulation/domain-gates`.
+{doc}`/pipeline/simulation/domain-gates`.
 
 ## Steps and warmup
 
 The YAML's `training:` block sets `max_steps` and `warmup_steps`. The shipped example uses `12`
 and `4`. `max_steps` must exceed `warmup_steps`. The launcher writes every step into the sidecar
 and the collector slices the warmup off, so the window can change without re-profiling. See
-{doc}`methodology`.
+{doc}`/pipeline/profiling/methodology`.
 
 Each step is bracketed by `on_train_step_start` and `on_train_step_end` with a
 `torch.cuda.synchronize()` on each side and `time.perf_counter()` in between. No barrier is
@@ -229,7 +229,7 @@ The second detection route is a `RuntimeError` naming NCCL and `unhandled cuda e
 `out of memory`) on a device with under 2% free memory. NCCL allocates its buffers outside the
 PyTorch allocator, so exhaustion surfaces there as a plain `RuntimeError`. The free-memory reading
 is what distinguishes it from a driver fault. Anything else re-raises and stays `failed`. The
-collector decides OOM from markers, never from log text. See {doc}`methodology`.
+collector decides OOM from markers, never from log text. See {doc}`/pipeline/profiling/methodology`.
 
 ### `status.json`
 
@@ -255,5 +255,5 @@ srl-regress training \
 
 `--validation-fraction` defaults to `0.2`, the split is by run id, and `--allow-rank-deficient`
 lowers the design-rank requirement. Formulas, the cell key and lookup are in
-{doc}`../cost-models/training-megatron`. The `ProfileRecord` schema is in
-{doc}`../reference/schemas`.
+{doc}`/pipeline/cost-models/training-megatron`. The `ProfileRecord` schema is in
+{doc}`/reference/schemas`.

@@ -2,7 +2,7 @@
 
 An adapter turns one backend's measurements into `ProfileRecord`. A cost model turns
 `ProfileRecord`, or kernel parquet, into predictions. The seam is the versioned record schema in
-{doc}`../reference/schemas`.
+{doc}`/reference/schemas`.
 
 ---
 
@@ -67,7 +67,7 @@ inequality constraint to the memory fit that can only raise the predicted floor,
 positive would make the model silently more conservative.
 
 A process that dies before writing a marker, for example from a setup error or a NCCL allocation
-failure, is `failed` and contributes no bound. See {doc}`../reference/limitations`.
+failure, is `failed` and contributes no bound. See {doc}`/reference/limitations`.
 
 ### `--resume`
 
@@ -158,7 +158,7 @@ fitting end-to-end times. Their inputs are kernel op tables and a per-model op l
 `ModelOps` or `TrainingOps`, both built from a checkpoint's architecture. `ComposedRollout` prices
 GEMMs, attention and collectives. It does not read the elementwise table, which belongs to the
 training path. Its decode segment is integrated with `LatticeIntegrator` or the closed form
-described in {doc}`architecture`.
+described in {doc}`/development/architecture`.
 
 `ComposedTraining` is only reachable from Python. It is not in `TRAINING_MODEL_REGISTRY` and is
 not selectable from the `training_cost` group.

@@ -1,7 +1,7 @@
 # Kernel profiling
 
 The kernel pipeline writes parquet *performance tables* instead of fitting a parametric model.
-{doc}`../cost-models/composed-rollout` and `ComposedTraining` read those tables directly and sum
+{doc}`/pipeline/cost-models/composed-rollout` and `ComposedTraining` read those tables directly and sum
 measured kernel latencies per step, so a composed model needs this sweep to have been run.
 
 The pipeline has no server, no KV-cache manager and no scheduler. Kernels are timed on synthetic
@@ -42,7 +42,7 @@ shapes the architecture family declares. It exits non-zero on a mismatch or on h
 layers, because a family multiplies one layer's shapes by the layer count.
 
 `validate` builds `ComposedRollout` from the config's `tensor_parallel` degree and the given
-kernel root, and scores it against a vLLM baseline. See {doc}`tensor-parallel`.
+kernel root, and scores it against a vLLM baseline. See {doc}`/pipeline/profiling/tensor-parallel`.
 
 ## What is measured
 
@@ -79,9 +79,9 @@ Notes on individual families:
   the `aten::copy_`, `aten::cat`, `aten::to`, `aten::mul` and `aten::add_` launches a Megatron
   step issues to stage buffers around Transformer Engine's fused modules, and it is priced by
   count rather than by bandwidth. `ComposedRollout` does **not** add an elementwise term.
-  `ComposedTraining` does. See {doc}`../cost-models/composed-rollout`.
+  `ComposedTraining` does. See {doc}`/pipeline/cost-models/composed-rollout`.
 - **`collective`** is the tensor-parallel and training-communication family. Its op list,
-  topology axes and dispatch measurement are the subject of {doc}`tensor-parallel`.
+  topology axes and dispatch measurement are the subject of {doc}`/pipeline/profiling/tensor-parallel`.
 - **`attention_training`** prices Transformer Engine's THD-packed attention in both directions.
   Backward is measured rather than derived, because the measured backward/forward ratio is above
   two and drifts with sequence length. `attn_mask_type` is a slice column because THD requires
@@ -182,7 +182,7 @@ server actually ran. On H20 the selector resolves to FlashAttention-3 vendored i
 which serves both prefill and decode. The vLLM table is the default for every downstream query
 because it describes the kernel the server executes. The FlashInfer rows answer what a switch
 would buy. Scoring a vLLM baseline against them, or overriding `attention_backend` in a
-simulation, compares against a backend that never ran. See {doc}`../reference/limitations` for
+simulation, compares against a backend that never ran. See {doc}`/reference/limitations` for
 the FlashInfer GQA restriction that can leave one table unwritten.
 
 ## Utility, SOL and the dispatch floor
@@ -258,7 +258,7 @@ Details that matter when reading a report:
   first.
 
 Per-op per-backend gate figures for the reference GPU and model live in
-{doc}`../reference/validation`, which owns accuracy.
+{doc}`/reference/validation`, which owns accuracy.
 
 ## End-to-end validation
 
@@ -274,7 +274,7 @@ srl-profile kernels validate \
     --output /tmp/validate.json
 ```
 
-The baseline is a vLLM JSONL ({doc}`vllm`). Bucketing is what makes the comparison meaningful:
+The baseline is a vLLM JSONL ({doc}`/pipeline/profiling/vllm`). Bucketing is what makes the comparison meaningful:
 
 - Iterations are grouped by `(phase, request_count, mean context, token count)`.
 - The context and token keys are rounded to a **linear** multiple (`DEFAULT_CONTEXT_BUCKET =
@@ -314,7 +314,7 @@ bash examples/simulate/simulate.sh
 tables at `{kernel_table_root}/kernel/{gpu}/`. `gpu` must match the slug in the tree. Leave
 `attention_backend` empty unless deliberately comparing backends. A `tp > 1` simulation needs a
 tree swept at that degree, and the example script checks that the path names it. See
-{doc}`tensor-parallel`.
+{doc}`/pipeline/profiling/tensor-parallel`.
 
 For adding a new op, the op protocol, and the shape families that decide which kernels a model
-runs, see {doc}`../development/kernel-ops` and {doc}`../development/model-families`.
+runs, see {doc}`/development/kernel-ops` and {doc}`/development/model-families`.

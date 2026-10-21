@@ -2,8 +2,8 @@
 
 This page documents the FSDP2 / HSDP cost model: its latency form, memory design, static
 inventory, the three batching modes, fitting and lookup, and how it differs from the Megatron
-model. Measurements are on {doc}`../profiling/fsdp`. Accuracy is in
-{doc}`../reference/validation`.
+model. Measurements are on {doc}`/pipeline/profiling/fsdp`. Accuracy is in
+{doc}`/reference/validation`.
 
 FSDP and Megatron have separate models because they shard differently and their schedules differ.
 Megatron's distributed optimizer shards optimizer state only and keeps a full-size fp32 gradient
@@ -13,7 +13,7 @@ one for the other silently overstates memory.
 
 ## Latency model
 
-FSDP has no pipeline, so the shared four-term form ({doc}`training-megatron`) degenerates: `PP = 1`
+FSDP has no pipeline, so the shared four-term form ({doc}`/pipeline/cost-models/training-megatron`) degenerates: `PP = 1`
 makes the bubble zero and the stage share one, so the design row is
 
 ```text
@@ -36,7 +36,7 @@ The quadratic term is present for the same reason as in the Megatron model: the 
 serves short- and long-sequence regimes, and the term must be $\sum_i s_i^2$ because attention
 does not cross a packed sequence boundary. Under BSHD with a micro-batch size of one every
 microbatch holds one sequence and the two token columns are collinear. That is a property of the
-sweep, not of the model, and the THD hint in {doc}`../profiling/methodology` applies to FSDP as
+sweep, not of the model, and the THD hint in {doc}`/pipeline/profiling/methodology` applies to FSDP as
 well.
 
 DP communication is not modelled. The planner distributes trajectory lengths across DP ranks and
@@ -191,7 +191,7 @@ At predict time the model enforces two things the fitted form cannot express:
 latency, `num_microbatches` and `activation_tokens` for memory. A value outside a recorded range
 raises unless the name is listed in `training_cost.extrapolate`. A permitted extrapolation is
 recorded in the estimate's diagnostics. The names are per component, and an unknown name raises at
-construction. {doc}`../simulation/domain-gates` covers the semantics. The FSDP default file
+construction. {doc}`/pipeline/simulation/domain-gates` covers the semantics. The FSDP default file
 `config/defaults/training_cost/fsdp.yaml` lists each selectable name and what it is safe to
 extrapolate.
 
@@ -249,4 +249,4 @@ bash examples/simulate/simulate.sh
 ```
 
 Coverage gaps (`optimizer_offload: true` never profiled, sequence parallelism out of scope, a
-narrow microbatch range) are in {doc}`../reference/limitations`.
+narrow microbatch range) are in {doc}`/reference/limitations`.

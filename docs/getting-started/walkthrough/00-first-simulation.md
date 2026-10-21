@@ -6,7 +6,7 @@ few seconds and confirms the install works end to end.
 
 ## What it needs
 
-The base install from {doc}`../installation`, including the `psrl` package that `srl`
+The base install from {doc}`/getting-started/installation`, including the `psrl` package that `srl`
 imports at startup.
 
 ## The command
@@ -23,12 +23,12 @@ Run it from the repository root. Each override selects one config group or sets 
   Its one knob is `policy.max_head_offpolicyness`, which defaults to 0. The other presets are
   `dressage`, `nemo_rl`, `openrlhf`, `prime_rl`, `psrl` (the default), `roll`, `skyrl`,
   `slime`, `trl`, `verl`, and `verl_v1`, and each carries its own system's knobs.
-  {doc}`../../simulation/policies` compares them.
+  {doc}`/pipeline/simulation/policies` compares them.
 
 `rollout_cost=roofline`
 : The rollout cost model, evaluating `max(F, W + G*n_tokens + A_p*sum_l2/b + A_d*ctxsum)`
   with the defaults in `srl/config/defaults/rollout_cost/roofline.yaml`.
-  {doc}`01-vllm-rollout` replaces those defaults with fitted ones.
+  {doc}`/getting-started/walkthrough/01-vllm-rollout` replaces those defaults with fitted ones.
 
 `training_cost=fixed`
 : A flat `latency_s` (1.0 s) per training step and `peak_memory_bytes` of zero. The right
@@ -98,7 +98,7 @@ Simulation complete: 5 versions in 11.48s
 ```
 
 True staleness is the gap between the consuming version and the *oldest* weight version
-behind the response's tokens, so it can exceed the policy's horizon. {doc}`../concepts`
+behind the response's tokens, so it can exceed the policy's horizon. {doc}`/getting-started/concepts`
 separates true from reported staleness.
 
 ## What lands on disk
@@ -132,7 +132,7 @@ outputs/
 ```
 
 Hydra's run directory is separate from `output_dir`. Re-running with the same `output_dir`
-replaces `logs/` instead of appending to it. {doc}`../../simulation/outputs` documents every
+replaces `logs/` instead of appending to it. {doc}`/pipeline/simulation/outputs` documents every
 stream. The ones used most are below.
 
 One `train.jsonl` record from the first run:
@@ -203,7 +203,7 @@ srl policy=areal rollout_cost=roofline training_cost=fixed workload=bimodal \
 ```
 
 `bimodal` is the parametric shape closest to a truncated output distribution.
-{doc}`../../workload/index` lists all six families.
+{doc}`/pipeline/workload/index` lists all six families.
 
 Check that an override landed where you meant it to, without running anything:
 
@@ -232,4 +232,4 @@ summary: nothing is written to disk and no plots are made.
 ## Next
 
 The `roofline` and `fixed` coefficients are not calibrated to any hardware.
-{doc}`01-vllm-rollout` measures the real inference engine and fits them.
+{doc}`/getting-started/walkthrough/01-vllm-rollout` measures the real inference engine and fits them.

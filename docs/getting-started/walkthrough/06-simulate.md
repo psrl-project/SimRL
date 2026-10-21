@@ -13,9 +13,9 @@ One rollout cost source and one training cost source, plus a workload:
 
 | | From | Alternative |
 |---|---|---|
-| rollout | `rollout_roofline.json` ({doc}`01-vllm-rollout`) | kernel tables ({doc}`02-kernels`) |
-| training | `training_hydraulis.json` ({doc}`03-megatron-training`) | `training_fsdp.json` ({doc}`04-fsdp-training`) |
-| workload | `joint.jsonl` ({doc}`05-workload-trace`) | a parametric distribution |
+| rollout | `rollout_roofline.json` ({doc}`/getting-started/walkthrough/01-vllm-rollout`) | kernel tables ({doc}`/getting-started/walkthrough/02-kernels`) |
+| training | `training_hydraulis.json` ({doc}`/getting-started/walkthrough/03-megatron-training`) | `training_fsdp.json` ({doc}`/getting-started/walkthrough/04-fsdp-training`) |
+| workload | `joint.jsonl` ({doc}`/getting-started/walkthrough/05-workload-trace`) | a parametric distribution |
 
 ## The command
 
@@ -90,7 +90,7 @@ Valid names for the Megatron artifact are `tokens`, `sum_squared_tokens`, `pipel
 `Unknown extrapolation feature(s) [...]` listing the valid ones. An extrapolation is a decision
 about how far to trust a linear stretch: the token terms are fitted over a profiled range, and
 attention grows with the square of the sequence length, so a long tail is a bounded
-approximation. {doc}`../../simulation/domain-gates` says which features are safe to extend.
+approximation. {doc}`/pipeline/simulation/domain-gates` says which features are safe to extend.
 
 Scaling the batch tests the same discipline. With `job.batch_size=32` (256 responses over
 `dp=8`, 32 microbatches per rank at `micro_batch_size=1`), the fitted `pipeline_slots` range
@@ -134,7 +134,7 @@ Simulation complete: 3 versions in 223.57s
 
 ## What lands on disk
 
-The same streams and plots as {doc}`00-first-simulation`, but the records now carry predicted
+The same streams and plots as {doc}`/getting-started/walkthrough/00-first-simulation`, but the records now carry predicted
 values:
 
 ```javascript
@@ -212,7 +212,7 @@ With `probe: true` (the default) the first run starts a real vLLM engine, reads 
 count, and caches it in `~/.cache/srl/kv_capacity.json` (override with `SIMRL_KV_CACHE`).
 `srl-profile kv-probe --model ... --tp ...` populates that cache ahead of time on a GPU box.
 `probe: false` computes the capacity from `config.json` on CPU, which is only reliable for dense
-models. {doc}`../../simulation/prefix-cache` covers capacity and the block pool.
+models. {doc}`/pipeline/simulation/prefix-cache` covers capacity and the block pool.
 
 ## The FSDP path
 
@@ -233,7 +233,7 @@ srl rollout_cost=roofline \
 Two differences from the Megatron path. `shard_size` and `replicate_size` select the mesh: an
 FSDP cell is a measurement of one mesh, so `parallelism.dp` (default 8 in `fsdp.yaml`) must
 equal `shard * replicate` or the model refuses. And `batching_mode` exists only here
-({doc}`04-fsdp-training` lists the three modes). The FSDP artifact fitted in stage 4 covers
+({doc}`/getting-started/walkthrough/04-fsdp-training` lists the three modes). The FSDP artifact fitted in stage 4 covers
 `tokens` up to 16384, and at these settings the run needs no `extrapolate`.
 
 ## Rollout from kernel tables instead
@@ -246,14 +246,14 @@ srl rollout_cost=composed \
 
 This substitutes the summed-kernel model for the fitted regression. It prices shapes the vLLM
 sweep never ran. For `rollout_cost.parallelism.tp=2` or above, `kernel_table_root` must point
-at a tree swept at the same degree ({doc}`02-kernels`).
+at a tree swept at the same degree ({doc}`/getting-started/walkthrough/02-kernels`).
 
 ## Choosing the rollout engine
 
 `srl` runs the compiled C++ rollout engine by default (`SIMRL_BACKEND=cpp`).
 `SIMRL_BACKEND=native` forces the Python engine, and `SIMRL_BACKEND=auto` falls back to it only
 when the extension cannot be imported or the configuration needs Python-only request state.
-{doc}`../../simulation/backends` covers how the two relate.
+{doc}`/pipeline/simulation/backends` covers how the two relate.
 
 ## How to tell it worked
 
@@ -302,7 +302,7 @@ backed by measurement or refuses to.
 
 ## Where to go next
 
-{doc}`../../simulation/policies` compares the staleness policies.
-{doc}`../../simulation/domain-gates` covers extrapolation in full.
-{doc}`../../reference/validation` collects the accuracy figures with their sample counts, which
+{doc}`/pipeline/simulation/policies` compares the staleness policies.
+{doc}`/pipeline/simulation/domain-gates` covers extrapolation in full.
+{doc}`/reference/validation` collects the accuracy figures with their sample counts, which
 is what tells you how far to trust any of this.

@@ -155,7 +155,7 @@ One record's payload (abridged):
 boundaries, so a microbatch holding several packed sequences costs the sum of their squared
 lengths. Squaring the packed total overcharges by the sequence count. With
 `micro_batch_size: 1` every microbatch holds one sequence and the two agree.
-{doc}`04-fsdp-training` packs.
+{doc}`/getting-started/walkthrough/04-fsdp-training` packs.
 
 **Both `allocated` and `reserved` are recorded, and the Megatron memory model fits
 `allocated`.** Reserved bytes are the allocator's high-water mark, not a footprint, and can
@@ -228,7 +228,7 @@ to tokens, work quadratic in sequence length (attention), and a fixed cost per p
 The token terms are sums over the rank's real microbatches, with the `PP - 1` bubble slots
 charged at the largest microbatch. A memory entry has coefficients `activation_scale`,
 `parameter_count`, `residual_constant` and the model-geometry terms, and feature ranges for
-`activation_bytes` and `profiled_dp`. {doc}`../../cost-models/training-megatron` derives both.
+`activation_bytes` and `profiled_dp`. {doc}`/pipeline/cost-models/training-megatron` derives both.
 
 ## How to tell it worked
 
@@ -268,10 +268,10 @@ The `selector` keys of the cell are config keys of `training_cost`
 (`activation_recompute`, `optimizer`, the three dtypes, `distributed_optimizer`), and a
 mismatch finds no cell. The response count per step (`batch_size * group_size`) must be
 divisible by `dp * micro_batch_size`: `batch_size=4` with `dp=8` raises
-`global_batch_size must be divisible by dp * micro_batch_size`. {doc}`06-simulate` shows the
+`global_batch_size must be divisible by dp * micro_batch_size`. {doc}`/getting-started/walkthrough/06-simulate` shows the
 domain gates firing on a real trace.
 
 ## Next
 
-{doc}`04-fsdp-training` measures the same thing under FSDP2, which shards differently and
+{doc}`/getting-started/walkthrough/04-fsdp-training` measures the same thing under FSDP2, which shards differently and
 therefore needs a separate model rather than a reused one.

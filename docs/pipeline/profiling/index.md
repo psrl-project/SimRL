@@ -1,7 +1,7 @@
 # Profiling
 
 Profiling is the measurement half of SimRL. Its output is never a model. It is either a
-versioned JSONL file describing what a real system did, which {doc}`../cost-models/index`
+versioned JSONL file describing what a real system did, which {doc}`/pipeline/cost-models/index`
 then fits, or a tree of parquet kernel tables that a cost model reads directly.
 
 All measurement goes through one console script, `srl-profile`.
@@ -10,11 +10,11 @@ All measurement goes through one console script, `srl-profile`.
 
 | Subcommand | Purpose | Page |
 |---|---|---|
-| `srl-profile kv-probe` | start a vLLM engine once and cache the KV capacity it allocates | {doc}`vllm` |
-| `srl-profile vllm {generate,run,collect}` | end-to-end scheduler iterations from `vllm bench sweep serve` | {doc}`vllm` |
-| `srl-profile kernels {run,fit-floor,holdout,verify-shapes,validate}` | individual kernels timed on synthetic tensors | {doc}`kernels`, {doc}`tensor-parallel` |
-| `srl-profile megatron {generate,run,collect}` | training steps under Megatron-Bridge | {doc}`megatron` |
-| `srl-profile fsdp {generate,run,collect}` | training steps under the SimRL FSDP2 launcher | {doc}`fsdp` |
+| `srl-profile kv-probe` | start a vLLM engine once and cache the KV capacity it allocates | {doc}`/pipeline/profiling/vllm` |
+| `srl-profile vllm {generate,run,collect}` | end-to-end scheduler iterations from `vllm bench sweep serve` | {doc}`/pipeline/profiling/vllm` |
+| `srl-profile kernels {run,fit-floor,holdout,verify-shapes,validate}` | individual kernels timed on synthetic tensors | {doc}`/pipeline/profiling/kernels`, {doc}`/pipeline/profiling/tensor-parallel` |
+| `srl-profile megatron {generate,run,collect}` | training steps under Megatron-Bridge | {doc}`/pipeline/profiling/megatron` |
+| `srl-profile fsdp {generate,run,collect}` | training steps under the SimRL FSDP2 launcher | {doc}`/pipeline/profiling/fsdp` |
 
 ## Where each pipeline ends
 
@@ -33,7 +33,7 @@ flowchart LR
 Only two `srl-regress` subcommands exist, `rollout` and `training`. The kernel pipeline has no
 regression step: its parquet tables are the cost model's input. Tensor-parallel communication is
 not a separate pipeline either. It is the `collective` kernel family, covered on
-{doc}`tensor-parallel`.
+{doc}`/pipeline/profiling/tensor-parallel`.
 
 ## Three verbs
 
@@ -57,7 +57,7 @@ because only a `success` status counts as done. Megatron and FSDP also accept `-
 
 `collect` reads the raw artifacts a run left behind and normalises them. It never re-executes
 anything, and the warmup window is applied here rather than in the launcher, so the number of
-discarded steps can change without re-profiling. See {doc}`methodology`.
+discarded steps can change without re-profiling. See {doc}`/pipeline/profiling/methodology`.
 
 The kernel pipeline has no `generate` or `collect`. It has `run` (measure and write parquet),
 then the accuracy and calibration steps `fit-floor`, `holdout` and `validate`, plus the
@@ -82,7 +82,7 @@ the kernel runner times synthetic tensors in-process for one family at a time (c
 one `torchrun` per topology and time all five ops inside it), and the vLLM adapter keeps one
 server alive across many benchmark points.
 
-Read {doc}`methodology` before running a long sweep. It collects the measurement rules the code
+Read {doc}`/pipeline/profiling/methodology` before running a long sweep. It collects the measurement rules the code
 enforces and the traps the design guards against.
 
 ```{toctree}

@@ -21,7 +21,7 @@ rollout and training loop over simulated time, asking the cost models for every 
 training step. It never touches a GPU.
 
 The seams are on-disk and versioned: `ProfileRecord` JSONL between adapters and fitters, and
-`CostArtifact` JSON or kernel parquet between fitters and the simulator. {doc}`../reference/schemas`
+`CostArtifact` JSON or kernel parquet between fitters and the simulator. {doc}`/reference/schemas`
 defines all of them.
 
 :::{image} /_static/img/simrl-architecture-plain.png
@@ -52,14 +52,16 @@ srl/
 │   │   ├── engine_cpp/          C++ engine (pybind11), built to srl/_engine_cpp*.so
 │   │   └── router/              RouterQueue, Router, AdmissionGate, eight strategies
 │   ├── recompute/cost.py        Log-prob recomputation cost models
-│   ├── sync/cost.py             Weight sync cost models
-│   └── training/                Namespace for training-loop helpers
+│   └── sync/cost.py             Weight sync cost models
 ├── config/                      Hydra: schema.py, defaults/, policies/ presets
 ├── cost/
 │   ├── artifact.py              CostArtifact, ArtifactEntry, FitMetrics
 │   ├── kernel/                  Kernel op registry, perf tables, SOL, utility surfaces, holdout
-│   ├── rollout/                 roofline, psrl, distserve, composed, segment advance
-│   └── training/                fixed, analytical, linear, hydraulis, fsdp, composed
+│   ├── rollout/                 Fitted models (roofline, psrl, distserve), composed model,
+│   │                            segment advance, and the KV capacity probe the simulator reads
+│   └── training/                Fitted and analytic models (fixed, analytical, linear, hydraulis,
+│                                fsdp), composed model, the memory inventories, and the fit/validate
+│                                helpers srl-regress drives
 ├── forecast/                    Per-instance drain and training-pipeline forecasts
 ├── policy/                      StalenessPolicy ABC, twelve presets, shared rule primitives
 ├── profiler/
@@ -313,4 +315,4 @@ print(result.versions_done, result.n_consumed, result.throughput)
 `staleness_reported_values`, `max_staleness_true`, `max_staleness_reported` and `throughput`,
 plus `scg(s)`, `scg_count(s)`, `scg_curve()` and `staleness_report()`.
 
-Importing this module needs the `psrl` package, as {doc}`../reference/limitations` explains.
+Importing this module needs the `psrl` package, as {doc}`/reference/limitations` explains.

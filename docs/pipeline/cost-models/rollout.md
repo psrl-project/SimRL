@@ -1,11 +1,11 @@
 # Rollout cost models
 
 Three fitted rollout models are provided: `roofline`, `psrl` and `distserve`. All three are fitted
-from vLLM profiling data ({doc}`../profiling/vllm`), stored as a `CostArtifact` JSON, and loaded
+from vLLM profiling data ({doc}`/pipeline/profiling/vllm`), stored as a `CostArtifact` JSON, and loaded
 by the simulator without a code change. This page covers their formulas, the regression command,
 and how each model's pure-decode terms are derived.
 
-{doc}`composed-rollout` covers the fourth rollout model, which sums measured kernels instead of
+{doc}`/pipeline/cost-models/composed-rollout` covers the fourth rollout model, which sums measured kernels instead of
 fitting.
 
 ## Fitting
@@ -44,7 +44,7 @@ not a measurement.
 | requests in the step | `request_count` | decode (PSRL), and `ComposedRollout`'s logits shape |
 
 These are filled by the vLLM adapter from the scheduler iteration log, as described on
-{doc}`../profiling/vllm`. A pure prefill step has `ctxsum = 0`, a pure decode step has
+{doc}`/pipeline/profiling/vllm`. A pure prefill step has `ctxsum = 0`, a pure decode step has
 `sum_l2 = 0`, and a mixed step has both. The models that distinguish phases zero the term that
 does not belong.
 
@@ -166,8 +166,12 @@ phases to be saturated. The simulator reads it to know whether a step is above t
 regime.
 
 `ComposedRollout` does not use `advance.py`, because a kernel sum is not `max(F, alpha + beta*k)`.
-Its `decode_coeffs` returns a floor of zero and a secant slope, which keeps the interface usable,
-but its segments are integrated numerically on a lattice ({doc}`composed-rollout`).
+Its `decode_coeffs` returns a floor of zero and a secant slope, which keeps the interface usable.
+A segment is integrated numerically on a lattice by default
+({doc}`/pipeline/cost-models/composed-rollout`), with one optional fast path: when the per-request
+KV depth reaches `saturation_step_threshold`, the segment is instead integrated in closed form
+over those coefficients. The threshold defaults to `1 << 62`, which disables the fast path, so a
+run that never sets it always uses the lattice.
 
 ## Choosing a model
 

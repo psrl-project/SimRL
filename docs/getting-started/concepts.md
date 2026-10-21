@@ -29,7 +29,7 @@ Every record carries these groups:
 `ProfileRecord` is the documented boundary between execution and modelling. An adapter
 writes records and a cost model reads them. Nothing in the adapter knows the model it will
 feed, and nothing in the cost model knows the system that produced the records.
-{doc}`../reference/schemas` lists every field.
+{doc}`/reference/schemas` lists every field.
 
 ---
 
@@ -106,7 +106,7 @@ The rollout fits record `feature_ranges` too, but the rollout cost models do not
 `ComposedRollout` has its own guard: an unmeasured kernel slice raises
 `KernelCoverageError`.
 
-{doc}`../simulation/domain-gates` has the full policy and the feature names each model accepts.
+{doc}`/pipeline/simulation/domain-gates` has the full policy and the feature names each model accepts.
 
 ---
 
@@ -133,7 +133,7 @@ may select different tile sizes.
 
 `world_size` is a slice column for collectives because a 2-rank and an 8-rank ring run
 different schedules over different links. The registered ops are listed by
-`srl.cost.kernel.ops.base.families()`. {doc}`../development/kernel-ops` explains how to add one.
+`srl.cost.kernel.ops.base.families()`. {doc}`/development/kernel-ops` explains how to add one.
 
 ---
 
@@ -181,12 +181,12 @@ A *group* is the set of responses that share a prompt (`group_id`). `job.batch_s
 **groups** per training step, and `job.group_size` is the responses per group, so one step
 consumes `batch_size * group_size` responses. GRPO and DAPO advantages normalise rewards
 within a group, so group boundaries must survive in the workload. A parametric workload has
-`group_size` 1. Only a joint trace carries real groups. See {doc}`../workload/index`.
+`group_size` 1. Only a joint trace carries real groups. See {doc}`/pipeline/workload/index`.
 
 A *policy preset* is the typed config for one asynchronous-RL system, selected with
 `policy=<name>`: `areal`, `dressage`, `nemo_rl`, `openrlhf`, `prime_rl`, `psrl`, `roll`,
 `skyrl`, `slime`, `trl`, `verl`, `verl_v1`. Each preset owns that system's own staleness
-knobs. {doc}`../simulation/policies` compares them.
+knobs. {doc}`/pipeline/simulation/policies` compares them.
 
 ---
 
@@ -203,7 +203,7 @@ four columns, `[1, tokens, slots, sum_squared_tokens]`, for the four coefficient
 `per_step_overhead`, `token_cost`, `microbatch_overhead`, and `token_quadratic_cost`. Holding
 `num_microbatches` at one value makes the slot column constant, hence collinear with the
 intercept, so the rank drops below four. **Check the design before committing GPU time.**
-{doc}`../profiling/methodology` gives the minimum sweep for each model.
+{doc}`/pipeline/profiling/methodology` gives the minimum sweep for each model.
 
 ---
 

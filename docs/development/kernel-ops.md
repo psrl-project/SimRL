@@ -6,8 +6,8 @@ the floor policy, the sweep parser and the GPU measurement. The rest of the pipe
 fitter, the holdout gate, the table writer, the database and the CLI, discovers ops through one
 registry. Adding an op means writing one class and registering it.
 
-For accuracy figures see {doc}`../reference/validation`. For the slice, axis, utility and floor
-vocabulary see {doc}`../getting-started/concepts` and {doc}`../cost-models/prior-art`.
+For accuracy figures see {doc}`/reference/validation`. For the slice, axis, utility and floor
+vocabulary see {doc}`/getting-started/concepts` and {doc}`/pipeline/cost-models/prior-art`.
 
 ---
 

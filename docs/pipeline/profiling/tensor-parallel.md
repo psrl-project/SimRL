@@ -137,7 +137,7 @@ CONFIG=examples/profile/vllm/qwen3_8b_tp2_serial.yaml \
 Use `max_parallel: 1` for any baseline whose figures will be quoted: concurrent servers sharing a
 machine and a filesystem can degrade one another mid-run with no error, and the diagnostic is
 non-monotonicity rather than an outlier. The grid should be the same as the `tp=1` grid if the two
-degrees will be compared bucket for bucket. {doc}`vllm` covers both points.
+degrees will be compared bucket for bucket. {doc}`/pipeline/profiling/vllm` covers both points.
 
 ### 4. Score it, and attribute the error
 
@@ -165,7 +165,7 @@ isolation, so an unmodelled compute/communication overlap would show up as over-
 roughly the collective's share, and fitting the comm term downward would be curve-fitting over a
 known mechanism.
 
-Accuracy figures for each degree are in {doc}`../reference/validation`. `kernels validate` writes
+Accuracy figures for each degree are in {doc}`/reference/validation`. `kernels validate` writes
 `{table_root}/validate_report.json` by default.
 
 ### 5. Simulate
@@ -193,7 +193,7 @@ workload is built.
 `TrainingOps` prices sequence-parallel collectives per layer as `(query, multiplier)` data, with
 different counts for the forward, the recompute replay and the backward, and `ComposedTraining`
 charges pipeline boundary transfers per microbatch and the 1F1B bubble as idle slots. See
-{doc}`../cost-models/training-megatron`.
+{doc}`/pipeline/cost-models/training-megatron`.
 
 ## What is not modelled
 
@@ -203,7 +203,7 @@ charges pipeline boundary transfers per microbatch and the 1F1B bubble as idle s
 - **Per-call floors at small batch.** A composed step sums one isolated latency per kernel, each
   with its own floor, while a server replays the step inside a CUDA graph where much of that cost
   disappears. Small-batch decode is where this is largest. See
-  {doc}`../reference/limitations`.
+  {doc}`/reference/limitations`.
 - **Degrees without an end-to-end baseline.** A collective table and a compute tree are not
   themselves evidence that composition holds at that degree. Scoring it needs a vLLM baseline at
   the same degree.

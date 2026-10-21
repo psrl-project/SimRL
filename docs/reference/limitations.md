@@ -1,7 +1,7 @@
 # Limitations
 
 What the code does not do today. Each item below was checked against the code, and the file or
-symbol that decides it is named. Items that are accuracy figures live on {doc}`validation`.
+symbol that decides it is named. Items that are accuracy figures live on {doc}`/reference/validation`.
 
 ---
 
@@ -60,7 +60,7 @@ GPUs. Simulation and `srl-regress` do not.
 - Tensor-parallel degrees above 2 have collective tables but no end-to-end baseline against a real
   server in the validation set.
 - Collectives are priced by `(world_size, nodes)` slices. Cross-node tables score below the
-  intra-node ones (see {doc}`validation`), because a flat-ring SOL describes a hierarchical
+  intra-node ones (see {doc}`/reference/validation`), because a flat-ring SOL describes a hierarchical
   collective poorly. Cross-node rows exist for NCCL only, since vLLM's custom all-reduce is disabled
   across nodes. NUMA placement inside a node is not represented.
 - Hybrid attention models (softmax plus gated delta net layers) and routed mixture-of-experts models
@@ -81,7 +81,7 @@ GPUs. Simulation and `srl-regress` do not.
 - `ComposedTraining` raises `NotImplementedError` for `dp > 1` (`TrainingOps.dp_comm_queries`).
   Its validation set is `dp=1` only, so a data-parallel gradient collective term could be written
   but not scored.
-- `ComposedTraining` under-predicts every record of its validation set (see {doc}`validation`), so it
+- `ComposedTraining` under-predicts every record of its validation set (see {doc}`/reference/validation`), so it
   is missing at least one additive term. The two residual adds that Megatron fuses into
   `bias_dropout_add_fused_train` are not charged. A ragged microbatch plan is priced from a mean slot.
   The count of tensor-staging launches per layer is traced from one framework version and does not
@@ -114,7 +114,7 @@ GPUs. Simulation and `srl-regress` do not.
   stopped fusing a projection.
 - Each model family must be registered. An architecture with no family, and any mixture-of-experts or
   compressed-KV architecture the dense family does not cover, is refused with a message naming the
-  missing kernel. See {doc}`../development/model-families`.
+  missing kernel. See {doc}`/development/model-families`.
 - Multi-node Megatron profiling needs a per-host launch with `--node-rank`. The tool does not start
   the other hosts.
 
@@ -140,7 +140,8 @@ GPUs. Simulation and `srl-regress` do not.
   derived from `config.json`. A capacity does not transfer between TP degrees or GPU models.
 - **Length prediction is an oracle.** `inventory_deadline` and the forecast modules require
   `policy=psrl` and use `oracle` or `noisy_oracle` lengths, which read the trace's `target_len`. No
-  predictor that estimates lengths from prompts is built in.
+  predictor that estimates lengths from prompts is built in. The strategy also requires the native
+  or `auto` engine backend, because it reads Python request state the C++ engine does not carry.
 - **Livelock detection is a guard.** The run returns `livelocked=True` after `rollout.livelock_rounds`
   idle rounds. A configuration that the guard ends early produces a result that is not comparable to a completed run.
 - **SCG is a rate.** `SimResult.scg` divides tokens by simulated time, so two runs are comparable

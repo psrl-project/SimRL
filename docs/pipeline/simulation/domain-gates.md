@@ -61,7 +61,7 @@ defaults in `srl/config/defaults/training_cost/fsdp.yaml` and `hydraulis.yaml`.
 : Do not list them without profiling past the target. Beyond a certain size the hardware
   cannot run the configuration at all, and a linear form with no saturation term still
   returns a smooth number there. The fitted ceiling is in the artifact's feature ranges and
-  in the profiling run that produced it ({doc}`../profiling/index`).
+  in the profiling run that produced it ({doc}`/pipeline/profiling/index`).
 
 ## Cell lookup
 

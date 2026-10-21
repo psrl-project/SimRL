@@ -113,7 +113,7 @@ One record, abridged:
 
 `sum_l2` and `ctxsum` are filled from equal-length formulas, since every request in a point
 has the same length. A pure decode record has `sum_l2: 0.0` and a non-zero `ctxsum`.
-{doc}`../concepts` covers `ProfileRecord` as a schema and {doc}`../../reference/schemas` has
+{doc}`/getting-started/concepts` covers `ProfileRecord` as a schema and {doc}`/reference/schemas` has
 every field.
 
 ## Fitting the cost model
@@ -169,7 +169,7 @@ attention term applied to `prefill` and `mixed` steps and the decode term to `de
 `--validation-fraction 0.2` for a split that is grouped by run, so repeats of one point
 cannot leak across it. On the same data, this gave a held-out MRE of 1.958% over 8202 samples
 (the training MRE moves to 6.076% because the split changes what is trained on).
-{doc}`../../reference/validation` lists which models on this project have a genuine split.
+{doc}`/reference/validation` lists which models on this project have a genuine split.
 
 Two other rollout models fit from the same JSONL:
 
@@ -182,7 +182,7 @@ bash examples/regress/regress_rollout_distserve.sh
 above). `distserve` re-expresses the roofline fit through the architecture constants `h` and
 `m`, so its fitted error equals the roofline's. All three scripts read `INPUT` and write
 `OUTPUT`, both overridable, and their defaults are the paths on this page.
-{doc}`../../cost-models/rollout` has the formulas.
+{doc}`/pipeline/cost-models/rollout` has the formulas.
 
 ## How to tell it worked
 
@@ -213,11 +213,11 @@ srl rollout_cost=roofline rollout_cost.artifact_path=outputs/cost/qwen3_8b/rollo
 
 When `artifact_path` is set the artifact replaces the `F`, `W`, `G`, `A_p`, `A_d`, `b`
 overrides, and the lookup is exact on `rollout_cost.parallelism` (`tp`, `pp`, `dp`, `cp`),
-so a TP=2 simulation needs a TP=2 cell in the artifact. {doc}`06-simulate` combines this with
+so a TP=2 simulation needs a TP=2 cell in the artifact. {doc}`/getting-started/walkthrough/06-simulate` combines this with
 a fitted training model and a workload trace.
 
 ## Next
 
-{doc}`02-kernels` measures the same engine from underneath, one CUDA kernel at a time. It
+{doc}`/getting-started/walkthrough/02-kernels` measures the same engine from underneath, one CUDA kernel at a time. It
 needs no regression at all, and it is what lets you price a configuration the end-to-end
 sweep never ran.

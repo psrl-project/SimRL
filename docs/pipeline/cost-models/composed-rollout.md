@@ -1,10 +1,10 @@
 # ComposedRollout
 
-Every fitted rollout model ({doc}`rollout`) is regressed from end-to-end vLLM server
+Every fitted rollout model ({doc}`/pipeline/cost-models/rollout`) is regressed from end-to-end vLLM server
 measurements, so it must be refitted for a new model, GPU or parallelism degree.
 `ComposedRollout` instead predicts one inference engine iteration by **summing the measured
 latencies of the individual kernels** the engine runs. Its input is the kernel perf tables of
-{doc}`../profiling/kernels`, so there is no `srl-regress` step and no fitted artifact.
+{doc}`/pipeline/profiling/kernels`, so there is no `srl-regress` step and no fitted artifact.
 
 The kernel tables are stored per GPU, and every query is normalised by the target GPU's
 speed-of-light roofline, so changing GPU requires a new utility surface, not a new end-to-end vLLM
@@ -19,7 +19,7 @@ bash examples/profile/kernel/profile_qwen3_8b.sh all
 
 That writes parquet tables under `outputs/profile/qwen3_8b/kernel_tp1/kernel/` and runs the
 interpolation gate. Per-kernel accuracy, the table layout, floor fitting, and the holdout and
-validate mechanics are covered on {doc}`../profiling/kernels`.
+validate mechanics are covered on {doc}`/pipeline/profiling/kernels`.
 
 ## Configuration
 
@@ -88,7 +88,7 @@ step = sum over projections   (layers * gemm latency)              # plus the lo
   attention output projection and after the MLP down projection, with the message sized
   `tokens * hidden * dtype bytes`. They are priced from the `vllm` table, which times vLLM's own
   dispatcher. `nccl` is the control. At `tp = 1` the query list is empty. See
-  {doc}`../profiling/tensor-parallel`.
+  {doc}`/pipeline/profiling/tensor-parallel`.
 - **GDN.** Priced separately from softmax attention because its cost function is different: the
   chunked prefill is varlen and linear in the packed token total, and the recurrent decode has no
   history-depth axis at all.
@@ -112,7 +112,7 @@ from 1 rather than toward it. Re-measure before wiring it in.
 ## Decode segments and the lattice integrator
 
 A decode segment is a run of `k` steps at a fixed batch with no prefill mixed in and no request
-entering or leaving. Fitted models integrate it in closed form ({doc}`rollout`). A kernel sum is
+entering or leaving. Fitted models integrate it in closed form ({doc}`/pipeline/cost-models/rollout`). A kernel sum is
 not `max(F, alpha + beta * k)`, so `ComposedRollout` integrates numerically.
 
 The obvious integrator, one query per step, is exact but costly. Sampling at a stride and
@@ -138,7 +138,7 @@ reaches are evaluated.
 
 The error this introduces is largest for a **cold** segment, one starting right after prefill with
 little KV behind it, because that is where the per-step cost is steepest across a stride.
-{doc}`../reference/validation` carries the measured figures against a step-by-step reference.
+{doc}`/reference/validation` carries the measured figures against a step-by-step reference.
 
 ### The closed-form fast path is off
 
@@ -186,12 +186,12 @@ srl-profile kernels validate \
 Pass `--min-samples 1` to score prefill and mixed as well as decode. At the default of 20 a
 typically decode-dominated baseline has no bucket that deep for the other two phases, and the tool
 warns about each phase it dropped. Score against the `vllm` tables, which are the kernels the
-server ran. The bucketing rules and the report fields are on {doc}`../profiling/kernels`.
+server ran. The bucketing rules and the report fields are on {doc}`/pipeline/profiling/kernels`.
 
-Accuracy figures by phase and by degree are in {doc}`../reference/validation`, along with what kind
+Accuracy figures by phase and by degree are in {doc}`/reference/validation`, along with what kind
 of evidence each number is. The known limitations of the composition, including the mixed-step
 approximation, small-batch over-prediction from per-call floors, and the TP degrees without an
-end-to-end baseline, are in {doc}`../reference/limitations`.
+end-to-end baseline, are in {doc}`/reference/limitations`.
 
 ## Known approximations
 

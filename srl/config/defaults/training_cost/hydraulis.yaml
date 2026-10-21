@@ -71,9 +71,9 @@ distributed_optimizer: true
 #   activation_bytes      : MEMORY: activation working-set bytes. Extrapolating beyond
 #                             the profiled range produces memory predictions for workloads
 #                             that may OOM; do not list unless you have supporting data.
-#   profiled_dp           : MEMORY: the canonical DP degree used when fitting. Needed
-#                             only when the artifact covers a single DP value and the query
-#                             is for a different degree via the analytical DP extension.
+#   profiled_dp           : MEMORY: accepted by the loader for compatibility and recorded
+#                             in the artifact's feature_ranges, but no prediction path
+#                             compares a query against it. Listing it changes nothing.
 #
 # Example Hydra override:
 #   training_cost.extrapolate=[pipeline_slots]
