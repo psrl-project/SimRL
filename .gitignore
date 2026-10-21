@@ -274,5 +274,5 @@ dmypy.json
 deprecated/
 
 # Generated validation experiments
-workflow/validate_performance/experiments/*.py
-!workflow/validate_performance/experiments/smoke.py
+workflow/validate/experiments/*.py
+!workflow/validate/experiments/smoke.py

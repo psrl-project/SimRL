@@ -1,7 +1,7 @@
 # 为什么这次 length_aware 验证跑了 2.5+ 小时
 
 验证本身在跑（`a0e19e895d713328e`，测 `length_aware(lpt,load)` vs `request_num_balance`），用一个
-fork 的 `validate-performance` agent 单独检查了这次慢在哪——方法是把每个 `tool_use` 的派发时间和对应
+fork 的 `validate` agent 单独检查了这次慢在哪——方法是把每个 `tool_use` 的派发时间和对应
 `tool_result` 的返回时间配对算真实耗时，而不是猜。
 
 ## 结论

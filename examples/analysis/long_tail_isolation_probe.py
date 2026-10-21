@@ -200,7 +200,7 @@ def _forecast_rows(sim, result, buffer_is_long: dict[int, bool]) -> list[dict]:
 def _run_one(seed: int, arm: str, strategy: str, strategy_args: dict, cap: int, train_s: float) -> dict:
     lti = _load_lti()
     fa = lti._load_forecast_accuracy()
-    sys.path.insert(0, str(ROOT / "workflow" / "validate_performance" / "scripts"))
+    sys.path.insert(0, str(ROOT / "workflow" / "validate" / "scripts"))
     import collect  # noqa: E402
 
     cost_model = fa._composed_cost_model()

@@ -4,7 +4,7 @@ Every check is deterministic and read-only. Exit code is non-zero when a blockin
 an agent can gate on it. Warnings do not block but must be quoted in the final report.
 
 Usage:
-    python workflow/validate_performance/scripts/preflight.py
+    python workflow/validate/scripts/preflight.py
 """
 
 from __future__ import annotations

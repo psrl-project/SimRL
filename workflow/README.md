@@ -4,8 +4,8 @@ Each subfolder is one validation unit that can be handed to a subagent and run e
 
 | Folder | What it does |
 |---|---|
-| `validate_performance/` | Decide whether a scheduling or system change improves end-to-end performance, using real simulator runs. |
-| `analysis/` | Reserved for a separate analysis subagent. Empty for now. |
+| `validate/` | Decide whether a scheduling or system change improves end-to-end performance, using real simulator runs. |
+| `analysis/` | Diagnose where span goes in one run. Replays a selected `validate` row with full telemetry and attributes its idle time. |
 
 ## Conventions
 

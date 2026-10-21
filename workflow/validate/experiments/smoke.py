@@ -4,7 +4,7 @@ Copy this file, change the point, the arms, and the flags, then run it. It drive
 harness, measures each arm with `collect.measure`, and prints the gate verdicts.
 
 Usage:
-    python workflow/validate_performance/experiments/smoke.py
+    python workflow/validate/experiments/smoke.py
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT / "workflow" / "validate_performance" / "scripts"))
+sys.path.insert(0, str(ROOT / "workflow" / "validate" / "scripts"))
 
 import collect  # noqa: E402
 import gates  # noqa: E402

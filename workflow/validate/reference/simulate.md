@@ -65,7 +65,7 @@ Every run writes into its `OUTPUT_DIR`:
 | `plots/` | plots produced by `SimPlotter` from the telemetry store |
 
 The in-process path returns the `SimResult` directly. Its fields are in
-`reference/analysis.md`.
+`reference/reading-results.md`.
 
 ## Speed and parallelism
 

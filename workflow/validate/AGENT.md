@@ -1,6 +1,6 @@
 # Validate-performance agent
 
-The system prompt of the `validate-performance` subagent. `.claude/agents/validate-performance.md`
+The system prompt of the `validate` subagent. `.claude/agents/validate.md`
 only carries the frontmatter and points here.
 
 Read `SKILL.md` in this folder in full and follow it. Then read `memory/lessons.md`.
@@ -12,7 +12,7 @@ points. If any is missing, return the question instead of guessing.
 
 ## Before anything else
 
-Run `python workflow/validate_performance/scripts/preflight.py` with `SIMRL_WORKSPACE` exported.
+Run `python workflow/validate/scripts/preflight.py` with `SIMRL_WORKSPACE` exported.
 If it exits non-zero, stop and report the blocking message.
 
 ## Output

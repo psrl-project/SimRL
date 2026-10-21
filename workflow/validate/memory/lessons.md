@@ -31,3 +31,31 @@ Never record result numbers. Remove a bullet when it stops being true.
   being tested, and it does not scale linearly with batch. A single-arm instrumentation run (one
   strategy, one point) stays tractable far longer than a full grid; prefer that when the point is a
   mechanism check rather than a speedup number.
+- 2026-10-21: `long_tail_isolation.py`'s `long_len=524288` point (`p512_n2`) does not finish inside
+  a session-reasonable window even at a single cap: 18 cells in parallel were still at 2-3/10
+  versions after ~18 minutes wall clock with per-version ETA still climbing. Doubling `long_len`
+  from the 262144 points is not a roughly-2x cost increase for this harness; budget for it
+  separately or skip it rather than let it block the points that already answer the question.
+- 2026-10-21: A single `sleep N` with `N` above ~115s in the Bash tool gets killed by the tool's
+  own 2-minute default foreground timeout (exit 143), independent of whether the background job
+  it's waiting on is still healthy. Poll a long-running background sweep with repeated short
+  (<120s) `sleep` calls, not one long one.
+- 2026-10-21: `examples/analysis/long_tail_isolation.py::build()` hardcodes its own `SimConfig`
+  call and does not expose `undoable_events`. To apply the fast-undo knob
+  (`undoable_events=frozenset({"request_complete"})`) uniformly across arms, construct `SimConfig`
+  directly (copy `build()`'s body into the experiment script) rather than calling `build()`.
+  Confirmed correctness-neutral and far faster than the full default
+  `{"request_complete","preempt","iteration_done"}` on this harness's workloads; apply it to every
+  arm in a comparison, not just a treatment, so it stays a speed knob and not a confound.
+- 2026-10-21: Sourcing `env/simrl.sh` and then running python must happen in the *same* Bash tool
+  call — the tool resets shell state between calls, so a `conda activate` from one call is gone by
+  the next and bare `python`/`psrl` imports silently fall back to the wrong interpreter (surfaces
+  as `ModuleNotFoundError` for a submodule, e.g. `psrl.workers.ps.staleness`, not an obvious env
+  error) rather than failing to find `python` at all.
+- 2026-10-21: `DynamicParallelConfig`/`ShapeReplanner`'s tail/bulk TP split, tested end to end with
+  a real TP4 kernel database and `undoable_events` fast-undo (so it is no longer tractability-
+  blocked), does reshape the fleet repeatedly across a 6-version run and does not revert to the
+  uniform shape by the run's end. A heterogeneous-TP split chosen this way is not automatically a
+  win — check mean/peak concurrency alongside span, since a treatment can show higher concurrency
+  than every static baseline while still finishing later, which reads as congestion rather than
+  throughput.

@@ -1,5 +1,5 @@
 ---
-name: validate_performance
+name: validate
 description: Use when deciding whether a scheduling or system change in this simulator actually improves end-to-end performance, or when asked to validate a knob, a policy, a routing change, or a new scheduler against a baseline.
 ---
 
@@ -32,12 +32,12 @@ These are the only fixed rules. Everything else, including how you slice the exp
 Analysis is free. Write whatever script, table, or plot answers the question, as long as it reads
 real simulator output.
 
-For a long sweep, delegate to the `validate-performance` subagent so run logs stay out of the
+For a long sweep, delegate to the `validate` subagent so run logs stay out of the
 caller's context.
 
 ## Workflow
 
-0. **Preflight.** `python workflow/validate_performance/scripts/preflight.py`. It needs
+0. **Preflight.** `python workflow/validate/scripts/preflight.py`. It needs
    `SIMRL_WORKSPACE` and prints the binary hashes, the git head, and uncommitted `srl/` files. A
    non-zero exit means stop. Quote its warnings in the report.
 1. **Stack the change.** Put the mechanism behind a flag with a default that reproduces the
@@ -89,5 +89,5 @@ and still had to be caught on four things. Each is a rule above for this reason.
 | `reference/gates.md` | Gate definitions, thresholds, and why each exists |
 | `reference/report.md` | Report template and the fields every report must carry |
 | `scripts/preflight.py` | Session check: workspace, env script, binary hashes, dirty tree |
-| `reference/analysis.md` | Result fields, telemetry layout, reusable analysis entry points |
+| `reference/reading-results.md` | Result fields, telemetry layout, reusable analysis entry points |
 | `experiments/smoke.py` | Smallest experiment that exercises both arms and every gate |
