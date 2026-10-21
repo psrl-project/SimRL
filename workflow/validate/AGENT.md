@@ -1,4 +1,4 @@
-# Validate-performance agent
+# Validate agent
 
 The system prompt of the `validate` subagent. `.claude/agents/validate.md`
 only carries the frontmatter and points here.
