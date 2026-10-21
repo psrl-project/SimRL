@@ -8,6 +8,7 @@ each training step, and the `bounds` module for optimistic counterfactuals.
 
 from __future__ import annotations
 
+from .critical_path import Decomposition, StepWait, decompose, steps
 from .pricer import SoloPricer
 from .timeline import Check, Phase, RequestTimeline, request_phases
 
@@ -17,4 +18,8 @@ __all__ = [
     "RequestTimeline",
     "SoloPricer",
     "request_phases",
+    "Decomposition",
+    "StepWait",
+    "decompose",
+    "steps",
 ]
