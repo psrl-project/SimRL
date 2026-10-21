@@ -241,6 +241,24 @@ class Simulator:
             groups=self._ledger.views(),
         )
 
+    def _emit_inventory(self) -> None:
+        """Log the policy's inventory, for a policy that exposes one.
+
+        Probed rather than declared, the same way `SchedulingRuntime` reads it,
+        so a policy with no buffer model stays silent instead of raising.
+        """
+        if not self.telemetry.enabled:
+            return
+        get_snapshot = getattr(self.policy, "inventory_snapshot", None)
+        if get_snapshot is None:
+            return
+        self.telemetry.write_inventory(
+            self.t,
+            self.train_version,
+            self.rollout_version,
+            get_snapshot(self._state()),
+        )
+
     def _next_request_shape(self) -> tuple[int, int, int]:
         """
         Return `(group_id, prompt_len, target_len)` for the next request.
@@ -309,6 +327,7 @@ class Simulator:
             return 0
         self.telemetry.emit_instance_all(self.instances)
         self.telemetry.emit_gateway(self.t, self.router, self.instances)
+        self._emit_inventory()
         return len(placed)
 
     def _can_place_from_router(self, req: Request) -> bool:
@@ -467,6 +486,7 @@ class Simulator:
             else:
                 self.ready_groups.append(group)
                 self.ready.extend(group)
+        self._emit_inventory()
 
     def _drop_reason_for_complete(self, group: list[Request]) -> str:
         """Why a policy's `on_group_complete` refused this finished group.
@@ -937,6 +957,7 @@ class Simulator:
         # fallback for an externally configured zero-credit update.
         if not self._stage():
             self._dispatch_router()
+        self._emit_inventory()
 
     def _train_cycle(
         self,
@@ -998,6 +1019,7 @@ class Simulator:
             self.consumed.append(req)
             self.n_consumed += 1
             self.telemetry.write_request("consume", self.t, req)
+        self._emit_inventory()
 
         sequence_lengths = tuple(self._training_sequence_length(req) for req in batch)
         total_tokens = sum(sequence_lengths)

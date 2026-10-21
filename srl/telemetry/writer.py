@@ -52,6 +52,7 @@ class SimTelemetry:
         self._last_instance_key: dict[int, tuple] = {}
         self._stats_cursor: dict[int, int] = {}
         self._last_gateway_key: tuple | None = None
+        self._last_inventory_key: tuple | None = None
 
     @property
     def enabled(self) -> bool:
@@ -336,6 +337,56 @@ class SimTelemetry:
         if extrapolation_notes:
             payload["extrapolation_notes"] = extrapolation_notes
         self.store.write("train", **payload)
+
+    # --- staleness inventory ("buffer" stream) ---------------------------
+
+    def write_inventory(self, t: float, train_version: int, rollout_version: int, snapshot) -> None:
+        """
+        Log one staleness-inventory sample, skipping exact duplicates.
+
+        Args:
+            t (float): Simulation time of the committed change.
+            train_version (int): Version the trainer is waiting to assemble.
+            rollout_version (int): Version new trajectories are stamped with.
+            snapshot: An `InventorySnapshot`, whose `buffers` carry `BufferView`
+                entries. `reserved` holds `(prompt_id, entry_id)` pairs, and a
+                prompt id is the simulator's group id.
+
+        Reserved group ids are kept rather than only their count, because the
+        question this stream exists to answer is which group an unready buffer
+        is still waiting on.
+        """
+        if self._suppressed("buffer"):
+            return
+        buffers = [
+            {
+                "buffer_id": view.buffer_id,
+                "ready_num_entries": view.ready_num_entries,
+                "n_occupied": view.n_occupied,
+                "n_reserved": len(view.reserved),
+                "reserved_group_ids": sorted(prompt_id for prompt_id, _ in view.reserved),
+            }
+            for view in snapshot.buffers
+        ]
+        key = (
+            t,
+            train_version,
+            rollout_version,
+            tuple(
+                (b["buffer_id"], b["ready_num_entries"], b["n_occupied"], tuple(b["reserved_group_ids"]))
+                for b in buffers
+            ),
+        )
+        if self._last_inventory_key == key:
+            return
+        self._last_inventory_key = key
+        self.store.write(
+            "buffer",
+            t=t,
+            train_version=train_version,
+            rollout_version=rollout_version,
+            buffers=buffers,
+        )
 
     def close(self) -> None:
         if self.store is not None:

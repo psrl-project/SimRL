@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from srl.component.rollout.engine import NativeInstance, Request
 from srl.cost.rollout import UnifiedRoofline
+from srl.policy.base import StalenessPolicy
+from srl.policy.psrl import PSRLPolicy
+from srl.policy.verl import VerlPolicy
+from srl.simulator import SimConfig, Simulator
 from srl.telemetry.store import JsonlStore
 from srl.telemetry.writer import SimTelemetry
+from srl.workload.grouped import GroupedWorkload
+from srl.workload.trace import RequestGroup
 
 
 def _make_instance(kv_blocks: int = 1000) -> NativeInstance:
@@ -15,6 +21,41 @@ def _make_instance(kv_blocks: int = 1000) -> NativeInstance:
 
 def _make_request(rid: int = 0) -> Request:
     return Request(rid=rid, prompt_len=512, target_len=50, v_traj=0, admit_time=0.0)
+
+
+def _workload(group_size: int) -> GroupedWorkload:
+    """Eight cycling prompt groups of `group_size` responses each."""
+    return GroupedWorkload.from_groups(
+        [
+            RequestGroup(group_id=gid, prompt_len=150, output_lens=tuple([64] * group_size))
+            for gid in range(8)
+        ]
+    )
+
+
+def _sim(
+    policy: StalenessPolicy,
+    store: JsonlStore | None = None,
+    n_versions: int = 2,
+    batch_size: int = 2,
+    group_size: int = 2,
+) -> Simulator:
+    """Build a full `Simulator` for a real run, the way `test_policy_contract.py` and
+    `test_kv_config.py` do, but parameterized on policy, store and workload shape so
+    the buffer-stream tests can exercise PSRL and a policy without an inventory."""
+    cfg = SimConfig(
+        batch_size=batch_size,
+        group_size=group_size,
+        staleness_horizon=1,
+        n_versions=n_versions,
+        workload=_workload(group_size),
+    )
+    return Simulator(
+        rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+        policy=policy,
+        cfg=cfg,
+        store=store,
+    )
 
 
 class TestDisabledIsNoOp:
@@ -156,3 +197,49 @@ class TestEnabledWritesRichRecords:
         telemetry.close()
         # A closed store's write handles are gone, but iter() re-opens for reads.
         assert len(list(store.iter("request"))) == 1
+
+
+def test_buffer_stream_records_reserve_and_occupy(tmp_path):
+    """The buffer stream exposes PSRL reserve/occupy state, which no other stream carries."""
+    store = JsonlStore(tmp_path / "logs", overwrite=True)
+    sim = _sim(PSRLPolicy(), store=store, n_versions=2, batch_size=2, group_size=2)
+    sim.run()
+    store.close()
+
+    rows = list(JsonlStore(tmp_path / "logs").iter("buffer"))
+    assert rows, "buffer stream is empty."
+    for row in rows:
+        assert set(row) == {"t", "train_version", "rollout_version", "buffers"}
+        for buf in row["buffers"]:
+            assert set(buf) == {
+                "buffer_id",
+                "ready_num_entries",
+                "n_occupied",
+                "n_reserved",
+                "reserved_group_ids",
+            }
+            assert buf["n_reserved"] == len(buf["reserved_group_ids"])
+    assert any(
+        buf["n_reserved"] > 0 for row in rows for buf in row["buffers"]
+    ), "No reservation was ever observed, so the stream cannot show a long tail holding an entry."
+    assert any(
+        buf["n_occupied"] > 0 for row in rows for buf in row["buffers"]
+    ), "No occupancy was ever observed."
+
+
+def test_buffer_stream_is_suppressible(tmp_path):
+    """`log_exclude` must switch the stream off at the source like the other streams."""
+    store = JsonlStore(tmp_path / "logs", overwrite=True, exclude=("buffer",))
+    sim = _sim(PSRLPolicy(), store=store, n_versions=2, batch_size=2, group_size=2)
+    sim.run()
+    store.close()
+    assert "buffer" not in JsonlStore(tmp_path / "logs").list_streams()
+
+
+def test_buffer_stream_absent_for_a_policy_without_an_inventory(tmp_path):
+    """A policy with no `inventory_snapshot` must not raise and must write no records."""
+    store = JsonlStore(tmp_path / "logs", overwrite=True)
+    sim = _sim(VerlPolicy(), store=store, n_versions=2, batch_size=2, group_size=2)
+    sim.run()
+    store.close()
+    assert "buffer" not in JsonlStore(tmp_path / "logs").list_streams()
