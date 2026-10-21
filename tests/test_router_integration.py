@@ -124,7 +124,11 @@ class TestPlacementTimeAdmission:
         cfg = SimConfig(
             batch_size=2,
             staleness_horizon=1,
-            n_versions=1,
+            # n_versions=2, not 1: total admission is capped at n_versions *
+            # batch_size, and this test never calls .run() (just _stage()
+            # once), so a higher n_versions only widens that cap -- it doesn't
+            # make the test iterate more.
+            n_versions=2,
             n_instances=1,
             max_concurrent_seqs_per_instance=1,
         )
@@ -172,7 +176,10 @@ class TestPlacementTimeAdmission:
         cfg = SimConfig(
             batch_size=2,
             staleness_horizon=1,
-            n_versions=1,
+            # n_versions=2, not 1: total admission is capped at n_versions *
+            # batch_size, and this test never calls .run(), so a higher
+            # n_versions only widens that cap, not the amount of work done.
+            n_versions=2,
             n_instances=1,
             max_concurrent_seqs_per_instance=1,
         )
@@ -199,7 +206,10 @@ class TestPreemptOverflowInAFullRun:
         cfg = SimConfig(
             batch_size=2,
             staleness_horizon=1,
-            n_versions=1,
+            # n_versions=2, not 1: total admission is capped at n_versions *
+            # batch_size, and this test never calls .run() (just _stage()
+            # once), so a higher n_versions only widens that cap.
+            n_versions=2,
             n_instances=2,
             router_reject_on_waiting=True,
         )
@@ -228,7 +238,13 @@ class TestPreemptOverflowInAFullRun:
 
     def test_global_waiting_gate_collects_simultaneous_completions(self):
         cfg = SimConfig(
-            batch_size=1,
+            # batch_size=2, not 1: total admission is capped at n_versions *
+            # batch_size, and this test's whole point is two instances
+            # completing *simultaneously* -- with only one group ever
+            # admitted, there would be nothing for a second instance to
+            # complete alongside. Widen batch_size (not n_versions, which
+            # would also change how many training steps actually run).
+            batch_size=2,
             staleness_horizon=1,
             n_versions=1,
             n_instances=2,

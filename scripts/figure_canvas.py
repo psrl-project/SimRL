@@ -58,10 +58,17 @@ def svg_family(char):
 
 
 class Canvas:
+    # PIL draws lines and rounded rects aliased (hard staircase edges on any
+    # diagonal). Rendering at this multiple and downsampling with LANCZOS in
+    # save()/save_plain() is what actually antialiases them; raising it
+    # smooths further at the cost of render time and file size.
+    SUPERSAMPLE = 4
+
     def __init__(self, name, w, h, title, out_dir):
         self.name, self.w, self.h, self.title, self.out_dir = name, w, h, title, out_dir
         out_dir.mkdir(parents=True, exist_ok=True)
-        self.im = Image.new("RGB", (w, h), BG)
+        s = self.SUPERSAMPLE
+        self.im = Image.new("RGB", (w * s, h * s), BG)
         self.d = ImageDraw.Draw(self.im)
         base = FONT_RELATIVE[out_dir]
         css = []
@@ -84,7 +91,9 @@ class Canvas:
         if outline and fill == WHITE and STYLE["shapes"]["outline_white_panels"] and stroke is None:
             stroke = LINE
         border = max(1, round(STYLE["lines"]["border_width"]))
-        self.d.rounded_rectangle((x, y, x + w, y + h), radius, fill, outline=stroke, width=border)
+        s = self.SUPERSAMPLE
+        self.d.rounded_rectangle((x * s, y * s, (x + w) * s, (y + h) * s), radius * s,
+                                 fill, outline=stroke, width=border * s)
         self.svg.append(
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{radius}" fill="{fill}"'
             + (f' stroke="{stroke}" stroke-width="{STYLE["lines"]["border_width"]}"' if stroke else "")
@@ -93,7 +102,9 @@ class Canvas:
 
     def stroke_rect(self, x, y, w, h, color, width=3, radius=10):
         radius *= STYLE["shapes"]["corner_radius_scale"]
-        self.d.rounded_rectangle((x, y, x + w, y + h), radius, fill=None, outline=color, width=width)
+        s = self.SUPERSAMPLE
+        self.d.rounded_rectangle((x * s, y * s, (x + w) * s, (y + h) * s), radius * s,
+                                 fill=None, outline=color, width=width * s)
         self.svg.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{radius}" '
                         f'fill="none" stroke="{color}" stroke-width="{width}"/>')
 
@@ -104,12 +115,13 @@ class Canvas:
         offset = STYLE["lines"]["sketch_offset"] * seed * 2 if distance > 40 else 0
         cx = (x1 + x2) / 2 - (y2 - y1) / max(1, distance) * offset
         cy = (y1 + y2) / 2 + (x2 - x1) / max(1, distance) * offset
+        s = self.SUPERSAMPLE
         points = []
         for step in range(21):
             t = step / 20
             points.append(((1 - t) ** 2 * x1 + 2 * (1 - t) * t * cx + t * t * x2,
                            (1 - t) ** 2 * y1 + 2 * (1 - t) * t * cy + t * t * y2))
-        self.d.line(points, fill=color, width=width)
+        self.d.line([(px * s, py * s) for px, py in points], fill=color, width=width * s)
         self.svg.append(f'<path d="M {x1} {y1} Q {cx:.2f} {cy:.2f} {x2} {y2}" '
                         f'fill="none" stroke="{color}" stroke-width="{width}"/>')
 
@@ -130,12 +142,13 @@ class Canvas:
         self._head(x1, y1, angle + math.pi, color, width)
 
     def curve_arrow(self, x1, y1, x2, y2, ctrl_x, ctrl_y, color=MUTED, width=2):
+        s = self.SUPERSAMPLE
         points = []
         for step in range(25):
             t = step / 24
             points.append(((1 - t) ** 2 * x1 + 2 * (1 - t) * t * ctrl_x + t * t * x2,
                            (1 - t) ** 2 * y1 + 2 * (1 - t) * t * ctrl_y + t * t * y2))
-        self.d.line(points, fill=color, width=max(1, round(width)))
+        self.d.line([(px * s, py * s) for px, py in points], fill=color, width=max(1, round(width)) * s)
         self.svg.append(f'<path d="M {x1:.1f} {y1:.1f} Q {ctrl_x:.1f} {ctrl_y:.1f} '
                         f'{x2:.1f} {y2:.1f}" fill="none" stroke="{color}" stroke-width="{width}"/>')
         angle = math.atan2(y2 - ctrl_y, x2 - ctrl_x)
@@ -182,9 +195,11 @@ class Canvas:
             raise ValueError(f"{self.name}: text outside canvas vertically: {s}")
         svg_runs = []
         cursor = x
+        s = self.SUPERSAMPLE
         for family, run in runs:
             f = font_for(run[0], size, bold)
-            self.d.text((cursor, baseline), run, font=f, fill=color, anchor="ls")
+            f_ss = font_for(run[0], size * s, bold)
+            self.d.text((cursor * s, baseline * s), run, font=f_ss, fill=color, anchor="ls")
             svg_runs.append(f'<tspan x="{cursor:.2f}" font-family="{family}">{run}</tspan>')
             cursor += self.d.textlength(run, font=f)
         self.svg.append(f'<text x="{x}" y="{baseline}" font-size="{size}" '
@@ -196,7 +211,7 @@ class Canvas:
         self.text(x + (w - width) / 2, y + (h - height) / 2, s, size, color, bold, maxw=w)
 
     def save(self):
-        self.im.save(self.out_dir / f"{self.name}.png")
+        self.im.resize((self.w, self.h), Image.LANCZOS).save(self.out_dir / f"{self.name}.png")
         (self.out_dir / f"{self.name}.svg").write_text("\n".join(self.svg + ["</svg>"]), encoding="utf-8")
 
     def save_plain(self, crop_top, suffix="-plain"):
@@ -208,7 +223,9 @@ class Canvas:
         """
         name = f"{self.name}{suffix}"
         new_h = self.h - crop_top
-        self.im.crop((0, crop_top, self.w, self.h)).save(self.out_dir / f"{name}.png")
+        s = self.SUPERSAMPLE
+        cropped = self.im.crop((0, crop_top * s, self.w * s, self.h * s))
+        cropped.resize((self.w, new_h), Image.LANCZOS).save(self.out_dir / f"{name}.png")
         head = (
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{self.w}" height="{new_h}" '
             f'viewBox="0 {crop_top} {self.w} {new_h}" role="img"><title>{self.title}</title>'

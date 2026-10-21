@@ -8,19 +8,19 @@
 <text x="126" y="207" font-size="36" font-weight="700" fill="#252B31"><tspan x="126.00" font-family="Kalam">Simulate frameworks</tspan></text>
 <text x="88" y="254" font-size="28" font-weight="400" fill="#657079"><tspan x="88.00" font-family="Kalam">10+ RL systems, one control plane</tspan></text>
 <rect x="88" y="286" width="144" height="70" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="116.3515625" y="331.0" font-size="27" font-weight="400" fill="#252B31"><tspan x="116.35" font-family="Kalam">Dataset</tspan></text>
+<text x="116.5" y="331.0" font-size="27" font-weight="400" fill="#252B31"><tspan x="116.50" font-family="Kalam">Dataset</tspan></text>
 <rect x="262" y="286" width="144" height="70" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="295.5546875" y="332.0" font-size="27" font-weight="400" fill="#252B31"><tspan x="295.55" font-family="Kalam">Rollout</tspan></text>
+<text x="295.5" y="332.0" font-size="27" font-weight="400" fill="#252B31"><tspan x="295.50" font-family="Kalam">Rollout</tspan></text>
 <path d="M 237 321.0 Q 247.00 321.00 257 321.0" fill="none" stroke="#657079" stroke-width="2"/>
 <path d="M 257 321.0 Q 250.49 324.73 243.98271230483525 328.45320206765604" fill="none" stroke="#657079" stroke-width="2"/>
 <path d="M 257 321.0 Q 250.49 317.27 243.98271230483525 313.54679793234396" fill="none" stroke="#657079" stroke-width="2"/>
 <rect x="436" y="286" width="144" height="70" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="474.203125" y="328.5" font-size="27" font-weight="400" fill="#252B31"><tspan x="474.20" font-family="Kalam">Queue</tspan></text>
+<text x="474.5" y="328.5" font-size="27" font-weight="400" fill="#252B31"><tspan x="474.50" font-family="Kalam">Queue</tspan></text>
 <path d="M 411 321.0 Q 421.00 321.00 431 321.0" fill="none" stroke="#657079" stroke-width="2"/>
 <path d="M 431 321.0 Q 424.49 324.73 417.9827123048353 328.45320206765604" fill="none" stroke="#657079" stroke-width="2"/>
 <path d="M 431 321.0 Q 424.49 317.27 417.9827123048353 313.54679793234396" fill="none" stroke="#657079" stroke-width="2"/>
 <rect x="610" y="286" width="144" height="70" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="653.578125" y="331.0" font-size="27" font-weight="400" fill="#252B31"><tspan x="653.58" font-family="Kalam">Train</tspan></text>
+<text x="654.0" y="331.0" font-size="27" font-weight="400" fill="#252B31"><tspan x="654.00" font-family="Kalam">Train</tspan></text>
 <path d="M 585 321.0 Q 595.00 321.00 605 321.0" fill="none" stroke="#657079" stroke-width="2"/>
 <path d="M 605 321.0 Q 598.49 324.73 591.9827123048352 328.45320206765604" fill="none" stroke="#657079" stroke-width="2"/>
 <path d="M 605 321.0 Q 598.49 317.27 591.9827123048352 313.54679793234396" fill="none" stroke="#657079" stroke-width="2"/>
@@ -67,7 +67,7 @@
 <text x="126" y="653" font-size="36" font-weight="700" fill="#252B31"><tspan x="126.00" font-family="Kalam">Predict at runtime</tspan></text>
 <text x="88" y="700" font-size="28" font-weight="400" fill="#657079"><tspan x="88.00" font-family="Kalam">Load shifts, so scale the fleet</tspan></text>
 <rect x="104" y="762" width="160" height="92" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="120.421875" y="815.5" font-size="27" font-weight="400" fill="#252B31"><tspan x="120.42" font-family="Kalam">live system</tspan></text>
+<text x="120.5" y="815.5" font-size="27" font-weight="400" fill="#252B31"><tspan x="120.50" font-family="Kalam">live system</tspan></text>
 <rect x="340" y="762" width="250" height="92" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
 <text x="360" y="807" font-size="27" font-weight="700" fill="#252B31"><tspan x="360.00" font-family="Kalam">forecast</tspan></text>
 <text x="360" y="843" font-size="23" font-weight="400" fill="#657079"><tspan x="360.00" font-family="Kalam">ETA · KV · step</tspan></text>
@@ -106,17 +106,17 @@
 <path d="M 184.0 932 Q 183.92 896.00 184.0 860" fill="none" stroke="#A2662D" stroke-width="2"/>
 <path d="M 184.0 860 Q 187.73 866.51 191.45320206765604 873.0172876951648" fill="none" stroke="#A2662D" stroke-width="2"/>
 <path d="M 184.0 860 Q 180.27 866.51 176.54679793234394 873.0172876951648" fill="none" stroke="#A2662D" stroke-width="2"/>
-<text x="210.0" y="974" font-size="25" font-weight="700" fill="#A2662D"><tspan x="210.00" font-family="Kalam">move engines · change TP</tspan></text>
+<text x="210.0" y="974" font-size="25" font-weight="700" fill="#A2662D"><tspan x="210.00" font-family="Kalam">scale instances · re-parallelize</tspan></text>
 <rect x="820" y="596" width="720" height="400" rx="4.5" fill="#FBECE9"/>
 <text x="848" y="651" font-size="36" font-weight="700" fill="#B75348"><tspan x="848.00" font-family="Kalam">D</tspan></text>
 <text x="886" y="653" font-size="36" font-weight="700" fill="#252B31"><tspan x="886.00" font-family="Kalam">Auto research</tspan></text>
 <text x="848" y="700" font-size="28" font-weight="400" fill="#657079"><tspan x="848.00" font-family="Kalam">Is kv-cache aware routing better here?</tspan></text>
 <rect x="1082.0" y="746" width="196" height="68" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="1104.390625" y="787.0" font-size="25" font-weight="400" fill="#252B31"><tspan x="1104.39" font-family="Kalam">proposal agent</tspan></text>
+<text x="1104.5" y="787.0" font-size="25" font-weight="400" fill="#252B31"><tspan x="1104.50" font-family="Kalam">proposal agent</tspan></text>
 <rect x="918.0" y="898" width="196" height="68" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="932.65625" y="939.0" font-size="25" font-weight="400" fill="#252B31"><tspan x="932.66" font-family="Kalam">validation agent</tspan></text>
+<text x="932.5" y="939.0" font-size="25" font-weight="400" fill="#252B31"><tspan x="932.50" font-family="Kalam">validation agent</tspan></text>
 <rect x="1246.0" y="898" width="196" height="68" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="1269.125" y="939.0" font-size="25" font-weight="400" fill="#252B31"><tspan x="1269.12" font-family="Kalam">analysis agent</tspan></text>
+<text x="1268.5" y="939.0" font-size="25" font-weight="400" fill="#252B31"><tspan x="1268.50" font-family="Kalam">analysis agent</tspan></text>
 <path d="M 1134.5 822.2 Q 1056.2 857.0 1061.5 889.8" fill="none" stroke="#657079" stroke-width="2"/>
 <path d="M 1061.485374085755 889.8428240180808 Q 1056.77 884.01 1052.0547679022075 878.1781908472161" fill="none" stroke="#657079" stroke-width="2"/>
 <path d="M 1061.485374085755 889.8428240180808 Q 1064.13 882.82 1066.7710391534551 875.8049557756412" fill="none" stroke="#657079" stroke-width="2"/>

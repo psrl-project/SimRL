@@ -3,7 +3,7 @@
 
 Three stacked bands, one per stage of the pipeline: measure with profiler
 adapters, cost modeling fitted from their records, simulate with the engine
-loop that asks those models for every duration.
+loop that calls those models directly at every step.
 """
 from __future__ import annotations
 
@@ -20,15 +20,15 @@ from figure_canvas import (
     Canvas,
 )
 
-BAND_X, BAND_W = 60, 1480
-BAND_H = 256
-BAND_GAP = 84
+BAND_X, BAND_W = 60, 1540
+BAND_H = 272
+BAND_GAP = 92
 BAND_Y = (150, 150 + BAND_H + BAND_GAP, 150 + 2 * (BAND_H + BAND_GAP))
-CARD_H = 180
+CARD_H = 192
 CARD_TOP = 22
 CARD_GAP = 28
-LINE_GAP = 33
-LABEL_W = 300
+LINE_GAP = 36
+LABEL_W = 350
 COL_X = BAND_X + LABEL_W
 ROW_RIGHT = BAND_X + BAND_W - 20
 
@@ -42,24 +42,24 @@ SUB_TONES = {
 def band(c, y, letter, title, module_path, gpu_note, tone):
     fill, color = SUB_TONES[tone]
     c.rect(BAND_X, y, BAND_W, BAND_H, fill=fill, radius=10, outline=False)
-    c.text(BAND_X + 26, y + 30, letter, 36, color, True)
-    c.text(BAND_X + 64, y + 30, title, 36, INK, True)
-    c.text(BAND_X + 26, y + 96, module_path, 24, MUTED)
-    c.text(BAND_X + 26, y + 130, gpu_note, 24, MUTED, True)
+    c.text(BAND_X + 26, y + 32, letter, 40, color, True)
+    c.text(BAND_X + 66, y + 32, title, 40, INK, True)
+    c.text(BAND_X + 26, y + 102, module_path, 26, MUTED)
+    c.text(BAND_X + 26, y + 138, gpu_note, 26, MUTED, True)
 
 
 def card(c, x, y, w, title, lines, tone):
     _, color = SUB_TONES[tone]
     c.rect(x, y, w, CARD_H)
     pad = 18
-    c.text(x + pad, y + 16, title, 28, color, True, maxw=w - 2 * pad)
+    c.text(x + pad, y + 18, title, 30, color, True, maxw=w - 2 * pad)
     # Centre the body lines in the space under the title so a 2-line card
     # and a 3-line card both look intentional, not half-empty.
-    title_bottom = y + 16 + 38
-    body_h = (len(lines) - 1) * LINE_GAP + 30
+    title_bottom = y + 18 + 40
+    body_h = (len(lines) - 1) * LINE_GAP + 32
     start = title_bottom + (CARD_H - (title_bottom - y) - body_h) / 2
     for i, line in enumerate(lines):
-        c.text(x + pad, start + i * LINE_GAP, line, 23, MUTED, maxw=w - 2 * pad)
+        c.text(x + pad, start + i * LINE_GAP, line, 25, MUTED, maxw=w - 2 * pad)
 
 
 def row(c, y, weights, specs, tone):
@@ -77,7 +77,7 @@ def row(c, y, weights, specs, tone):
 
 def build(out_dirs=None):
     for out_dir in out_dirs or OUT_DIRS:
-        c = Canvas("simrl-architecture", 1600, 1130, "How SimRL is built", out_dir)
+        c = Canvas("simrl-architecture", 1660, 1190, "How SimRL is built", out_dir)
         c.text(60, 44, "How SimRL is built", 54, INK, True)
         c.text(60, 104,
                "Profile a real system once, fit cost models to the records, then simulate on CPU.",
@@ -93,8 +93,8 @@ def build(out_dirs=None):
                         "elementwise · GDN · optimizer",
                         "shape grids and holdout split"]),
         ], "profiler")
-        c.text(COL_X, y + CARD_TOP + CARD_H + 24,
-               "each adapter records, none of them models", 22, MUTED)
+        c.text(COL_X, y + CARD_TOP + CARD_H + 26,
+               "each adapter records, none of them models", 24, MUTED)
 
         # -- Cost modeling -----------------------------------------------------
         y = BAND_Y[1]
@@ -105,8 +105,8 @@ def build(out_dirs=None):
                                 "FSDP latency and memory"]),
             ("kernel database", ["measured cubes", "speed-of-light", "utility surfaces"]),
         ], "cost")
-        c.text(COL_X, y + CARD_TOP + CARD_H + 24,
-               "each model interpolates inside its fitted domain", 22, MUTED)
+        c.text(COL_X, y + CARD_TOP + CARD_H + 26,
+               "each model interpolates inside its fitted domain", 24, MUTED)
 
         # -- Simulate ----------------------------------------------------------
         y = BAND_Y[2]
@@ -117,16 +117,22 @@ def build(out_dirs=None):
             ("component", ["rollout engine", "router", "recompute · sync"]),
             ("workload", ["grouped traces", "length models"]),
         ], "simulate")
-        c.text(COL_X, y + CARD_TOP + CARD_H + 24,
-               "every duration comes from a cost model", 22, MUTED)
+        c.text(COL_X, y + CARD_TOP + CARD_H + 26,
+               "every duration comes from a cost model", 24, MUTED)
 
         # -- Seams -------------------------------------------------------------
-        for band_top in (BAND_Y[0], BAND_Y[1]):
-            top = band_top + BAND_H
-            bottom = top + BAND_GAP
-            label = "profile records, JSONL" if band_top == BAND_Y[0] else "cost artifacts, JSON"
-            c.arrow(COL_X + 60, top + 10, COL_X + 60, bottom - 10, MUTED, 3)
-            c.text(COL_X + 90, (top + bottom) / 2 - 2, label, 23, MUTED)
+        # Measure -> cost modeling is a real file handoff: an adapter writes
+        # many JSONL records, a fitter reads them back later, offline.
+        top, bottom = BAND_Y[0] + BAND_H, BAND_Y[0] + BAND_H + BAND_GAP
+        c.arrow(COL_X + 60, top + 10, COL_X + 60, bottom - 10, MUTED, 3)
+        c.text(COL_X + 90, (top + bottom) / 2 - 2, "profile records, JSONL", 24, MUTED)
+
+        # Cost modeling -> simulate is not a streamed handoff: the fit is
+        # loaded once, then the engine calls the model object directly,
+        # including from C++ via a pybind11 trampoline.
+        top, bottom = BAND_Y[1] + BAND_H, BAND_Y[1] + BAND_H + BAND_GAP
+        c.arrow(COL_X + 60, top + 10, COL_X + 60, bottom - 10, MUTED, 3)
+        c.text(COL_X + 90, (top + bottom) / 2 - 2, "Python / C++ API", 24, MUTED)
 
         c.save()
         # Every embed (README, docs/development/architecture.md) is already

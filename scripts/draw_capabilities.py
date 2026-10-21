@@ -111,7 +111,7 @@ def draw_c(c):
     c.dashes(back, sy + bh / 2, back, sy + bh + 78, GOLD, 2)
     c.dashes(back, sy + bh + 78, sx + bw / 2, sy + bh + 78, GOLD, 2)
     c.arrow(sx + bw / 2, sy + bh + 78, sx + bw / 2, sy + bh + 6, GOLD, 2)
-    c.text(sx + bw / 2 + 26, sy + bh + 100, "move engines · change TP", 25, GOLD, True)
+    c.text(sx + bw / 2 + 26, sy + bh + 100, "scale instances · re-parallelize", 25, GOLD, True)
 
 
 def draw_d(c):

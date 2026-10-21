@@ -16,9 +16,10 @@
 # eviction and re-prefill go unexercised and a simulator could get all three
 # wrong while still appearing to match.
 #
-# Current agreement (srl-compare against the run's own logs): train/step
-# +1.9%, peak KV utilisation +0.0%, mean KV utilisation -2.5%, mean running
-# requests +2.7%, span +5.0%.
+# Current agreement (srl-compare against the run's own logs, measured at
+# ACTIVE_CAP=50): train/step +1.9%, peak KV utilisation +0.0%, mean KV
+# utilisation -2.5%, mean running requests +2.7%, span +5.0%. Not yet
+# re-measured against the ACTIVE_CAP=0 default below.
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -70,9 +71,11 @@ export TOKEN_BUDGET="${TOKEN_BUDGET:-12800}"
 # request dwells in the router queue instead of the instance's own waiting queue.
 # At 1024 it never binds here, since a step routes 32*8=256 requests across 2
 # instances, so it is transcribed for fidelity rather than for its effect.
-# Lower it to study a per-instance residency limit. `ACTIVE_CAP=50` caps each
-# instance at 50 resident (waiting + running) requests.
-export ACTIVE_CAP="${ACTIVE_CAP:-50}"
+# Defaults to disabled (0), matching the real run's cap effectively never
+# binding. Set it to a positive number to study a tighter per-instance
+# residency limit instead; examples/visualize/instance_load_simulated.png was
+# generated with ACTIVE_CAP=50 (each instance capped at 50 resident requests).
+export ACTIVE_CAP="${ACTIVE_CAP:-0}"
 # vLLM's own max_num_seqs. psrl leaves it at the engine default, which is 1024
 # for this build, and it is a separate limit from the router cap above.
 export MAX_CONCURRENCY="${MAX_CONCURRENCY:-1024}"

@@ -159,9 +159,10 @@ class Simulator:
         self._staged_groups: dict[int, list[Request]] = {}
         self._admitted_group_ids: set[int] = set()
         # A flow limit on dataset ingress, not a staleness bound. See `_stage`.
-        self._ingress_group_credits = (
-            cfg.ingress_window_groups or self._default_ingress_groups(cfg)
-        )
+        self._ingress_group_credits = 0
+        self._ingress_granted = 0
+        self._ingress_cap = cfg.n_versions * cfg.batch_size
+        self._grant_ingress_credits(cfg.ingress_window_groups or self._default_ingress_groups(cfg))
         self.pending: dict[int, list[Request]] = {}
         """Finished responses whose group is not complete yet, by group id.
 
@@ -202,6 +203,26 @@ class Simulator:
         """
         span = 2 if cfg.staleness_horizon is None else cfg.staleness_horizon + 1
         return span * cfg.batch_size
+
+    def _grant_ingress_credits(self, amount: int) -> int:
+        """Grant up to `amount` credits without the cumulative total crossing
+        `n_versions * batch_size`, the most this run will ever train on.
+
+        Scoped to the two speculative grant sites (the initial seed and the
+        per-publish top-up). `_grant_drop_replacements` and `_apply_cancels`'s
+        non-DROP credit bypass this entirely: each backfills a group the cap
+        already counted once, before a policy discarded it permanently, so
+        capping them too would stop GC-style policies (ROLL, Dressage, TRL,
+        verl_v1's drop strategy, prime_rl's ready-pool sweep) from refilling
+        their working set once the cap is reached.
+
+        Returns the amount actually granted, which may be less than requested.
+        """
+        remaining = max(0, self._ingress_cap - self._ingress_granted)
+        granted = max(0, min(amount, remaining))
+        self._ingress_group_credits += granted
+        self._ingress_granted += granted
+        return granted
 
     def _state(self) -> SimState:
         return SimState(
@@ -911,7 +932,7 @@ class Simulator:
         # consume — the real PSRL loop never requests a buffer past its last
         # step either.
         if self.train_version < self.cfg.n_versions:
-            self._ingress_group_credits += self.cfg.batch_size
+            self._grant_ingress_credits(self.cfg.batch_size)
         # `_stage` dispatches only when it enqueued something, so keep the
         # fallback for an externally configured zero-credit update.
         if not self._stage():

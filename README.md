@@ -69,11 +69,12 @@ trees are not committed. Simulation and cost fitting need no GPU of their own. P
 ## 🚀 Run a simulation
 
 ```bash
-ACTIVE_CAP=0 bash examples/simulate/psrl_aligned.sh
+bash examples/simulate/psrl_aligned.sh
 ```
 
 This reproduces the real PSRL run SimRL is aligned against (`qwen3_8b_megatron_simulate`: 160 prompt
-groups, 5 training steps, 2 rollout instances), with the router's per-instance residency cap disabled.
+groups, 5 training steps, 2 rollout instances). The router's per-instance residency cap is disabled by
+default (`ACTIVE_CAP=0`), matching the real run's own cap effectively never binding at this workload size.
 `examples/simulate/psrl_aligned.sh` resolves or caches what it needs: the workload trace, the KV
 capacity, and the profiled training/rollout cost artifacts for this mesh. See the script for the exact
 knobs and how to point it at a different run. This is `instance_load.png`, one of the six plots the run

@@ -1,80 +1,80 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="984" viewBox="0 146 1600 984" role="img"><title>How SimRL is built</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="1660" height="1044" viewBox="0 146 1660 1044" role="img"><title>How SimRL is built</title>
 <style>@font-face{font-family:"Kalam";src:url("../../../../blog/figure-style/fonts/Kalam-Regular.ttf");font-weight:400}@font-face{font-family:"Kalam";src:url("../../../../blog/figure-style/fonts/Kalam-Bold.ttf");font-weight:700}@font-face{font-family:"LXGW WenKai";src:url("../../../../blog/figure-style/fonts/LXGWWenKai-Regular.ttf");font-weight:400}@font-face{font-family:"LXGW WenKai";src:url("../../../../blog/figure-style/fonts/LXGWWenKai-Regular.ttf");font-weight:700}</style>
-<rect width="1600" height="1130" fill="#FFFFFF"/>
+<rect width="1660" height="1190" fill="#FFFFFF"/>
 <text x="60" y="88" font-size="54" font-weight="700" fill="#252B31"><tspan x="60.00" font-family="Kalam">How SimRL is built</tspan></text>
 <text x="60" y="129" font-size="31" font-weight="400" fill="#657079"><tspan x="60.00" font-family="Kalam">Profile a real system once, fit cost models to the records, then simulate on CPU.</tspan></text>
-<rect x="60" y="150" width="1480" height="256" rx="4.5" fill="#E8F1FC"/>
-<text x="86" y="207" font-size="36" font-weight="700" fill="#436B9E"><tspan x="86.00" font-family="Kalam">1</tspan></text>
-<text x="124" y="207" font-size="36" font-weight="700" fill="#252B31"><tspan x="124.00" font-family="Kalam">Measure</tspan></text>
-<text x="86" y="265" font-size="24" font-weight="400" fill="#657079"><tspan x="86.00" font-family="Kalam">srl/profiler/</tspan></text>
-<text x="86" y="300" font-size="24" font-weight="700" fill="#657079"><tspan x="86.00" font-family="Kalam">needs GPUs</tspan></text>
-<rect x="360" y="172" width="301.09090909090907" height="180" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="378" y="209" font-size="28" font-weight="700" fill="#436B9E"><tspan x="378.00" font-family="Kalam">training</tspan></text>
-<text x="378" y="276.5" font-size="23" font-weight="400" fill="#657079"><tspan x="378.00" font-family="Kalam">Megatron-Bridge</tspan></text>
-<text x="378" y="307.5" font-size="23" font-weight="400" fill="#657079"><tspan x="378.00" font-family="Kalam">FSDP2</tspan></text>
-<rect x="689.090909090909" y="172" width="301.09090909090907" height="180" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="707.090909090909" y="211" font-size="28" font-weight="700" fill="#436B9E"><tspan x="707.09" font-family="Kalam">rollout</tspan></text>
-<text x="707.090909090909" y="258.0" font-size="23" font-weight="400" fill="#657079"><tspan x="707.09" font-family="Kalam">vLLM server</tspan></text>
-<text x="707.090909090909" y="293.0" font-size="23" font-weight="400" fill="#657079"><tspan x="707.09" font-family="Kalam">KV probe</tspan></text>
-<text x="707.090909090909" y="326.0" font-size="23" font-weight="400" fill="#657079"><tspan x="707.09" font-family="Kalam">prefix probe</tspan></text>
-<rect x="1018.181818181818" y="172" width="501.8181818181818" height="180" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="1036.181818181818" y="211" font-size="28" font-weight="700" fill="#436B9E"><tspan x="1036.18" font-family="Kalam">kernel</tspan></text>
-<text x="1036.181818181818" y="260.0" font-size="23" font-weight="400" fill="#657079"><tspan x="1036.18" font-family="Kalam">attention · GEMM · collective</tspan></text>
-<text x="1036.181818181818" y="293.0" font-size="23" font-weight="400" fill="#657079"><tspan x="1036.18" font-family="Kalam">elementwise · GDN · optimizer</tspan></text>
-<text x="1036.181818181818" y="326.0" font-size="23" font-weight="400" fill="#657079"><tspan x="1036.18" font-family="Kalam">shape grids and holdout split</tspan></text>
-<text x="360" y="393" font-size="22" font-weight="400" fill="#657079"><tspan x="360.00" font-family="Kalam">each adapter records, none of them models</tspan></text>
-<rect x="60" y="490" width="1480" height="256" rx="4.5" fill="#FFF1DA"/>
-<text x="86" y="547" font-size="36" font-weight="700" fill="#A2662D"><tspan x="86.00" font-family="Kalam">2</tspan></text>
-<text x="124" y="549" font-size="36" font-weight="700" fill="#252B31"><tspan x="124.00" font-family="Kalam">Cost modeling</tspan></text>
-<text x="86" y="605" font-size="24" font-weight="400" fill="#657079"><tspan x="86.00" font-family="Kalam">srl/cost/</tspan></text>
-<text x="86" y="638" font-size="24" font-weight="700" fill="#657079"><tspan x="86.00" font-family="Kalam">no GPU</tspan></text>
-<rect x="360" y="512" width="368.0" height="180" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="378" y="551" font-size="28" font-weight="700" fill="#A2662D"><tspan x="378.00" font-family="Kalam">rollout cost</tspan></text>
-<text x="378" y="600.0" font-size="23" font-weight="400" fill="#657079"><tspan x="378.00" font-family="Kalam">roofline</tspan></text>
-<text x="378" y="633.0" font-size="23" font-weight="400" fill="#657079"><tspan x="378.00" font-family="Kalam">composed kernel sum</tspan></text>
-<text x="378" y="666.0" font-size="23" font-weight="400" fill="#657079"><tspan x="378.00" font-family="Kalam">DistServe · PSRL fitted</tspan></text>
-<rect x="756.0" y="512" width="368.0" height="180" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="774.0" y="549" font-size="28" font-weight="700" fill="#A2662D"><tspan x="774.00" font-family="Kalam">training cost</tspan></text>
-<text x="774.0" y="600.0" font-size="23" font-weight="400" fill="#657079"><tspan x="774.00" font-family="Kalam">fixed · analytical · linear</tspan></text>
-<text x="774.0" y="633.0" font-size="23" font-weight="400" fill="#657079"><tspan x="774.00" font-family="Kalam">Hydraulis</tspan></text>
-<text x="774.0" y="666.0" font-size="23" font-weight="400" fill="#657079"><tspan x="774.00" font-family="Kalam">FSDP latency and memory</tspan></text>
-<rect x="1152.0" y="512" width="368.0" height="180" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="1170.0" y="551" font-size="28" font-weight="700" fill="#A2662D"><tspan x="1170.00" font-family="Kalam">kernel database</tspan></text>
-<text x="1170.0" y="600.0" font-size="23" font-weight="400" fill="#657079"><tspan x="1170.00" font-family="Kalam">measured cubes</tspan></text>
-<text x="1170.0" y="633.0" font-size="23" font-weight="400" fill="#657079"><tspan x="1170.00" font-family="Kalam">speed-of-light</tspan></text>
-<text x="1170.0" y="666.0" font-size="23" font-weight="400" fill="#657079"><tspan x="1170.00" font-family="Kalam">utility surfaces</tspan></text>
-<text x="360" y="733" font-size="22" font-weight="400" fill="#657079"><tspan x="360.00" font-family="Kalam">each model interpolates inside its fitted domain</tspan></text>
-<rect x="60" y="830" width="1480" height="256" rx="4.5" fill="#EAF4EF"/>
-<text x="86" y="887" font-size="36" font-weight="700" fill="#387F70"><tspan x="86.00" font-family="Kalam">3</tspan></text>
-<text x="124" y="889" font-size="36" font-weight="700" fill="#252B31"><tspan x="124.00" font-family="Kalam">Simulate</tspan></text>
-<text x="86" y="945" font-size="24" font-weight="400" fill="#657079"><tspan x="86.00" font-family="Kalam">srl/simulator/</tspan></text>
-<text x="86" y="978" font-size="24" font-weight="700" fill="#657079"><tspan x="86.00" font-family="Kalam">no GPU</tspan></text>
-<rect x="360" y="852" width="269.0" height="180" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="378" y="891" font-size="28" font-weight="700" fill="#387F70"><tspan x="378.00" font-family="Kalam">simulator</tspan></text>
-<text x="378" y="940.0" font-size="23" font-weight="400" fill="#657079"><tspan x="378.00" font-family="Kalam">discrete-event loop</tspan></text>
-<text x="378" y="973.0" font-size="23" font-weight="400" fill="#657079"><tspan x="378.00" font-family="Kalam">two backends</tspan></text>
-<text x="378" y="1006.0" font-size="23" font-weight="400" fill="#657079"><tspan x="378.00" font-family="Kalam">C++ and Python</tspan></text>
-<rect x="657.0" y="852" width="269.0" height="180" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="675.0" y="891" font-size="28" font-weight="700" fill="#387F70"><tspan x="675.00" font-family="Kalam">policy</tspan></text>
-<text x="675.0" y="938.0" font-size="23" font-weight="400" fill="#657079"><tspan x="675.00" font-family="Kalam">10+ system presets</tspan></text>
-<text x="675.0" y="973.0" font-size="23" font-weight="400" fill="#657079"><tspan x="675.00" font-family="Kalam">L1 · L2 · L3 controls</tspan></text>
-<text x="675.0" y="1006.0" font-size="23" font-weight="400" fill="#657079"><tspan x="675.00" font-family="Kalam">staleness rules</tspan></text>
-<rect x="954.0" y="852" width="269.0" height="180" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="972.0" y="887" font-size="28" font-weight="700" fill="#387F70"><tspan x="972.00" font-family="Kalam">component</tspan></text>
-<text x="972.0" y="940.0" font-size="23" font-weight="400" fill="#657079"><tspan x="972.00" font-family="Kalam">rollout engine</tspan></text>
-<text x="972.0" y="969.0" font-size="23" font-weight="400" fill="#657079"><tspan x="972.00" font-family="Kalam">router</tspan></text>
-<text x="972.0" y="1002.0" font-size="23" font-weight="400" fill="#657079"><tspan x="972.00" font-family="Kalam">recompute · sync</tspan></text>
-<rect x="1251.0" y="852" width="269.0" height="180" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
-<text x="1269.0" y="891" font-size="28" font-weight="700" fill="#387F70"><tspan x="1269.00" font-family="Kalam">workload</tspan></text>
-<text x="1269.0" y="956.5" font-size="23" font-weight="400" fill="#657079"><tspan x="1269.00" font-family="Kalam">grouped traces</tspan></text>
-<text x="1269.0" y="989.5" font-size="23" font-weight="400" fill="#657079"><tspan x="1269.00" font-family="Kalam">length models</tspan></text>
-<text x="360" y="1073" font-size="22" font-weight="400" fill="#657079"><tspan x="360.00" font-family="Kalam">every duration comes from a cost model</tspan></text>
-<path d="M 420 416 Q 419.57 448.00 420 480" fill="none" stroke="#657079" stroke-width="3"/>
-<path d="M 420 480 Q 416.27 473.49 412.54679793234396 466.9827123048353" fill="none" stroke="#657079" stroke-width="3"/>
-<path d="M 420 480 Q 423.73 473.49 427.45320206765604 466.9827123048353" fill="none" stroke="#657079" stroke-width="3"/>
-<text x="450" y="465.0" font-size="23" font-weight="400" fill="#657079"><tspan x="450.00" font-family="Kalam">profile records, JSONL</tspan></text>
-<path d="M 420 756 Q 420.41 788.00 420 820" fill="none" stroke="#657079" stroke-width="3"/>
-<path d="M 420 820 Q 416.27 813.49 412.54679793234396 806.9827123048352" fill="none" stroke="#657079" stroke-width="3"/>
-<path d="M 420 820 Q 423.73 813.49 427.45320206765604 806.9827123048352" fill="none" stroke="#657079" stroke-width="3"/>
-<text x="450" y="805.0" font-size="23" font-weight="400" fill="#657079"><tspan x="450.00" font-family="Kalam">cost artifacts, JSON</tspan></text>
+<rect x="60" y="150" width="1540" height="272" rx="4.5" fill="#E8F1FC"/>
+<text x="86" y="212" font-size="40" font-weight="700" fill="#436B9E"><tspan x="86.00" font-family="Kalam">1</tspan></text>
+<text x="126" y="212" font-size="40" font-weight="700" fill="#252B31"><tspan x="126.00" font-family="Kalam">Measure</tspan></text>
+<text x="86" y="273" font-size="26" font-weight="400" fill="#657079"><tspan x="86.00" font-family="Kalam">srl/profiler/</tspan></text>
+<text x="86" y="309" font-size="26" font-weight="700" fill="#657079"><tspan x="86.00" font-family="Kalam">needs GPUs</tspan></text>
+<rect x="410" y="172" width="303.8181818181818" height="192" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="428" y="213" font-size="30" font-weight="700" fill="#436B9E"><tspan x="428.00" font-family="Kalam">training</tspan></text>
+<text x="428" y="283.0" font-size="25" font-weight="400" fill="#657079"><tspan x="428.00" font-family="Kalam">Megatron-Bridge</tspan></text>
+<text x="428" y="317.0" font-size="25" font-weight="400" fill="#657079"><tspan x="428.00" font-family="Kalam">FSDP2</tspan></text>
+<rect x="741.8181818181818" y="172" width="303.8181818181818" height="192" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="759.8181818181818" y="214" font-size="30" font-weight="700" fill="#436B9E"><tspan x="759.82" font-family="Kalam">rollout</tspan></text>
+<text x="759.8181818181818" y="263.0" font-size="25" font-weight="400" fill="#657079"><tspan x="759.82" font-family="Kalam">vLLM server</tspan></text>
+<text x="759.8181818181818" y="301.0" font-size="25" font-weight="400" fill="#657079"><tspan x="759.82" font-family="Kalam">KV probe</tspan></text>
+<text x="759.8181818181818" y="337.0" font-size="25" font-weight="400" fill="#657079"><tspan x="759.82" font-family="Kalam">prefix probe</tspan></text>
+<rect x="1073.6363636363635" y="172" width="506.3636363636363" height="192" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="1091.6363636363635" y="214" font-size="30" font-weight="700" fill="#436B9E"><tspan x="1091.64" font-family="Kalam">kernel</tspan></text>
+<text x="1091.6363636363635" y="265.0" font-size="25" font-weight="400" fill="#657079"><tspan x="1091.64" font-family="Kalam">attention · GEMM · collective</tspan></text>
+<text x="1091.6363636363635" y="301.0" font-size="25" font-weight="400" fill="#657079"><tspan x="1091.64" font-family="Kalam">elementwise · GDN · optimizer</tspan></text>
+<text x="1091.6363636363635" y="337.0" font-size="25" font-weight="400" fill="#657079"><tspan x="1091.64" font-family="Kalam">shape grids and holdout split</tspan></text>
+<text x="410" y="409" font-size="24" font-weight="400" fill="#657079"><tspan x="410.00" font-family="Kalam">each adapter records, none of them models</tspan></text>
+<rect x="60" y="514" width="1540" height="272" rx="4.5" fill="#FFF1DA"/>
+<text x="86" y="576" font-size="40" font-weight="700" fill="#A2662D"><tspan x="86.00" font-family="Kalam">2</tspan></text>
+<text x="126" y="578" font-size="40" font-weight="700" fill="#252B31"><tspan x="126.00" font-family="Kalam">Cost modeling</tspan></text>
+<text x="86" y="637" font-size="26" font-weight="400" fill="#657079"><tspan x="86.00" font-family="Kalam">srl/cost/</tspan></text>
+<text x="86" y="672" font-size="26" font-weight="700" fill="#657079"><tspan x="86.00" font-family="Kalam">no GPU</tspan></text>
+<rect x="410" y="536" width="371.3333333333333" height="192" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="428" y="578" font-size="30" font-weight="700" fill="#A2662D"><tspan x="428.00" font-family="Kalam">rollout cost</tspan></text>
+<text x="428" y="629.0" font-size="25" font-weight="400" fill="#657079"><tspan x="428.00" font-family="Kalam">roofline</tspan></text>
+<text x="428" y="665.0" font-size="25" font-weight="400" fill="#657079"><tspan x="428.00" font-family="Kalam">composed kernel sum</tspan></text>
+<text x="428" y="701.0" font-size="25" font-weight="400" fill="#657079"><tspan x="428.00" font-family="Kalam">DistServe · PSRL fitted</tspan></text>
+<rect x="809.3333333333333" y="536" width="371.3333333333333" height="192" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="827.3333333333333" y="577" font-size="30" font-weight="700" fill="#A2662D"><tspan x="827.33" font-family="Kalam">training cost</tspan></text>
+<text x="827.3333333333333" y="629.0" font-size="25" font-weight="400" fill="#657079"><tspan x="827.33" font-family="Kalam">fixed · analytical · linear</tspan></text>
+<text x="827.3333333333333" y="665.0" font-size="25" font-weight="400" fill="#657079"><tspan x="827.33" font-family="Kalam">Hydraulis</tspan></text>
+<text x="827.3333333333333" y="701.0" font-size="25" font-weight="400" fill="#657079"><tspan x="827.33" font-family="Kalam">FSDP latency and memory</tspan></text>
+<rect x="1208.6666666666665" y="536" width="371.3333333333333" height="192" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="1226.6666666666665" y="578" font-size="30" font-weight="700" fill="#A2662D"><tspan x="1226.67" font-family="Kalam">kernel database</tspan></text>
+<text x="1226.6666666666665" y="629.0" font-size="25" font-weight="400" fill="#657079"><tspan x="1226.67" font-family="Kalam">measured cubes</tspan></text>
+<text x="1226.6666666666665" y="665.0" font-size="25" font-weight="400" fill="#657079"><tspan x="1226.67" font-family="Kalam">speed-of-light</tspan></text>
+<text x="1226.6666666666665" y="701.0" font-size="25" font-weight="400" fill="#657079"><tspan x="1226.67" font-family="Kalam">utility surfaces</tspan></text>
+<text x="410" y="773" font-size="24" font-weight="400" fill="#657079"><tspan x="410.00" font-family="Kalam">each model interpolates inside its fitted domain</tspan></text>
+<rect x="60" y="878" width="1540" height="272" rx="4.5" fill="#EAF4EF"/>
+<text x="86" y="940" font-size="40" font-weight="700" fill="#387F70"><tspan x="86.00" font-family="Kalam">3</tspan></text>
+<text x="126" y="942" font-size="40" font-weight="700" fill="#252B31"><tspan x="126.00" font-family="Kalam">Simulate</tspan></text>
+<text x="86" y="1001" font-size="26" font-weight="400" fill="#657079"><tspan x="86.00" font-family="Kalam">srl/simulator/</tspan></text>
+<text x="86" y="1036" font-size="26" font-weight="700" fill="#657079"><tspan x="86.00" font-family="Kalam">no GPU</tspan></text>
+<rect x="410" y="900" width="271.5" height="192" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="428" y="942" font-size="30" font-weight="700" fill="#387F70"><tspan x="428.00" font-family="Kalam">simulator</tspan></text>
+<text x="428" y="993.0" font-size="25" font-weight="400" fill="#657079"><tspan x="428.00" font-family="Kalam">discrete-event loop</tspan></text>
+<text x="428" y="1029.0" font-size="25" font-weight="400" fill="#657079"><tspan x="428.00" font-family="Kalam">two backends</tspan></text>
+<text x="428" y="1065.0" font-size="25" font-weight="400" fill="#657079"><tspan x="428.00" font-family="Kalam">C++ and Python</tspan></text>
+<rect x="709.5" y="900" width="271.5" height="192" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="727.5" y="942" font-size="30" font-weight="700" fill="#387F70"><tspan x="727.50" font-family="Kalam">policy</tspan></text>
+<text x="727.5" y="991.0" font-size="25" font-weight="400" fill="#657079"><tspan x="727.50" font-family="Kalam">10+ system presets</tspan></text>
+<text x="727.5" y="1029.0" font-size="25" font-weight="400" fill="#657079"><tspan x="727.50" font-family="Kalam">L1 · L2 · L3 controls</tspan></text>
+<text x="727.5" y="1065.0" font-size="25" font-weight="400" fill="#657079"><tspan x="727.50" font-family="Kalam">staleness rules</tspan></text>
+<rect x="1009.0" y="900" width="271.5" height="192" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="1027.0" y="939" font-size="30" font-weight="700" fill="#387F70"><tspan x="1027.00" font-family="Kalam">component</tspan></text>
+<text x="1027.0" y="993.0" font-size="25" font-weight="400" fill="#657079"><tspan x="1027.00" font-family="Kalam">rollout engine</tspan></text>
+<text x="1027.0" y="1026.0" font-size="25" font-weight="400" fill="#657079"><tspan x="1027.00" font-family="Kalam">router</tspan></text>
+<text x="1027.0" y="1062.0" font-size="25" font-weight="400" fill="#657079"><tspan x="1027.00" font-family="Kalam">recompute · sync</tspan></text>
+<rect x="1308.5" y="900" width="271.5" height="192" rx="7.2" fill="#FFFFFF" stroke="#D1D8DD" stroke-width="1.8"/>
+<text x="1326.5" y="942" font-size="30" font-weight="700" fill="#387F70"><tspan x="1326.50" font-family="Kalam">workload</tspan></text>
+<text x="1326.5" y="1011.0" font-size="25" font-weight="400" fill="#657079"><tspan x="1326.50" font-family="Kalam">grouped traces</tspan></text>
+<text x="1326.5" y="1047.0" font-size="25" font-weight="400" fill="#657079"><tspan x="1326.50" font-family="Kalam">length models</tspan></text>
+<text x="410" y="1137" font-size="24" font-weight="400" fill="#657079"><tspan x="410.00" font-family="Kalam">every duration comes from a cost model</tspan></text>
+<path d="M 470 432 Q 469.38 468.00 470 504" fill="none" stroke="#657079" stroke-width="3"/>
+<path d="M 470 504 Q 466.27 497.49 462.54679793234396 490.9827123048353" fill="none" stroke="#657079" stroke-width="3"/>
+<path d="M 470 504 Q 473.73 497.49 477.45320206765604 490.9827123048353" fill="none" stroke="#657079" stroke-width="3"/>
+<text x="500" y="485.0" font-size="24" font-weight="400" fill="#657079"><tspan x="500.00" font-family="Kalam">profile records, JSONL</tspan></text>
+<path d="M 470 796 Q 469.90 832.00 470 868" fill="none" stroke="#657079" stroke-width="3"/>
+<path d="M 470 868 Q 466.27 861.49 462.54679793234396 854.9827123048352" fill="none" stroke="#657079" stroke-width="3"/>
+<path d="M 470 868 Q 473.73 861.49 477.45320206765604 854.9827123048352" fill="none" stroke="#657079" stroke-width="3"/>
+<text x="500" y="849.0" font-size="24" font-weight="400" fill="#657079"><tspan x="500.00" font-family="Kalam">Python / C++ API</tspan></text>
 </svg>

@@ -283,8 +283,14 @@ class TestRollGarbageCollection:
     def test_expired_groups_are_replaced(self):
         sim, policy = _roll_sim(1)
         sim.run()
-        assert sim.n_admitted >= (sim.cfg.staleness_horizon + 1 + sim.cfg.n_versions) * sim.cfg.batch_size, (
-            "each GC'd group must be refilled with a fresh prompt."
+        # Base admission is capped at what training will ever consume
+        # (n_versions * batch_size, see `Simulator._grant_ingress_credits`); GC
+        # replacement credits are the one exception, since each one backfills a
+        # group already counted once before it was dropped permanently.
+        base_cap = sim.cfg.n_versions * sim.cfg.batch_size
+        assert sim.n_admitted == base_cap + policy.gc_dropped, (
+            "each GC'd group must be refilled with exactly one fresh prompt, "
+            "on top of the capped base admission."
         )
 
     def test_on_publish_cancels_only_cohorts_below_the_window(self):
@@ -488,13 +494,19 @@ class TestPartialRolloutPublish:
                 )
 
         saw_abort = False
-        for train in trains:
+        for index, train in enumerate(trains):
             start, end = train["start"], train["end"]
             assert end > start, "Train+sync window should have positive duration."
             during = [r for r in inst_rows if start <= r["t"] < end]
-            assert any(r["num_running_reqs"] > 0 for r in during), (
-                "Rollout should keep generating during training and sync."
-            )
+            # Total admission is capped at what training will ever consume (see
+            # `Simulator._grant_ingress_credits`), so by the last training step
+            # rollout can legitimately have already generated and finished
+            # everything it will ever be given -- nothing is left to run during
+            # that final window. Checked for every window except the last.
+            if index < len(trains) - 1:
+                assert any(r["num_running_reqs"] > 0 for r in during), (
+                    "Rollout should keep generating during training and sync."
+                )
             at_end = [r for r in inst_rows if abs(r["t"] - end) < 1e-9]
             if any(_is_partial_abort(r) for r in at_end):
                 saw_abort = True
@@ -529,15 +541,30 @@ class TestPartialRolloutPublish:
         assert not result.livelocked
         trains = list(store.iter("train"))
         admit_ts = [r["t"] for r in store.iter("request") if r["event"] == "admit"]
+        # Total ever admitted is capped at what training will ever consume, so
+        # the per-publish top-up stops once the cumulative cap is reached,
+        # which can be before the last publish -- track the same
+        # remaining-budget bookkeeping the simulator does rather than assuming
+        # every non-final publish opens a fresh batch.
+        cap = cfg.n_versions * cfg.batch_size
+        seed = min((cfg.staleness_horizon + 1) * cfg.batch_size, cap)
+        remaining = cap - seed
         for index, train in enumerate(trains):
             start, end = train["start"], train["end"]
             during = [t for t in admit_ts if start < t < end]
             assert not during, "AReaL quota should not open mid-training."
             at_end = [t for t in admit_ts if abs(t - end) < 1e-9]
-            if index < len(trains) - 1:
+            is_last = index == len(trains) - 1
+            grant = 0 if is_last else min(cfg.batch_size, remaining)
+            if not is_last:
+                remaining -= grant
+            if grant:
                 assert at_end, "AReaL quota should open when train_version is published."
             else:
-                assert not at_end, "AReaL quota should not open past the last published version."
+                assert not at_end, (
+                    "AReaL quota should not open past the last published version, "
+                    "or once the cumulative admission cap is reached."
+                )
 
     def test_psrl_interrupt_keeps_one_batch_per_published_version_but_not_past_the_last(self, tmp_path):
         store = JsonlStore(tmp_path / "logs")
@@ -568,27 +595,81 @@ class TestPartialRolloutPublish:
         assert not result.livelocked
         assert not result.dropped
         assert all(r.staleness_true() <= cfg.staleness_horizon for r in result.consumed)
-        # One batch opens per publish, except the last: there is no next training
-        # step left to overlap it with, so the final publish grants no new batch
-        # (see `Simulator._publish_weights`). The window is seeded with
-        # `staleness_horizon + 1` batches up front, then tops up once per publish
-        # for all but the last of `n_versions` publishes.
-        assert sim.n_admitted == (cfg.staleness_horizon + cfg.n_versions) * cfg.batch_size
-        assert sim.n_admitted - sim.n_consumed == cfg.staleness_horizon * cfg.batch_size
+        # Total ever admitted is capped at what training will ever consume
+        # (see `Simulator._grant_ingress_credits`), so nothing is stranded.
+        cap = cfg.n_versions * cfg.batch_size
+        assert sim.n_admitted == cap
+        assert sim.n_admitted == sim.n_consumed
 
         admit_counts: dict[float, int] = {}
         for row in store.iter("request"):
             if row["event"] == "admit":
                 admit_counts[row["t"]] = admit_counts.get(row["t"], 0) + 1
         trains = list(store.iter("train"))
-        assert admit_counts.pop(0.0) == (cfg.staleness_horizon + 1) * cfg.batch_size
+        # The window is seeded with `staleness_horizon + 1` batches up front,
+        # clamped to the cap, then tops up by one batch per publish -- except
+        # the last publish (nothing left to overlap it with), and except once
+        # the cumulative cap is reached, which can happen before the last
+        # publish. Track the same remaining-budget bookkeeping the simulator
+        # does, rather than assuming every non-final publish gets a full
+        # batch's worth.
+        seed = min((cfg.staleness_horizon + 1) * cfg.batch_size, cap)
+        assert admit_counts.pop(0.0) == seed
+        remaining = cap - seed
         for train in trains[:-1]:
-            assert admit_counts.pop(train["end"]) == cfg.batch_size
+            grant = min(cfg.batch_size, remaining)
+            remaining -= grant
+            if grant:
+                assert admit_counts.pop(train["end"]) == grant
+            else:
+                assert train["end"] not in admit_counts
         assert trains[-1]["end"] not in admit_counts, (
             "The last published version must not admit a fresh batch: nothing "
             "will ever train on it."
         )
         assert not admit_counts, "PSRL should admit only initially and when a version is published."
+
+
+class TestIngressAdmissionCap:
+    """Regression guard for `Simulator._grant_ingress_credits`.
+
+    Before the cap existed, total admission was `(staleness_horizon +
+    n_versions) * batch_size`, permanently stranding `staleness_horizon *
+    batch_size` requests at the end of every run, independent of run length.
+    A deliberately large `staleness_horizon` relative to a small `n_versions`
+    makes that gap easy to catch if it ever comes back.
+    """
+
+    @pytest.mark.parametrize(
+        "policy_factory",
+        [PSRLPolicy, ArealPolicy, VerlPolicy, lambda: SlimePolicy(update_weights_interval=1)],
+        ids=["psrl", "areal", "verl", "slime"],
+    )
+    def test_total_admission_never_exceeds_what_training_will_consume(self, policy_factory):
+        cfg = SimConfig(
+            batch_size=4,
+            staleness_horizon=3,
+            n_versions=3,
+            workload=GroupedWorkload.from_lengths([512], uniform(80, 200, 400, seed=0)),
+        )
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.5), FixedTrainingMemory(0)),
+            policy=policy_factory(),
+            cfg=cfg,
+        )
+        result = sim.run()
+        assert not result.livelocked
+        assert sim._ingress_granted <= cfg.n_versions * cfg.batch_size
+
+    def test_gc_replacement_credit_is_allowed_to_exceed_the_base_cap(self):
+        # ROLL's GC replaces a dropped group's credit (unlike the base seed
+        # and per-publish top-up), so its total admission is the capped base
+        # plus exactly one credit per dropped group -- not just the base cap.
+        sim, policy = _roll_sim(1, n_versions=3)
+        sim.run()
+        base_cap = sim.cfg.n_versions * sim.cfg.batch_size
+        assert sim.n_admitted <= base_cap + policy.gc_dropped
 
 
 class TestLengthCaps:
