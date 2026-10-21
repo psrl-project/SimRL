@@ -209,7 +209,9 @@ def test_buffer_stream_records_reserve_and_occupy(tmp_path):
     rows = list(JsonlStore(tmp_path / "logs").iter("buffer"))
     assert rows, "buffer stream is empty."
     for row in rows:
-        assert set(row) == {"t", "train_version", "rollout_version", "buffers"}
+        assert set(row) == {"t", "train_version", "rollout_version", "buffers"}, (
+            f"Unexpected buffer-record keys: {set(row)!r}."
+        )
         for buf in row["buffers"]:
             assert set(buf) == {
                 "buffer_id",
@@ -217,8 +219,11 @@ def test_buffer_stream_records_reserve_and_occupy(tmp_path):
                 "n_occupied",
                 "n_reserved",
                 "reserved_group_ids",
-            }
-            assert buf["n_reserved"] == len(buf["reserved_group_ids"])
+            }, f"Unexpected buffer entry keys: {set(buf)!r}."
+            assert buf["n_reserved"] == len(buf["reserved_group_ids"]), (
+                f"n_reserved {buf['n_reserved']!r} does not match reserved_group_ids length "
+                f"{len(buf['reserved_group_ids'])!r}."
+            )
     assert any(
         buf["n_reserved"] > 0 for row in rows for buf in row["buffers"]
     ), "No reservation was ever observed, so the stream cannot show a long tail holding an entry."
@@ -233,7 +238,9 @@ def test_buffer_stream_is_suppressible(tmp_path):
     sim = _sim(PSRLPolicy(), store=store, n_versions=2, batch_size=2, group_size=2)
     sim.run()
     store.close()
-    assert "buffer" not in JsonlStore(tmp_path / "logs").list_streams()
+    assert "buffer" not in JsonlStore(tmp_path / "logs").list_streams(), (
+        "The buffer stream should have been suppressed but was written anyway."
+    )
 
 
 def test_buffer_stream_absent_for_a_policy_without_an_inventory(tmp_path):
@@ -242,4 +249,6 @@ def test_buffer_stream_absent_for_a_policy_without_an_inventory(tmp_path):
     sim = _sim(VerlPolicy(), store=store, n_versions=2, batch_size=2, group_size=2)
     sim.run()
     store.close()
-    assert "buffer" not in JsonlStore(tmp_path / "logs").list_streams()
+    assert "buffer" not in JsonlStore(tmp_path / "logs").list_streams(), (
+        "The buffer stream should be absent for a policy without an inventory method."
+    )
