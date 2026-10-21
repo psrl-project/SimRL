@@ -53,6 +53,15 @@ class DiagnosisPlotter:
         plt.close(fig)
         return path
 
+    def _empty_placeholder(self, name: str, title: str) -> Path:
+        path = self.out_dir / name
+        fig, ax = plt.subplots(figsize=(10.0, 3.0))
+        ax.text(0.5, 0.5, title, ha="center", va="center", transform=ax.transAxes)
+        ax.set_axis_off()
+        fig.savefig(path, dpi=120)
+        plt.close(fig)
+        return path
+
     def plot_critical_path(self) -> Path:
         """One stacked bar per training step: compute plus idle split by binding phase."""
         fig, ax = plt.subplots(figsize=self.figsize)
@@ -106,7 +115,6 @@ class DiagnosisPlotter:
 
     def plot_buffers(self) -> Path:
         """Occupied and reserved entries per buffer over time, with train starts marked."""
-        fig, ax = plt.subplots(figsize=self.figsize)
         series: dict[int, list[tuple[float, int, int]]] = {}
         for rec in self.store.iter("buffer"):
             for view in rec["buffers"]:
@@ -114,7 +122,10 @@ class DiagnosisPlotter:
                     (rec["t"], view["n_occupied"], view["n_reserved"])
                 )
         if not series:
-            ax.set_title("No buffer stream: the policy exposes no inventory")
+            return self._empty_placeholder(
+                "buffers.png", "No buffer stream: the policy exposes no inventory"
+            )
+        fig, ax = plt.subplots(figsize=self.figsize)
         for buffer_id, points in sorted(series.items()):
             times = [point[0] for point in points]
             ax.step(times, [point[1] for point in points], where="post", label=f"buffer {buffer_id} occupied")
@@ -138,12 +149,17 @@ class DiagnosisPlotter:
         fig, (top, bottom) = plt.subplots(2, 1, figsize=self.figsize, sharex=True)
         versions = [window.version for window in self.windows]
         instance_ids = sorted({iid for window in self.windows for iid in window.busy_fraction})
+        totals = {row.instance_id: row for row in self.imbalance}
         for instance_id in instance_ids:
+            label = f"instance {instance_id}"
+            total = totals.get(instance_id)
+            if total is not None:
+                label += f" (whole run: {total.busy_seconds:.0f}s busy, {total.tokens} tok)"
             top.plot(
                 versions,
                 [window.busy_fraction.get(instance_id, 0.0) for window in self.windows],
                 marker="o",
-                label=f"instance {instance_id}",
+                label=label,
             )
         top.set_ylabel("busy fraction")
         top.set_ylim(0.0, 1.05)
