@@ -26,6 +26,9 @@ Tick each item in order. An unticked item means the result is not reportable yet
 - [ ] `consumed_groups == batch_size * n_versions`.
 - [ ] `tokens_per_group` is within 1% of the control arm at the same point.
 - [ ] The treatment is not byte-identical to the control. If it is, the flag is not wired.
+- [ ] The experiment script exposes `build(spec, output_dir=None) -> (Simulator, n_instances)`, and
+      every summary row carries `row_id` and `replay` via `scripts/replayspec.attach`. A row that
+      cannot be replayed cannot be diagnosed later.
 
 ## Before reporting
 

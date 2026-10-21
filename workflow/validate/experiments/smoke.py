@@ -1,7 +1,8 @@
-"""Smallest experiment that exercises both arms and every gate.
+"""Smallest experiment that exercises both arms, every gate, and the replay contract.
 
 Copy this file, change the point, the arms, and the flags, then run it. It drives the in-process
-harness, measures each arm with `collect.measure`, and prints the gate verdicts.
+harness, measures each arm with `collect.measure`, attaches the replay field each row needs, and
+prints the gate verdicts.
 
 Usage:
     python workflow/validate/experiments/smoke.py
@@ -19,6 +20,7 @@ sys.path.insert(0, str(ROOT / "workflow" / "validate" / "scripts"))
 
 import collect  # noqa: E402
 import gates  # noqa: E402
+import replayspec  # noqa: E402
 
 POINT = {
     "name": "smoke_cv0.5_tau345",
@@ -46,21 +48,51 @@ def _load(name: str, path: Path):
     return module
 
 
-def main() -> int:
+def build(spec: dict, output_dir: Path | None = None):
+    """
+    Rebuild one arm of this experiment, optionally with full telemetry.
+
+    Args:
+        spec (dict): `{"point": <POINT dict>, "strategy": str, "strategy_args": dict, "cap": int}`.
+        output_dir (Path | None): When set, write every telemetry stream here.
+
+    Returns:
+        tuple: An unstarted `Simulator` and the instance count.
+    """
     probe = _load("headroom_probe", ROOT / "examples" / "analysis" / "headroom_probe.py")
     fa = probe._load_forecast_accuracy()
     mdt = fa._load_dispersed_trace_module()
     cost_model = fa._composed_cost_model()
-    point = probe.Point(**POINT)
+    point = probe.Point(**spec["point"])
+    regime = probe._regime(
+        fa,
+        point,
+        strategy=spec["strategy"],
+        strategy_args=spec["strategy_args"],
+        cap=spec.get("cap", 0),
+    )
+    sim = fa._build_medium(regime, cost_model, mdt)
+    if output_dir is not None:
+        from srl.telemetry.store import JsonlStore
+        from srl.telemetry.writer import SimTelemetry
 
+        sim.cfg.log_telemetry = True
+        sim.telemetry = SimTelemetry(JsonlStore(output_dir, overwrite=True), enabled=True)
+    return sim, point.n_instances
+
+
+def main() -> int:
     rows = []
-    for arm, spec in ARMS.items():
-        regime = probe._regime(fa, point, strategy=spec["strategy"], strategy_args=spec["strategy_args"], cap=0)
-        sim = fa._build_medium(regime, cost_model, mdt)
+    specs = {}
+    for arm, arm_spec in ARMS.items():
+        spec = {"point": POINT, "cap": 0, **arm_spec}
+        sim, n_instances = build(spec)
         result = sim.run()
-        rows.append({"point": point.name, "arm": arm, **collect.measure(sim, result, point.n_instances)})
+        rows.append({"point": POINT["name"], "arm": arm, **collect.measure(sim, result, n_instances)})
+        specs[replayspec.row_id(POINT["name"], arm)] = spec
 
     rows = collect.compare_rows(rows, "control")
+    rows = replayspec.attach(rows, Path(__file__), specs, ROOT)
     control = next(row for row in rows if row["arm"] == "control")
     out_dir = ROOT / "outputs" / "simulate" / "validate_smoke"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -70,11 +102,11 @@ def main() -> int:
         if row["arm"] == "control":
             continue
         found = gates.evaluate_point(
-            row, control, n_versions=point.n_versions, batch_size=point.batch
+            row, control, n_versions=POINT["n_versions"], batch_size=POINT["batch"]
         )
         verdicts.append(
             {
-                "name": f"{row['point']}/{row['arm']}",
+                "name": row["row_id"],
                 "speedup": row["speedup"],
                 "gates": [{"name": gate.name, "ok": gate.ok, "detail": gate.detail} for gate in found],
             }
