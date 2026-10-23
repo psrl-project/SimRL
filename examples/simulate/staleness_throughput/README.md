@@ -17,10 +17,13 @@ then thrown away, keyed by why. The line across the blue is the effective
 training throughput.
 
 For a knob that bounds staleness by discarding (`roll`, `trl`, `verl_v1`'s
-`max_off_policy_threshold`), tightening it does not shorten the bar. It
-moves tokens across that line instead, since the discard happens after
-generation. For an admission-type knob (most of the rest), tightening it
-can shorten the bar too, since the knob gates how much rollout runs ahead
+`max_off_policy_threshold`), the bar keeps its height only once rollout is
+already saturated: in that region, tightening the knob moves tokens across
+the line instead of shortening the bar, since the discard happens after
+generation. At the tightest setting on each of these three, the same knob
+also doubles as an admission cutoff and the bar does shorten. For an
+admission-type knob (most of the rest), tightening it can shorten the bar
+at any point in its range, since the knob gates how much rollout runs ahead
 in the first place, and span moves with it. Both are the trade-off the
 figures exist to show, by different mechanisms.
 

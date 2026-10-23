@@ -202,17 +202,21 @@ once the knob is above 0. Informative, with the caveat its own grid comment
 carries: the shared 0 to 5 axis is not commensurable with the other eleven
 presets' version counts.
 
-**areal.** The cumulative token bucket widens the composition smoothly across
-its whole range (`maxS` 0, 2, 4, 5, 5, 6 for knob 0 through 5) with 0.0 waste
-throughout, matching its description as an admission-only gate. Span settles to
-about 15730 to 15890s once the knob is above 0. Informative.
+**areal.** Confirmed non-bound, by the same test `skyrl` fails below:
+`maxS` overshoots the knob at every point once admission opens (knob 0
+through 5: `+0, +1, +2, +2, +1, +1`) with 0.0 waste throughout, so nothing
+ever pulls it back. This is not a coincidence: `skyrl`'s own policy
+docstring states it uses "the same formula as AReaL", and the data confirms
+the two behave identically by this test. Span settles to about 15730 to
+15890s once the knob is above 0. Informative about admission's effect on
+span, but not a staleness bound.
 
 **roll.** One of three presets, alongside `trl` and `verl_v1`, whose figure
 shows real discard cost. `async_generation_ratio`'s ceiling acts as both the
 admission window and an L2 GC, so unlike `psrl`'s free bound, `roll` pays
 for its cap: waste falls from 18.0% at knob=1 to 8.6% at knob=5 as the
 window loosens, visible as a shrinking hatched segment on top of each bar.
-`maxS` tracks the knob exactly throughout (1 through 5, no overshoot).
+`maxS` tracks the knob exactly throughout (0 through 5, no overshoot).
 Informative, and its own figure is the clearest illustration in the set that
 a version-window cap is not automatically free.
 
@@ -224,31 +228,36 @@ improves only modestly across the range, 17428s down to about 16825s. Informativ
 the mildest of the clean version-cap presets in this regime.
 
 **skyrl.** Confirmed non-bound, but not a flat figure. The test is not
-`waste% = 0`, since `psrl`, `slime` and `nemo_rl` below are all genuine
-bounds with 0.0 waste too. The test is whether `maxS` ever gets back under
-control: those three hold `maxS` at or below the knob at every point, and
-`roll` and `trl` hold it close by discarding when timing pushes past it.
-`skyrl` does neither. `maxS` overshoots the knob by a margin that grows as
-the knob loosens (knob 1 through 5: `+1, +2, +2, +2, +1`) and nothing is
-ever discarded to correct it. Span and throughput both move substantially
+`waste% = 0`: `psrl`, `slime`, `nemo_rl`, `roll` and `trl` below are all
+genuine bounds, and three of them have 0.0 waste too. The test is whether
+`maxS` ever gets pulled back toward the knob at all, by waiting (`psrl`,
+`slime`, `nemo_rl`) or by discarding (`roll`, `trl`). `skyrl` and `areal`
+above do neither: `maxS` overshoots the knob by one or two at every point
+once admission opens (knob 0 through 5: `+0, +1, +2, +2, +2, +1`, not
+monotone, since nothing in this regime ever exceeds `S6`) and nothing is
+ever discarded to correct it, at any knob setting. The size of an overshoot
+is not itself the signal: `verl_v1` at its tightest threshold reaches an
+overshoot of `+3` while discarding up to 23.5%, and is still a genuine
+bound, because it does discard. Span and throughput both move substantially
 too (21762s at knob=0 to between 15014s and 15282s from knob=1 on, a real
 change in bar height), because the knob still drives an admission quota
 even though it never caps the composition once rollout is admitted. This
 matches the grid's own description: an admission quota and a violation
 counter, never a filter. Staleness does develop here (`maxS` is well above
 0 once the knob opens), so this is not the regime failing to let staleness
-develop. It is the mechanism itself not being a staleness bound, exactly as
-the spec predicted, just not a bound that also holds span constant.
+develop. The mechanism itself is simply not a staleness bound, exactly as
+the spec predicted, just not one that also holds span constant.
 
-**openrlhf.** Same shape as `skyrl` and the same conclusion, by the same
-test: `maxS` overshoots the knob at every point past the first (`+0, +2,
-+2, +1, +1` for knob 1 through 5) with 0.0 waste throughout, so nothing
-ever pulls it back. This is consistent with `async_queue_size` bounding
-in-flight batch lumps rather than per-sample age. Span moves too (16620s at
-knob=1 down to between 15080s and 15176s from knob=2 on), the same
-admission effect `skyrl` shows. Staleness clearly develops (up to `S6`), so
-this is case (a), not case (b): a confirmed non-bound. The mandatory
-`partial_rollout_enable=true` pin is exercised at every point.
+**openrlhf.** Same shape as `skyrl` and `areal`, and the same conclusion, by
+the same test: `maxS` overshoots the knob at every point past the first
+(`+0, +2, +2, +1, +1` for knob 1 through 5, again not monotone) with 0.0
+waste throughout, so nothing ever pulls it back. This is consistent with
+`async_queue_size` bounding in-flight batch lumps rather than per-sample
+age. Span moves too (16620s at knob=1 down to between 15080s and 15176s
+from knob=2 on), the same admission effect `skyrl` shows. Staleness clearly
+develops (up to `S6`), so this is case (a), not case (b): a confirmed
+non-bound. The mandatory `partial_rollout_enable=true` pin is exercised at
+every point.
 
 **dressage.** The one preset whose entire swept range is a literal plateau: all
 five points (`keep_versions` 1 through 5) are byte-identical, span 14854s,
@@ -287,16 +296,20 @@ synchronous-floor pattern.
 
 **trl.** The most direct bound in the study, and the busiest figure: a hatched
 `l3_stale` segment appears at knob=0 (12.8% waste) and knob=2 through 5
-(9.1%, 8.7%, 5.0%, 5.7%), vanishing only at knob=1. `maxS` matches the knob
-exactly at knob=1, then overshoots by one from knob=2 on (knob=2 reaches
-`S3`, knob=5 reaches `S6`) with the discard holding it that close rather
-than letting it run further. Span
+(9.1%, 8.7%, 5.0%, 5.7%), vanishing only at knob=1. The window's own slack
+is widest at knob=0, its worst point: `maxS=1` there too, but 66.4% of its
+consumed tokens sit above the knob at `S1` (25.0M of 37.6M), against 0 to
+5.2% above the knob at every other setting. From knob=1 on the discard
+holds `maxS` within one of the knob (exact at knob=1, `+1` from knob=2 on,
+knob=5 reaching `S6`) rather than letting it run further. Span
 is not monotone across the range (15976s at knob=3 down to 15290s at knob=4,
 back up to 15526s at knob=5), unlike
 the cleaner caps. Informative, and the figure that most directly shows a
 staleness bound charging a real, non-trivial, and non-monotonic cost.
 
-**prime_rl.** Flat, and flat for a reason distinct from `skyrl` and `openrlhf`.
+**prime_rl.** Genuinely flat, unlike `skyrl` and `openrlhf` above (their span
+and composition both move): every one of its own points sits on the exact
+same synchronous-floor number.
 `waste%` is 0.0 and `maxS` is 0 at every single point, knob 0 through 5: every
 bar is the regime's exact synchronous-floor number (span 21762s, all 32.5M
 tokens at `S0`), and the figure's legend never needs an `S1` entry. This is case
@@ -319,20 +332,23 @@ reach it while its paired admission knob sits at the regime's synchronous floor.
 The spec predicted `skyrl` and `openrlhf` would be flat. Neither is: both
 show the admission quota moving span substantially once the knob opens. What
 the spec actually meant, and what holds, is that neither knob ever pulls
-`maxS` back under control: it overshoots the knob by a growing margin at
-every point, with 0.0 waste throughout to correct it, confirming each knob
-is an admission quota or an in-flight cap rather than an age-based ceiling.
-The spec's own word choice, "flat," conflated these two claims.
-`prime_rl` is also flat, but the
-spec did not predict it, and the mechanism is different: its own cancel-horizon
-knob never gets the chance to bind because the regime's synchronous floor is
-reached through a different, un-swept parameter (`target_lag`) left at its
-default. `dressage` is the preset whose whole tested range turned out to be one
-plateau, exactly the risk the spec's "0..5 ceiling might already be unbounded"
-caveat called out, just not on the axis the spec guessed at (`verl_v1` and
-`max_off_policy_threshold=5` turned out to still be informative, not flat).
-`nemo_rl` carries a smaller version of the same plateau from `max_staleness_versions=3`
-onward, alongside a newly found floor at 0.
+`maxS` back toward itself, by waiting or by discarding, with 0.0 waste
+throughout confirming nothing is ever corrected. Each knob is an admission
+quota or an in-flight cap rather than an age-based ceiling. `areal`, not
+named in the spec's prediction at all, turns out to fail the identical
+test by the identical mechanism (its own policy's docstring is the one
+`skyrl` cites as sharing its formula). The spec's own word choice, "flat,"
+conflated the span claim with the composition claim. Only `prime_rl` is
+actually flat in the literal sense, every one of its points landing on the
+same number, because its paired admission knob (`target_lag`, left at its
+default) rather than the swept `max_off_policy_steps` is what pins it to
+the regime's synchronous floor. `dressage` is the preset whose whole tested
+range turned out to be one plateau, exactly the risk the spec's "0..5
+ceiling might already be unbounded" caveat called out, just not on the axis
+the spec guessed at (`verl_v1` and `max_off_policy_threshold=5` turned out
+to still be informative, not flat). `nemo_rl` carries a smaller version of
+the same plateau from `max_staleness_versions=3` onward, alongside a newly
+found floor at 0.
 
 No preset is compared against another as a system anywhere above: every span,
 waste share and composition described is that preset's own knob compared against

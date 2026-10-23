@@ -118,9 +118,8 @@ def plot_staleness_throughput(
     reasons = waste_reasons(panels)
     colours = plt.cm.Blues(np.linspace(0.35, 0.95, max(len(levels), 1)))
 
-    # +2.1 widens the axes region so it is not cramped against the legend,
-    # which `bbox_inches="tight"` on save already guarantees room for outside
-    # the canvas regardless of this term.
+    # +2.1 widens the plotted bars themselves. Room for the legend, which sits
+    # outside the axes, comes from `bbox_inches="tight"` on save, not from this.
     n_bars = sum(len(points) for _, points in panels)
     width = max(7.0, 1.1 * n_bars + 2.0 * len(panels)) + 2.1
     fig, axes = plt.subplots(1, len(panels), figsize=(width, 5.6), sharey=True, squeeze=False)
