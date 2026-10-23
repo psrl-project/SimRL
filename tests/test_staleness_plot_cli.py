@@ -65,3 +65,31 @@ def test_a_malformed_row_names_its_line_number(tmp_path):
     manifest.write_text("only-one-column\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="line 1"):
         load_manifest(manifest)
+
+
+def test_the_consumption_gate_exits_cleanly_rather_than_crashing(tmp_path, monkeypatch):
+    """A violated consumption gate must surface as SystemExit, like the manifest's own errors."""
+    a = _run(tmp_path, "a")
+    store = JsonlStore(tmp_path / "b" / "logs", overwrite=True)
+    store.write("request", event="consume", t=5.0, staleness_true=0, generated=50)
+    store.close()
+    manifest = tmp_path / "points.tsv"
+    manifest.write_text(f"\t1\t{a}\n\t2\t{tmp_path / 'b'}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "srl-staleness-plot",
+            str(manifest),
+            "--primary-label",
+            "k",
+            "--title",
+            "t",
+            "--out",
+            str(tmp_path / "x.png"),
+        ],
+    )
+    from srl.cli.staleness_plot import main
+
+    with pytest.raises(SystemExit, match="consumed different trajectory counts"):
+        main()

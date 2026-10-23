@@ -76,7 +76,10 @@ def main() -> None:
     panels = load_manifest(args.manifest, logs_subdir=args.logs_subdir)
     every_point = [point for _, points in panels for point in points]
     if not args.allow_unequal_consumption:
-        check_same_consumption(every_point)
+        try:
+            check_same_consumption(every_point)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
 
     path = plot_staleness_throughput(
         panels,
