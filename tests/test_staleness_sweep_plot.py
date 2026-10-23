@@ -83,3 +83,10 @@ def test_a_two_panel_figure_is_written(tmp_path):
 def test_an_empty_panel_set_is_refused(tmp_path):
     with pytest.raises(ValueError, match="no points"):
         plot_staleness_throughput([], primary_label="knob", title="t", out_path=tmp_path / "x.png")
+
+
+def test_a_mixed_empty_and_nonempty_panel_set_is_refused(tmp_path):
+    panels = [("a", []), ("b", [("1", LOOSE)])]
+    with pytest.raises(ValueError, match="panel 'a' has no points"):
+        plot_staleness_throughput(panels, primary_label="k", title="t", out_path=tmp_path / "x.png")
+

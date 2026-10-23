@@ -105,11 +105,15 @@ def plot_staleness_throughput(
         Path: The written PNG.
 
     Raises:
-        ValueError: If no panel carries any point.
+        ValueError: If no panel carries any point, or if one panel is empty
+            while another is not.
     """
     out_path = Path(out_path)
     if not any(points for _, points in panels):
         raise ValueError("Cannot draw a staleness figure with no points.")
+    empty_panels = [name for name, points in panels if not points]
+    if empty_panels:
+        raise ValueError(f"Cannot draw a staleness figure: panel {empty_panels[0]!r} has no points.")
 
     levels = staleness_levels(panels)
     reasons = waste_reasons(panels)
@@ -185,7 +189,7 @@ def plot_staleness_throughput(
         ax.grid(True, axis="y", alpha=0.3)
         ax.set_axisbelow(True)
 
-    axes[0].set_ylabel("Generation throughput  [tokens / s]")
+    axes[0].set_ylabel("Generation throughput [tokens / s]")
     # Headroom so a bar that reaches the data max still has room for its span
     # annotation below the panel title instead of crowding into it.
     axes[0].set_ylim(0, tallest_bar * 1.12 if tallest_bar > 0 else 1.0)
