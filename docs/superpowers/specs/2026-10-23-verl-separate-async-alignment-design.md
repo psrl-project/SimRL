@@ -113,9 +113,13 @@ field) is decided during implementation, once Phase 1's actual process/replica t
 2. `srl/cli/verl_plot.py` and `examples/visualize/plot_verl_run.sh`, mirroring the `psrl_plot` pair.
 3. `examples/simulate/verl_aligned.sh`, mirroring `psrl_aligned.sh`'s structure (read the real run's
    logs, extract the trace, set every knob to match), with:
-   - `POLICY=verl_v1` — not the legacy `verl` policy. (`psrl_aligned.sh` currently defaults to
-     `POLICY=verl`, which does not model `separate_async`; `verl_v1` is the policy that does, and
-     this default should be corrected there too as part of this change.)
+   - `POLICY=verl_v1` — the policy that models `separate_async` (`num_warmup_batches`,
+     `max_off_policy_threshold`, `max_off_policy_strategy`). Not the legacy `verl` policy, and not
+     `psrl` (`srl/policy/psrl.py`, which wraps PSRL's own `StalenessInventory` source directly — the
+     correct policy for *PSRL*, not for verl). `psrl_aligned.sh`'s own `POLICY=verl` default is a
+     separate, pre-existing matter outside this task's scope: it is not touched here, since there is
+     no evidence it is wrong and changing it would risk invalidating its already-measured,
+     documented agreement numbers without re-validating them.
    - `TRAINING_BACKEND=hydraulis`, reusing the existing
      `outputs/cost/qwen3_8b_tp2_pp3_thd/training_hydraulis.json` cost artifact unchanged — the mesh
      is identical to PSRL's, so no new profiling sweep is needed.
