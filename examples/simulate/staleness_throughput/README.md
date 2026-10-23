@@ -50,7 +50,7 @@ Staleness also cannot exceed the number of versions in the run, so a short
   fills it produces truncated traces that look like failures.
 - At cap 38912 the training cost is extrapolated on `tokens` and
   `pipeline_slots`. Every figure carries the footnote. Treat the training
-  component as indicative; the rollout and staleness numbers are the claims.
+  component as indicative. The rollout and staleness numbers are the claims.
 
 ## Two mandatory pins
 
@@ -66,7 +66,7 @@ Not optional panels. Without them the sweep is illegal or inert.
 ## Axis floors
 
 Five axes start at 1, each because 0 is rejected or inverted. Validated by
-running the endpoints; do not change one without re-running it.
+running the endpoints. Do not change one without re-running it.
 
 | preset | knob | why not 0 |
 |---|---|---|
