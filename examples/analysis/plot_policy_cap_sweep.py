@@ -10,7 +10,6 @@ is recomputed from the `consume` rows exactly as `SimResult.scg` defines it, bec
 from __future__ import annotations
 
 import argparse
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,90 +18,61 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
+from srl.diagnosis.staleness import StalenessBreakdown, check_same_consumption, staleness_breakdown
+from srl.telemetry.store import JsonlStore
+
 # One colour per policy, shared by every figure so the overlays and panels agree.
 POLICY_COLOR = {"psrl": "#B23A48", "verl": "#2E6F95", "roll": "#4C9A2A"}
 
 
 @dataclass(frozen=True)
 class RunSummary:
-    """Hold one finished simulation, reduced to what the SCG curves need."""
+    """One finished simulation, labelled by the sweep axis it came from.
+
+    The staleness arithmetic lives in `srl.diagnosis.staleness` so this figure
+    and the per-preset sweep figures cannot disagree about what SCG means.
+    """
 
     policy: str
     cap: int
-    span: float
-    n_consumed: int
-    tokens_by_staleness: dict[int, int]
-    max_staleness_seen: int
+    breakdown: StalenessBreakdown
+
+    @property
+    def span(self) -> float:
+        return self.breakdown.span
+
+    @property
+    def n_consumed(self) -> int:
+        return self.breakdown.n_consumed
+
+    @property
+    def max_staleness_seen(self) -> int:
+        return self.breakdown.max_staleness
 
     @property
     def throughput(self) -> float:
-        return sum(self.tokens_by_staleness.values()) / self.span
+        return self.breakdown.throughput
 
     def scg(self, s: int) -> float:
-        """
-        Return SCG(S) in tokens per second.
-
-        Defined for every S. SCG saturates at `throughput` once nothing is excluded,
-        so an S above the run's own maximum equals the value below it.
-        """
-        tokens = sum(n for staleness, n in self.tokens_by_staleness.items() if staleness <= s)
-        return tokens / self.span
+        return self.breakdown.scg(s)
 
 
 def load_run(run_dir: Path, policy: str, cap: int) -> RunSummary:
-    """
-    Reduce one run's request telemetry to a `RunSummary`.
+    """Reduce one run's request telemetry to a `RunSummary`.
 
     Raises:
         FileNotFoundError: If the run has no request stream.
         ValueError: If it has no consume rows or a non-positive span.
     """
-    stream = run_dir / "logs" / "request.jsonl"
-    if not stream.is_file():
-        raise FileNotFoundError(f"No telemetry at {stream}.")
-
-    span = 0.0
-    tokens: dict[int, int] = {}
-    n_consumed = 0
-    with stream.open(encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            span = max(span, float(row.get("t", 0.0)))
-            if row.get("event") != "consume" or row.get("staleness_true") is None:
-                continue
-            n_consumed += 1
-            s = int(row["staleness_true"])
-            tokens[s] = tokens.get(s, 0) + int(row.get("generated", 0))
-
-    if not n_consumed:
-        raise ValueError(f"{stream} holds no consume rows.")
-    if span <= 0.0:
-        raise ValueError(f"{stream} has a non-positive span.")
-    return RunSummary(
-        policy=policy,
-        cap=cap,
-        span=span,
-        n_consumed=n_consumed,
-        tokens_by_staleness=tokens,
-        max_staleness_seen=max(tokens),
-    )
+    logs = run_dir / "logs"
+    if not (logs / "request.jsonl").is_file():
+        raise FileNotFoundError(f"No telemetry at {logs / 'request.jsonl'}.")
+    return RunSummary(policy=policy, cap=cap, breakdown=staleness_breakdown(JsonlStore(logs)))
 
 
 def check_comparable(runs: list[RunSummary]) -> None:
-    """
-    Refuse to plot runs that did not consume the same amount of work.
-
-    SCG is a rate, so a run that ended early can score arbitrarily well.
-
-    Raises:
-        ValueError: If the consumed trajectory counts disagree.
-    """
-    counts = {r.n_consumed for r in runs}
-    if len(counts) > 1:
-        detail = ", ".join(f"{r.policy}/cap{r.cap}: {r.n_consumed}" for r in runs)
-        raise ValueError(f"Runs consumed different trajectory counts: {detail}.")
+    """Refuse to plot runs that did not consume the same amount of work."""
+    check_same_consumption([(f"{r.policy}/cap{r.cap}", r.breakdown) for r in runs])
 
 
 def plot_per_policy(
