@@ -1,0 +1,67 @@
+"""The manifest reader must preserve bar order and group panels."""
+
+from __future__ import annotations
+
+import matplotlib
+
+matplotlib.use("Agg")
+
+import pytest
+
+from srl.cli.staleness_plot import load_manifest
+from srl.telemetry.store import JsonlStore
+
+ROWS = [
+    dict(event="consume", t=10.0, staleness_true=0, generated=100),
+    dict(event="consume", t=20.0, staleness_true=1, generated=100),
+]
+
+
+def _run(tmp_path, name):
+    """Create a minimal finished run directory with a `logs/request.jsonl`."""
+    store = JsonlStore(tmp_path / name / "logs", overwrite=True)
+    for row in ROWS:
+        store.write("request", **row)
+    store.close()
+    return tmp_path / name
+
+
+def test_rows_keep_their_order_within_a_panel(tmp_path):
+    a, b = _run(tmp_path, "a"), _run(tmp_path, "b")
+    manifest = tmp_path / "points.tsv"
+    manifest.write_text(f"p1\t2\t{b}\np1\t1\t{a}\n", encoding="utf-8")
+    panels = load_manifest(manifest)
+    assert [name for name, _ in panels] == ["p1"]
+    assert [label for label, _ in panels[0][1]] == ["2", "1"], "Bar order must follow row order."
+
+
+def test_panels_are_grouped_in_first_appearance_order(tmp_path):
+    a = _run(tmp_path, "a")
+    manifest = tmp_path / "points.tsv"
+    manifest.write_text(f"second\t1\t{a}\nfirst\t1\t{a}\nsecond\t2\t{a}\n", encoding="utf-8")
+    panels = load_manifest(manifest)
+    assert [name for name, _ in panels] == ["second", "first"]
+    assert len(panels[0][1]) == 2
+    assert len(panels[1][1]) == 1
+
+
+def test_an_empty_panel_column_yields_one_unnamed_panel(tmp_path):
+    a = _run(tmp_path, "a")
+    manifest = tmp_path / "points.tsv"
+    manifest.write_text(f"\t0\t{a}\n", encoding="utf-8")
+    panels = load_manifest(manifest)
+    assert [name for name, _ in panels] == [""]
+
+
+def test_a_missing_run_directory_names_itself(tmp_path):
+    manifest = tmp_path / "points.tsv"
+    manifest.write_text(f"\t0\t{tmp_path / 'absent'}\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="absent"):
+        load_manifest(manifest)
+
+
+def test_a_malformed_row_names_its_line_number(tmp_path):
+    manifest = tmp_path / "points.tsv"
+    manifest.write_text("only-one-column\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="line 1"):
+        load_manifest(manifest)

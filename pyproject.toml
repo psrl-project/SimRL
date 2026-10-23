@@ -28,6 +28,7 @@ srl-profile = "srl.cli.profile:main"
 srl-regress = "srl.cli.regress:main"
 srl-plot = "srl.cli.plot:main"
 srl-psrl-plot = "srl.cli.psrl_plot:main"
+srl-staleness-plot = "srl.cli.staleness_plot:main"
 srl-compare = "srl.cli.compare:main"
 srl-workload = "srl.cli.workload:main"
 
