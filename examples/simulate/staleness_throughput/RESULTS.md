@@ -236,9 +236,11 @@ above do neither: `maxS` overshoots the knob by one or two at every point
 once admission opens (knob 0 through 5: `+0, +1, +2, +2, +2, +1`, not
 monotone, since nothing in this regime ever exceeds `S6`) and nothing is
 ever discarded to correct it, at any knob setting. The size of an overshoot
-is not itself the signal: `verl_v1` at its tightest threshold reaches an
-overshoot of `+3` while discarding up to 23.5%, and is still a genuine
-bound, because it does discard. Span and throughput both move substantially
+is not itself the signal: within `verl_v1`'s tightest threshold panel, one
+point overshoots by `+3` and a different point in that same panel discards
+up to 23.5%, and the panel is still a genuine bound throughout, because it
+discards somewhere at every point past the first. Span and throughput both
+move substantially
 too (21762s at knob=0 to between 15014s and 15282s from knob=1 on, a real
 change in bar height), because the knob still drives an admission quota
 even though it never caps the composition once rollout is admitted. This
@@ -297,7 +299,7 @@ synchronous-floor pattern.
 **trl.** The most direct bound in the study, and the busiest figure: a hatched
 `l3_stale` segment appears at knob=0 (12.8% waste) and knob=2 through 5
 (9.1%, 8.7%, 5.0%, 5.7%), vanishing only at knob=1. The window's own slack
-is widest at knob=0, its worst point: `maxS=1` there too, but 66.4% of its
+is widest at knob=0, its worst point: `maxS=1` there too, but 66.5% of its
 consumed tokens sit above the knob at `S1` (25.0M of 37.6M), against 0 to
 5.2% above the knob at every other setting. From knob=1 on the discard
 holds `maxS` within one of the knob (exact at knob=1, `+1` from knob=2 on,

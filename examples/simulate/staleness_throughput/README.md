@@ -17,15 +17,21 @@ then thrown away, keyed by why. The line across the blue is the effective
 training throughput.
 
 For a knob that bounds staleness by discarding (`roll`, `trl`, `verl_v1`'s
-`max_off_policy_threshold`), the bar keeps its height only once rollout is
-already saturated: in that region, tightening the knob moves tokens across
-the line instead of shortening the bar, since the discard happens after
-generation. At the tightest setting on each of these three, the same knob
-also doubles as an admission cutoff and the bar does shorten. For an
-admission-type knob (most of the rest), tightening it can shorten the bar
-at any point in its range, since the knob gates how much rollout runs ahead
-in the first place, and span moves with it. Both are the trade-off the
-figures exist to show, by different mechanisms.
+`max_off_policy_threshold`), the bar keeps its height while rollout stays
+saturated: tightening the knob moves tokens across the line instead of
+shortening the bar, since the discard happens after generation. Whether
+tightening it further also shortens the bar depends on the policy's own
+admission code, not on the fact that it discards: `roll`'s own admission
+budget scales with its knob, so its tightest setting is also an admission
+cutoff and the bar does shrink there. `trl`'s admission budget clamps to
+the same floor at its two tightest settings (`max(max_staleness, 1) *
+batch_size`), so nothing extra happens at its own tightest point. `verl_v1`'s
+`max_off_policy_threshold` never enters admission at all, only the
+post-generation discard. For an admission-type knob (most of the rest),
+tightening it can shorten the bar at any point in its range, since the
+knob gates how much rollout runs ahead in the first place, and span moves
+with it. Read a figure's bar heights from its own policy's mechanism, not
+from which category this paragraph puts it in.
 
 The number above each bar is the simulated span. Every bar in a figure finished
 the same number of training steps on the same number of trajectories, so span is
