@@ -163,33 +163,71 @@ staleness. `psrl`, `areal` and `roll` take their threshold through
 `SimConfig.staleness_horizon` rather than a constructor argument; setting the preset
 field drives both that and `ingress_window_groups`, so no extra plumbing is needed.
 
+Every primary axis is **0..5**, or **1..5** where 0 is rejected or inverted. A shared
+axis is what lets twelve figures be read as one result instead of twelve one-offs.
+Each range below was validated by actually running its endpoints, not inferred: the
+`0 ..` rows all completed at 0, and every row completed at 5.
+
 The "secondary" column is written into each `grid.sh` and commented out, so expanding a
 preset to two dimensions later is a one-line edit rather than a fresh design pass.
 
-| preset | primary (x axis), run now | secondary, deferred |
-|---|---|---|
-| `verl_v1` | `num_warmup_batches` 1,2,3,4,6,8 | `max_off_policy_threshold` 1,2,4,8 — **run now** |
-| `verl` | `staleness_threshold` 0.2 .. 3.0 | `require_batches` 1,2 |
-| `psrl` | `staleness` 0 .. 6 | `proactive_filter` false/true |
-| `areal` | `max_head_offpolicyness` 0 .. 6 | `max_inflight` |
-| `roll` | `async_generation_ratio` 0.5 .. 4 | `max_inflight` |
-| `slime` | `update_weights_interval` 1 .. 4 | `over_sampling_ratio` 1.0/1.5 |
-| `skyrl` | `max_staleness_steps` 0 .. 8 | `pause_mode` in_place/abort |
-| `openrlhf` | `async_queue_size` 1 .. 4 | `partial_rollout_enable` false/true |
-| `dressage` | `keep_versions` 0 .. 4 | `max_partial_rollout_preempts` |
-| `nemo_rl` | `max_staleness_versions` 0 .. 4 | `sampler` in_order/windowed/weight_fifo/ready_first |
-| `trl` | `max_staleness` 0 .. 8 | `max_inflight_tasks` |
-| `prime_rl` | `max_off_policy_steps` 1 .. 8 | `target_lag` 1/2/4 |
+| preset | primary (x axis) | why this floor | secondary, deferred |
+|---|---|---|---|
+| `psrl` | `staleness` **0..5** | | `proactive_filter` false/true |
+| `areal` | `max_head_offpolicyness` **0..5** | | `max_inflight` |
+| `roll` | `async_generation_ratio` **0..5** | | `max_inflight` |
+| `skyrl` | `max_staleness_steps` **0..5** | | `pause_mode` in_place/abort |
+| `trl` | `max_staleness` **0..5** | | `max_inflight_tasks` |
+| `prime_rl` | `max_off_policy_steps` **0..5** | | `target_lag` 1/2/4 |
+| `verl` | `staleness_threshold` **0..5** | ratio, not versions — see below | `require_batches` 1,2 |
+| `nemo_rl` | `max_staleness_versions` **0..5** | needs `sampler=windowed` pinned | `sample_freshest_first` |
+| `slime` | `update_weights_interval` **1..5** | 0 fails: it is an interval | `over_sampling_ratio` 1.0/1.5 |
+| `openrlhf` | `async_queue_size` **1..5** | asserts `> 0`; needs `partial_rollout_enable=true` | — |
+| `dressage` | `keep_versions` **1..5** | 0 means *off*, not on-policy | `max_partial_rollout_preempts` |
+| `verl_v1` | `num_warmup_batches` **1..5** x `max_off_policy_threshold` **1..5** | both assert `> 0` | `max_off_policy_strategy` drop/wait |
 
-`verl_v1` runs its full two-dimensional grid, 24 points. The other eleven run their
-primary knob only, 4 to 9 points each. About 100 runs total; the probe measured four
-concurrent runs at 26 s wall, so the sweep is roughly 15 minutes, not a long job.
+88 runs: eight presets x 6 points, three x 5 points, and `verl_v1`'s 5x5 grid. The probe
+measured four concurrent runs at 26 s, so this is minutes of wall clock, not a long job.
+
+### Two pins that are mandatory, not stylistic
+
+These are not optional panels. Without them the sweep is either illegal or inert, so
+`sweep.sh` sets them for those two presets and the figures say so.
+
+- **`openrlhf` requires `partial_rollout_enable=true`.** `openrlhf.py:30` asserts
+  `partial_rollout_enable or async_queue_size == 1`, so four of the five points crash
+  otherwise. Enabling it also flips `pause_mode` to `in_place` (line 80). That is a
+  confound, and it is unavoidable: in the real system the two are the same switch.
+- **`nemo_rl` requires `sampler=windowed`.** Under the default `in_order`, `horizon`
+  reads `max_lookahead_versions` instead (`nemo_rl.py:55`) and the L2 cancel never runs
+  (line 122), so sweeping `max_staleness_versions` would move nothing. `windowed` is
+  the sampler that actually implements a staleness window.
+
+### Where the shared axis is a unit lie
+
+`verl.staleness_threshold` is a **sample-overage ratio**, not a version count: it admits
+at most `int(B * (1 + threshold))` groups between syncs. Putting it on a 0..5 integer
+axis next to eleven version counts makes it *look* commensurable when it is not, and
+integer steps are coarse for a knob whose default is 2.0 and whose interesting region
+may be below 1. It is kept on the shared axis for comparability, and both the figure
+and the post must label its x axis as a ratio rather than as versions. If the 0..5
+sweep comes out flat or monotone-boring, the fallback is its own 0.2-step sweep, which
+is what `examples/analysis/verl_staleness_sweep.sh` already does today.
 
 Two presets are expected to produce flat figures, and that is the measurement:
 `skyrl`'s `max_staleness_steps` only drives admission quota and a violation counter and
 never discards, and `openrlhf`'s `async_queue_size` bounds in-flight batch lumps rather
 than per-sample age. A flat bar there is evidence the knob is not a staleness bound,
 which is what the post claims about them.
+
+The 0..5 ceiling is a claim that needs checking on the first run, not an assumption.
+The probe used `max_off_policy_threshold=8` to stand for "effectively unbounded" and
+saw zero drops there; if 5 is already unbounded on this workload, the top of several
+axes will be a flat plateau carrying no information. Likewise `num_warmup_batches`
+saturated past 4 in the probe (10701 -> 10627 s), so 5 is one point into its plateau by
+design — enough to show the saturation, not enough to waste the axis. If the first
+sweep shows a preset's whole 0..5 range sitting on one plateau, the fix is to re-centre
+*that* preset's axis and say so in the figure, not to quietly widen everything.
 
 ## Gates
 
