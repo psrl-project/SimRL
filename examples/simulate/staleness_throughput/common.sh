@@ -37,8 +37,7 @@ RUN_BASE="${RUN_BASE:-${ROOT_DIR}/outputs/simulate/staleness_throughput}"
 MAX_PARALLEL="${MAX_PARALLEL:-16}"
 REUSE="${REUSE:-true}"
 
-# At cap 38912 an unsplittable sequence forms a microbatch wider than the
-# training sweep covers, and the microbatch count exceeds its pipeline_slots
-# range. Every figure carries this, so a reader never takes the training
-# component for a measured number.
+# NOTE(claude): At cap 38912 an unsplittable sequence forms a microbatch wider
+# than the training sweep's domain, and the microbatch count exceeds its
+# pipeline_slots range too. Every figure carries this footnote.
 FOOTNOTE="${FOOTNOTE:-Training cost extrapolated beyond its fit domain (tokens, pipeline_slots). Rollout and staleness are in domain.}"

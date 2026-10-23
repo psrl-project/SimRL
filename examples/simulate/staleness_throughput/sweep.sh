@@ -29,9 +29,9 @@ OUT_DIR="${SCRIPT_DIR}/${PRESET_DIR%/}/figures"
 RUNS="${RUN_BASE}/${PRESET}"
 mkdir -p "${OUT_DIR}" "${RUNS}"
 
-# A rebuild of the engine mid-sweep kills running simulations with a native
-# signal that reads like an engine bug, and silently mixes binaries when it does
-# not, so the binary's identity is part of the result.
+# NOTE(claude): A rebuild of the engine mid-sweep kills running simulations with
+# a native signal that reads like an engine bug, and silently mixes binaries
+# when it does not, so the binary's identity is part of the result.
 SO="$(echo "${ROOT_DIR}"/srl/_engine_cpp*.so)"
 SO_MD5_BEFORE="$(md5sum "${SO}" | cut -d' ' -f1)"
 
@@ -88,7 +88,7 @@ for panel in "${PANEL_KEYS[@]}"; do
             echo "  [reuse] ${run_dir##*/}"
             continue
         fi
-        while (( $(jobs -rp | wc -l) >= MAX_PARALLEL )); do wait -n; done
+        while (( $(jobs -rp | wc -l) >= MAX_PARALLEL )); do wait -n || true; done
         echo "  [run]   ${run_dir##*/}"
         run_point "${run_dir}" "${overrides}" &
         pids+=("$!")
