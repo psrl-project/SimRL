@@ -24,10 +24,11 @@ two-clock text log (Phase 3), and a final empirical comparison pass (Phase 4).
   `/apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new`.
 - The conda env for `verl-new` is built fresh, purely from `verl-new`'s own install scripts —
   never cloned from the existing `verl-exp` env.
-- Any task that touches the shared Ray cluster or starts GPU work (Tasks 5, 10, 15) is a
-  **CHECKPOINT**: confirm `ray status` and `nvidia-smi` show the target node genuinely free, and get
-  explicit user go-ahead, before running anything. Never touch a node the user has flagged as
-  reserved for other work.
+- Any task that touches the shared Ray cluster or starts GPU work (Tasks 5 and 10 — Task 15 only
+  reads Task 10's already-collected logs and runs the CPU-only simulator/plotter/`srl-compare`, so
+  it is not a cluster checkpoint) is a **CHECKPOINT**: confirm `ray status` and `nvidia-smi` show the
+  target node genuinely free, and get explicit user go-ahead, before running anything. Never touch a
+  node the user has flagged as reserved for other work.
 - All three telemetry patches in Phase 2 are gated behind the `VERL_TELEMETRY_LOG_DIR` env var —
   no behavior change to training when it is unset.
 - `verl_aligned.sh` uses `POLICY=verl_v1`. `psrl_aligned.sh` is never modified by this plan.
