@@ -43,9 +43,10 @@ and `_gate_window()` returns `staleness_window` for `windowed`. At
 `max_staleness_versions=0` this is `0 >= 0 + 0`, true from the very first cohort,
 so admission never opens at all, for the entire run. This is a sixth instance of
 the axis-floor pattern the README's "Axis floors" table already documents for
-five other presets (`verl_v1`, `slime`, `openrlhf`, `dressage`), just reached
-through a livelock rather than an assertion, and only visible once `nemo_rl` is
-swept against `sampler=windowed`, which is itself a pin added for this preset.
+five knobs across four other presets (`verl_v1` twice, `slime`, `openrlhf`,
+`dressage`), just reached through a livelock rather than an assertion, and only
+visible once `nemo_rl` is swept against `sampler=windowed`, which is itself a
+pin added for this preset.
 `nemo_rl`'s figure is drawn from its remaining five points, `max_staleness_versions`
 1 through 5, built from the same `request.jsonl` streams `sweep.sh` already wrote
 for those points, through the standalone `srl-staleness-plot` CLI rather than by
@@ -172,9 +173,9 @@ under several different names.
 **psrl.** Fully informative, and the cleanest figure in the set. `staleness`
 caps the composition at exactly `S <= staleness` at every point (`maxS` tracks
 the knob 0 through 5 exactly) with `waste%` at 0.0 throughout. Span drops from
-the synchronous floor (21656s) to about 15800 to 15940s once the knob opens past
-0, and is already near that level at `staleness=1`. The bound is free in this
-regime: it reshapes which `S` level a token lands in without ever discarding one.
+the synchronous floor (21656s) to 16179s at `staleness=1` and settles to about
+15810 to 15940s from `staleness=2` on. The bound is free in this regime: it
+reshapes which `S` level a token lands in without ever discarding one.
 
 **verl_v1.** The two-knob grid (`num_warmup_batches` x `max_off_policy_threshold`,
 25 points) is the richest figure and reproduces the probe that set this regime.
@@ -182,8 +183,9 @@ At `num_warmup_batches=1` every `max_off_policy_threshold` panel's first point
 sits on the synchronous floor, because warmup=1 alone is tight enough to prevent
 rollout from ever running ahead (the same mechanism the design doc already
 documents). Once warmup is 2 or higher, tightening `max_off_policy_threshold`
-visibly grows a hatched `l3_stale` segment (up to 23.5% waste at warmup=1,
-threshold=4) while the composition narrows toward low `S`. Both axes are doing
+visibly grows a hatched `l3_stale` segment (up to 23.5% waste at
+`max_off_policy_threshold=1`, `num_warmup_batches=4`) while the composition
+narrows toward low `S`. Both axes are doing
 real work here, and the trade the harness exists to show, a tighter bound costing
 span and discarded tokens at once, is visible directly in the figure.
 
@@ -191,7 +193,7 @@ span and discarded tokens at once, is visible directly in the figure.
 count, and its axis label says so. `waste%` is 0.0 at every point: the ratio
 gates how many groups are admitted between syncs rather than discarding anything
 after the fact. The composition still broadens steadily from `S0`-only at 0 to a
-spread reaching `S6` at 5, and span drops from 21656s to about 15700 to 15810s
+spread reaching `S6` at 5, and span drops from 21656s to about 15670 to 15810s
 once the knob is above 0. Informative, with the caveat its own grid comment
 carries: the shared 0 to 5 axis is not commensurable with the other eleven
 presets' version counts.
@@ -255,7 +257,7 @@ reproduces the regime's synchronous floor exactly (span 21762s, `maxS=0`,
 identical numbers to `prime_rl`'s baseline and to every other preset's own
 degenerate point): one unit of lookahead is not enough room for staleness to
 develop when rollout is this far behind training. From 2 onward the knob is
-informative, `maxS` reaches 2 then 3, span drops to about 15560 to 15570s, and
+informative, `maxS` reaches 2 then 3, span drops to 15574s then settles to 15559s, and
 3, 4 and 5 are then byte-identical to each other (a smaller, partial plateau:
 this regime's natural staleness ceiling for `nemo_rl` is `S3`, and loosening the
 window past 3 has nothing further to bind). The axis genuinely is a staleness
@@ -266,7 +268,8 @@ synchronous-floor pattern.
 `l3_stale` segment appears at knob=0 (12.8% waste) and knob=2 through 5
 (9.1%, 8.7%, 5.0%, 5.7%), vanishing only at knob=1. `maxS` tracks the knob with
 a consistent one-off overshoot (knob=2 reaches `S3`, knob=5 reaches `S6`). Span
-is not monotone across the range (15290 to 15976s for knob 2 through 5), unlike
+is not monotone across the range (15976s at knob=3 down to 15290s at knob=4,
+back up to 15526s at knob=5), unlike
 the cleaner caps. Informative, and the figure that most directly shows a
 staleness bound charging a real, non-trivial, and non-monotonic cost.
 
