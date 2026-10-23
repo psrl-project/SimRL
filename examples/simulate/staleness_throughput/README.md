@@ -16,8 +16,13 @@ staleness they carried. Its hatched segments are tokens that were generated and
 then thrown away, keyed by why. The line across the blue is the effective
 training throughput.
 
-A knob that tightens staleness does not shorten the bar. It moves tokens across
-that line. That is the trade-off the figures exist to show.
+For a knob that bounds staleness by discarding (`roll`, `trl`, `verl_v1`'s
+`max_off_policy_threshold`), tightening it does not shorten the bar. It
+moves tokens across that line instead, since the discard happens after
+generation. For an admission-type knob (most of the rest), tightening it
+can shorten the bar too, since the knob gates how much rollout runs ahead
+in the first place, and span moves with it. Both are the trade-off the
+figures exist to show, by different mechanisms.
 
 The number above each bar is the simulated span. Every bar in a figure finished
 the same number of training steps on the same number of trajectories, so span is

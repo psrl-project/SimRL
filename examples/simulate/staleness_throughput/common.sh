@@ -38,6 +38,6 @@ MAX_PARALLEL="${MAX_PARALLEL:-16}"
 REUSE="${REUSE:-true}"
 
 # NOTE(claude): At cap 38912 an unsplittable sequence forms a microbatch wider
-# than the training sweep's domain, and the microbatch count exceeds its
-# pipeline_slots range too. Every figure carries this footnote.
+# than the training sweep's domain on four features at once (tokens,
+# activation_bytes, pipeline_slots, sum_squared_tokens). Every figure carries this footnote.
 FOOTNOTE="${FOOTNOTE:-Training cost extrapolated beyond its fit domain (tokens, activation_bytes, pipeline_slots, sum_squared_tokens). Rollout and staleness are in domain.}"

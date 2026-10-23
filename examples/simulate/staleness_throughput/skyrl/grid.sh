@@ -1,6 +1,5 @@
-# SkyRL: `max_staleness_steps` drives the admission quota and a violation
-# counter and never discards, so this axis is expected to move span without
-# bounding the composition. A flat figure here is the measurement.
+# SkyRL: `max_staleness_steps` drives an admission quota and a violation
+# counter but never discards, so `maxS` overshoots the knob at every point.
 PRESET=skyrl
 PRIMARY_KNOB=policy.max_staleness_steps
 PRIMARY_VALUES=(0 1 2 3 4 5)

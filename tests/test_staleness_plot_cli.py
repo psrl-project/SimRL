@@ -103,5 +103,36 @@ def test_a_run_with_no_consumed_trajectories_names_its_line(tmp_path):
     store.close()
     manifest = tmp_path / "points.tsv"
     manifest.write_text(f"\t0\t{tmp_path / 'livelocked'}\n", encoding="utf-8")
-    with pytest.raises(SystemExit, match="manifest line 1"):
+    with pytest.raises(SystemExit, match=r"no consumed trajectories.*manifest line 1"):
         load_manifest(manifest)
+
+
+def test_allow_unequal_consumption_prints_the_differing_counts(tmp_path, monkeypatch, capsys):
+    """Bypassing the gate must not claim a single count that is actually false."""
+    a = _run(tmp_path, "a")
+    store = JsonlStore(tmp_path / "b" / "logs", overwrite=True)
+    store.write("request", event="consume", t=5.0, staleness_true=0, generated=50)
+    store.close()
+    manifest = tmp_path / "points.tsv"
+    manifest.write_text(f"\t1\t{a}\n\t2\t{tmp_path / 'b'}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "srl-staleness-plot",
+            str(manifest),
+            "--primary-label",
+            "k",
+            "--title",
+            "t",
+            "--out",
+            str(tmp_path / "x.png"),
+            "--allow-unequal-consumption",
+        ],
+    )
+    from srl.cli.staleness_plot import main
+
+    main()
+    out = capsys.readouterr().out
+    assert "Points consumed different trajectory counts: [1, 2]." in out, f"Got {out!r}."
+    assert "Every point consumed" not in out, f"Got {out!r}."

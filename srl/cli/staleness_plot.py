@@ -29,9 +29,11 @@ def load_manifest(path: Path, logs_subdir: str = "logs") -> list[Panel]:
         list[Panel]: Panels in first-appearance order, bars in row order.
 
     Raises:
-        SystemExit: If a row is malformed or a run directory has no log stream.
-            This is operator error in a generated file, so it reports the
-            offending line rather than raising something a caller would catch.
+        SystemExit: If a row is malformed, a run directory has no log stream,
+            or a run's own telemetry cannot be reduced (for example a
+            livelocked point with no consumed trajectories). This is operator
+            error in a generated file, so it reports the offending line
+            rather than raising something a caller would catch.
     """
     grouped: dict[str, list] = {}
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -47,7 +49,7 @@ def load_manifest(path: Path, logs_subdir: str = "logs") -> list[Panel]:
         try:
             breakdown = staleness_breakdown(JsonlStore(logs))
         except ValueError as exc:
-            raise SystemExit(f"{exc} (manifest line {number}).") from exc
+            raise SystemExit(f"{str(exc).rstrip('.')} (manifest line {number}).") from exc
         grouped.setdefault(panel, []).append((label, breakdown))
     if not grouped:
         raise SystemExit(f"Manifest {path!s} holds no points.")
