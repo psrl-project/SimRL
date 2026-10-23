@@ -7,9 +7,10 @@ span sums to the fleet's full generation throughput, so tightening a staleness
 bound shows up as tokens moving from a consumed level into a discard bucket
 rather than disappearing from the accounting.
 
-`span` is `max(t)` over all request rows, which is what `SimResult.sim_time` and
-every existing sweep figure use, so a rate computed here is comparable with
-those.
+`span` is the later of `max(t)` over the request stream and the last training
+step's `end`, matching what `SimResult.sim_time` reaches once the clock is
+force-aligned to a training deadline after rollout has drained, so a rate
+computed here is comparable with `sim_time`-based rates.
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from dataclasses import dataclass
 
 from ..telemetry.store import JsonlStore
 
-# A discard row written before `drop_reason` existed, or by a path that supplies
-# none, still carries tokens that were really spent.
+# A discard row whose path supplies no reason still carries tokens that were
+# really spent.
 _UNKNOWN_REASON = "unknown"
 
 
@@ -29,8 +30,8 @@ class StalenessBreakdown:
     """One finished run, reduced to its staleness-by-throughput composition.
 
     Args:
-        span (float): Largest timestamp in the request stream, in seconds. The
-            denominator of every rate below.
+        span (float): Latest wall-clock instant the run reached, combining the
+            request and train streams. The denominator of every rate below.
         n_consumed (int): Trajectories that reached a training batch.
         consumed_tokens (dict[int, int]): `staleness_true` to generated tokens.
         wasted_tokens (dict[str, int]): `drop_reason` to generated tokens that
@@ -109,6 +110,12 @@ def staleness_breakdown(store: JsonlStore) -> StalenessBreakdown:
         elif event == "drop":
             reason = row.get("drop_reason") or _UNKNOWN_REASON
             wasted[reason] = wasted.get(reason, 0) + int(row.get("generated", 0) or 0)
+
+    # The last training step force-advances the clock to its own end even when
+    # rollout has already drained and writes no further request row, so the
+    # request stream alone can understate the run's true span.
+    for row in store.iter("train"):
+        span = max(span, float(row.get("end", 0.0) or 0.0))
 
     if not n_consumed:
         raise ValueError(f"Run at {store.root!s} has no consumed trajectories with a recorded staleness.")

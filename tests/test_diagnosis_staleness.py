@@ -88,6 +88,17 @@ def test_a_non_positive_span_is_refused(tmp_path):
         staleness_breakdown(_store(tmp_path, rows))
 
 
+def test_a_training_tail_past_the_last_request_row_extends_the_span(tmp_path):
+    """The clock can force-align to a training deadline with no request row at that instant."""
+    root = tmp_path / "tail_logs"
+    store = JsonlStore(root, overwrite=True)
+    store.write("request", event="consume", t=10.0, staleness_true=0, generated=100)
+    store.write("train", t=10.0, start=5.0, end=50.0)
+    store.close()
+    bd = staleness_breakdown(JsonlStore(root))
+    assert bd.span == 50.0, f"Got {bd.span!r}."
+
+
 def _bd(n_consumed):
     return StalenessBreakdown(
         span=10.0,
