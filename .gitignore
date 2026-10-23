@@ -39,6 +39,7 @@ tensorflow/my_graph/*
 # re-included after the broad file-type rules above.
 !docs/_static/img/*.png
 !assets/*.png
+!examples/simulate/staleness_throughput/*/figures/*.png
 
 # Common artifact directories
 **/checkpoints
