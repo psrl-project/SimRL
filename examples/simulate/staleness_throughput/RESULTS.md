@@ -310,11 +310,10 @@ the cleaner caps. Informative, and the figure that most directly shows a
 staleness bound charging a real, non-trivial, and non-monotonic cost.
 
 **prime_rl.** Genuinely flat, unlike `skyrl` and `openrlhf` above (their span
-and composition both move): every one of its own points sits on the exact
-same synchronous-floor number.
-`waste%` is 0.0 and `maxS` is 0 at every single point, knob 0 through 5: every
-bar is the regime's exact synchronous-floor number (span 21762s, all 32.5M
-tokens at `S0`), and the figure's legend never needs an `S1` entry. This is case
+and composition both move): `waste%` is 0.0 and `maxS` is 0 at every single
+point, knob 0 through 5, every bar is the regime's exact synchronous-floor
+number (span 21762s, all 32.5M tokens at `S0`), and the figure's legend
+never needs an `S1` entry. This is case
 (b), the regime never letting staleness develop, but for a specific, traceable
 reason rather than bad luck: reading `srl/policy/prime_rl.py`, `admit_quota`
 gates admission on `target_lag` (`dispatch_index >= train_version + target_lag`),
