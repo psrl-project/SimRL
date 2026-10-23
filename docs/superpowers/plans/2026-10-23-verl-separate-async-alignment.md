@@ -200,7 +200,23 @@ No commit — this is a generated data artifact, not source.
   (`dapo-math-17k.parquet`, `aime-2024.parquet`, already on disk, used unmodified).
 - Produces: the launch script Task 5 runs.
 
-- [ ] **Step 1: Write the script**
+- [ ] **Step 1: Create the `psrl-compare` branch**
+
+All of this plan's verl-new work (this task's launch script and Phase 2's telemetry patches) lands
+on one dedicated branch, cut from whatever commit the clone currently sits at, so nothing here ever
+touches `verl-new`'s own default branch:
+
+```bash
+cd /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new
+git checkout -b psrl-compare
+git rev-parse HEAD  # record this; it must equal a4b9354968705a441fb7da7367924b15b902e771
+```
+
+Expected: the printed commit equals `a4b9354968705a441fb7da7367924b15b902e771` (Task 1's pinned
+commit) — the branch starts exactly there. Task 6 continues on this same branch rather than
+creating a new one.
+
+- [ ] **Step 2: Write the script**
 
 Write `/apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_compare/qwen3_8b_separate_async_megatron.sh`:
 
@@ -331,11 +347,11 @@ python3 -m verl.trainer.main_ppo \
     trainer.default_local_dir="${CKPTS_DIR}" "$@" 2>&1 | tee "${OUTPUT_DIR}/${experiment_name}.log"
 ```
 
-- [ ] **Step 2: Make it executable**
+- [ ] **Step 3: Make it executable**
 
 Run: `chmod +x /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_compare/qwen3_8b_separate_async_megatron.sh`
 
-- [ ] **Step 3: Dry-run the config (no GPUs touched)**
+- [ ] **Step 4: Dry-run the config (no GPUs touched)**
 
 ```bash
 source /apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh
@@ -354,7 +370,7 @@ Expected: exits 0 and writes a fully resolved Hydra config to `/tmp/verl_cfg_dry
 `MissingMandatoryValue`/interpolation errors — this validates every override key name resolves
 against `ppo_trainer.yaml` before any GPU is touched.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit (on the `psrl-compare` branch created in Step 1)**
 
 ```bash
 cd /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new
@@ -428,7 +444,7 @@ Phase 2.
 
 ## Phase 2 — Instrument verl for telemetry
 
-### Task 6: Create the `telemetry-logging` branch and the telemetry sink module
+### Task 6: Write the telemetry sink module
 
 **Files:**
 - Create: `/apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/verl/utils/telemetry_sink.py`
@@ -441,12 +457,14 @@ Phase 2.
   snapshot: dict) -> None`, `maybe_start_stats_poller(server_handles, interval_s=2.0) -> ObjectRef |
   None`, `write_step_metrics(step, metrics: dict) -> None`. Consumed by Tasks 7, 8, 9.
 
-- [ ] **Step 1: Create the branch**
+- [ ] **Step 1: Confirm the `psrl-compare` branch (created in Task 4, Step 1) is checked out**
 
 ```bash
 cd /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new
-git checkout -b telemetry-logging a4b9354968705a441fb7da7367924b15b902e771
+git branch --show-current
 ```
+
+Expected: `psrl-compare`. This task continues on that same branch — do not create a new one.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -1014,7 +1032,7 @@ git commit -m "feat: mirror per-step training metrics to a local JSONL file when
 **Files:** none (execution only).
 
 **Interfaces:**
-- Consumes: Task 4's launch script, the `telemetry-logging` branch (Tasks 6-9).
+- Consumes: Task 4's launch script, the `psrl-compare` branch (Tasks 6-9).
 - Produces: the telemetry directory Phase 3's converter is built against.
 
 - [ ] **Step 1: Confirm the cluster is still free — STOP and ask before proceeding**
@@ -1047,12 +1065,12 @@ depends on staleness drops/waits), 2 `stats_r*.jsonl` files (one per rollout rep
 roughly `run_duration_s / 2` lines, and `train_metrics.jsonl` with exactly 5 lines (one per training
 step). Every `head -1 | python3 -m json.tool` call must print valid, pretty-printed JSON.
 
-- [ ] **Step 4: Commit the telemetry-logging branch**
+- [ ] **Step 4: Review the `psrl-compare` branch's commit log**
 
 ```bash
 cd /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new
-git log --oneline telemetry-logging -5
-git push -u origin telemetry-logging  # only if the user has a remote to push to and asks for it
+git log --oneline psrl-compare -8
+git push -u origin psrl-compare  # only if the user has a remote to push to and asks for it
 ```
 
 Report the branch's commit log back; do not push unless explicitly asked.
@@ -1224,7 +1242,7 @@ Write `srl/telemetry/verl_log.py`:
 simulator's own `JsonlStore` streams.
 
 Verl's telemetry (`verl/utils/telemetry_sink.py` in verl-new's
-`telemetry-logging` branch) already writes structured JSON with proper
+`psrl-compare` branch) already writes structured JSON with proper
 wall-clock timestamps, so unlike `psrl_log.py` this module does no text-log
 parsing and no UTC-offset inference: every source file already carries a
 `ts` field in the same clock.
