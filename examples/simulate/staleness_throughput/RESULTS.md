@@ -23,7 +23,7 @@ train cost   outputs/cost/qwen3_8b_tp2_pp3_thd/training_hydraulis.json
 At cap 38912 a single sequence cannot be split, so the longest microbatch and the
 microbatch count both sit outside the training cost model's fitted domain
 (`tokens`, `pipeline_slots`). Every figure carries that footnote. Training span in
-these runs is indicative; the rollout numbers and the staleness composition are
+these runs is indicative. The rollout numbers and the staleness composition are
 the claims the figures make.
 
 ## Sweep execution
@@ -52,7 +52,7 @@ pin added for this preset.
 for those points, through the standalone `srl-staleness-plot` CLI rather than by
 editing the harness. The consumption-set gate still holds: all five points consumed
 3072 trajectories, same as every other preset's points. `nemo_rl`'s grid, like the
-other five floor exceptions, needs its 0 point dropped from `PRIMARY_VALUES`; that
+other five floor exceptions, needs its 0 point dropped from `PRIMARY_VALUES`. That
 edit is intentionally left for whoever next revises the harness rather than folded
 into this measurement task.
 
@@ -247,7 +247,7 @@ version that would need dropping apparently lies beyond `keep=5`. This is the
 plateau the design doc's own caveat anticipated ("the 0..5 ceiling might already
 be past unbounded on some axes"), landing on `dressage`'s axis instead of the
 ones the spec guessed at. Per that caveat, the right next step is to re-centre
-just this preset's axis to a wider range, not to widen all twelve; that is future
+just this preset's axis to a wider range, not to widen all twelve. That is future
 work, out of scope here.
 
 **nemo_rl.** Three distinct regimes on one axis. `max_staleness_versions=0`
@@ -261,7 +261,7 @@ informative, `maxS` reaches 2 then 3, span drops to 15574s then settles to 15559
 3, 4 and 5 are then byte-identical to each other (a smaller, partial plateau:
 this regime's natural staleness ceiling for `nemo_rl` is `S3`, and loosening the
 window past 3 has nothing further to bind). The axis genuinely is a staleness
-bound; its lowest legal point just happens to coincide with this regime's known
+bound. Its lowest legal point just happens to coincide with this regime's known
 synchronous-floor pattern.
 
 **trl.** The most direct bound in the study, and the busiest figure: a hatched
@@ -283,12 +283,12 @@ gates admission on `target_lag` (`dispatch_index >= train_version + target_lag`)
 not on `max_off_policy_steps`, the knob this preset's grid actually sweeps.
 `max_off_policy_steps` only drives the publish-time cancel and the ready-pool
 sweep, both of which require something to already be stale before they can act.
-`target_lag` defaults to 1 and is left at that default here (the grid's own
-comment lists it as the deferred secondary knob). At `target_lag=1`, rollout
-being this far behind training means dispatch can never build up enough of a
-lead for anything to become stale, so `max_off_policy_steps`'s cancel horizon
+`target_lag` defaults to 1 and is left at that default here (the design spec's
+knob table lists it as this preset's deferred secondary knob). At `target_lag=1`,
+rollout being this far behind training means dispatch can never build up enough of
+a lead for anything to become stale, so `max_off_policy_steps`'s cancel horizon
 never has anything to catch at any of its six tested values. `max_off_policy_steps`
-genuinely is meant to be a staleness bound; this preset's own axis simply cannot
+genuinely is meant to be a staleness bound. This preset's own axis simply cannot
 reach it while its paired admission knob sits at the regime's synchronous floor.
 
 ## The two predictions checked
