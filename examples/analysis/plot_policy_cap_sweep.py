@@ -3,8 +3,9 @@ Plot SCG(S) against the router active cap, one figure per policy plus overlays.
 
 Reads the telemetry of finished `policy_cap_sweep.sh` runs and writes PNGs only. SCG
 is recomputed from the `consume` rows exactly as `SimResult.scg` defines it, because
-`SimResult` is not persisted. The span is `max(t)` over all rows, matching
-`SimResult.sim_time`.
+`SimResult` is not persisted. `span` comes from `srl.diagnosis.staleness`,
+which reconciles the request and train streams the same way `SimResult.sim_time`
+does.
 """
 
 from __future__ import annotations

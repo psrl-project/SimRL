@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 from ..diagnosis.staleness import StalenessBreakdown  # noqa: E402
-from .plots import _FIG_DPI  # noqa: E402
+from .plots import _BLUE_DARK, _FIG_DPI  # noqa: E402
 
 Point = tuple[str, StalenessBreakdown]
 Panel = tuple[str, Sequence[Point]]
@@ -34,7 +34,6 @@ Panel = tuple[str, Sequence[Point]]
 _WASTE_FILL = "#d9d7cf"
 _WASTE_EDGE = "#6f6d66"
 _WASTE_HATCHES = ("//", "xx", "..", "\\\\", "++")
-_BOUNDARY = "#104281"
 _BAR_WIDTH = 0.68
 
 
@@ -119,8 +118,10 @@ def plot_staleness_throughput(
     reasons = waste_reasons(panels)
     colours = plt.cm.Blues(np.linspace(0.35, 0.95, max(len(levels), 1)))
 
+    # +2.1 reserves room for the legend, which now sits outside the axes rather
+    # than inside a `tight_layout` squeeze, so it never overlaps the rightmost bar.
     n_bars = sum(len(points) for _, points in panels)
-    width = max(7.0, 1.1 * n_bars + 2.0 * len(panels))
+    width = max(7.0, 1.1 * n_bars + 2.0 * len(panels)) + 2.1
     fig, axes = plt.subplots(1, len(panels), figsize=(width, 5.6), sharey=True, squeeze=False)
     axes = axes[0]
     tallest_bar = 0.0
@@ -168,7 +169,7 @@ def plot_staleness_throughput(
         # The consumed ceiling is the effective training throughput, which a bar
         # height alone hides once a discard segment sits on top of it.
         edges = np.append(xs - _BAR_WIDTH / 2, xs[-1] + _BAR_WIDTH / 2)
-        ax.step(edges, np.append(consumed_top, consumed_top[-1]), where="post", color=_BOUNDARY, linewidth=1.6)
+        ax.step(edges, np.append(consumed_top, consumed_top[-1]), where="post", color=_BLUE_DARK, linewidth=1.6)
 
         for index in range(len(points)):
             ax.annotate(
@@ -194,16 +195,23 @@ def plot_staleness_throughput(
     # annotation below the panel title instead of crowding into it.
     axes[0].set_ylim(0, tallest_bar * 1.12 if tallest_bar > 0 else 1.0)
 
-    # Gathered across panels, since a segment may be absent from the first one.
+    # Gathered across panels, since a segment may be absent from the first one,
+    # but ordered explicitly (S levels ascending, then discard reasons, then the
+    # boundary line) rather than by whatever order a panel's own
+    # `get_legend_handles_labels()` happens to return.
     handles: dict[str, object] = {}
     for ax in axes:
         for handle, label in zip(*ax.get_legend_handles_labels()):
             handles.setdefault(label, handle)
-    handles["effective training throughput"] = plt.Line2D([], [], color=_BOUNDARY, linewidth=1.6)
+    ordered_labels = [f"S = {level}" for level in levels if f"S = {level}" in handles]
+    ordered_labels += [f"discarded: {reason}" for reason in reasons if f"discarded: {reason}" in handles]
+    ordered_labels.append("effective training throughput")
+    handles["effective training throughput"] = plt.Line2D([], [], color=_BLUE_DARK, linewidth=1.6)
     fig.legend(
-        list(handles.values()),
-        list(handles.keys()),
-        loc="center right",
+        [handles[label] for label in ordered_labels],
+        ordered_labels,
+        loc="center left",
+        bbox_to_anchor=(1.0, 0.5),
         frameon=False,
         title="bar segments",
     )
@@ -211,8 +219,8 @@ def plot_staleness_throughput(
     fig.suptitle(title)
     if footnote:
         fig.text(0.01, 0.01, footnote, fontsize=9, color="#555555", va="bottom")
-    fig.tight_layout(rect=(0.0, 0.04 if footnote else 0.0, 0.82, 0.95))
+    fig.tight_layout(rect=(0.0, 0.04 if footnote else 0.0, 1.0, 0.95))
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=_FIG_DPI)
+    fig.savefig(out_path, dpi=_FIG_DPI, bbox_inches="tight")
     plt.close(fig)
     return out_path

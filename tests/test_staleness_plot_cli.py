@@ -93,3 +93,15 @@ def test_the_consumption_gate_exits_cleanly_rather_than_crashing(tmp_path, monke
 
     with pytest.raises(SystemExit, match="consumed different trajectory counts"):
         main()
+
+
+def test_a_run_with_no_consumed_trajectories_names_its_line(tmp_path):
+    """A livelocked point must surface as a clean SystemExit, not an uncaught ValueError."""
+    root = tmp_path / "livelocked" / "logs"
+    store = JsonlStore(root, overwrite=True)
+    store.write("request", event="enqueue", t=1.0)
+    store.close()
+    manifest = tmp_path / "points.tsv"
+    manifest.write_text(f"\t0\t{tmp_path / 'livelocked'}\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="manifest line 1"):
+        load_manifest(manifest)

@@ -48,9 +48,11 @@ Staleness also cannot exceed the number of versions in the run, so a short
 - `log_exclude=instance,rollout_step` on every run, and the instance stream
   deleted after. The shared filesystem quota is chronically full and a sweep that
   fills it produces truncated traces that look like failures.
-- At cap 38912 the training cost is extrapolated on `tokens` and
-  `pipeline_slots`. Every figure carries the footnote. Treat the training
-  component as indicative. The rollout and staleness numbers are the claims.
+- At cap 38912 the training cost is extrapolated on `tokens`, `activation_bytes`,
+  `pipeline_slots`, and `sum_squared_tokens` (the worst exceedance, 8.27x its
+  fitted bound, since it is the quadratic attention term). Every figure
+  carries the footnote. Treat the training component as indicative. The
+  rollout and staleness numbers are the claims.
 
 ## Two mandatory pins
 
@@ -65,7 +67,7 @@ Not optional panels. Without them the sweep is illegal or inert.
 
 ## Axis floors
 
-Five axes start at 1, each because 0 is rejected or inverted. Validated by
+Six axes start at 1, each because 0 is rejected, inverted, or livelocks. Validated by
 running the endpoints. Do not change one without re-running it.
 
 | preset | knob | why not 0 |
@@ -75,6 +77,7 @@ running the endpoints. Do not change one without re-running it.
 | `slime` | `update_weights_interval` | a loop interval, fails at 0 |
 | `openrlhf` | `async_queue_size` | asserts `> 0` |
 | `dressage` | `keep_versions` | 0 means the filter is **off**, the loose end |
+| `nemo_rl` | `max_staleness_versions` | `windowed`'s admission gate never opens, livelocks |
 
 `verl.staleness_threshold` shares the 0..5 range but is a sample-overage ratio,
 not a version count. Its axis says so, and it is not commensurable with the

@@ -20,11 +20,14 @@ rollout cost composed, kernel table outputs/profile/qwen3_8b/kernel_tp1/kernel
 train cost   outputs/cost/qwen3_8b_tp2_pp3_thd/training_hydraulis.json
 ```
 
-At cap 38912 a single sequence cannot be split, so the longest microbatch and the
-microbatch count both sit outside the training cost model's fitted domain
-(`tokens`, `pipeline_slots`). Every figure carries that footnote. Training span in
-these runs is indicative. The rollout numbers and the staleness composition are
-the claims the figures make.
+At cap 38912 a single sequence cannot be split, so the longest microbatch, the
+microbatch count, the activation footprint, and the quadratic attention term
+all sit outside the training cost model's fitted domain (`tokens`,
+`pipeline_slots`, `activation_bytes`, `sum_squared_tokens`, the last
+exceeding its fitted bound by 8.27x, the worst of the four). Every figure
+carries that footnote. Training span in these runs is indicative. The
+rollout numbers and the staleness composition are the claims the figures
+make.
 
 ## Sweep execution
 
@@ -52,9 +55,9 @@ pin added for this preset.
 for those points, through the standalone `srl-staleness-plot` CLI rather than by
 editing the harness. The consumption-set gate still holds: all five points consumed
 3072 trajectories, same as every other preset's points. `nemo_rl`'s grid, like the
-other five floor exceptions, needs its 0 point dropped from `PRIMARY_VALUES`. That
-edit is intentionally left for whoever next revises the harness rather than folded
-into this measurement task.
+other five floor exceptions, has had its 0 point dropped from `PRIMARY_VALUES`
+in the final fix wave of this task, once the harness's own `load_manifest` was
+also hardened to refuse a livelocked point cleanly rather than crash on it.
 
 Every other preset's 6 (or 5) points consumed exactly 3072 trajectories each,
 satisfying `sweep.sh`'s consumption-set gate. The engine `.so` md5 was unchanged
@@ -218,21 +221,28 @@ tracks the knob exactly (1 through 5) with 0.0 waste throughout, and span
 improves only modestly across the range, 17428s down to about 16825s. Informative,
 the mildest of the clean version-cap presets in this regime.
 
-**skyrl.** Flat, and flat for the predicted reason. `waste%` is 0.0 at every
-point, and `maxS` exceeds the knob value at every point past 0 (knob=1 reaches
-`S2`, knob=5 reaches `S6`), proving `max_staleness_steps` never actually caps the
-composition at its own value. This matches the grid's own description: the knob
-drives an admission quota and a violation counter, and never discards. Staleness
-does develop here (`maxS` is well above 0 once the knob opens), so this is not
-the regime failing to let staleness develop. It is the mechanism itself not being
-a staleness bound, exactly as the spec predicted.
+**skyrl.** Confirmed non-bound, but not a flat figure. `waste%` is 0.0 at
+every point, and that absence of discarding, not whether `maxS` exceeds the
+knob, is what actually separates this preset from a genuine bound: `trl`
+also slightly exceeds its own knob (see below) but does discard. Span and
+throughput both move substantially (21762s at knob=0 to between 15014s and
+15282s from knob=1 on, a real change in bar height), because the knob still
+drives an admission quota even though it never caps the composition once
+rollout is admitted. This matches the grid's own description. Staleness does
+develop here (`maxS` is well above 0 once the knob opens), so this is not the
+regime failing to let staleness develop. It is the mechanism itself not being
+a staleness bound, exactly as the spec predicted, just not a bound that also
+holds span constant.
 
-**openrlhf.** Same shape as `skyrl` and the same conclusion. `waste%` is 0.0 at
-every point, and `maxS` exceeds the knob at every point (knob=2 reaches `S4`,
-knob=5 reaches `S6`), consistent with `async_queue_size` bounding in-flight batch
-lumps rather than per-sample age. Staleness clearly develops (up to `S6`), so
-this is case (a), not case (b): a confirmed non-bound, not a starved regime. The
-mandatory `partial_rollout_enable=true` pin is exercised at every point.
+**openrlhf.** Same shape as `skyrl` and the same conclusion: a confirmed
+non-bound, not a flat figure. `waste%` is 0.0 at every point (the actual
+distinguishing feature from a genuine bound), consistent with
+`async_queue_size` bounding in-flight batch lumps rather than per-sample age.
+Span moves too (16620s at knob=1 down to between 15080s and 15176s from
+knob=2 on), the same admission effect `skyrl` shows. Staleness clearly
+develops (up to `S6`), so this is case (a), not case (b): a confirmed
+non-bound. The mandatory `partial_rollout_enable=true` pin is exercised at
+every point.
 
 **dressage.** The one preset whose entire swept range is a literal plateau: all
 five points (`keep_versions` 1 through 5) are byte-identical, span 14854s,
@@ -251,8 +261,11 @@ just this preset's axis to a wider range, not to widen all twelve. That is futur
 work, out of scope here.
 
 **nemo_rl.** Three distinct regimes on one axis. `max_staleness_versions=0`
-livelocks outright (see "Sweep execution" above), a floor exception like five
-other presets already carry, just discovered here. `max_staleness_versions=1`
+livelocked outright in the original 88-point sweep (see "Sweep execution"
+above), a floor exception like five other presets already carry, just
+discovered here. The grid's own `PRIMARY_VALUES` has since been corrected to
+drop that value, matching the other five floor exceptions.
+`max_staleness_versions=1`
 reproduces the regime's synchronous floor exactly (span 21762s, `maxS=0`,
 identical numbers to `prime_rl`'s baseline and to every other preset's own
 degenerate point): one unit of lookahead is not enough room for staleness to
@@ -293,10 +306,13 @@ reach it while its paired admission knob sits at the regime's synchronous floor.
 
 ## The two predictions checked
 
-The spec predicted `skyrl` and `openrlhf` would be flat. Both are, and for the
-predicted reason: zero waste at every point, and `maxS` exceeding the swept knob
-at every point past the floor, confirming each knob is an admission quota or an
-in-flight cap rather than an age-based ceiling. `prime_rl` is also flat, but the
+The spec predicted `skyrl` and `openrlhf` would be flat. Neither is: both
+show the admission quota moving span substantially once the knob opens. What
+the spec actually meant, and what holds, is that neither knob ever caps the
+staleness composition: zero waste at every point in both, confirming each
+knob is an admission quota or an in-flight cap rather than an age-based
+ceiling. The spec's own word choice, "flat," conflated these two claims.
+`prime_rl` is also flat, but the
 spec did not predict it, and the mechanism is different: its own cancel-horizon
 knob never gets the chance to bind because the regime's synchronous floor is
 reached through a different, un-swept parameter (`target_lag`) left at its

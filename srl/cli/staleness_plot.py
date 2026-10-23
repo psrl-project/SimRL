@@ -44,7 +44,11 @@ def load_manifest(path: Path, logs_subdir: str = "logs") -> list[Panel]:
         logs = Path(run_dir) / logs_subdir
         if not (logs / "request.jsonl").is_file():
             raise SystemExit(f"No request stream under {run_dir!s} (manifest line {number}).")
-        grouped.setdefault(panel, []).append((label, staleness_breakdown(JsonlStore(logs))))
+        try:
+            breakdown = staleness_breakdown(JsonlStore(logs))
+        except ValueError as exc:
+            raise SystemExit(f"{exc} (manifest line {number}).") from exc
+        grouped.setdefault(panel, []).append((label, breakdown))
     if not grouped:
         raise SystemExit(f"Manifest {path!s} holds no points.")
     return [(panel, points) for panel, points in grouped.items()]
@@ -96,7 +100,11 @@ def main() -> None:
             share = 100.0 * bd.total_wasted_tokens / max(1, bd.total_consumed_tokens + bd.total_wasted_tokens)
             spread = " ".join(f"S{s}:{n / 1e6:.1f}M" for s, n in sorted(bd.consumed_tokens.items()))
             print(f"  {panel:<12}{label:>8}{bd.span:>10.0f}{bd.throughput:>9.0f}{share:>8.1f}  {spread}")
-    print(f"\n  Every point consumed {every_point[0][1].n_consumed} trajectories.")
+    counts = {bd.n_consumed for _, bd in every_point}
+    if len(counts) == 1:
+        print(f"\n  Every point consumed {every_point[0][1].n_consumed} trajectories.")
+    else:
+        print(f"\n  Points consumed different trajectory counts: {sorted(counts)}.")
     print(f"  {path}")
 
 
