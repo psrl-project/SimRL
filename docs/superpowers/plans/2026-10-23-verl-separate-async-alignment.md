@@ -329,7 +329,11 @@ export VERL_LOGGING_LEVEL=${VERL_LOGGING_LEVEL:-INFO}
 export VLLM_USE_V1=1
 
 HF_MODEL_PATH=${HF_MODEL_PATH:-/apdcephfs_zwfy10_303541817/share_303541817/lhy/models/Qwen3-8B}
-DIST_CKPT_PATH=${DIST_CKPT_PATH:-/apdcephfs_zwfy10_303541817/share_303541817/lhy/models/mcore_ckpt_verl_new/Qwen3-8B}
+# converter_hf_to_mcore.py always nests the distributed checkpoint under
+# <output_path>/model/dist_ckpt (checkpoint = output / "model" / "dist_ckpt"
+# in scripts/converter_hf_to_mcore.py) -- the training mesh must point there,
+# not at the converter's --output_path itself.
+DIST_CKPT_PATH=${DIST_CKPT_PATH:-/apdcephfs_zwfy10_303541817/share_303541817/lhy/models/mcore_ckpt_verl_new/Qwen3-8B/model/dist_ckpt}
 
 TRAIN_FILES=${TRAIN_FILES:-/jizhicfs/lhy/data/dapo/dapo-math-17k.parquet}
 VAL_FILES=${VAL_FILES:-/jizhicfs/lhy/data/dapo/aime-2024.parquet}
