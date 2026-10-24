@@ -345,6 +345,12 @@ Write `/apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_co
 #     ray_kwargs.ray_init.runtime_env override point, which verl's own
 #     main_ppo.py merges on top of its defaults. Empty string when unset,
 #     matching telemetry_sink.py's own "empty means disabled" convention.
+#   - actor_rollout_ref.rollout.disable_log_stats=False (default True): the
+#     stats poller's vLLMHttpServer.snapshot() (Task 8) requires this to be
+#     False -- vllm_async_server.py raises if it isn't. Needed any time the
+#     poller runs, i.e. whenever VERL_TELEMETRY_LOG_DIR is set; harmless
+#     otherwise, so left on unconditionally rather than threaded through a
+#     second env-var check.
 set -xeuo pipefail
 
 export VERL_LOGGING_LEVEL=${VERL_LOGGING_LEVEL:-INFO}
@@ -437,6 +443,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=12800 \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.enforce_eager=True \
+    actor_rollout_ref.rollout.disable_log_stats=False \
     actor_rollout_ref.rollout.max_num_batched_tokens=12800 \
     actor_rollout_ref.rollout.checkpoint_engine.backend=nccl \
     reward.reward_manager.name=dapo \
