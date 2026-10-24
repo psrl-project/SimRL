@@ -336,6 +336,15 @@ Write `/apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_co
 #     correctness -- Phase 4's timing comparison against PSRL (which is not
 #     known to run eager) should note this when interpreting generation-time
 #     deltas.
+#   - +ray_kwargs.ray_init.runtime_env.env_vars.VERL_TELEMETRY_LOG_DIR: every
+#     telemetry write (Phase 2) happens inside Ray actor processes, not the
+#     launching shell, and Ray's own default runtime_env forwarding list
+#     (PPO_RAY_RUNTIME_ENV in verl/trainer/constants_ppo.py) does not include
+#     this var, so merely exporting it beforehand never reaches the actors.
+#     This forwards it explicitly through the documented
+#     ray_kwargs.ray_init.runtime_env override point, which verl's own
+#     main_ppo.py merges on top of its defaults. Empty string when unset,
+#     matching telemetry_sink.py's own "empty means disabled" convention.
 set -xeuo pipefail
 
 export VERL_LOGGING_LEVEL=${VERL_LOGGING_LEVEL:-INFO}
@@ -382,6 +391,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.v1.sampler.max_off_policy_strategy=wait \
     transfer_queue.enable=True \
     transfer_queue.backend.SimpleStorage.total_storage_size=100000 \
+    +ray_kwargs.ray_init.runtime_env.env_vars.VERL_TELEMETRY_LOG_DIR="${VERL_TELEMETRY_LOG_DIR:-}" \
     data.train_files="${TRAIN_FILES}" \
     data.val_files="${VAL_FILES}" \
     data.prompt_key=prompt \
