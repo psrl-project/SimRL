@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from ..component.rollout.engine import Request
-from .base import Cancel, PauseMode, PolicyContext, SimState, StalenessPolicy
+from .base import Cancel, CompleteAction, PauseMode, PolicyContext, SimState, StalenessPolicy
 from .rules import FIFO, VersionWindow
 
 
 class TRLPolicy(StalenessPolicy):
     """
     TRL's online trainer: a single admitted-but-unconsumed task queue, drained
-    FIFO, bounded by `max_inflight_tasks`. The version window sweeps the ready
-    pool at every publish, which is equivalent to checking at dequeue since
-    this simulator publishes once per training step.
+    FIFO, bounded by `max_inflight_tasks`. `on_group_complete` re-applies the
+    same version check the moment a group finishes, since `train_version` by
+    then already reflects the latest published weights. This closes the gap a
+    publish-only sweep leaves: a group can become `status=="done"` strictly
+    between one `on_publish` call and the next `take_batch`, already past
+    `max_staleness` against the version already published, with no sweep due
+    until the next publish, which may arrive only after FIFO has consumed it.
 
     TRL actually drops individual stale samples once a group has been
     disaggregated into single completions. This simulator keeps prompt groups
@@ -46,6 +50,13 @@ class TRLPolicy(StalenessPolicy):
 
     def on_admit(self, group: list[Request], st: SimState) -> None:
         self._buffered += 1
+
+    def on_group_complete(self, group: list[Request], st: SimState) -> CompleteAction:
+        if st.train_version - group[0].v_traj > self.max_staleness:
+            self._buffered -= 1
+            self.gc_dropped += 1
+            return CompleteAction.DROP
+        return CompleteAction.KEEP
 
     def peek_batch(self, st: SimState) -> list[Request] | None:
         return FIFO().select(st.ready_groups, st.batch_size)

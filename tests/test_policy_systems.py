@@ -709,35 +709,74 @@ class TestTRLVersionWindow:
         assert policy.gc_dropped == 1
 
 
-class TestTRLIntegration:
-    def test_a_straggler_is_dropped_and_refilled_once_it_goes_stale(self) -> None:
-        workload = GroupedWorkload.from_lengths([150], [3000] + [50] * 11)
-        cfg = SimConfig(
-            batch_size=2, n_versions=20, workload=workload, ingress_window_groups=24, staleness_horizon=0
-        )
-        policy = TRLPolicy(max_staleness=0, max_inflight_tasks=24)
-        sim = Simulator(
-            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
-            training_cost=TrainingCostModel(FixedTrainingLatency(0.1), FixedTrainingMemory(0)),
-            policy=policy,
-            cfg=cfg,
-        )
-        result = sim.run()
+class TestTRLCompletionCheck:
+    """VersionWindow only sweeps `status=="done"` groups at `on_publish`. A group
+    can become done strictly between one publish and the next `take_batch` call,
+    already past `max_staleness` relative to the already-published `train_version`,
+    with no sweep running in that gap to catch it before FIFO consumes it."""
 
-        assert not result.livelocked
-        assert policy.gc_dropped > 0, "some group must go stale under a zero-tolerance window."
-        dropped_ids = {r.group_id for r in result.dropped}
-        consumed_ids = {r.group_id for r in result.consumed}
-        assert len(dropped_ids) == policy.gc_dropped
-        assert dropped_ids.isdisjoint(consumed_ids), "a dropped group is never also trained on."
-        # Not asserting global strictness: `VersionWindow` (TRL's cancel rule,
-        # srl/policy/rules/sampling.py) is restricted to status=="done", since
-        # TRL has no runtime-cancel primitive of its own -- a straggler still
-        # generating when it goes stale keeps running and is eventually
-        # consumed however stale it has become by then. What TRL actually
-        # guarantees is that every *ready* stale group gets dropped before
-        # consumption, which `gc_dropped > 0` and the disjointness check above
-        # already cover.
+    def test_a_group_that_completes_already_stale_is_dropped_immediately(self) -> None:
+        policy = TRLPolicy(max_staleness=2, max_inflight_tasks=10)
+        group = _req_group(1)  # v_traj=0
+        st = SimState(batch_size=2, group_size=1, train_version=3)
+
+        action = policy.on_group_complete(group, st)
+
+        assert action == CompleteAction.DROP
+        assert policy.gc_dropped == 1
+
+    def test_a_group_that_completes_exactly_at_the_budget_is_kept(self) -> None:
+        policy = TRLPolicy(max_staleness=2, max_inflight_tasks=10)
+        group = _req_group(1)  # v_traj=0
+        st = SimState(batch_size=2, group_size=1, train_version=2)
+
+        action = policy.on_group_complete(group, st)
+
+        assert action == CompleteAction.KEEP
+        assert policy.gc_dropped == 0
+
+
+class TestTRLGuaranteesTheBoundEndToEnd:
+    """Scripts the exact race a real 88-point sweep's telemetry exposed: a
+    group's last member finished at t=4175.1, strictly between the publish(v=3)
+    sweep at t=3909.5 (which ran too early, the group was not yet "done") and
+    the next consumption at t=4970.6 (which had no sweep due before it). The
+    group was consumed with staleness 3 against a configured max of 2.
+
+    This proves the fix end to end through the policy's own hooks -- admit,
+    publish, complete, publish again -- without depending on Simulator timing
+    to reproduce the race, which proved unreliable to script at full-simulation
+    scale (see the plan's TRL fix notes for background)."""
+
+    def test_a_group_that_finishes_between_two_publishes_is_never_consumed_stale(self) -> None:
+        policy = TRLPolicy(max_staleness=2, max_inflight_tasks=10)
+        straggler = _req_group(1)  # v_traj=0
+        quick = _req_group(2)  # v_traj=0
+        policy.on_admit(straggler, SimState(batch_size=2, group_size=1, train_version=0))
+        policy.on_admit(quick, SimState(batch_size=2, group_size=1, train_version=0))
+
+        # Publish v=1, v=2: the ready pool is still empty, nothing to sweep.
+        for v in (1, 2):
+            assert policy.on_publish(v, SimState(train_version=v, groups=())) == []
+
+        # `quick` finishes now, at train_version=2: staleness 2-0=2, within budget.
+        at_v2 = SimState(batch_size=2, group_size=1, train_version=2)
+        assert policy.on_group_complete(quick, at_v2) == CompleteAction.KEEP
+
+        # Publish v=3 while `straggler` is still generating (status != "done"),
+        # so VersionWindow's status=="done" sweep correctly skips it here.
+        assert policy.on_publish(3, SimState(train_version=3, groups=())) == []
+
+        # `straggler` finishes now: strictly after publish(3) already ran, with
+        # no publish due before the next take_batch would otherwise consume it.
+        at_v3 = SimState(batch_size=2, group_size=1, train_version=3)
+        action = policy.on_group_complete(straggler, at_v3)
+
+        assert action == CompleteAction.DROP, (
+            "the gap a publish-only sweep misses: straggler finished already "
+            "stale, strictly between one publish and the next"
+        )
+        assert policy.gc_dropped == 1
 
 
 class TestPrimeRLAdmission:
