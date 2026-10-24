@@ -32,7 +32,11 @@ two-clock text log (Phase 3), and a final empirical comparison pass (Phase 4).
   sidesteps that CUDA mismatch entirely; the residual risk is verl-new's HEAD-of-main Python code
   expecting slightly newer vllm/megatron APIs than this cloned stack provides — a Python-level
   compatibility question, not a CUDA/build one, and Task 2 is written to surface and resolve that
-  kind of gap explicitly rather than force an upgrade.
+  kind of gap explicitly rather than force an upgrade. One such gap did surface at real-run time
+  (Task 5): the cloned env carried `cupy-cuda13x` (CUDA 13.0 runtime), a latent mismatch that
+  PSRL's own fork never exercises but `verl-new`'s NCCL checkpoint-sync path does. Swapped in place
+  for `cupy-cuda12x==14.1.1` (same version, correct CUDA major series) — not reverted, this is now
+  part of the env's correct state.
 - Any task that touches the shared Ray cluster or starts GPU work (Tasks 5 and 10 — Task 15 only
   reads Task 10's already-collected logs and runs the CPU-only simulator/plotter/`srl-compare`, so
   it is not a cluster checkpoint) is a **CHECKPOINT**: confirm `ray status` and `nvidia-smi` show the
@@ -323,6 +327,15 @@ Write `/apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_co
 #     crashes (simple_storage_bootstrap.py divides by it unconditionally).
 #     Not a PSRL-alignment choice -- a workaround for this gap, matching the
 #     value two other example scripts in this checkout already use.
+#   - actor_rollout_ref.rollout.enforce_eager=True (default False): without
+#     it, vLLM's sleep-mode wake-up after a weight sync hits a PyTorch
+#     CUDACachingAllocator internal assert during CUDA-graph recapture
+#     ("please report a bug to PyTorch"). rollout.yaml's own comment already
+#     flags the underlying tension: "cudagraph in inference engine can not
+#     be offloaded during update policy." This trades rollout throughput for
+#     correctness -- Phase 4's timing comparison against PSRL (which is not
+#     known to run eager) should note this when interpreting generation-time
+#     deltas.
 set -xeuo pipefail
 
 export VERL_LOGGING_LEVEL=${VERL_LOGGING_LEVEL:-INFO}
@@ -413,6 +426,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=True \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=12800 \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
+    actor_rollout_ref.rollout.enforce_eager=True \
     actor_rollout_ref.rollout.max_num_batched_tokens=12800 \
     actor_rollout_ref.rollout.checkpoint_engine.backend=nccl \
     reward.reward_manager.name=dapo \
