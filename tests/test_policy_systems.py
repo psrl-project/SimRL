@@ -736,6 +736,20 @@ class TestTRLCompletionCheck:
         assert policy.gc_dropped == 0
 
 
+class TestTRLReplacesGroupsDroppedAtCompletion:
+    """The real-regime sweep's `trl` points livelocked after the completion-time
+    fix landed: `on_group_complete`'s DROP routes through
+    `_grant_drop_replacements` -> `replacement_groups_on_drop`, a different
+    mechanism than the pre-existing `on_publish`/`VersionWindow` path (which
+    replenishes via `Cancel(..., REPLACE)` instead). The base class default is
+    0, so every completion-time drop was permanently shrinking the dataset."""
+
+    def test_a_completion_time_drop_is_credited_like_rolls_expiry(self) -> None:
+        policy = TRLPolicy(max_staleness=2, max_inflight_tasks=10)
+        straggler = _req_group(1)
+        assert policy.replacement_groups_on_drop([straggler], SimState()) == 1
+
+
 class TestTRLGuaranteesTheBoundEndToEnd:
     """Scripts the exact race a real 88-point sweep's telemetry exposed: a
     group's last member finished at t=4175.1, strictly between the publish(v=3)

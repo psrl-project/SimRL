@@ -58,6 +58,16 @@ class TRLPolicy(StalenessPolicy):
             return CompleteAction.DROP
         return CompleteAction.KEEP
 
+    def replacement_groups_on_drop(
+        self,
+        groups: list[list[Request]],
+        st: SimState,
+    ) -> int:
+        """TRL replaces groups permanently removed by `on_group_complete`, the
+        same way the pre-existing `on_publish` sweep already does through
+        `Cancel(..., REPLACE)` -- a separate mechanism this hook does not cover."""
+        return len(groups)
+
     def peek_batch(self, st: SimState) -> list[Request] | None:
         return FIFO().select(st.ready_groups, st.batch_size)
 
