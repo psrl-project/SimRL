@@ -816,7 +816,7 @@ def maybe_start_stats_poller(server_handles: list, interval_s: float = 2.0):
     return None when telemetry is disabled.
 
     Fire-and-forget: the returned ref is never awaited. A short research run
-    does not need an explicit stop; the poller dies with the Ray cluster.
+    does not need an explicit stop, since the poller dies with the Ray cluster.
     """
     if telemetry_dir() is None:
         return None
