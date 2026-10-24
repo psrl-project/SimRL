@@ -22,8 +22,17 @@ two-clock text log (Phase 3), and a final empirical comparison pass (Phase 4).
 - `verl-new` is cloned from `https://github.com/verl-project/verl`, pinned to commit
   `a4b9354968705a441fb7da7367924b15b902e771`. It is already cloned at
   `/apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new`.
-- The conda env for `verl-new` is built fresh, purely from `verl-new`'s own install scripts —
-  never cloned from the existing `verl-exp` env.
+- The conda env for `verl-new` is created by cloning `psrl_smg_new` (the env `env/psrl.sh`
+  activates, already proven on this node's driver/CUDA: `torch 2.11.0+cu128`,
+  `vllm 0.22.1.dev0+...cu128`, `megatron-core 0.19.0`), then swapping only the editable `verl`
+  install from PSRL's fork (`psrl/third_party/verl`) for the fresh `verl-new` checkout. An earlier
+  attempt to build a fully from-scratch env via `verl-new`'s own install script failed: PyPI's
+  `vllm==0.24.0` resolves to `torch+cu130`, which this node's driver (535.247.01) cannot run, and
+  vLLM's v0.24.0 release ships no `cu128` wheel to substitute. Cloning the already-working env
+  sidesteps that CUDA mismatch entirely; the residual risk is verl-new's HEAD-of-main Python code
+  expecting slightly newer vllm/megatron APIs than this cloned stack provides — a Python-level
+  compatibility question, not a CUDA/build one, and Task 2 is written to surface and resolve that
+  kind of gap explicitly rather than force an upgrade.
 - Any task that touches the shared Ray cluster or starts GPU work (Tasks 5 and 10 — Task 15 only
   reads Task 10's already-collected logs and runs the CPU-only simulator/plotter/`srl-compare`, so
   it is not a cluster checkpoint) is a **CHECKPOINT**: confirm `ray status` and `nvidia-smi` show the
@@ -55,10 +64,26 @@ Run: `git -C /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new rev-parse 
 Expected: `a4b9354968705a441fb7da7367924b15b902e771` (already the case; this step just re-confirms
 nothing has changed the checkout since cloning).
 
-- [ ] **Step 2: Create the conda env**
+- [ ] **Step 2: Create the conda env by cloning `psrl_smg_new`**
 
-Run: `conda create -n verl-new python=3.12 -y`
-Expected: environment created at `/apdcephfs_zwfy10/share_303541817/lhy/anaconda3/envs/verl-new`.
+A prior attempt created an empty `verl-new` env with `conda create -n verl-new python=3.12 -y` and
+nothing else — remove it first (`conda create --clone` refuses to target a name that already
+exists):
+
+```bash
+conda env remove -n verl-new -y
+```
+
+Then clone the already-working env. This copies a large conda env over fuse-mounted storage and
+may take a while — let it run to completion rather than interrupting:
+
+```bash
+conda create -n verl-new --clone psrl_smg_new -y
+```
+
+Expected: environment created at `/apdcephfs_zwfy10/share_303541817/lhy/anaconda3/envs/verl-new`,
+with `torch`, `vllm`, `megatron-core`, `ray` etc. already present (inherited from
+`psrl_smg_new`) — verified in Task 2, not here.
 
 - [ ] **Step 3: Write the env file**
 
@@ -107,45 +132,70 @@ to. If it turns out to be tracked, commit only `env/verl_new.sh` with message
 
 ---
 
-### Task 2: Install verl-new's dependencies and verl itself
+### Task 2: Swap the editable `verl` install for the fresh `verl-new` checkout
 
 **Files:**
-- Modify (install into, not edit): the `verl-new` conda env created in Task 1.
+- Modify (install into, not edit): the `verl-new` conda env cloned in Task 1.
 
 **Interfaces:**
-- Consumes: `/apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh` (Task 1).
-- Produces: an env with `verl`, `vllm==0.24.0`, Megatron-LM, and TransformerEngine importable —
-  consumed by every later task that runs anything in this env.
+- Consumes: `/apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh` (Task 1); the cloned
+  env's pre-existing `torch 2.11.0+cu128`, `vllm 0.22.1.dev0+...cu128`, `megatron-core 0.19.0`.
+- Produces: an env where `verl` resolves to the `verl-new` checkout (not PSRL's fork) while every
+  other package stays exactly what `psrl_smg_new` already had — consumed by every later task that
+  runs anything in this env.
 
-- [ ] **Step 1: Install the GPU stack (Megatron, no SGLang — vLLM only)**
-
-```bash
-source /apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh
-cd /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new
-USE_MEGATRON=1 USE_SGLANG=0 bash scripts/install_vllm_sglang_mcore.sh
-```
-
-Expected: ends with `Successfully installed all packages`, no pip errors. This is a long-running
-step (TransformerEngine + Megatron build from source) — expect 20-40 minutes.
-
-- [ ] **Step 2: Install verl itself, editable, no deps**
+- [ ] **Step 1: Uninstall the inherited PSRL-fork `verl` and install `verl-new` in its place**
 
 ```bash
 source /apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh
+pip uninstall -y verl
 cd /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new
 pip install --no-deps -e .
 ```
 
-Expected: `Successfully installed verl-<version>`.
+Expected: the uninstall reports removing `verl 0.9.0.dev0` (PSRL's fork, previously editable from
+`psrl/third_party/verl`); the install reports `Successfully installed verl-<version>` pointing at
+this checkout. `--no-deps` is deliberate: a normal install would let pip resolve verl-new's
+`pyproject.toml` dependencies and could silently upgrade the cloned env's carefully-pinned
+`torch`/`vllm`/`megatron-core`.
 
-- [ ] **Step 3: Verify the install**
+- [ ] **Step 2: Verify the swap and the inherited GPU stack**
 
 ```bash
-source /apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh
-python3 -c "import verl, vllm, megatron.core, ray; print(verl.__file__, vllm.__version__)"
+python3 -c "import verl, vllm, megatron.core, ray; print(verl.__file__, vllm.__version__, torch.__version__)" 2>&1 || true
+python3 -c "import torch; print(torch.__version__)"
 ```
 
-Expected: prints the path under `verl-new/verl/__init__.py` and `0.24.0`, no `ImportError`.
+Expected: `verl.__file__` is under `verl-new/verl/__init__.py` (not `psrl/third_party/verl`);
+`torch.__version__` is still `2.11.0+cu128` — if it changed, Step 1 upgraded something it should
+not have, and that is a stop-and-report condition, not a "proceed anyway" one.
+
+- [ ] **Step 3: Surface and resolve verl-new's genuinely new Python dependencies**
+
+`verl-new`'s v1 trainer imports `transfer_queue` unconditionally at module load — this package did
+not exist when PSRL forked verl (0.9.0.dev0, pre-dating the v1 trainer) and is very unlikely to be
+in the cloned env. Find out what else is actually missing by trying to import the real module path
+this plan's later tasks need, not just the top-level package:
+
+```bash
+python3 -c "from verl.trainer.ppo.v1 import trainer_base, trainer_separate_async" 2>&1
+```
+
+For each `ModuleNotFoundError` this reports, install just that one package, preferring `--no-deps`
+first so it can't drag in an upgrade of anything already pinned:
+
+```bash
+pip install --no-deps <package>
+python3 -c "import torch, vllm; print(torch.__version__, vllm.__version__)"  # re-check nothing moved
+```
+
+If `--no-deps` leaves the newly-installed package unable to import (it genuinely needs a
+dependency absent from the env), retry that one package without `--no-deps`, then immediately
+re-run the `torch`/`vllm` version check above. If `torch` or `vllm`'s version changed as a result,
+stop and report it as a concern rather than continuing — this is exactly the kind of regression
+Step 1's `--no-deps` was trying to prevent, and whether to accept the upgrade is a call for whoever
+reviews this task, not something to decide mid-install. Repeat until the
+`trainer_base, trainer_separate_async` import above succeeds cleanly.
 
 - [ ] **Step 4: Commit**
 
