@@ -318,6 +318,11 @@ Write `/apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_co
 #     than dropping them). See the design spec's "Risks and open items".
 #   - clip_ratio_low/high are left at this repo's own default: PSRL's script
 #     does not override them, so neither does this one.
+#   - transfer_queue.backend.SimpleStorage.total_storage_size=100000: the
+#     default (null) is documented as "unlimited capacity" but actually
+#     crashes (simple_storage_bootstrap.py divides by it unconditionally).
+#     Not a PSRL-alignment choice -- a workaround for this gap, matching the
+#     value two other example scripts in this checkout already use.
 set -xeuo pipefail
 
 export VERL_LOGGING_LEVEL=${VERL_LOGGING_LEVEL:-INFO}
@@ -359,6 +364,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.v1.sampler.max_off_policy_threshold=1 \
     trainer.v1.sampler.max_off_policy_strategy=wait \
     transfer_queue.enable=True \
+    transfer_queue.backend.SimpleStorage.total_storage_size=100000 \
     data.train_files="${TRAIN_FILES}" \
     data.val_files="${VAL_FILES}" \
     data.prompt_key=prompt \
