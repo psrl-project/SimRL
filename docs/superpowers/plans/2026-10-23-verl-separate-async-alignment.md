@@ -234,10 +234,15 @@ ssh 28.49.55.85 "nvidia-smi --query-gpu=index,memory.used,utilization.gpu --form
 
 Expected: all 8 GPUs at or near 0 MiB / 0%. If not, stop and report rather than running anyway.
 
+The converter only gets a multi-rank `WORLD_SIZE` from `torchrun`-set env vars
+(`verl/models/mcore/bridge_checkpoint.py:70-76`, `initialize_conversion()` defaults `WORLD_SIZE` to
+`"1"` via `os.environ.setdefault` otherwise) — a plain `python3` invocation fails with
+`WORLD_SIZE=1 must be divisible by TP * PP (6)`. Launch with `torchrun`:
+
 ```bash
 ssh 28.49.55.85 "source /apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh && \
 cd /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new && \
-python3 scripts/converter_hf_to_mcore.py \
+torchrun --nproc_per_node=6 --nnodes=1 scripts/converter_hf_to_mcore.py \
     --hf_model_path /apdcephfs_zwfy10_303541817/share_303541817/lhy/models/Qwen3-8B \
     --output_path /apdcephfs_zwfy10_303541817/share_303541817/lhy/models/mcore_ckpt_verl_new/Qwen3-8B \
     --tp_size 2 \
