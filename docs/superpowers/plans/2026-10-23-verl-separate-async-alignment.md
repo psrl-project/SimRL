@@ -44,6 +44,14 @@ two-clock text log (Phase 3), and a final empirical comparison pass (Phase 4).
 - Field names written by the Phase 2 patches must match PSRL's own `stats_r*_dp*.jsonl` schema
   (`num_running_reqs`, `num_waiting_reqs`, `kv_cache_usage`) so Phase 3's converter can mirror
   `psrl_log.py`'s shape.
+- **Target node: `28.49.55.85`.** This session's own node (`29.162.247.148`) has GPUs 0-3 held by an
+  unrelated job (~92GB each, confirmed via `nvidia-smi`) and is not usable for this plan's GPU work.
+  `28.49.55.85` was confirmed fully free (0 MiB / 0% on all 8 GPUs) and reachable over passwordless
+  SSH, with the same shared storage (conda envs, the `verl-new` clone) visible there. Every command
+  in Tasks 3, 5, and 10 that needs a GPU runs there via
+  `ssh 28.49.55.85 "source .../env/verl_new.sh && <command>"`, not on the local node. Re-confirm
+  `nvidia-smi` on `28.49.55.85` immediately before each such task, since cluster state can change
+  between tasks.
 
 ---
 
@@ -215,24 +223,33 @@ Nothing to commit in `verl-new` itself (dependency install, not a source change)
   reference run).
 - Produces: `DIST_CKPT_PATH`, consumed by Task 4's launch script.
 
-- [ ] **Step 1: Run the converter**
+- [ ] **Step 1: Confirm the target node is free, then run the converter there**
+
+The converter launches a 6-rank distributed process (TP=2 × PP=3) that needs real GPU allocation
+per rank, not just CPU — confirm `28.49.55.85` is still free before running:
 
 ```bash
-source /apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh
-cd /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new
+ssh 28.49.55.85 "nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv"
+```
+
+Expected: all 8 GPUs at or near 0 MiB / 0%. If not, stop and report rather than running anyway.
+
+```bash
+ssh 28.49.55.85 "source /apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh && \
+cd /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new && \
 python3 scripts/converter_hf_to_mcore.py \
     --hf_model_path /apdcephfs_zwfy10_303541817/share_303541817/lhy/models/Qwen3-8B \
     --output_path /apdcephfs_zwfy10_303541817/share_303541817/lhy/models/mcore_ckpt_verl_new/Qwen3-8B \
     --tp_size 2 \
-    --pp_size 3
+    --pp_size 3"
 ```
 
-Expected: completes without error; this is CPU-bound checkpoint reshaping, expect several minutes
-for an 8B model.
+Expected: completes without error; expect several minutes for an 8B model reshape across 6 ranks.
 
 - [ ] **Step 2: Verify the output**
 
-Run: `find /apdcephfs_zwfy10_303541817/share_303541817/lhy/models/mcore_ckpt_verl_new/Qwen3-8B -maxdepth 2`
+The output lands on shared storage, so this can run from either node:
+`find /apdcephfs_zwfy10_303541817/share_303541817/lhy/models/mcore_ckpt_verl_new/Qwen3-8B -maxdepth 2`
 Expected: non-empty directory tree with per-rank weight shards (6 ranks' worth, matching TP=2×PP=3).
 
 - [ ] **Step 3: Commit**
@@ -443,33 +460,36 @@ git commit -m "feat: add launch script matching PSRL's qwen3_8b_megatron_simulat
 - [ ] **Step 1: Confirm the target node is actually free — STOP and ask before proceeding**
 
 ```bash
-ray status
-nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv
+ssh 28.49.55.85 "nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv"
 ```
 
-Do not proceed past this point without explicit user confirmation that the chosen node
-(`28.49.55.85` or `28.49.196.175` — not `29.162.247.148`, flagged as running other work) is free, and
-without the user's go-ahead to start a Ray cluster and launch an 8-GPU job there.
+Do not proceed past this point without explicit user confirmation that `28.49.55.85` (the Global
+Constraints' designated target node — not `29.162.247.148`, which has GPUs 0-3 held by other work)
+is still free, and without the user's go-ahead to start a Ray cluster and launch an 8-GPU job
+there. Cluster state can change between tasks — re-check even if it was free earlier.
 
-- [ ] **Step 2: Start a fresh, single-node Ray cluster on the confirmed-free node**
+- [ ] **Step 2: Start a fresh, single-node Ray cluster on `28.49.55.85`**
 
 ```bash
-echo "<confirmed-free-node-ip>" > /tmp/verl_new_hostfile
+echo "28.49.55.85" > /tmp/verl_new_hostfile
 bash /apdcephfs_zwfy10_303541817/share_303541817/lhy/psrl/examples/ray/ray_start.sh /tmp/verl_new_hostfile
 ```
 
 Note: `ray_start.sh` sources `${PSRL_WORKSPACE}/env/psrl.sh` internally, not our new env file — this
 only brings up the Ray head/worker processes; the actual job launch in Step 3 sources
-`env/verl_new.sh` itself.
+`env/verl_new.sh` itself. `ray_start.sh` uses `pssh` so it reaches `28.49.55.85` directly; it does
+not need to run from that node.
 
-Expected: "Starting Head node" then no error; `ray status` on that node now shows 1 active node, 8
-GPUs.
+Expected: "Starting Head node" then no error; `ssh 28.49.55.85 "ray status"` now shows 1 active
+node, 8 GPUs.
 
-- [ ] **Step 3: Launch the run**
+- [ ] **Step 3: Launch the run on `28.49.55.85`**
+
+The training process itself must run on the node with the GPUs, not locally:
 
 ```bash
-source /apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh
-bash /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_compare/qwen3_8b_separate_async_megatron.sh
+ssh 28.49.55.85 "source /apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh && \
+bash /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_compare/qwen3_8b_separate_async_megatron.sh"
 ```
 
 Expected: completes all 5 training steps without a Python traceback; the final console lines show
@@ -1091,14 +1111,17 @@ git commit -m "feat: mirror per-step training metrics to a local JSONL file when
 Same check as Task 5, Step 1. If the Task 5 Ray cluster from Phase 1 is still up and idle, it may be
 reused; otherwise repeat Task 5's Steps 1-2 on a confirmed-free node.
 
-- [ ] **Step 2: Launch with telemetry enabled**
+- [ ] **Step 2: Launch with telemetry enabled, on `28.49.55.85`**
 
 ```bash
-export VERL_TELEMETRY_LOG_DIR=/apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_compare/output/telemetry
-mkdir -p "${VERL_TELEMETRY_LOG_DIR}"
-source /apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh
-bash /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_compare/qwen3_8b_separate_async_megatron.sh
+mkdir -p /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_compare/output/telemetry
+ssh 28.49.55.85 "export VERL_TELEMETRY_LOG_DIR=/apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_compare/output/telemetry && \
+source /apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh && \
+bash /apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_compare/qwen3_8b_separate_async_megatron.sh"
 ```
+
+`mkdir` runs locally first since it's shared storage, visible identically from either node; the
+training process itself must run on `28.49.55.85`, the node with the GPUs.
 
 - [ ] **Step 3: Verify the three telemetry streams are non-empty and well-formed**
 
