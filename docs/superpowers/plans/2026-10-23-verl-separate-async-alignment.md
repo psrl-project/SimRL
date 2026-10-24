@@ -473,20 +473,26 @@ Constraints' designated target node — not `29.162.247.148`, which has GPUs 0-3
 is still free, and without the user's go-ahead to start a Ray cluster and launch an 8-GPU job
 there. Cluster state can change between tasks — re-check even if it was free earlier.
 
-- [ ] **Step 2: Start a fresh, single-node Ray cluster on `28.49.55.85`**
+- [ ] **Step 2: Start a fresh, single-node Ray cluster on `28.49.55.85`, under the `verl-new` env**
+
+Do **not** use `psrl/examples/ray/ray_start.sh` — it sources `env/psrl.sh`, and Ray spawns every
+worker Python process using whatever interpreter was active when the raylet started
+(`--python_worker_command` is pinned to that env at `ray start` time; a driver sourcing a
+different env afterwards does not change it). That mismatch is exactly what Task 5 hit the first
+time: the raylet's workers imported `verl` from the old PSRL fork regardless of what the driver
+script sourced. Since this is a single node, `ray_start.sh`'s `pssh` fan-out isn't needed anyway —
+start the cluster directly, under the right env, on the right node:
 
 ```bash
-echo "28.49.55.85" > /tmp/verl_new_hostfile
-bash /apdcephfs_zwfy10_303541817/share_303541817/lhy/psrl/examples/ray/ray_start.sh /tmp/verl_new_hostfile
+ssh 28.49.55.85 "source /apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh && \
+ray start --head --port=8887 --dashboard-host=0.0.0.0 --dashboard-port=8265 --num-cpus=32"
 ```
 
-Note: `ray_start.sh` sources `${PSRL_WORKSPACE}/env/psrl.sh` internally, not our new env file — this
-only brings up the Ray head/worker processes; the actual job launch in Step 3 sources
-`env/verl_new.sh` itself. `ray_start.sh` uses `pssh` so it reaches `28.49.55.85` directly; it does
-not need to run from that node.
-
-Expected: "Starting Head node" then no error; `ssh 28.49.55.85 "ray status"` now shows 1 active
-node, 8 GPUs.
+Expected: "Local node IP" / "Ray runtime started" with no error; `ssh 28.49.55.85 "source
+/apdcephfs_zwfy10_303541817/share_303541817/lhy/env/verl_new.sh && ray status"` now shows 1 active
+node, 8 GPUs. Spot-check the fix worked before launching training:
+`ssh 28.49.55.85 "ps aux | grep -o '/[^ ]*python_worker_command[^ ]*' ; ps aux | grep raylet | grep -o 'python_worker_command=[^ ]*'"`
+should show the `verl-new` env's path, not `psrl_smg_new`'s.
 
 - [ ] **Step 3: Launch the run on `28.49.55.85`**
 
