@@ -77,13 +77,14 @@ export WORKLOAD=dapo_trace
 # The real run's own telemetry reports
 # training/off_policy/trajectory_staleness/mean = 1.0 for 4 of its 5 steps
 # (0.0 only for the first step, which has no prior version to be stale
-# against), so the two systems count num_warmup_batches with a one-batch
-# offset between them. NUM_WARMUP_BATCHES=2 reproduces that same 20/80 split
-# (256 requests at staleness 0, 1024 at staleness 1, mean 0.80) and brings
-# peak running requests to an exact match. Raising MAX_OFF_POLICY_THRESHOLD
-# instead of NUM_WARMUP_BATCHES was tried first and measured to have no
-# effect at all here. admit_quota's credit, not the span check, is what was
-# forcing lockstep, so threshold alone could not fix it.
+# against), so the two systems appear to count num_warmup_batches with a
+# one-batch offset between them (inferred from this evidence, not verified
+# against verl's own sampler source). NUM_WARMUP_BATCHES=2 reproduces that
+# same 20/80 split (256 requests at staleness 0, 1024 at staleness 1, mean
+# 0.80) and brings peak running requests to an exact match. Raising
+# MAX_OFF_POLICY_THRESHOLD instead of NUM_WARMUP_BATCHES was tried first and
+# measured to have no effect at all here. admit_quota's credit, not the span
+# check, is what was forcing lockstep, so threshold alone could not fix it.
 export NUM_WARMUP_BATCHES="${NUM_WARMUP_BATCHES:-2}"
 export MAX_OFF_POLICY_THRESHOLD="${MAX_OFF_POLICY_THRESHOLD:-1}"
 export MAX_OFF_POLICY_STRATEGY="${MAX_OFF_POLICY_STRATEGY:-wait}"
