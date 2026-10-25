@@ -40,6 +40,8 @@ tensorflow/my_graph/*
 !docs/_static/img/*.png
 !assets/*.png
 !examples/simulate/staleness_throughput/*/figures/*.png
+!examples/visualize/instance_load_verl_separate_async.png
+!examples/visualize/instance_load_verl_simulated.png
 
 # Common artifact directories
 **/checkpoints
