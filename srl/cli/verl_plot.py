@@ -25,14 +25,22 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Render the SimRL instance-load plot from a real verl separate_async run's telemetry.",
     )
     parser.add_argument("log_dir", help="A verl run's telemetry directory (VERL_TELEMETRY_LOG_DIR). Read only.")
-    parser.add_argument("--output-dir", required=True, help="Directory to write the converted logs and the plot into.")
+    parser.add_argument(
+        "--output-dir", required=True, help="Directory to write the converted logs and the plot into."
+    )
     parser.add_argument("--time-label", default="Wall-clock Time (s)", help="X-axis label for the rendered figure.")
-    parser.add_argument("--logs-subdir", default="logs", help="Name of the logs subdirectory to write under output_dir.")
-    parser.add_argument("--plots-subdir", default="plots", help="Name of the plots subdirectory to write under output_dir.")
+    parser.add_argument(
+        "--logs-subdir", default="logs", help="Name of the logs subdirectory to write under output_dir."
+    )
+    parser.add_argument(
+        "--plots-subdir", default="plots", help="Name of the plots subdirectory to write under output_dir."
+    )
 
     layout_group = parser.add_argument_group("log layout overrides")
     for spec in fields(VerlLogLayout):
-        layout_group.add_argument(f"--{spec.name.replace('_', '-')}", default=spec.default, help=f"Default: {spec.default!r}")
+        layout_group.add_argument(
+            f"--{spec.name.replace('_', '-')}", default=spec.default, help=f"Default: {spec.default!r}"
+        )
     return parser
 
 
