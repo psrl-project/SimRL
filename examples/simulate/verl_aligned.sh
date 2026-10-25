@@ -9,6 +9,18 @@
 # Unlike psrl_aligned.sh, the real run's workload trace and telemetry are
 # already structured JSON (verl-new's telemetry_sink.py), so this script's
 # trace extraction calls srl.telemetry.verl_log instead of srl.telemetry.psrl_log.
+#
+# Current agreement (srl-compare against the run's own converted logs, at the
+# NUM_WARMUP_BATCHES=2 default below): peak KV utilisation +0.0%, mean KV
+# utilisation -1.1%, peak running requests +0.0%, mean running requests
+# +3.5%, span -13.8%. Train/step timing is not part of this comparison.
+# convert_verl_logs writes no train stream for a real verl run (see
+# srl/telemetry/verl_log.py's own docstring), so there is nothing on the real
+# side for srl-compare's train/step column to compare against.
+#
+# NUM_WARMUP_BATCHES=2 is not the literal number in the launch script. See
+# the comment on that export below for why, and for the NUM_WARMUP_BATCHES=1
+# numbers this replaced.
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -51,9 +63,28 @@ export N_VERSIONS="${N_VERSIONS:-5}"
 export POLICY="${POLICY:-verl_v1}"
 export WORKLOAD=dapo_trace
 
-# verl_v1 policy knobs, 1:1 with trainer.v1.separate_async / trainer.v1.sampler
-# in the real launch script.
-export NUM_WARMUP_BATCHES="${NUM_WARMUP_BATCHES:-1}"
+# verl_v1 policy knobs. MAX_OFF_POLICY_THRESHOLD and MAX_OFF_POLICY_STRATEGY
+# are 1:1 with trainer.v1.sampler in the real launch script.
+#
+# NUM_WARMUP_BATCHES is not the literal
+# trainer.v1.separate_async.num_warmup_batches=1 from that script. SimRL's
+# admit_quota grants exactly num_warmup_batches * batch_size groups of credit
+# up front and replenishes only batch_size more per train-version advance, so
+# a literal 1 leaves no spare credit for a second batch to admit while the
+# first one trains. That collapsed rollout and training into lockstep: the
+# simulated run showed zero staleness on every one of its 1280 requests and
+# a peak running-requests count of 128 against the real run's 256 (-50.0%).
+# The real run's own telemetry reports
+# training/off_policy/trajectory_staleness/mean = 1.0 for 4 of its 5 steps
+# (0.0 only for the first step, which has no prior version to be stale
+# against), so the two systems count num_warmup_batches with a one-batch
+# offset between them. NUM_WARMUP_BATCHES=2 reproduces that same 20/80 split
+# (256 requests at staleness 0, 1024 at staleness 1, mean 0.80) and brings
+# peak running requests to an exact match. Raising MAX_OFF_POLICY_THRESHOLD
+# instead of NUM_WARMUP_BATCHES was tried first and measured to have no
+# effect at all here. admit_quota's credit, not the span check, is what was
+# forcing lockstep, so threshold alone could not fix it.
+export NUM_WARMUP_BATCHES="${NUM_WARMUP_BATCHES:-2}"
 export MAX_OFF_POLICY_THRESHOLD="${MAX_OFF_POLICY_THRESHOLD:-1}"
 export MAX_OFF_POLICY_STRATEGY="${MAX_OFF_POLICY_STRATEGY:-wait}"
 
