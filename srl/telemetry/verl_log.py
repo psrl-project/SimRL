@@ -167,6 +167,13 @@ def extract_workload_trace(
     does. That reproduces the length *distribution* and the group *arity*,
     not which prompt each response belonged to.
 
+    Under `max_off_policy_strategy=drop`, a few requests still in flight
+    when training stops never get a surviving sibling to complete alongside
+    them, so the total is not always a whole number of groups. Those
+    trailing stragglers (sorted-order, not time-order, so no real group is
+    identifiable anyway) are dropped and logged rather than failing the
+    whole conversion.
+
     Args:
         log_dir: A verl run's telemetry directory. Opened read-only.
         output_path: Destination JSONL trace.
@@ -179,8 +186,7 @@ def extract_workload_trace(
         The path written.
 
     Raises:
-        ValueError: If no completed requests are found, or if the count is
-            not a whole number of groups.
+        ValueError: If no completed requests are found at all.
     """
     log_dir = Path(log_dir)
     layout = layout or VerlLogLayout()
@@ -198,13 +204,18 @@ def extract_workload_trace(
 
     if not parsed:
         raise ValueError(f"No completed requests in {request_paths!r}, so no generated lengths could be read.")
-    if len(parsed) % group_size != 0:
-        raise ValueError(
-            f"Found {len(parsed)} completed requests, which is not a whole number of groups of "
-            f"{group_size}. Pass the group_size this run was launched with."
-        )
 
     parsed.sort(key=lambda row: row[0])
+    straggler_count = len(parsed) % group_size
+    if straggler_count:
+        srl_logger.warning(
+            "Found %d completed requests, not a whole number of groups of %d. Dropping %d trailing "
+            "stragglers (likely left in flight by max_off_policy_strategy=drop when training stopped).",
+            len(parsed),
+            group_size,
+            straggler_count,
+        )
+        parsed = parsed[: len(parsed) - straggler_count]
     groups = [
         RequestGroup(
             group_id=index,

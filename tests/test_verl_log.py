@@ -112,10 +112,23 @@ class TestWorkloadTraceExtraction:
         assert len(groups) == 4
         assert len(groups[0].output_lens) == 4
 
-    def test_a_count_not_divisible_by_group_size_raises(self, tmp_path):
+    def test_a_count_not_divisible_by_group_size_drops_the_trailing_stragglers(self, tmp_path):
         log_dir = _build_log_dir(tmp_path)
-        with pytest.raises(ValueError, match="not a whole number of groups"):
-            extract_workload_trace(log_dir, tmp_path / "trace.jsonl", group_size=5)
+        out = tmp_path / "trace.jsonl"
+        extract_workload_trace(log_dir, out, group_size=5)
+        groups = read_group_trace(out)
+        assert len(groups) == 3
+        assert all(len(group.output_lens) == 5 for group in groups)
+
+    def test_no_completed_requests_raises(self, tmp_path):
+        log_dir = tmp_path / "empty_trace"
+        log_dir.mkdir()
+        (log_dir / "stats_r0.jsonl").write_text(
+            '{"ts": 0, "num_running_reqs": 0, "num_waiting_reqs": 0, "kv_cache_usage": 0.0}\n'
+        )
+        (log_dir / "request_trace_pid1.jsonl").write_text("")
+        with pytest.raises(ValueError, match="No completed requests"):
+            extract_workload_trace(log_dir, tmp_path / "trace.jsonl", group_size=4)
 
     def test_missing_trace_files_raise(self, tmp_path):
         log_dir = tmp_path / "no_trace"
