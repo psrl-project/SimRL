@@ -10,17 +10,54 @@
 # already structured JSON (verl-new's telemetry_sink.py), so this script's
 # trace extraction calls srl.telemetry.verl_log instead of srl.telemetry.psrl_log.
 #
-# Current agreement (srl-compare against the run's own converted logs, at the
-# NUM_WARMUP_BATCHES=2 default below): peak KV utilisation +0.0%, mean KV
-# utilisation -1.1%, peak running requests +0.0%, mean running requests
-# +3.5%, span -13.8%. Train/step timing is not part of this comparison.
-# convert_verl_logs writes no train stream for a real verl run (see
-# srl/telemetry/verl_log.py's own docstring), so there is nothing on the real
-# side for srl-compare's train/step column to compare against.
+# Current agreement (srl-compare against the run's own converted logs), at
+# the MAX_OFF_POLICY_STRATEGY=drop default below, which is what the launch
+# script itself now runs by default: peak running requests +0.0%, peak KV
+# utilisation +0.0%, mean running requests -15.6%, mean KV utilisation
+# -12.1%, span -18.3%, idle fraction +0.246 (simulated 0.261 vs real 0.015 --
+# the simulated run shows a longer flat-zero stretch before each train block
+# than the real one does; not yet root-caused, flagged here rather than
+# hidden). Train/step timing is not part of this comparison. convert_verl_logs
+# writes no train stream for a real verl run (see srl/telemetry/verl_log.py's
+# own docstring), so there is nothing on the real side for srl-compare's
+# train/step column to compare against.
 #
-# NUM_WARMUP_BATCHES=2 is not the literal number in the launch script. See
-# the comment on that export below for why, and for the NUM_WARMUP_BATCHES=1
-# numbers this replaced.
+# Both real and simulated drop runs independently confirm the system runs at
+# staleness 0, not 1: the real run's own training/off_policy/trajectory_
+# staleness/mean reports 0.0 for consumed samples (evicted_samples_staleness/
+# mean is 2.0 -- that's the staleness at which drop evicts, not what gets
+# trained on), and the simulated run's own staleness distribution is 100% at
+# staleness 0. This is a genuinely different regime from the wait-strategy
+# numbers further down: under drop, nothing stale ever survives to be
+# consumed, so NUM_WARMUP_BATCHES needs no offset -- the literal
+# trainer.v1.separate_async.num_warmup_batches=1 from the launch script
+# reproduces this directly. The simulated run also confirmed drop's refill
+# semantics against the real run's own telemetry: both dropped exactly one
+# batch's worth of groups (32 groups x 8 = 256 requests simulated vs the real
+# run's own reported training/off_policy/evicted_samples:32.0 at the step it
+# happened), matching verl's ReplayBufferAsync.wait_for_sampleable(), which
+# evicts stale terminal groups and calls refill_fn in the same loop
+# iteration, and SimRL's OffPolicySpan rule, which cancels with
+# CancelAction.REPLACE (grants one new ingress credit per cancellation, not a
+# plain drop) -- same evict-and-immediately-replace semantics on both sides.
+#
+# Separately: this run shows zero temporal overlap between generation and
+# training regardless of wait or drop (every instance's num_running_reqs
+# drops to exactly 0 before each train block starts, in both the real and
+# simulated plots). That is not a staleness-strategy effect -- it is forced
+# by parameter_sync_step=1, which this config's trainer.v1.separate_async.
+# parameter_sync_step=$((TRAIN_BATCH_SIZE / PPO_MINI_BATCH_SIZE)) sets to 1
+# because train_batch_size==ppo_mini_batch_size (both 32). Data-version
+# staleness (which weight version generated a sample) and wall-clock overlap
+# (whether generation and training run concurrently) are independent
+# concepts here: this config has off-policy staleness control active
+# (threshold=1) but no concurrency at all, since the next rollout round
+# cannot start until the single in-flight parameter sync completes.
+#
+# The historical wait-strategy numbers (and the NUM_WARMUP_BATCHES=2
+# offset finding that applied only to wait) are preserved below the
+# MAX_OFF_POLICY_STRATEGY export, for anyone who passes
+# MAX_OFF_POLICY_STRATEGY=wait explicitly.
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -64,30 +101,37 @@ export POLICY="${POLICY:-verl_v1}"
 export WORKLOAD=dapo_trace
 
 # verl_v1 policy knobs. MAX_OFF_POLICY_THRESHOLD and MAX_OFF_POLICY_STRATEGY
-# are 1:1 with trainer.v1.sampler in the real launch script.
+# are 1:1 with trainer.v1.sampler in the real launch script. The launch
+# script itself now defaults to drop (see its own header for why), so this
+# defaults to drop too -- pass MAX_OFF_POLICY_STRATEGY=wait explicitly to
+# reproduce the historical wait-strategy numbers below instead.
 #
-# NUM_WARMUP_BATCHES is not the literal
-# trainer.v1.separate_async.num_warmup_batches=1 from that script. SimRL's
-# admit_quota grants exactly num_warmup_batches * batch_size groups of credit
-# up front and replenishes only batch_size more per train-version advance, so
-# a literal 1 leaves no spare credit for a second batch to admit while the
-# first one trains. That collapsed rollout and training into lockstep: the
-# simulated run showed zero staleness on every one of its 1280 requests and
-# a peak running-requests count of 128 against the real run's 256 (-50.0%).
-# The real run's own telemetry reports
-# training/off_policy/trajectory_staleness/mean = 1.0 for 4 of its 5 steps
-# (0.0 only for the first step, which has no prior version to be stale
-# against), so the two systems appear to count num_warmup_batches with a
-# one-batch offset between them (inferred from this evidence, not verified
-# against verl's own sampler source). NUM_WARMUP_BATCHES=2 reproduces that
-# same 20/80 split (256 requests at staleness 0, 1024 at staleness 1, mean
-# 0.80) and brings peak running requests to an exact match. Raising
+# NUM_WARMUP_BATCHES=1 is the literal
+# trainer.v1.separate_async.num_warmup_batches=1 from the launch script, and
+# needs no offset under drop (see the drop agreement note above).
+#
+# Historical note, applies only when MAX_OFF_POLICY_STRATEGY=wait: a literal
+# NUM_WARMUP_BATCHES=1 collapsed rollout and training into lockstep under
+# wait, because SimRL's admit_quota grants exactly num_warmup_batches *
+# batch_size groups of credit up front and replenishes only batch_size more
+# per train-version advance, leaving no spare credit for a second batch to
+# admit while the first one trains -- the simulated run showed zero
+# staleness on every one of its 1280 requests and a peak running-requests
+# count of 128 against the real run's 256 (-50.0%). The real run's own
+# telemetry reports training/off_policy/trajectory_staleness/mean = 1.0 for
+# 4 of its 5 steps (0.0 only for the first step, which has no prior version
+# to be stale against), so the two systems appear to count num_warmup_batches
+# with a one-batch offset between them under wait (inferred from this
+# evidence, not verified against verl's own sampler source). Passing
+# NUM_WARMUP_BATCHES=2 with MAX_OFF_POLICY_STRATEGY=wait reproduces that same
+# 20/80 split (256 requests at staleness 0, 1024 at staleness 1, mean 0.80)
+# and brings peak running requests to an exact match. Raising
 # MAX_OFF_POLICY_THRESHOLD instead of NUM_WARMUP_BATCHES was tried first and
 # measured to have no effect at all here. admit_quota's credit, not the span
 # check, is what was forcing lockstep, so threshold alone could not fix it.
-export NUM_WARMUP_BATCHES="${NUM_WARMUP_BATCHES:-2}"
+export NUM_WARMUP_BATCHES="${NUM_WARMUP_BATCHES:-1}"
 export MAX_OFF_POLICY_THRESHOLD="${MAX_OFF_POLICY_THRESHOLD:-1}"
-export MAX_OFF_POLICY_STRATEGY="${MAX_OFF_POLICY_STRATEGY:-wait}"
+export MAX_OFF_POLICY_STRATEGY="${MAX_OFF_POLICY_STRATEGY:-drop}"
 
 # Training mesh: tensor_model_parallel_size=2, pipeline_model_parallel_size=3,
 # context_parallel_size=1, on 6 training GPUs, so DP=1. Identical to PSRL's
