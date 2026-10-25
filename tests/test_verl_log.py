@@ -8,7 +8,7 @@ import json
 import pytest
 
 from srl.telemetry.store import JsonlStore
-from srl.telemetry.verl_log import VerlLogLayout, convert_verl_logs, extract_workload_trace
+from srl.telemetry.verl_log import convert_verl_logs, extract_workload_trace
 from srl.workload.trace import read_group_trace
 
 _N_SAMPLES = 50
@@ -120,6 +120,8 @@ class TestWorkloadTraceExtraction:
     def test_missing_trace_files_raise(self, tmp_path):
         log_dir = tmp_path / "no_trace"
         log_dir.mkdir()
-        (log_dir / "stats_r0.jsonl").write_text('{"ts": 0, "num_running_reqs": 0, "num_waiting_reqs": 0, "kv_cache_usage": 0.0}\n')
+        (log_dir / "stats_r0.jsonl").write_text(
+            '{"ts": 0, "num_running_reqs": 0, "num_waiting_reqs": 0, "kv_cache_usage": 0.0}\n'
+        )
         with pytest.raises(ValueError, match="No request trace files"):
             extract_workload_trace(log_dir, tmp_path / "trace.jsonl", group_size=4)
