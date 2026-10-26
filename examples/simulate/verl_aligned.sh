@@ -14,13 +14,33 @@
 # the MAX_OFF_POLICY_STRATEGY=drop default below, which is what the launch
 # script itself now runs by default: peak running requests +0.0%, peak KV
 # utilisation +0.0%, mean running requests -15.6%, mean KV utilisation
-# -12.1%, span -18.3%, idle fraction +0.246 (simulated 0.261 vs real 0.015 --
-# the simulated run shows a longer flat-zero stretch before each train block
-# than the real one does; not yet root-caused, flagged here rather than
-# hidden). Train/step timing is not part of this comparison. convert_verl_logs
-# writes no train stream for a real verl run (see srl/telemetry/verl_log.py's
-# own docstring), so there is nothing on the real side for srl-compare's
+# -12.1%, span -18.3%, idle fraction +0.246 (simulated 0.261 vs real 0.015).
+# Train/step timing is not part of this comparison. convert_verl_logs writes
+# no train stream for a real verl run (see srl/telemetry/verl_log.py's own
+# docstring), so there is nothing on the real side for srl-compare's
 # train/step column to compare against.
+#
+# Root cause of the idle-fraction gap (found by segmenting each instance's
+# own num_running_reqs==0 stretches, not just reading the aggregate
+# srl-compare number): the real drop run is idle only at startup (~70s) and
+# shutdown (~34s) -- under 1.5% total, with ZERO idle stretches between its 5
+# train steps. The simulated drop run instead shows one ~300-350s idle
+# stretch before EVERY train step (~26% total) -- the same shape the real
+# WAIT run has (idle ~31-32%, one ~300-400s gap per step; see telemetry/ via
+# MAX_OFF_POLICY_STRATEGY=wait below). So the simulated drop run is
+# reproducing wait's admission cadence, not drop's. The cause: SimRL's
+# verl_v1 policy grants a new version's full batch_size*group_size admission
+# credit only once per train-version advance (admit_quota), identically for
+# wait and drop -- only the per-group eviction/refill (OffPolicySpan's
+# CancelAction.REPLACE, verified above to match ReplayBufferAsync's
+# refill_fn one group at a time) differs between the two strategies in this
+# policy. The real system's drop strategy evidently lets rollout keep
+# admitting the NEXT version's prompts on its own GPU pool while the CURRENT
+# version's recompute/train still runs on the training GPU pool (that overlap
+# is the whole point of separate_async's GPU disaggregation) -- SimRL's
+# admission timing model does not yet capture that inter-version overlap, so
+# it under-estimates drop's rollout utilisation. Not yet fixed -- flagged
+# here rather than hidden.
 #
 # Both real and simulated drop runs independently confirm the system runs at
 # staleness 0, not 1: the real run's own training/off_policy/trajectory_
@@ -41,18 +61,25 @@
 # CancelAction.REPLACE (grants one new ingress credit per cancellation, not a
 # plain drop) -- same evict-and-immediately-replace semantics on both sides.
 #
-# Separately: this run shows zero temporal overlap between generation and
-# training regardless of wait or drop (every instance's num_running_reqs
-# drops to exactly 0 before each train block starts, in both the real and
-# simulated plots). That is not a staleness-strategy effect -- it is forced
-# by parameter_sync_step=1, which this config's trainer.v1.separate_async.
-# parameter_sync_step=$((TRAIN_BATCH_SIZE / PPO_MINI_BATCH_SIZE)) sets to 1
-# because train_batch_size==ppo_mini_batch_size (both 32). Data-version
-# staleness (which weight version generated a sample) and wall-clock overlap
-# (whether generation and training run concurrently) are independent
-# concepts here: this config has off-policy staleness control active
-# (threshold=1) but no concurrency at all, since the next rollout round
-# cannot start until the single in-flight parameter sync completes.
+# Separately, and corrected from an earlier version of this comment: zero
+# temporal overlap between generation and training is a WAIT-specific
+# effect, not a universal one forced by parameter_sync_step=1. Under wait,
+# the real run's own instance streams do go idle before every train step (see
+# the idle-fraction paragraph above) -- wait's threshold check blocks new
+# admission outright until the stale buffer clears, which serializes rollout
+# and training regardless of parameter_sync_step. Under drop, the real run's
+# own instance streams show no such idle stretches: eviction-and-immediate-
+# refill never blocks admission, so the next version's rollout overlaps the
+# current version's training on verl's separate GPU pools, exactly as
+# separate_async's disaggregation is meant to allow. Data-version staleness
+# (which weight version generated a sample) and wall-clock overlap (whether
+# generation and training run concurrently) remain independent concepts --
+# this config has off-policy staleness control active (threshold=1) under
+# either strategy -- but whether that control manifests as idle time or as
+# genuine overlap depends entirely on wait vs drop, which is also why this
+# script's own simulated-vs-real idle-fraction gap under drop matters: the
+# simulator is not yet capturing the overlap drop actually buys on real
+# hardware.
 #
 # The historical wait-strategy numbers (and the NUM_WARMUP_BATCHES=2
 # offset finding that applied only to wait) are preserved below the
