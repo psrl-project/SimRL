@@ -55,6 +55,8 @@ class TestRegistry:
             "throughput_balance",
             "length_aware",
             "inventory_deadline",
+            "slack_lane",
+            "length_lane",
         }
 
     def test_an_unknown_name_lists_the_known_ones(self):
