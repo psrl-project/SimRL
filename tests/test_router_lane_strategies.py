@@ -82,3 +82,87 @@ class TestLengthLane:
 
         with pytest.raises(ValueError, match="at least one bulk"):
             build_strategy("length_lane", n_fast=0, threshold=20_000, c_fast=2)
+
+
+class TestLaneStrategiesChangeARealRun:
+    """Both strategies must move a real simulated run off the default router's result."""
+
+    def build(self, strategy: str, strategy_args: dict):
+        """Build a real `Simulator` with a straggler-heavy workload and a contested fleet.
+
+        `staleness_horizon=1` lets a second group wave overlap the first in flight, which is
+        what gives `slack_lane` an already-admitted-but-not-yet-placed request to isolate:
+        under the default horizon of 0 every wave is admitted and fully routed inside one
+        atomic dispatch burst, so the planner never sees a request before it is already
+        pinned to an instance. `max_concurrency` is tight enough to keep members of the same
+        wave queued across more than one dispatch call instead of draining in one pass.
+
+        The roofline's decode term `A_d` is raised well above a token-level cost so that
+        sharing an instance with more neighbours measurably slows every resident's decode.
+        Under a floor-dominated roofline, batching is free and a fast lane buys nothing for
+        `plan_lanes` to find. `horizon_buffers=1` keeps `slack_lane`'s own forecast inside the
+        one buffer this horizon can actually resolve, since projecting a second buffer this
+        wave hasn't admitted into yet reports an unresolvable (`inf`) objective that no single
+        reassignment can fix, which would stall its own upgrade search before it starts.
+        """
+        import random
+
+        from srl.component.sync.cost import FixedSyncCost
+        from srl.cost.rollout import UnifiedRoofline
+        from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
+        from srl.policy.psrl import PSRLPolicy
+        from srl.simulator.config import SimConfig
+        from srl.simulator.simulator import Simulator
+        from srl.workload.grouped import GroupedWorkload
+        from srl.workload.trace import RequestGroup
+
+        rng = random.Random(7)
+        groups = []
+        for group_id in range(24):
+            # One straggler per four groups, so a fast lane has something to isolate.
+            base = 24_000 if group_id % 4 == 0 else rng.randint(800, 2_500)
+            lengths = [base if member == 0 else rng.randint(800, 2_500) for member in range(4)]
+            groups.append(RequestGroup(group_id=group_id, prompt_len=120, output_lens=tuple(lengths)))
+        cfg = SimConfig(
+            n_versions=4,
+            batch_size=6,
+            group_size=4,
+            n_instances=4,
+            kv_blocks=20_000,
+            block_size=16,
+            token_budget=8192,
+            max_concurrency=8,
+            weight_load_time=0.0,
+            log_telemetry=False,
+            workload=GroupedWorkload(groups),
+            staleness_horizon=1,
+        )
+        cfg.routing_strategy = strategy
+        args = dict(strategy_args)
+        if strategy == "slack_lane":
+            args.setdefault("horizon_buffers", 1)
+        cfg.routing_strategy_args = args
+        return Simulator(
+            cfg=cfg,
+            policy=PSRLPolicy(),
+            rollout_cost=UnifiedRoofline(F=0.001, W=0.002, G=4e-6, A_p=3e-10, A_d=5e-6, b=16),
+            training_cost=TrainingCostModel(FixedTrainingLatency(40.0), FixedTrainingMemory(0)),
+            sync_cost=FixedSyncCost(0.0),
+        )
+
+    def test_slack_lane_is_not_the_default_router(self):
+        base = self.build("request_num_balance", {}).run()
+        lane = self.build("slack_lane", {}).run()
+        assert lane.sim_time != base.sim_time
+        assert lane.versions_done == base.versions_done == 4
+
+    def test_slack_lane_without_upgrades_differs_from_slack_lane_with_them(self):
+        nolane = self.build("slack_lane", {"enable_upgrade": False}).run()
+        full = self.build("slack_lane", {"enable_upgrade": True}).run()
+        assert nolane.sim_time != full.sim_time
+
+    def test_length_lane_is_not_the_default_router(self):
+        base = self.build("request_num_balance", {}).run()
+        lane = self.build("length_lane", {"n_fast": 1, "threshold": 20_000, "c_fast": 2}).run()
+        assert lane.sim_time != base.sim_time
+        assert lane.versions_done == base.versions_done == 4

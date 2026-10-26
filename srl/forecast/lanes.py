@@ -343,7 +343,7 @@ def plan_lanes(
         winner = None
         for cand_assignment, cand_fast in candidates:
             pricing = price(cand_assignment, jobs, slots, **pricing_args)
-            improves = pricing.objective < best.objective - eps
+            improves = _accepts(pricing.objective, best.objective, eps)
             if improves and (winner is None or pricing.objective < winner[0].objective):
                 winner = (pricing, cand_assignment, cand_fast)
         if winner is None:
@@ -358,6 +358,21 @@ def plan_lanes(
         objective=best.objective,
         moves=moves,
     )
+
+
+def _accepts(candidate: float, current: float, eps: float) -> bool:
+    """Whether a candidate's objective is a real improvement over the current one.
+
+    `current == inf` means some priced buffer never becomes ready, so any finite
+    candidate resolves that outright and is accepted without the margin: there is no
+    meaningful fraction of a training cycle to compare a resolved buffer against one
+    that never fills. `eps - inf` is still `inf` in IEEE arithmetic, so the plain
+    `candidate < current - eps` form can never accept a move once `current` is
+    infinite, even when the candidate is strictly better or fully resolved.
+    """
+    if math.isinf(current):
+        return not math.isinf(candidate)
+    return candidate < current - eps
 
 
 def _target_time(pipeline: Pipeline, train: TrainState, now: float, index: int) -> float:
