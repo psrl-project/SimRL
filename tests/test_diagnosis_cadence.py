@@ -90,6 +90,27 @@ class TestSpanContentionFree:
         )
         assert loose < tight
 
+    def test_buffer_membership_follows_occupy_not_a_global_eta_sort(self):
+        groups = [
+            (0, [100_000]), (0, [100_000]),
+            (0, [1_000]), (0, [1_100]), (0, [1_200]), (0, [1_300]),
+            (0, [1]), (0, [1]),
+        ]
+
+        def train(lengths) -> float:
+            return 1e-9 * sum(lengths)
+
+        span = span_contention_free(
+            groups, staleness=2, batch_size=2, n_versions=2,
+            solo_latency=self.solo, train_latency=train, weight_load=0.0,
+        )
+        # Buffer 1's true occupants stay groups 4, 5 (ready at 1.3s), not the
+        # smaller-ETA groups 6, 7 that a global ETA sort would wrongly pick.
+        train_end_0 = 1.1 + train([1_000, 1_100])
+        expected = max(1.3, train_end_0) + train([1_200, 1_300])
+        assert span == pytest.approx(expected, abs=1e-9)
+        assert span != pytest.approx(1.3 + train([1, 1]), abs=1e-9)
+
     def test_too_few_groups_for_the_requested_steps_is_rejected(self):
         with pytest.raises(ValueError, match="needs at least"):
             span_contention_free(

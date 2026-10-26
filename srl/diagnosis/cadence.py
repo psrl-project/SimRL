@@ -16,7 +16,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from psrl.workers.ps.staleness import InventorySnapshot, forecast_ready_times
+# `forecast_ready_times` only returns ready times, not buffer membership, and no public
+# `psrl.workers.ps.staleness` API exposes the latter, so `_Replay` is used directly below.
+from psrl.workers.ps.staleness import InventorySnapshot
+from psrl.workers.ps.staleness.api import _Replay
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,9 +123,10 @@ def span_contention_free(
     lets a straggler slip past: a wide round makes many groups simultaneously eligible for the
     oldest open buffer, so psrl's own reserve and occupy rules let the fastest among them fill
     it while the straggler is pushed into a later one. Each round's membership (and so its
-    `train_latency` lengths) is then the earliest-finishing groups not yet claimed by an
-    earlier round, in ascending ETA order. The bound ignores fleet capacity entirely: large
-    headroom against it is necessary for a scheduler to win and never sufficient.
+    `train_latency` lengths) comes from replaying those same reserve and occupy rules over
+    every group admitted so far, the same replay `forecast_ready_times` runs internally, not
+    from sorting candidates by ETA. The bound ignores fleet capacity entirely: large headroom
+    against it is necessary for a scheduler to win and never sufficient.
 
     Args:
         groups (Sequence[tuple[int, Sequence[int]]]): `(prompt_len, output_lens)` per group, in
@@ -163,18 +167,12 @@ def span_contention_free(
             members.append(next_group)
             next_group += 1
 
-        snapshot = InventorySnapshot(staleness=staleness, num_entries=batch_size, next_buffer_id=0, buffers=())
-        ready = forecast_ready_times(snapshot, {}, new_groups)
-        f_k = ready.get(version, math.inf)
+        f_k, occupant_indices = _resolve_buffer(new_groups, staleness, batch_size, version)
         if not math.isfinite(f_k):
             raise ValueError(f"Buffer {version} can never fill from the groups admitted to it.")
 
-        pending = sorted(
-            (index for index, group_id in enumerate(members) if group_id not in consumed),
-            key=lambda index: new_groups[index][1],
-        )
         lengths: list[int] = []
-        for index in pending[:batch_size]:
+        for index in occupant_indices:
             group_id = members[index]
             prompt_len, output_lens = groups[group_id]
             lengths.extend(prompt_len + length for length in output_lens)
@@ -184,3 +182,40 @@ def span_contention_free(
         train_end = start + train_latency(lengths)
 
     return float(train_end)
+
+
+def _resolve_buffer(
+    new_groups: Sequence[tuple[int, float]],
+    staleness: int,
+    batch_size: int,
+    buffer_id: int,
+) -> tuple[float, list[int]]:
+    """
+    Replay reserve and occupy over `new_groups` and report one buffer's ready time and occupants.
+
+    `forecast_ready_times` runs this exact replay internally but only returns ready times. Buffer
+    membership determines which groups' lengths feed `train_latency`, and a candidate's own
+    admission-version window decides where `_Replay.occupy` ultimately places it, which an
+    ETA sort over not-yet-consumed candidates cannot reproduce.
+
+    Args:
+        new_groups (Sequence[tuple[int, float]]): Every group admitted so far, as `(version, eta)`.
+        staleness (int): psrl's staleness tolerance.
+        batch_size (int): Entries per buffer.
+        buffer_id (int): The buffer, equal to the training version that consumes it.
+
+    Returns:
+        tuple[float, list[int]]: The buffer's ready time, and the index into `new_groups` of each
+            group `_Replay.occupy` assigned to it, in assignment order.
+    """
+    snapshot = InventorySnapshot(staleness=staleness, num_entries=batch_size, next_buffer_id=0, buffers=())
+    replay = _Replay(snapshot, {})
+    occupants: list[int] = []
+    before = replay.occupied.get(buffer_id, 0)
+    for finish, _, _, key in replay.schedule(new_groups):
+        replay.occupy(key, finish)
+        after = replay.occupied.get(buffer_id, 0)
+        if after > before:
+            occupants.append(-1 - key)
+        before = after
+    return replay.ready.get(buffer_id, math.inf), occupants
