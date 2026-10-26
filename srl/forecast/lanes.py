@@ -208,7 +208,7 @@ def price(
         assignment (Mapping[int, int]): Request id to slot id, covering every job.
         jobs (Sequence[LaneJob]): The jobs the assignment covers.
         slots (Sequence[LaneSlot]): Every slot the assignment may name.
-        snapshot: The staleness inventory to replay.
+        snapshot (InventorySnapshot): The staleness inventory to replay.
         train (TrainState): The training loop's state, priced for the next cycle.
         members (Mapping[int, Sequence[int]]): Group id to its member request ids.
         finished (Mapping[int, float]): Completion time of an already-finished member, by id.
