@@ -163,7 +163,9 @@ class TestPrice:
         assert pricing.objective > 10.0
 
     def test_splitting_two_long_jobs_beats_stacking_them(self):
-        jobs = [job(0, 20_000, group_id=0), job(1, 20_000, group_id=1)]
+        # NOTE(claude): remaining must be long enough that stacked ctxsum clears ROOFLINE's F
+        # floor; below that both scenarios are floor-bound and tie regardless of concurrency.
+        jobs = [job(0, 100_000, group_id=0), job(1, 100_000, group_id=1)]
         slots = [priced_slot(0), priced_slot(1)]
         common = dict(
             snapshot=self.snapshot_one_buffer([0, 1]),
