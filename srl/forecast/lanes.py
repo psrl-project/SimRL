@@ -425,7 +425,9 @@ def _candidate_moves(
 
     Two shapes only: join a fast lane that still has room, or thin a bulk lane out by
     rebalancing its current jobs over the remaining bulk lanes. Enumerating every bulk lane
-    would price N nearly identical options, so only the emptiest one is offered.
+    would price N nearly identical options, so only the emptiest one is offered. A pinned
+    resident of the thinned slot is never part of what gets rebalanced, even when that slot
+    is chosen as the new host.
     """
     if not movers:
         return []
@@ -448,8 +450,14 @@ def _candidate_moves(
     if len(bulk) > 1 and len(movers) <= c_max:
         host = min(bulk, key=lambda s: (load[s], s))
         remaining_bulk = [slot_id for slot_id in bulk if slot_id != host]
-        evicted = [by_rid[rid] for rid, slot_id in assignment.items() if slot_id == host and rid not in movers]
-        candidate = {rid: slot_id for rid, slot_id in assignment.items() if slot_id != host}
+        evicted = [
+            by_rid[rid]
+            for rid, slot_id in assignment.items()
+            if slot_id == host and rid not in movers and rid not in pinned
+        ]
+        candidate = {
+            rid: slot_id for rid, slot_id in assignment.items() if slot_id != host or rid in pinned
+        }
         candidate.update(lpt_assign(evicted, remaining_bulk, pinned={r: s for r, s in pinned.items() if s != host}))
         for rid in movers:
             candidate[rid] = host

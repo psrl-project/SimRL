@@ -13,6 +13,7 @@ from srl.forecast import TrainState
 from srl.forecast.lanes import (
     LaneJob,
     LaneSlot,
+    _candidate_moves,
     kv_safe_concurrency,
     lpt_assign,
     plan_lanes,
@@ -266,20 +267,17 @@ class TestPlanLanes:
         assert plan.fast_instances == frozenset()
 
     def test_a_straggler_is_moved_onto_a_slot_of_its_own(self):
-        # NOTE(claude): Free LPT always isolates a dominant job for free, so no pure job mix
-        # creates a rescuable co-location. Pinning three fillers forces the free straggler to
-        # share instead of landing on an empty slot, sized past ROOFLINE's per-step floor.
-        jobs = [job(0, 500_000, group_id=0)] + [job(i, 100_000, group_id=i) for i in (1, 2, 3)]
-        pinned = {1: 0, 2: 1, 3: 2}
+        # Four jobs on two slots forces LPT to pair two per slot. The straggler's pair is
+        # slower than consolidating the other three onto one slot, so the search isolates it.
+        jobs = [job(i, L, group_id=i) for i, L in enumerate([550_000, 340_000, 320_000, 290_000])]
         plan = plan_lanes(
             jobs,
-            self.fleet(3),
+            self.fleet(2),
             snapshot=self.snapshot_one_buffer_n(4),
             train=TrainState(training_end=None, now=0.0, cycle=5.0, weight_load=0.0),
             members={i: [i] for i in range(4)},
             finished={},
             now=0.0,
-            pinned=pinned,
             c_max=1,
         )
         straggler_slot = plan.assignment[0]
@@ -327,6 +325,25 @@ class TestPlanLanes:
             pinned={0: 1},
         )
         assert plan.assignment[0] == 1
+
+    def test_a_pinned_coresident_of_the_eviction_host_never_moves(self):
+        # Job 1 is pinned to slot 1 alongside free job 2. A mover (job 0) is cheaper to settle
+        # on slot 1 than on slot 0, so slot 1 is chosen as the eviction host: only job 2 may be
+        # displaced, job 1 must stay exactly where it was pinned.
+        by_rid = {j.rid: j for j in (job(0, 600), job(1, 50), job(2, 50))}
+        candidates = _candidate_moves(
+            movers=[0],
+            assignment={0: 0, 1: 1, 2: 1},
+            by_rid=by_rid,
+            slot_ids=[0, 1],
+            fast=set(),
+            c_max=1,
+            pinned={1: 1},
+        )
+        assert len(candidates) == 1
+        candidate, _fast = candidates[0]
+        assert candidate[1] == 1
+        assert set(candidate) == {0, 1, 2}
 
     def snapshot_one_buffer_n(self, n):
         return InventorySnapshot(
