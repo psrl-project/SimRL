@@ -8,10 +8,12 @@ from . import (  # noqa: F401
     inventory_deadline,
     kv_cache_aware,
     length_aware,
+    length_lane,
     prefix_aware,
     random_choice,
     request_num_balance,
     round_robin,
+    slack_lane,
     throughput_balance,
 )
 

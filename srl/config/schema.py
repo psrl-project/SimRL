@@ -251,7 +251,8 @@ class RouterConfig:
     """
     strategy: str = "request_num_balance"
     """request_num_balance | round_robin | random | kv_cache_aware |
-    prefix_aware | throughput_balance | length_aware | inventory_deadline.
+    prefix_aware | throughput_balance | length_aware | inventory_deadline |
+    slack_lane | length_lane.
 
     The default reproduces the former least-active selection exactly, so it is
     behaviour-preserving as well as what the matched PSRL run uses.

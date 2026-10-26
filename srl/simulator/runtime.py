@@ -60,6 +60,10 @@ class SchedulingRuntime:
     def weight_load(self) -> float:
         return self._sim.cfg.weight_load_time
 
+    @property
+    def token_budget(self) -> int:
+        return self._sim.cfg.token_budget
+
     # --- inventory and training ---------------------------------------
 
     def inventory(self) -> InventorySnapshot:
