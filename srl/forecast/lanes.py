@@ -243,3 +243,215 @@ def price(
     horizon = pipeline.train_end[:horizon_buffers]
     objective = math.inf if any(math.isinf(e) for e in horizon) else sum(horizon)
     return Pricing(objective=objective, pipeline=pipeline, member_finish=member_finish, group_eta=eta)
+
+
+@dataclass(frozen=True, slots=True)
+class LanePlan:
+    """Where every job goes, and which instances ended up as fast lanes."""
+
+    assignment: dict[int, int]
+    fast_instances: frozenset[int]
+    """Instances the search deliberately thinned out. Empty when the bulk plan was never beaten."""
+    objective: float
+    moves: int
+    """Upgrades the search accepted, for telemetry and for bounding the search in tests."""
+
+
+def plan_lanes(
+    jobs: Sequence[LaneJob],
+    slots: Sequence[LaneSlot],
+    *,
+    snapshot: InventorySnapshot,
+    train: TrainState,
+    members: Mapping[int, Sequence[int]],
+    finished: Mapping[int, float],
+    now: float,
+    pinned: Mapping[int, int] | None = None,
+    horizon_buffers: int = 2,
+    c_max: int = 4,
+    eps_frac: float = 0.01,
+    max_moves: int = 8,
+) -> LanePlan:
+    """
+    Assign jobs to slots, then thin out slots until no late buffer can be improved.
+
+    The search starts from the balanced assignment and repeatedly asks the same question: which
+    pending buffer would make the trainer idle, and which group holds it up? It then tries to
+    give that group's late members fewer neighbours, either on a slot already thinned out or by
+    thinning a fresh one, and keeps the move that lowers the objective most. The number of fast
+    lanes and their occupancy are outputs of this loop, never inputs.
+
+    Args:
+        jobs (Sequence[LaneJob]): Every job in flight or awaiting placement.
+        slots (Sequence[LaneSlot]): The fleet.
+        snapshot (InventorySnapshot): The staleness inventory to replay.
+        train (TrainState): The training loop's state, held fixed across the search.
+        members (Mapping[int, Sequence[int]]): Group id to its member request ids.
+        finished (Mapping[int, float]): Completion time of an already-finished member, by id.
+        now (float): Simulated time the forecasts start from.
+        pinned (Mapping[int, int] | None): Jobs already placed, which keep their slot.
+        horizon_buffers (int): Buffers the objective sums over.
+        c_max (int): Jobs a fast lane may hold.
+        eps_frac (float): Fraction of one training cycle a move must save to be accepted.
+        max_moves (int): Upgrades the search may accept.
+
+    Returns:
+        LanePlan: The assignment, the fast lanes, the objective, and the moves accepted.
+
+    Raises:
+        ValueError: If `c_max` is below 1 or `slots` is empty.
+    """
+    if c_max < 1:
+        raise ValueError(f"c_max must be at least 1, got {c_max!r}.")
+    if not slots:
+        raise ValueError("plan_lanes needs at least one slot.")
+    pinned = pinned or {}
+    slot_ids = [slot.instance_id for slot in slots]
+    by_rid = {job.rid: job for job in jobs}
+    pricing_args = dict(
+        snapshot=snapshot,
+        train=train,
+        members=members,
+        finished=finished,
+        now=now,
+        horizon_buffers=horizon_buffers,
+    )
+
+    assignment = lpt_assign(jobs, slot_ids, pinned=pinned)
+    best = price(assignment, jobs, slots, **pricing_args)
+    eps = eps_frac * train.cycle
+    fast: set[int] = set()
+    unfixable: set[int] = set()
+    moves = 0
+
+    while moves < max_moves:
+        late = _first_late_buffer(best.pipeline, train, now, horizon_buffers, unfixable)
+        if late is None:
+            break
+        buffer_id = best.pipeline.buffers[late]
+        target = _target_time(best.pipeline, train, now, late)
+        critical = _critical_group(snapshot, best.group_eta, members, buffer_id)
+        if critical is None:
+            unfixable.add(buffer_id)
+            continue
+        movers = [
+            rid
+            for rid in members[critical]
+            if rid in by_rid and rid not in pinned and best.member_finish.get(rid, math.inf) > target
+        ]
+        candidates = _candidate_moves(movers, assignment, by_rid, slot_ids, fast, c_max, pinned)
+        winner = None
+        for cand_assignment, cand_fast in candidates:
+            pricing = price(cand_assignment, jobs, slots, **pricing_args)
+            improves = pricing.objective < best.objective - eps
+            if improves and (winner is None or pricing.objective < winner[0].objective):
+                winner = (pricing, cand_assignment, cand_fast)
+        if winner is None:
+            unfixable.add(buffer_id)
+            continue
+        best, assignment, fast = winner[0], winner[1], set(winner[2])
+        moves += 1
+
+    return LanePlan(
+        assignment=dict(assignment),
+        fast_instances=frozenset(fast),
+        objective=best.objective,
+        moves=moves,
+    )
+
+
+def _target_time(pipeline: Pipeline, train: TrainState, now: float, index: int) -> float:
+    """When buffer `index` must be ready for the trainer not to idle before it."""
+    if index > 0:
+        return pipeline.train_end[index - 1]
+    return now if train.training_end is None else train.training_end + train.weight_load
+
+
+def _first_late_buffer(
+    pipeline: Pipeline,
+    train: TrainState,
+    now: float,
+    horizon_buffers: int,
+    skip: set[int],
+) -> int | None:
+    """Index of the earliest priced buffer the trainer would wait for, skipping `skip`."""
+    for index in range(min(horizon_buffers, len(pipeline.buffers))):
+        if pipeline.buffers[index] in skip:
+            continue
+        if pipeline.ready[index] > _target_time(pipeline, train, now, index):
+            return index
+    return None
+
+
+def _critical_group(
+    snapshot: InventorySnapshot,
+    group_eta: Mapping[int, float],
+    members: Mapping[int, Sequence[int]],
+    buffer_id: int,
+) -> int | None:
+    """
+    The latest-finishing group that buffer `buffer_id` cannot be ready without.
+
+    A group whose deadline is at or before `buffer_id` must be consumed by it at the latest, so
+    the buffer cannot fill until every one of them has finished. The slowest of those is what
+    sets the buffer's READY time, and the only group worth speeding up.
+    """
+    worst_eta = -math.inf
+    worst: int | None = None
+    for group_id in members:
+        try:
+            deadline = snapshot.deadline(group_id)
+        except KeyError:
+            continue
+        if deadline > buffer_id:
+            continue
+        eta = group_eta.get(group_id, math.inf)
+        if eta > worst_eta:
+            worst_eta, worst = eta, group_id
+    return worst
+
+
+def _candidate_moves(
+    movers: Sequence[int],
+    assignment: Mapping[int, int],
+    by_rid: Mapping[int, LaneJob],
+    slot_ids: Sequence[int],
+    fast: set[int],
+    c_max: int,
+    pinned: Mapping[int, int],
+) -> list[tuple[dict[int, int], set[int]]]:
+    """
+    Enumerate the ways `movers` could get fewer neighbours.
+
+    Two shapes only: join a fast lane that still has room, or thin a bulk lane out by
+    rebalancing its current jobs over the remaining bulk lanes. Enumerating every bulk lane
+    would price N nearly identical options, so only the emptiest one is offered.
+    """
+    if not movers:
+        return []
+    out: list[tuple[dict[int, int], set[int]]] = []
+    load = {slot_id: 0 for slot_id in slot_ids}
+    held = {slot_id: 0 for slot_id in slot_ids}
+    for rid, slot_id in assignment.items():
+        load[slot_id] += by_rid[rid].remaining
+        held[slot_id] += 1
+
+    for slot_id in sorted(fast):
+        if held[slot_id] + len(movers) > c_max:
+            continue
+        candidate = dict(assignment)
+        for rid in movers:
+            candidate[rid] = slot_id
+        out.append((candidate, set(fast)))
+
+    bulk = [slot_id for slot_id in slot_ids if slot_id not in fast]
+    if len(bulk) > 1 and len(movers) <= c_max:
+        host = min(bulk, key=lambda s: (load[s], s))
+        remaining_bulk = [slot_id for slot_id in bulk if slot_id != host]
+        evicted = [by_rid[rid] for rid, slot_id in assignment.items() if slot_id == host and rid not in movers]
+        candidate = {rid: slot_id for rid, slot_id in assignment.items() if slot_id != host}
+        candidate.update(lpt_assign(evicted, remaining_bulk, pinned={r: s for r, s in pinned.items() if s != host}))
+        for rid in movers:
+            candidate[rid] = host
+        out.append((candidate, {*fast, host}))
+    return out

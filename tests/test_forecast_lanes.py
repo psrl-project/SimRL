@@ -15,6 +15,7 @@ from srl.forecast.lanes import (
     LaneSlot,
     kv_safe_concurrency,
     lpt_assign,
+    plan_lanes,
     price,
     state_for,
 )
@@ -222,3 +223,117 @@ class TestPrice:
                 now=0.0,
                 horizon_buffers=2,
             )
+
+
+class TestPlanLanes:
+    def fleet(self, n: int):
+        return [priced_slot(i) for i in range(n)]
+
+    def snapshot_two_buffers(self, early_groups, late_groups):
+        """Buffer 0 holds `early_groups`, buffer 1 holds `late_groups`, staleness 1."""
+        return InventorySnapshot(
+            staleness=1,
+            num_entries=max(len(early_groups), len(late_groups)),
+            next_buffer_id=2,
+            buffers=(
+                BufferView(
+                    buffer_id=0,
+                    ready_num_entries=max(len(early_groups), len(late_groups)),
+                    n_occupied=0,
+                    reserved=tuple((g, 0) for g in early_groups),
+                ),
+                BufferView(
+                    buffer_id=1,
+                    ready_num_entries=max(len(early_groups), len(late_groups)),
+                    n_occupied=0,
+                    reserved=tuple((g, 1) for g in late_groups),
+                ),
+            ),
+        )
+
+    def test_a_balanced_fleet_needs_no_upgrade(self):
+        jobs = [job(i, 2000, group_id=i) for i in range(4)]
+        plan = plan_lanes(
+            jobs,
+            self.fleet(4),
+            snapshot=self.snapshot_one_buffer_n(4),
+            train=TrainState(training_end=None, now=0.0, cycle=1e6, weight_load=0.0),
+            members={i: [i] for i in range(4)},
+            finished={},
+            now=0.0,
+        )
+        assert plan.moves == 0
+        assert plan.fast_instances == frozenset()
+
+    def test_a_straggler_is_moved_onto_a_slot_of_its_own(self):
+        # NOTE(claude): Free LPT always isolates a dominant job for free, so no pure job mix
+        # creates a rescuable co-location. Pinning three fillers forces the free straggler to
+        # share instead of landing on an empty slot, sized past ROOFLINE's per-step floor.
+        jobs = [job(0, 500_000, group_id=0)] + [job(i, 100_000, group_id=i) for i in (1, 2, 3)]
+        pinned = {1: 0, 2: 1, 3: 2}
+        plan = plan_lanes(
+            jobs,
+            self.fleet(3),
+            snapshot=self.snapshot_one_buffer_n(4),
+            train=TrainState(training_end=None, now=0.0, cycle=5.0, weight_load=0.0),
+            members={i: [i] for i in range(4)},
+            finished={},
+            now=0.0,
+            pinned=pinned,
+            c_max=1,
+        )
+        straggler_slot = plan.assignment[0]
+        assert [rid for rid, s in plan.assignment.items() if s == straggler_slot] == [0]
+        assert straggler_slot in plan.fast_instances
+
+    def test_the_plan_never_loses_to_the_bulk_only_assignment(self):
+        jobs = [job(0, 30_000, group_id=0)] + [job(i, 2_000, group_id=i) for i in range(1, 8)]
+        slots = self.fleet(4)
+        common = dict(
+            snapshot=self.snapshot_one_buffer_n(8),
+            train=TrainState(training_end=None, now=0.0, cycle=5.0, weight_load=0.0),
+            members={i: [i] for i in range(8)},
+            finished={},
+            now=0.0,
+        )
+        plan = plan_lanes(jobs, slots, **common)
+        bulk = price(lpt_assign(jobs, [s.instance_id for s in slots]), jobs, slots, horizon_buffers=2, **common)
+        assert plan.objective <= bulk.objective
+
+    def test_max_moves_bounds_the_search(self):
+        jobs = [job(i, 30_000, group_id=i) for i in range(6)]
+        plan = plan_lanes(
+            jobs,
+            self.fleet(6),
+            snapshot=self.snapshot_one_buffer_n(6),
+            train=TrainState(training_end=None, now=0.0, cycle=5.0, weight_load=0.0),
+            members={i: [i] for i in range(6)},
+            finished={},
+            now=0.0,
+            max_moves=1,
+        )
+        assert plan.moves <= 1
+
+    def test_pinned_jobs_are_never_moved(self):
+        jobs = [job(0, 30_000, group_id=0)] + [job(i, 1_000, group_id=i) for i in (1, 2)]
+        plan = plan_lanes(
+            jobs,
+            self.fleet(2),
+            snapshot=self.snapshot_one_buffer_n(3),
+            train=TrainState(training_end=None, now=0.0, cycle=5.0, weight_load=0.0),
+            members={i: [i] for i in range(3)},
+            finished={},
+            now=0.0,
+            pinned={0: 1},
+        )
+        assert plan.assignment[0] == 1
+
+    def snapshot_one_buffer_n(self, n):
+        return InventorySnapshot(
+            staleness=0,
+            num_entries=n,
+            next_buffer_id=1,
+            buffers=(
+                BufferView(buffer_id=0, ready_num_entries=n, n_occupied=0, reserved=tuple((g, 0) for g in range(n))),
+            ),
+        )
