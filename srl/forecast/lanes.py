@@ -13,6 +13,8 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from psrl.workers.ps.staleness import InventorySnapshot
+
 from ..component.rollout.engine import blocks_for
 from .drain import InstanceForecast
 from .pipeline import Pipeline, PipelineForecast, TrainState, group_etas
@@ -188,7 +190,7 @@ def price(
     jobs: Sequence[LaneJob],
     slots: Sequence[LaneSlot],
     *,
-    snapshot,
+    snapshot: InventorySnapshot,
     train: TrainState,
     members: Mapping[int, Sequence[int]],
     finished: Mapping[int, float],

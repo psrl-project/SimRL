@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import math
-import pytest
 
+import pytest
 from psrl.workers.ps.staleness import BufferView, InventorySnapshot
 
 from srl.cost.rollout import UnifiedRoofline
@@ -124,7 +124,7 @@ class TestStateFor:
         assert all(r.prefilled == 0 for r in state.waiting)
 
     def test_concurrency_is_capped_by_the_pool(self):
-        # Final ctx 100 + 1500 = 1600 tokens = 100 blocks each; a 250-block pool holds two.
+        # Final ctx 100 + 1500 = 1600 tokens = 100 blocks each. A 250-block pool holds two.
         jobs = [job(i, 1500) for i in range(10)]
         assert state_for(priced_slot(0, kv_blocks=250), jobs, now=0.0).max_concurrency == 2
 
@@ -163,8 +163,8 @@ class TestPrice:
         assert pricing.objective > 10.0
 
     def test_splitting_two_long_jobs_beats_stacking_them(self):
-        # NOTE(claude): remaining must be long enough that stacked ctxsum clears ROOFLINE's F
-        # floor; below that both scenarios are floor-bound and tie regardless of concurrency.
+        # NOTE(claude): Remaining must be long enough that stacked ctxsum clears ROOFLINE's F
+        # floor. Below that, both scenarios are floor-bound and tie regardless of concurrency.
         jobs = [job(0, 100_000, group_id=0), job(1, 100_000, group_id=1)]
         slots = [priced_slot(0), priced_slot(1)]
         common = dict(
