@@ -458,7 +458,7 @@ def _candidate_moves(
         candidate = {
             rid: slot_id for rid, slot_id in assignment.items() if slot_id != host or rid in pinned
         }
-        candidate.update(lpt_assign(evicted, remaining_bulk, pinned={r: s for r, s in pinned.items() if s != host}))
+        candidate.update(lpt_assign(evicted, remaining_bulk))
         for rid in movers:
             candidate[rid] = host
         out.append((candidate, {*fast, host}))

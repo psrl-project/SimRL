@@ -327,9 +327,8 @@ class TestPlanLanes:
         assert plan.assignment[0] == 1
 
     def test_a_pinned_coresident_of_the_eviction_host_never_moves(self):
-        # Job 1 is pinned to slot 1 alongside free job 2. A mover (job 0) is cheaper to settle
-        # on slot 1 than on slot 0, so slot 1 is chosen as the eviction host: only job 2 may be
-        # displaced, job 1 must stay exactly where it was pinned.
+        # Job 1 is pinned to slot 1 alongside free job 2. The mover (job 0) settles on slot
+        # 1 as host, and only job 2, not pinned job 1, may be displaced.
         by_rid = {j.rid: j for j in (job(0, 600), job(1, 50), job(2, 50))}
         candidates = _candidate_moves(
             movers=[0],
