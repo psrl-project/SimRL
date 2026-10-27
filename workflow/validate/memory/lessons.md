@@ -151,3 +151,18 @@ Never record result numbers. Remove a bullet when it stops being true.
   underscore) by the actual summarizer. Confirm a field name against one real row's own keys
   before writing a verification script around it; a wrong assumed name silently filters to an
   empty set rather than raising, which reads as "zero gated rows" instead of "wrong key."
+- 2026-10-27: A driver that loops over many points/arms in ONE long-lived process (`build()`
+  called repeatedly, no subprocess-per-point) freezes whatever `srl` module state existed at
+  process start -- later on-disk edits to `srl/` from a concurrent session during that process's
+  multi-hour run have zero effect on it. A REPLAY attempted afterward in a fresh process is NOT
+  protected this way and will silently pick up whatever is on disk at replay time. Confirmed
+  exact root cause of a real fidelity-gate failure this way: a concurrent, uncommitted edit to
+  `srl/simulator/simulator.py` added a new `SimConfig` field with a default that flips the
+  ingress-admission behavior, landing on disk mid-sweep; the sweep's frozen process never saw it,
+  a later fresh-process replay did, and `mean_concurrency`/`fleet_idle_frac` (far more than
+  `span`) diverged as a result. Before trusting a replay-fidelity mismatch as evidence of
+  non-determinism or a different physical node, check `git status --short`/mtimes on the files
+  the driver imports against the sweep's own start/end wall-clock window first -- it is a cheap
+  check and was the actual cause here, not either of the other two candidates. The fix is to pin
+  every config field the driver's `build()` depends on explicitly, rather than relying on
+  whatever a dataclass's own default happens to be at call time.

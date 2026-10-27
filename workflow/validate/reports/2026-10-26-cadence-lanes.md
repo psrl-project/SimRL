@@ -29,6 +29,23 @@ anything over a fixed threshold.
 - Workload: `outputs/workload/qwen3_8b_dapo_38912_tp1` (1024 real DAPO groups x 8, cap 38912),
   permuted 3 ways by seed. Fleet: 16 x TP1 Qwen3-8B on H20, composed cost model, KV from the
   real probe, `weight_load_time=0.0`. All lengths come from the oracle predictor.
+- **`ingress_lifetime_cap` note.** The full sweep ran as one long-lived process that imported
+  `srl` once, well before a concurrent session's in-progress, uncommitted edit to
+  `srl/simulator/simulator.py`/`config.py` landed on disk (confirmed by file mtimes falling
+  inside the sweep's own 05:41-10:24 execution window). That edit added
+  `SimConfig.ingress_lifetime_cap` (default `False`, meaning no lifetime cap on dataset ingress,
+  intentionally -- its own docstring cites a real-verl-v1 comparison showing the unconditional
+  cap this sweep's driver implicitly relied on makes every metric but span *less* realistic, not
+  more). The sweep's one long-lived process never saw this edit (modules are frozen in memory at
+  import), so every row in `summary.json` was computed under the OLD unconditional cap; a FRESH
+  process (any later replay) instead gets the new default and silently diverges -- confirmed by
+  reproducing 6 rows bit-for-bit only with `ingress_lifetime_cap=True` forced, not the on-disk
+  default. The driver (`workflow/validate/experiments/cadence_lanes.py`, gitignored) now pins
+  `ingress_lifetime_cap=True` explicitly in `build()` so this reproduces going forward. This has
+  no effect on any number in Section 3 taken directly from `summary.json`'s own stored fields
+  (every row there came from the one self-consistent frozen process) -- it affects only the
+  supplementary re-runs this report performed afterward in fresh processes (the autocorrelation
+  table and fast-lane burst counts below), which are corrected in place.
 
 ## 3. Gated results
 
@@ -59,8 +76,8 @@ do not compare them to the other rows' 27/27 geomeans as if the point sets match
 `staleness=1` points, plus one `staleness=3` point (`s3_rho1.10_seed1`) — 10 of 27 points total.
 Confirmed by direct instrumentation of `SlackLane.begin_dispatch` on 3 representative points
 (one per staleness level, `rho=1.0, seed=0`): at `staleness=1`, the upgrade search runs on every
-one of 56 dispatch bursts and finds a fast lane on **0 of them**. At `staleness=2` and
-`staleness=3`, it finds 1-2 fast instances (out of 16) on a minority of bursts (7/54 and 4/54 in
+one of 65 dispatch bursts and finds a fast lane on **0 of them**. At `staleness=2` and
+`staleness=3`, it finds 1-2 fast instances (out of 16) on a minority of bursts (6/59 and 2/55 in
 the two sampled points), with at most 2 accepted moves in any single burst. `a_slack`'s entire
 edge over `a_nolane` (1.0121 vs 1.0045 vs `b1_best`) comes from the 17 of 27 points where the
 search found a genuine, net-positive move — it is structurally a no-op at `staleness=1` at this
@@ -109,12 +126,21 @@ per staleness level, `rho=1.0, seed=0`) with full telemetry and applying
 
 | point | arm | trainer idle (s) | fleet idle frac | acf1 (lag 1) | acf2 (lag 2) |
 |---|---|---|---|---|---|
-| `s1_rho1.00_seed0` | `b0_default` | 3115.8 | 0.196 | **-0.528** | +0.082 |
-| `s1_rho1.00_seed0` | `a_slack` | 2994.6 | 0.186 | **-0.658** | **+0.432** |
-| `s2_rho1.00_seed0` | `b0_default` | 1685.9 | 0.132 | -0.278 | -0.309 |
-| `s2_rho1.00_seed0` | `a_slack` | 1644.2 | 0.129 | -0.259 | -0.316 |
-| `s3_rho1.00_seed0` | `b0_default` | 886.9 | 0.054 | +0.089 | -0.033 |
-| `s3_rho1.00_seed0` | `a_slack` | 851.6 | 0.059 | +0.070 | +0.021 |
+| `s1_rho1.00_seed0` | `b0_default` | 3105.7 | 0.223 | **-0.526** | +0.082 |
+| `s1_rho1.00_seed0` | `a_slack` | 2994.6 | 0.211 | **-0.658** | **+0.432** |
+| `s2_rho1.00_seed0` | `b0_default` | 1710.8 | 0.200 | -0.274 | -0.314 |
+| `s2_rho1.00_seed0` | `a_slack` | 1644.2 | 0.192 | -0.260 | -0.316 |
+| `s3_rho1.00_seed0` | `b0_default` | 872.8 | 0.148 | +0.093 | -0.026 |
+| `s3_rho1.00_seed0` | `a_slack` | 803.9 | 0.143 | +0.073 | +0.029 |
+
+(Corrected from an earlier draft of this report: the first pass of these 6 re-runs executed in a
+fresh process after a concurrent session's edit to `srl/simulator/simulator.py`/`config.py`
+landed on disk mid-sweep -- see Section 2's note on `ingress_lifetime_cap` -- and so used a
+different ingress-admission default than the frozen-at-import-time process that actually produced
+`summary.json`. Every span above now reproduces its point's stored `summary.json` row exactly, to
+full float precision; `acf1`/`acf2` barely moved (the shape of the interval sequence is largely
+insensitive to the flag), but `fleet_idle_frac` moved substantially -- up to +175% relative at
+`staleness=3` -- and this table's prose below is written against the corrected values.)
 
 **The user's period-2 prior does not hold as stated, and this is a negative result worth
 reporting as such.** A clean period-2 oscillation requires both a strongly negative lag-1 AND a
@@ -135,10 +161,11 @@ pattern is weaker or absent:
   it is only materially different at staleness=1, where it makes the existing weak alternation
   tendency notably *stronger*, not weaker, while still not reaching a clean 2-cycle.
 
-Fleet idle fraction drops monotonically with staleness (0.19 to 0.13 to 0.05) regardless of
-arm, consistent with staleness relaxing the admission window and giving the fleet more
-continuously-available work — this is the dominant, well-behaved trend; a repeating oscillation
-is, at best, a secondary and partial effect confined to low staleness.
+Fleet idle fraction drops monotonically with staleness (~0.22 to ~0.20 to ~0.15, averaged over
+the two arms at each level) regardless of arm, consistent with staleness relaxing the admission
+window and giving the fleet more continuously-available work — this is the dominant, well-behaved
+trend; a repeating oscillation is, at best, a secondary and partial effect confined to low
+staleness.
 
 ## 4. Failed gates
 
