@@ -110,12 +110,16 @@ captured), gated rows
 | `b1_cap48` | 9 | -0.112 | -0.343 | -0.021 |
 
 Median `headroom_capture` for `a_slack` is below 0.5 (it is +0.039, far below it) on points
-with meaningful headroom. Per the plan's own decision rule (Task 10), this means **Algorithm B
-(explicit cadence-target planning) is not warranted** — `a_slack`'s greedy, nearest-late-buffer
-search already behaves like the dominant lever available at this fleet scale, and there is not
-enough uncaptured headroom to justify the added complexity of period-targeted planning. This
-is evaluated formally in Task 10; it is noted here because the number driving that decision is
-produced by this sweep.
+with meaningful headroom (all 27 points qualify: `b1_best_span - lb >= 0.05 * b1_best_span`
+holds everywhere in this grid). Per the plan's own decision rule (Task 10) -- build B when
+the median is *below* 0.5, meaning most of the gap between `b1_best` and the contention-free
+bound is still uncaptured -- this means **Algorithm B (explicit cadence-target planning) is
+warranted**: `a_slack`'s greedy, nearest-late-buffer search is claiming only ~3.9% of the
+available headroom at the median point, leaving the large majority on the table for a
+period-targeted planner to attempt. (An earlier draft of this report stated the opposite
+conclusion by misreading the rule's direction -- low capture means *more* headroom left to
+claim, not less reason to try. Corrected here; Task 10 carries out the build this rule calls
+for.)
 
 ### Step-interval autocorrelation: testing the period-2 oscillation prior
 
