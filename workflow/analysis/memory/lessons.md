@@ -56,15 +56,29 @@ bullet when it stops being true.
   "why did arm A finish before arm B" lives in `binding_decompositions[rid]` (solo/interference/
   queue seconds for the step's binding request) and `steps[i].sibling_spread` (how tightly the
   binding group's members finished together), not the fleet tables.
-- 2026-10-27: A `cadence_lanes.py`-style row (native backend, `request_num_balance`/`slack_lane`
-  on the real DAPO trace, `n_versions=24`) can fail `replay.fidelity()` on `mean_concurrency`
-  even when `span` and every count field match exactly, and can fail on `span` too at a tighter
-  staleness horizon. Ruled out directly, each with its own re-run: telemetry on vs. off (both give
-  the identical mismatched numbers), `PYTHONHASHSEED` pinned vs. unset (4 fresh-process launches
-  agree with each other to the last printed digit regardless), and the native `.so` being rebuilt
-  since the row was captured (same mtime and md5 as 10 days before the sweep ran). The mismatch is
-  present on the very first arm run in a fresh process, not just after many arms have run in the
-  same process, which weighs against "accumulated heap/allocation state from the sweep's own long
-  arm sequence" as the mechanism. Before trusting a replay of this driver's rows, check whether the
-  sweep and the replay ran on the same physical node: no node identity is recorded in the row, and
-  that is the leading untested candidate once the four above are eliminated.
+- 2026-10-27: A fresh-process replay of a `validate` sweep row can silently pick up a *different*
+  `SimConfig` default than the one the sweep itself ran under, with every gated field still
+  disagreeing bit-for-bit, if a concurrent session's uncommitted edit adds a new config field
+  (with its own default) to a module the sweep process had *already imported* before the edit
+  landed on disk. The sweep's own long-lived process freezes its import of that module at start,
+  so its rows stay internally self-consistent under the old default throughout; a later,
+  freshly-started replay process imports the new on-disk default instead, which is a materially
+  different simulator even though every line of code the two processes share is identical. This
+  produced a `mean_concurrency`-and-sometimes-`span` mismatch that survived ruling out telemetry
+  on/off, `PYTHONHASHSEED`, and the native `.so` being rebuilt -- none of those is the first thing
+  to suspect; the first thing to suspect is whether a config field's *default* changed on disk
+  inside the sweep's own wall-clock execution window, found by `ls -la --time-style=full-iso` on
+  every module the driver's `build()` imports, checked against the sweep's own `summary.json`
+  mtime range. The fix is for the replay driver to pin every config field whose default could
+  plausibly have moved, explicitly, rather than rely on "the dataclass default happens to match
+  what the sweep used."
+- 2026-10-27: `diagnose.build()`'s cross-source check (`srl.diagnosis.timeline.request_phases`)
+  can fail for a `request_num_balance`-capped control row even after that row's `replay.fidelity()`
+  passes bit-for-bit -- these are two separate gates, and passing the first does not imply passing
+  the second. Observed failure modes cluster at the highest-contention point tried so far and
+  include `reprefill_present` (a request charged reprefill tokens with no reconstructed reprefill
+  phase) alongside `decode_tokens_match` and `completion_time_match`, all on the capped control
+  arm, never on the lane-strategy arm at the same points. Not yet root-caused to a specific missing
+  sync point; `cadence_report` (`srl.diagnosis.cadence`, reads `train.jsonl`/`rollout_step.jsonl`
+  directly) does not depend on this reconstruction and stays available even when this check fails,
+  which is the fallback to reach for rather than widening the check's own tolerance.
