@@ -170,6 +170,40 @@ under this task's own "measure B as one more arm" scope. The data gathered (`b_c
 rows in `summary.json`) is correct and real; it measures `plan_cadence` exactly as specified,
 and that specification's own bracket is what did not engage.
 
+### Instance-level placement: checked and closed
+
+After reporting the above, a direct follow-up question was raised: is the small measured
+headroom an artifact of the baseline router already colocating a GRPO group's siblings onto
+one instance, hiding real load imbalance this plan's lane-reordering work never looked at?
+Checked directly against the real router code and the real trace, independently re-verified
+rather than taken on a single investigating pass:
+
+1. **No colocation happens, code-confirmed.** `RequestNumBalance.select()`
+   (`srl/component/rollout/router/strategies/request_num_balance.py:19-20`) is
+   `min(..., key=lambda i: candidates[i].n_active)` -- it never reads `group_id`.
+   `Router.enable_group_sticky` would do this, but defaults `False` and this plan's driver
+   never sets it (confirmed by direct grep, zero hits).
+2. **Instance-busy-seconds imbalance under `b0_default` is real but modest, and shrinks as
+   concurrency rises**: 7.2-10.9% spread across 5 sampled points (Task 9's own one point plus 4
+   more at varied staleness/arm) -- not the large imbalance a correlated-sibling-colocation
+   hypothesis would predict if it were actually happening.
+3. **`a_slack`'s own spread is consistently larger** (11.6-19.9%) than the baseline's -- the
+   fast-lane mechanism's own deliberate cost of thinning some instances to isolate a straggler,
+   not unclaimed baseline imbalance sitting there unnoticed.
+4. **Siblings genuinely are length-correlated** (within-group CV 0.2016 vs. across-group CV
+   0.5953, independently recomputed directly from
+   `outputs/workload/qwen3_8b_dapo_38912_tp1/joint.jsonl`) -- but since point 1 means they are
+   never colocated, this correlation is never amplified into a real per-instance load spike.
+
+This converges with two independent prior investigations in this same codebase --
+`memory/psrl-headroom-lives-at-s1-and-balanced-training.md` ("No gain from: placement by
+predicted load...") and `memory/long-tail-headroom-is-near-zero-fleet-is-saturated-not-starved.md`
+(fleet saturated, busy fraction 0.89-1.00, not starved) -- plus this plan's own Task 9
+diagnosis (idle-window busy fraction 92.8-99.3%). The fleet here runs consistently near its own
+capacity ceiling; reshuffling who-goes-where, at admission time or after, moves contention
+around without creating new idle capacity to redirect toward. This closes the loop the user's
+own question opened -- it is not left as a dangling "not established" item.
+
 ### Step-interval autocorrelation: testing the period-2 oscillation prior
 
 Explicit test of the prior that `staleness=S` should produce an oscillation with some period
