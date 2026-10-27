@@ -59,3 +59,95 @@ Never record result numbers. Remove a bullet when it stops being true.
   win — check mean/peak concurrency alongside span, since a treatment can show higher concurrency
   than every static baseline while still finishing later, which reads as congestion rather than
   throughput.
+- 2026-10-22: `outputs/profile/qwen3_8b/kernel_tp{4,8}` are incomplete for an end-to-end TP sweep:
+  `kernel_tp4` has no `collective/` tables (fails on the all_reduce query) and `kernel_tp8` has no
+  `gemm/` tables at all. Only `kernel_tp1`/`kernel_tp2` are complete for this model on this host.
+  Re-profile with `srl-profile kernels run --family collective|gemm` before trusting a tp4/tp8 row
+  from any experiment that calls `ComposedRollout`/`KernelDatabase.from_root` directly (bypassing
+  the `_composed_cost_model()` helpers that hardcode `tensor_parallel=1`).
+- 2026-10-22: On the real Qwen3-8B DAPO trace (`outputs/workload/qwen3_8b_dapo_38912_tp1/joint.jsonl`,
+  8x shorter tail and real within-group variance vs the earlier synthetic `TailPoint`), the
+  near-zero-headroom verdict from the synthetic-point diagnosis reproduces: `length_aware`
+  (`order="lpt", balance="load"`) does not clear `request_num_balance` at its own best cap at any
+  of n_instances in {2,4,6} with proportionally scaled batch. The earlier verdict was not an
+  artifact of the synthetic workload's extreme tail.
+- 2026-10-23: `real_dapo_tail.py`'s full `TP_GRID=(1,2,4,8)` sweep (after `kernel_tp4`/`kernel_tp8`
+  gained complete gemm/attention/elementwise/collective tables) shows no TP degree where
+  `length_aware` reliably clears `request_num_balance`'s best cap across n_instances -- the earlier
+  ungated single-point TP=2 hint does not generalize once n_instances is swept against it at the
+  same TP; wins and losses of similar magnitude appear at every TP degree with no TP-correlated
+  trend. Also: merging this sweep's output into an earlier TP=1-only `results.json` leaves the old
+  run's unsuffixed point names (`n2`, `n4`, `n6_base`) sitting alongside the new `_tp1` compound
+  names for the same cell -- same values, but double-counts that cell unless filtered out before
+  taking an overall geometric mean.
+- 2026-10-24: `length_aware`'s `order="lpt"` reorders the *router's* dispatch sequence
+  (`rank_queued`), not anything inside `NativeInstance`. At `n_instances=1` that is sufficient to
+  make the single instance admit longest-first too, since the router is the only gate before
+  `add_request` appends to `waiting` in call order -- no engine-level admission-order code is
+  needed for a single-instance LPT test. Verify it actually took effect by comparing
+  `target_len` of the requests admitted in the first wave (`req.admit_time == 0.0`, i.e. the ones
+  the router placed before any completion freed a `max_concurrent_seqs_per_instance` slot)
+  between arms, not by trusting the config was accepted.
+- 2026-10-24: At `cap=40` with the real measured TP1 H20 KV budget
+  (`MEDIUM_KV_TOKENS_PER_INSTANCE=500_192`, confirmed against
+  `$HOME/.cache/srl/kv_capacity.json`'s own TP1 probe entry) and a 256-request/32-group single
+  step off `qwen3_8b_dapo_38912_tp1`, a single instance never reaches KV pressure -- zero
+  preemptions in either arm. An eviction-strategy comparison (e.g. `shortest_ctx` vs `vllm_lru`)
+  is untested at that point; it needs either a smaller KV budget or more concurrent long
+  trajectories to ever call `select()`.
+- 2026-10-24: `FixedTrainingCost`/`FixedTrainingLatency` raises `ValueError` on `latency_s <= 0`
+  (`srl/cost/training/fixed.py`). To isolate a pure-rollout span (no training/sync tax) use a
+  negligible positive epsilon (e.g. `1e-6`), not `0.0`. `FixedSyncCost` has no such floor and
+  accepts `0.0` directly.
+- 2026-10-26: `preflight.py`'s `run_sim.workspace()`/`activate_environment()` expect
+  `SIMRL_WORKSPACE` to point at the directory that HOLDS `env/simrl.sh` (one level above this
+  repo checkout), not at the repo root itself. Pointing it at the repo root raises
+  `Environment script not found` as a blocking error even though the real env script
+  (`/.../lhy/env/simrl.sh`, outside the repo) sourced fine in the same shell.
+- 2026-10-26: `outputs/profile/<model>/kernel_tp{N}/kernel/h20/attention/{flashinfer,vllm}/<version>/`
+  missing `floors.json` (present for other families like `collective`/`elementwise` in the same
+  `kernel_tpN` root) is easy to miss because the run still completes and only logs a warning
+  per op, not a hard failure. Check with `find <root> -iname floors.json` against a sibling TP
+  degree's tree before trusting any attention-heavy prediction at that TP; `srl-profile kernels
+  fit-floor --config <the tp's own profile yaml>` regenerates it in place from the existing
+  parquet tables (no new profiling run needed).
+- 2026-10-26: For a closed-batch makespan search over heterogeneous TP shapes, an exhaustive
+  shape enumeration paired with a generic per-shape greedy-LPT + light-SA seed can land on a
+  WORSE result than a single well-seeded SA run started from `heddle_presorted_dp`'s own
+  construction, even with a comparable total iteration budget spread over more shapes. The
+  presorted-contiguous (sort-by-length, cut into tiered contiguous blocks) construction is a
+  structurally stronger starting point for this cost model than naive load-balancing greedy;
+  don't read a cheap generic-greedy multi-shape sweep scoring worse than the incumbent as
+  evidence the incumbent's shape is optimal -- it mainly shows the sweep's own seed was weaker.
+  Isolate shape-coverage checks (fixed membership heuristic, vary shape) from membership-depth
+  checks (fixed incumbent shape, vary membership search effort) rather than conflating both in
+  one pooled search.
+- 2026-10-27: `$HOME/.cache/srl/kv_capacity.json` is keyed by (model, tp, `max_model_len`, gpu
+  util), not just model/tp. A new `MAX_PROMPT_LENGTH`+`MAX_OUTPUT_LENGTH` combination the cache
+  has never seen (e.g. a new workload variant) is a cache miss and triggers a real
+  `vllm.LLM(load_format="dummy")` probe. Launching several points that share a brand-new
+  `max_model_len` in parallel starts that many real vLLM engines on the same GPU at once (each
+  requesting `gpu_memory_utilization=0.9`), which is the same "parallel vLLM servers contaminate
+  each other" failure mode as a real-engine benchmark. Run the first point of any new
+  length-cap combination alone to populate the cache, then parallelize the rest once the probe
+  has written its entry -- cheap simulation-only reruns of an already-cached combination are
+  fine to parallelize freely.
+- 2026-10-27: A multi-hour sweep driver that writes its `summary.json` only once, at the very
+  end, produces long stretches with zero new bytes on disk and no subagent chatter -- that is
+  the expected shape of a healthy run, not a stall signal. Distinguish a real hang from this by
+  checking the actual OS process (`ps aux` on the python pid, or the background shell's CPU
+  time) against wall-clock elapsed time: a healthy run's CPU time tracks wall clock roughly 1:1;
+  a hung one's CPU time stops climbing while wall clock keeps going. Don't rely on the
+  dispatched subagent's own "still running" self-report as the only signal -- it can be
+  correctly waiting on its own spawned child process with nothing new to say.
+- 2026-10-27: `JsonlStore(output_dir)` writes `output_dir/*.jsonl` directly -- it does not nest
+  under a `logs/` subdirectory. That nesting convention belongs to `simulate.sh`'s own CLI
+  wrapper, not to `JsonlStore` itself. Passing a path built on the `logs/`-nested assumption to a
+  driver that instantiates `JsonlStore` directly (bypassing `simulate.sh`) raises
+  `FileNotFoundError`; pass the directory itself.
+- 2026-10-27: A sweep's per-row result schema is not guaranteed to match the field name used
+  elsewhere in the same codebase for the same concept -- a gate-pass boolean that reads as
+  `gated` in one script's local variable name can be stored on the row as `_gated` (leading
+  underscore) by the actual summarizer. Confirm a field name against one real row's own keys
+  before writing a verification script around it; a wrong assumed name silently filters to an
+  empty set rather than raising, which reads as "zero gated rows" instead of "wrong key."
