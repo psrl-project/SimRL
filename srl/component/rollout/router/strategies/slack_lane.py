@@ -13,7 +13,7 @@ Moving one outside a publish would discard KV the plan has no way to pay back.
 
 from __future__ import annotations
 
-from .....forecast import LaneJob, LaneSlot, build_length_predictor, plan_lanes
+from .....forecast import LaneJob, LaneSlot, build_length_predictor, plan_cadence, plan_lanes
 from .....forecast.fleet import members_of, sequence_hint
 from ...engine import InstanceView, Request, traj_view
 from ..strategy import register_strategy
@@ -35,6 +35,7 @@ class SlackLane:
         eps_frac: float = 0.01,
         max_moves: int = 8,
         enable_upgrade: bool = True,
+        cadence_target: bool = False,
     ) -> None:
         """
         Args:
@@ -47,6 +48,9 @@ class SlackLane:
             enable_upgrade (bool): Whether to search for fast lanes at all. False leaves the
                 balanced assignment untouched, which isolates what the lanes themselves buy
                 from what planning the fleet as a unit buys.
+            cadence_target (bool): Whether to plan for the smallest uniform step period the
+                fleet can hold (`plan_cadence`) instead of greedily fixing the nearest late
+                buffer (`plan_lanes`).
 
         Raises:
             ValueError: If `horizon_buffers` is below 1.
@@ -59,6 +63,7 @@ class SlackLane:
         self.eps_frac = float(eps_frac)
         self.max_moves = int(max_moves)
         self.enable_upgrade = bool(enable_upgrade)
+        self.cadence_target = bool(cadence_target)
         self._runtime = None
         self._plan = None
 
@@ -148,7 +153,8 @@ class SlackLane:
             )
             for inst in instances
         ]
-        return plan_lanes(
+        planner = plan_cadence if self.cadence_target else plan_lanes
+        return planner(
             jobs,
             slots,
             snapshot=runtime.inventory(),

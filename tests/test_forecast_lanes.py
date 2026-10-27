@@ -16,6 +16,7 @@ from srl.forecast.lanes import (
     _candidate_moves,
     kv_safe_concurrency,
     lpt_assign,
+    plan_cadence,
     plan_lanes,
     price,
     state_for,
@@ -353,3 +354,65 @@ class TestPlanLanes:
                 BufferView(buffer_id=0, ready_num_entries=n, n_occupied=0, reserved=tuple((g, 0) for g in range(n))),
             ),
         )
+
+
+class TestPlanCadence:
+    def fleet(self, n: int):
+        return [priced_slot(i) for i in range(n)]
+
+    def snapshot_one_buffer_n(self, n):
+        return InventorySnapshot(
+            staleness=0,
+            num_entries=n,
+            next_buffer_id=1,
+            buffers=(
+                BufferView(buffer_id=0, ready_num_entries=n, n_occupied=0, reserved=tuple((g, 0) for g in range(n))),
+            ),
+        )
+
+    def straggler_scenario(self):
+        """Task 3's straggler mix, where isolating job 0 is the only improving move."""
+        jobs = [job(i, L, group_id=i) for i, L in enumerate([550_000, 340_000, 320_000, 290_000])]
+        slots = self.fleet(2)
+        common = dict(
+            snapshot=self.snapshot_one_buffer_n(4),
+            train=TrainState(training_end=None, now=0.0, cycle=5.0, weight_load=0.0),
+            members={i: [i] for i in range(4)},
+            finished={},
+            now=0.0,
+        )
+        return jobs, slots, common
+
+    def test_a_balanced_fleet_needs_no_upgrade(self):
+        jobs = [job(i, 2000, group_id=i) for i in range(4)]
+        plan = plan_cadence(
+            jobs,
+            self.fleet(4),
+            snapshot=self.snapshot_one_buffer_n(4),
+            train=TrainState(training_end=None, now=0.0, cycle=1e6, weight_load=0.0),
+            members={i: [i] for i in range(4)},
+            finished={},
+            now=0.0,
+        )
+        assert plan.moves == 0
+        assert plan.fast_instances == frozenset()
+
+    def test_a_feasible_tighter_period_is_found_when_one_exists(self):
+        jobs, slots, common = self.straggler_scenario()
+        bulk_assignment = lpt_assign(jobs, [s.instance_id for s in slots])
+        bulk_period = price(bulk_assignment, jobs, slots, horizon_buffers=2, **common).pipeline.ready[0]
+        plan = plan_cadence(jobs, slots, c_max=1, **common)
+        achieved_period = price(plan.assignment, jobs, slots, horizon_buffers=2, **common).pipeline.ready[0]
+        assert achieved_period < bulk_period
+        assert plan.fast_instances
+
+    def test_plan_cadence_never_regresses_relative_to_plan_lanes(self):
+        jobs, slots, common = self.straggler_scenario()
+        plan_c = plan_cadence(jobs, slots, c_max=1, **common)
+        plan_a = plan_lanes(jobs, slots, c_max=1, **common)
+        assert plan_c.objective <= plan_a.objective
+
+    def test_bisect_steps_zero_falls_back_to_plan_lanes_exactly(self):
+        jobs, slots, common = self.straggler_scenario()
+        cadence = plan_cadence(jobs, slots, bisect_steps=0, c_max=1, **common)
+        assert cadence == plan_lanes(jobs, slots, c_max=1, **common)

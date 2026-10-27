@@ -463,3 +463,230 @@ def _candidate_moves(
             candidate[rid] = host
         out.append((candidate, {*fast, host}))
     return out
+
+
+def plan_cadence(
+    jobs: Sequence[LaneJob],
+    slots: Sequence[LaneSlot],
+    *,
+    snapshot: InventorySnapshot,
+    train: TrainState,
+    members: Mapping[int, Sequence[int]],
+    finished: Mapping[int, float],
+    now: float,
+    pinned: Mapping[int, int] | None = None,
+    horizon_buffers: int = 2,
+    c_max: int = 4,
+    eps_frac: float = 0.01,
+    max_moves: int = 8,
+    bisect_steps: int = 8,
+) -> LanePlan:
+    """
+    Plan for the smallest uniform step period the fleet can actually hold.
+
+    `plan_lanes` improves the nearest late buffer first, so it will spend its move budget on
+    buffer k and leave k+1 late. This asks the opposite question: what is the smallest period
+    `P` such that spacing every deadline `P` apart leaves a plan that meets all of them? The
+    answer is found by bisection between `train.cycle` and the bulk (un-upgraded) plan's own
+    mean spacing, and the plan that achieved it is returned. The exception is when
+    `plan_lanes`'s own plan on the same input happens to price lower, since the two searches
+    optimize different things (uniform spacing vs. total pipeline cost) and this function must
+    never regress relative to `plan_lanes`.
+
+    Args:
+        jobs (Sequence[LaneJob]): Every job in flight or awaiting placement.
+        slots (Sequence[LaneSlot]): The fleet.
+        snapshot (InventorySnapshot): The staleness inventory to replay.
+        train (TrainState): The training loop's state, held fixed across the search.
+        members (Mapping[int, Sequence[int]]): Group id to its member request ids.
+        finished (Mapping[int, float]): Completion time of an already-finished member, by id.
+        now (float): Simulated time the forecasts start from.
+        pinned (Mapping[int, int] | None): Jobs already placed, which keep their slot.
+        horizon_buffers (int): Buffers the objective sums over.
+        c_max (int): Jobs a fast lane may hold.
+        eps_frac (float): Fraction of one training cycle a move must save to be accepted.
+        max_moves (int): Upgrades each period's search may accept.
+        bisect_steps (int): Bisection iterations between `train.cycle` and the bulk plan's own
+            mean period. Eight brings the bracket inside 0.4% of its width. Zero skips the
+            search entirely and returns `plan_lanes`'s own result.
+
+    Returns:
+        LanePlan: Whichever of the smallest-feasible-period plan and `plan_lanes`'s own plan has
+            the lower objective. Exactly `plan_lanes`'s result when no period in the bracket is
+            feasible, or when `bisect_steps` is 0.
+
+    Raises:
+        ValueError: If `c_max` is below 1 or `slots` is empty.
+    """
+    if c_max < 1:
+        raise ValueError(f"c_max must be at least 1, got {c_max!r}.")
+    if not slots:
+        raise ValueError("plan_cadence needs at least one slot.")
+
+    plan_lanes_args = dict(
+        snapshot=snapshot,
+        train=train,
+        members=members,
+        finished=finished,
+        now=now,
+        pinned=pinned,
+        horizon_buffers=horizon_buffers,
+        c_max=c_max,
+        eps_frac=eps_frac,
+        max_moves=max_moves,
+    )
+    fallback = plan_lanes(jobs, slots, **plan_lanes_args)
+    if bisect_steps == 0:
+        return fallback
+
+    pinned_map = pinned or {}
+    slot_ids = [slot.instance_id for slot in slots]
+    by_rid = {job.rid: job for job in jobs}
+    pricing_args = dict(
+        snapshot=snapshot,
+        train=train,
+        members=members,
+        finished=finished,
+        now=now,
+        horizon_buffers=horizon_buffers,
+    )
+    eps = eps_frac * train.cycle
+
+    bulk_assignment = lpt_assign(jobs, slot_ids, pinned=pinned_map)
+    bulk = price(bulk_assignment, jobs, slots, **pricing_args)
+    n = min(horizon_buffers, len(bulk.pipeline.buffers))
+    if n == 0:
+        return fallback
+    target_0 = _target_time(bulk.pipeline, train, now, 0)
+    bulk_mean_period = (bulk.pipeline.ready[n - 1] - target_0) / n
+
+    def deadlines_for(period: float) -> list[float]:
+        return [target_0 + (k + 1) * period for k in range(n)]
+
+    def feasible_plan_for(period: float) -> LanePlan | None:
+        return _search_for_period(
+            jobs,
+            slots,
+            by_rid,
+            slot_ids,
+            pinned_map,
+            pricing_args,
+            snapshot,
+            members,
+            deadlines_for(period),
+            horizon_buffers,
+            c_max,
+            eps,
+            max_moves,
+        )
+
+    lo, hi = train.cycle, bulk_mean_period
+    best_feasible: LanePlan | None = feasible_plan_for(hi) if hi > lo else None
+    if best_feasible is None:
+        return fallback
+
+    for _ in range(bisect_steps):
+        mid = (lo + hi) / 2
+        candidate = feasible_plan_for(mid)
+        if candidate is not None:
+            best_feasible, hi = candidate, mid
+        else:
+            lo = mid
+
+    return best_feasible if best_feasible.objective <= fallback.objective else fallback
+
+
+def _feasible_for_deadlines(pipeline: Pipeline, deadlines: Sequence[float], horizon_buffers: int) -> bool:
+    """Whether every priced buffer in the horizon is ready at or before its fixed deadline."""
+    n = min(horizon_buffers, len(pipeline.buffers))
+    return all(pipeline.ready[k] <= deadlines[k] for k in range(n))
+
+
+def _overshoot(pipeline: Pipeline, deadlines: Sequence[float], horizon_buffers: int) -> float:
+    """Total seconds every priced buffer in the horizon is late past its fixed deadline."""
+    n = min(horizon_buffers, len(pipeline.buffers))
+    return sum(max(0.0, pipeline.ready[k] - deadlines[k]) for k in range(n))
+
+
+def _first_late_buffer_for_deadlines(
+    pipeline: Pipeline,
+    deadlines: Sequence[float],
+    horizon_buffers: int,
+    skip: set[int],
+) -> int | None:
+    """Index of the earliest priced buffer in the horizon late past its fixed deadline, skipping `skip`."""
+    n = min(horizon_buffers, len(pipeline.buffers))
+    for index in range(n):
+        if pipeline.buffers[index] in skip:
+            continue
+        if pipeline.ready[index] > deadlines[index]:
+            return index
+    return None
+
+
+def _search_for_period(
+    jobs: Sequence[LaneJob],
+    slots: Sequence[LaneSlot],
+    by_rid: Mapping[int, LaneJob],
+    slot_ids: Sequence[int],
+    pinned: Mapping[int, int],
+    pricing_args: dict,
+    snapshot: InventorySnapshot,
+    members: Mapping[int, Sequence[int]],
+    deadlines: Sequence[float],
+    horizon_buffers: int,
+    c_max: int,
+    eps: float,
+    max_moves: int,
+) -> LanePlan | None:
+    """
+    Search for an assignment meeting every fixed `deadlines[k]`, by the same move set
+    `plan_lanes` uses (`_candidate_moves`), accepting a move when it strictly reduces total
+    overshoot past those deadlines rather than when it lowers the training-pipeline objective.
+
+    Returns:
+        LanePlan | None: The feasible plan, or `None` when the search exhausts `max_moves`
+            without meeting every deadline in the horizon.
+    """
+    assignment = lpt_assign(jobs, slot_ids, pinned=pinned)
+    best = price(assignment, jobs, slots, **pricing_args)
+    best_overshoot = _overshoot(best.pipeline, deadlines, horizon_buffers)
+    fast: set[int] = set()
+    unfixable: set[int] = set()
+    moves = 0
+
+    while best_overshoot > 0 and moves < max_moves:
+        late = _first_late_buffer_for_deadlines(best.pipeline, deadlines, horizon_buffers, unfixable)
+        if late is None:
+            break
+        buffer_id = best.pipeline.buffers[late]
+        critical = _critical_group(snapshot, best.group_eta, members, buffer_id)
+        if critical is None:
+            unfixable.add(buffer_id)
+            continue
+        movers = [
+            rid
+            for rid in members[critical]
+            if rid in by_rid and rid not in pinned and best.member_finish.get(rid, math.inf) > deadlines[late]
+        ]
+        candidates = _candidate_moves(movers, assignment, by_rid, slot_ids, fast, c_max, pinned)
+        winner = None
+        for cand_assignment, cand_fast in candidates:
+            pricing = price(cand_assignment, jobs, slots, **pricing_args)
+            overshoot = _overshoot(pricing.pipeline, deadlines, horizon_buffers)
+            if overshoot < best_overshoot - eps and (winner is None or overshoot < winner[0]):
+                winner = (overshoot, pricing, cand_assignment, cand_fast)
+        if winner is None:
+            unfixable.add(buffer_id)
+            continue
+        best_overshoot, best, assignment, fast = winner[0], winner[1], winner[2], set(winner[3])
+        moves += 1
+
+    if not _feasible_for_deadlines(best.pipeline, deadlines, horizon_buffers):
+        return None
+    return LanePlan(
+        assignment=dict(assignment),
+        fast_instances=frozenset(fast),
+        objective=best.objective,
+        moves=moves,
+    )
