@@ -166,3 +166,12 @@ Never record result numbers. Remove a bullet when it stops being true.
   check and was the actual cause here, not either of the other two candidates. The fix is to pin
   every config field the driver's `build()` depends on explicitly, rather than relying on
   whatever a dataclass's own default happens to be at call time.
+- 2026-10-27: When a new arm comes back byte-identical to an existing one across every point in
+  a grid, do not report "no additional benefit" from the aggregate alone -- instrument the new
+  code path directly on at least one point with full telemetry and classify every call's
+  outcome (search never attempted vs. attempted and failed vs. attempted and tied). A null
+  result that looks clean in the summary file can be hiding a guard clause that bails out before
+  the new logic ever runs, which is a design-input problem (a badly chosen bracket/threshold),
+  not evidence against the mechanism itself. Cheap to check: wrap the new function, recompute its
+  own fallback path inline, and compare -- a handful of representative points is enough to see
+  the pattern, no need to re-run the full grid under instrumentation.

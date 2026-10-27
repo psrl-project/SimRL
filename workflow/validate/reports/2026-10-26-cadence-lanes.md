@@ -121,6 +121,55 @@ conclusion by misreading the rule's direction -- low capture means *more* headro
 claim, not less reason to try. Corrected here; Task 10 carries out the build this rule calls
 for.)
 
+### Algorithm B decision and measurement (Task 10)
+
+**Decision: BUILD.** `plan_cadence` (bisecting on a uniform target period between `train.cycle`
+and the bulk plan's own mean buffer spacing) was added to `srl/forecast/lanes.py`, gated behind
+a new `cadence_target` flag on `SlackLane`, and measured as a new arm, `b_cadence`
+(`strategy_args={"cadence_target": True}`), across the same 27 points, reusing each point's
+already-computed `b1_best_span`/`lb` rather than re-deriving them. All 27 rows gated clean.
+
+**Measurement: `b_cadence` is byte-identical to `a_slack` at all 27 of 27 points** (same `span`,
+`mean_concurrency`, every field, to full float precision) -- not just the 10 points where
+`a_slack` is already known to equal `a_nolane` (Section 3's earlier finding), but every single
+point, including the 17 where `plan_lanes`'s own search finds a genuine, non-trivial move. Its
+geomean `speedup_vs_b1_best` (1.0121) and `headroom_capture` (median +0.0386, min -0.2383, max
++0.1913) are therefore not a new number -- they are `a_slack`'s own, replayed.
+
+**Mechanism, not assumed: `plan_cadence` structurally never ran its own search on this
+workload.** Instrumenting `plan_cadence` directly at two representative points
+(`s2_rho1.00_seed0`, `s3_rho0.90_seed1`, 51 dispatch bursts each) shows every single call
+returning `plan_lanes`'s own plan unchanged, for two distinct, now-isolated reasons:
+
+1. **50 of 51 bursts at the sampled point: the bisection bracket itself is inverted.**
+   `plan_cadence`'s own `lo, hi = train.cycle, bulk_mean_period` is followed by
+   `feasible_plan_for(hi) if hi > lo else None` -- and `bulk_mean_period`, computed as
+   `(bulk.pipeline.ready[n-1] - target_0) / n` under the bulk (no-upgrade) assignment, came out
+   *below* `train.cycle` at every one of these 50 bursts (e.g. `hi=108.95` vs `lo=503.14` at one
+   burst). The search is never even attempted -- `plan_cadence` falls back to `plan_lanes`
+   through the `best_feasible is None` guard before the bisection loop runs once.
+2. **The 1 remaining burst, where the bracket was valid (`hi > lo`), still failed to find a
+   fully feasible period** within `max_moves=8` -- `_search_for_period` returned `None` there
+   too.
+
+**This is a design limitation of the specific bracket construction, not evidence that
+uniform-period planning cannot help.** `bulk_mean_period` is a single average over the whole
+horizon; a buffer can be individually late relative to `plan_lanes`'s own sequential,
+chain-based target (`_target_time`, which depends on the *previous* buffer's actual training
+end) while the simple average spacing across the horizon stays below `train.cycle` -- exactly
+the raggedness that lets `plan_lanes` find a real move at 17 of 27 points while this bracket
+reports "nothing worth tightening" almost everywhere. The two searches are not comparable here
+because the uniform-period framing's own upper bound rarely clears its lower bound on this
+real, bursty trace -- not because the underlying idea was tested and found wanting.
+
+**Not established:** whether a bracket built from `plan_lanes`'s own achieved (ragged, not
+averaged) spacing, or from a different feasibility target entirely, would let `plan_cadence`'s
+search engage and find real headroom beyond `a_slack`'s. This was not attempted here -- fixing
+the bracket is a fresh design change that needs its own review cycle, not a same-task patch
+under this task's own "measure B as one more arm" scope. The data gathered (`b_cadence`'s 27
+rows in `summary.json`) is correct and real; it measures `plan_cadence` exactly as specified,
+and that specification's own bracket is what did not engage.
+
 ### Step-interval autocorrelation: testing the period-2 oscillation prior
 
 Explicit test of the prior that `staleness=S` should produce an oscillation with some period
