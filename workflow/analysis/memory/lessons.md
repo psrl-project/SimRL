@@ -38,3 +38,33 @@ bullet when it stops being true.
   `measure`, and use that as the row. It still tests the one thing that can differ between a sweep
   row and this unit's replay, namely telemetry logging and the store, and it costs about half of
   what the telemetry replay costs.
+- 2026-10-24: An ad hoc script that calls `replay.run`/`collect.measure` outside `preflight.py`
+  hits the same `select.py`-shadows-stdlib bug the first lesson here describes, if it puts
+  `workflow/analysis/scripts/` on `sys.path` via `sys.path.insert` + `import replay`. `replay.py`
+  and `workflow/validate/scripts/collect.py` have no cross-file imports of their own, so load both
+  with `importlib.util.spec_from_file_location` directly and skip `sys.path` entirely.
+- 2026-10-24: Forcing KV pressure (lower `kv_scale`) on an LPT-admission + protect-long-eviction
+  pair does not necessarily grow its margin over the baseline -- it can shrink it. LPT concentrates
+  deep contexts in the resident pool by design, which raises *aggregate* committed KV (and so total
+  preemption/reprefill churn across the whole consumed set) faster than a protect-long eviction
+  strategy's per-event victim choice claws back. Compare the count of distinct requests ever
+  preempted and total reprefill tokens summed over every consumed request between arms, not just
+  the step's binding request's own `reprefill_seconds` -- the binding request can look only mildly
+  worse while the population-wide churn more than doubles.
+- 2026-10-24: For a single-step run (`n_versions=1`), `idle_windows`/`instance_imbalance` collapse
+  to one trivial window/one instance (nothing to compare across steps or instances). The signal for
+  "why did arm A finish before arm B" lives in `binding_decompositions[rid]` (solo/interference/
+  queue seconds for the step's binding request) and `steps[i].sibling_spread` (how tightly the
+  binding group's members finished together), not the fleet tables.
+- 2026-10-27: A `cadence_lanes.py`-style row (native backend, `request_num_balance`/`slack_lane`
+  on the real DAPO trace, `n_versions=24`) can fail `replay.fidelity()` on `mean_concurrency`
+  even when `span` and every count field match exactly, and can fail on `span` too at a tighter
+  staleness horizon. Ruled out directly, each with its own re-run: telemetry on vs. off (both give
+  the identical mismatched numbers), `PYTHONHASHSEED` pinned vs. unset (4 fresh-process launches
+  agree with each other to the last printed digit regardless), and the native `.so` being rebuilt
+  since the row was captured (same mtime and md5 as 10 days before the sweep ran). The mismatch is
+  present on the very first arm run in a fresh process, not just after many arms have run in the
+  same process, which weighs against "accumulated heap/allocation state from the sweep's own long
+  arm sequence" as the mechanism. Before trusting a replay of this driver's rows, check whether the
+  sweep and the replay ran on the same physical node: no node identity is recorded in the row, and
+  that is the leading untested candidate once the four above are eliminated.
