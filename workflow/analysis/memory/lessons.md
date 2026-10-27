@@ -82,3 +82,28 @@ bullet when it stops being true.
   sync point; `cadence_report` (`srl.diagnosis.cadence`, reads `train.jsonl`/`rollout_step.jsonl`
   directly) does not depend on this reconstruction and stays available even when this check fails,
   which is the fallback to reach for rather than widening the check's own tolerance.
+- 2026-10-28: Re-ran the above cadence-lanes diagnosis against a regenerated sweep (same driver,
+  `enable_trajectory_sticky=True` now pinned, `t_sat` recalibrated) and the cross-source check
+  failure recurred -- still only on a `request_num_balance`-capped control, still only at the
+  point with the highest contention of the set tried, with the same `decode_tokens_match` /
+  `reprefill_present` shape. One point that passed the check in the earlier dataset's sample now
+  also passes here (5 of 6 rows this time vs 4 of 6 before), but a point with comparable
+  contention still fails. The failure survived both the `ingress_lifetime_cap` fix and the
+  `enable_trajectory_sticky` fix, i.e. it is not an artifact of either config-default bug -- it is
+  some property of `request_num_balance`'s capped admission at high contention. Still not
+  root-caused; do not assume a config fix elsewhere will make it go away without checking.
+- 2026-10-28: A training step's wall-clock `dt` (`end - start` in `train.jsonl`) is not always
+  equal to its priced cost (`train_time + sync_time + recompute_time`), even though
+  `reference/metrics.md` already has a name for the difference (`weight_load`) and
+  `weight_load_time=0.0` was configured. `_train`'s `_run_engine(deadline=...)` can settle past
+  its nominal deadline before `_publish_weights()` runs, and the telemetry records whatever `self.t`
+  that leaves as the step's `end`. This showed up as `cadence_report.train_busy` differing between
+  two arms at the same point (`request_num_balance`-capped control higher) while
+  `consumed_tokens`/`consumed_groups` were bit-identical between them (ruling out a genuine
+  training-cost difference) -- confirmed by checking `diagnose.build()`'s `train_seconds_total`
+  (which sums the *priced* components only) was bit-identical between the same two arms, then
+  finding the gap lived entirely in 1-2 individual steps' `dt` on the capped-control arm only
+  (never on `slack_lane`, 0 of 3 rows checked). Before reporting "arm X trains less/more" from
+  `cadence_report`'s `train_busy` alone, diff it against `train_seconds_total` (or sum
+  `train_time+sync_time+recompute_time` from the raw `train.jsonl` directly) to rule out this
+  per-step residual being mistaken for a training-cost effect.
