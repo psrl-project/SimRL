@@ -69,19 +69,45 @@ def _watch_retire(inst: NativeInstance) -> dict:
     return seen
 
 
-def run(spec: dict, out: Path, blocks: int, model: str, kernel_root: str, version: int = 0) -> None:
+def run(
+    spec: dict,
+    out: Path,
+    blocks: int,
+    model: str,
+    kernel_root: str,
+    version: int = 0,
+    backend: str = "native",
+) -> None:
     engine = spec["engine"]
-    inst = NativeInstance(
-        _cost_model(model, kernel_root),
-        token_budget=engine["max_num_batched_tokens"],
-        kv_blocks=blocks,
-        block_size=16,
-        max_concurrency=engine["max_num_seqs"],
-        enable_prefix_caching=engine["enable_prefix_caching"],
-        eviction=build_eviction("vllm_lru"),
-    )
+    cost = _cost_model(model, kernel_root)
+    if backend == "cpp":
+        from srl._engine_cpp import CppInstance, CppRequest, PyWrappedCostModel
+
+        RequestCls = CppRequest
+        inst = CppInstance(
+            cost=PyWrappedCostModel(cost),
+            token_budget=engine["max_num_batched_tokens"],
+            kv_blocks=blocks,
+            block_size=16,
+            max_concurrency=engine["max_num_seqs"],
+            enable_prefix_caching=engine["enable_prefix_caching"],
+        )
+        inst.set_eviction(build_eviction("vllm_lru"))
+        pre = {}
+    else:
+        RequestCls = Request
+        inst = NativeInstance(
+            cost,
+            token_budget=engine["max_num_batched_tokens"],
+            kv_blocks=blocks,
+            block_size=16,
+            max_concurrency=engine["max_num_seqs"],
+            enable_prefix_caching=engine["enable_prefix_caching"],
+            eviction=build_eviction("vllm_lru"),
+        )
+        pre = _watch_retire(inst)
     reqs = {
-        r["rid"]: Request(
+        r["rid"]: RequestCls(
             rid=r["rid"],
             prompt_len=r["prompt_len"],
             target_len=r["output_len"],
@@ -92,7 +118,6 @@ def run(spec: dict, out: Path, blocks: int, model: str, kernel_root: str, versio
         )
         for r in spec["requests"]
     }
-    pre = _watch_retire(inst)
     arrival = {r["rid"]: r["arrival"] for r in spec["requests"]}
     pending = sorted(reqs, key=lambda rid: (arrival[rid], rid))
     aborts = list(spec["abort_at"])
@@ -180,10 +205,11 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--model", default=MODEL_PATH)
     parser.add_argument("--kernel-root", default=KERNEL_ROOT)
+    parser.add_argument("--backend", choices=["native", "cpp"], default="native")
     args = parser.parse_args()
     spec = json.loads(args.spec.read_text())
     blocks = json.loads((args.real / "meta.json").read_text())["num_gpu_blocks"]
-    run(spec, args.out, blocks, args.model, args.kernel_root)
+    run(spec, args.out, blocks, args.model, args.kernel_root, backend=args.backend)
 
 
 if __name__ == "__main__":

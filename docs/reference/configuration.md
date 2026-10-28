@@ -215,16 +215,16 @@ running policy is:
 3. `preset.build(max_inflight=rollout.max_inflight)` constructs the `StalenessPolicy`.
 4. `preset.horizon` becomes `SimConfig.staleness_horizon`, the bound policies read as
    `SimState.max_staleness`. `None` means the system declares no bound.
-5. `preset.ingress_window_groups(batch_size)` becomes the number of prompt groups the dataset may
-   feed into the router before any training step publishes. It is a flow limit and not a
-   staleness bound.
+5. `preset.ingress_window_groups(batch_size, group_size, n_instances)` becomes the number of prompt
+   groups the dataset may feed into the router before any training step publishes. It is a flow
+   limit and not a staleness bound. Only `slime` reads the extra two arguments.
 
 | Preset | Keys (defaults) | `horizon` | Ingress window, in groups |
 |---|---|---|---|
 | `psrl` | `staleness` (2), `proactive_filter` (false), `proactive_threshold` (0) | `staleness` | `(staleness + 1) * batch_size` |
 | `areal` | `max_head_offpolicyness` (0) | the same key | `(2 * max_head_offpolicyness + 1) * batch_size` |
 | `roll` | `async_generation_ratio` (1.0) | `ceil(ratio)` | `(ceil(ratio) + 2) * batch_size` |
-| `slime` | `update_weights_interval` (1), `over_sampling_ratio` (1.0), `pause_mode` (abort) | none | `(ceil(over_sampling_ratio) + 2) * batch_size` |
+| `slime` | `server_concurrency` (64), `group_prefetch_factor` (1), `flush_cache_interval` (1) | none | `2 * max(threshold, batch_size) + batch_size`, with `threshold` as `max(1, server_concurrency * n_instances // group_size) * group_prefetch_factor` |
 | `verl` | `staleness_threshold` (2.0), `require_batches` (1) | `ceil(threshold)` | `(ceil(threshold) + 1) * batch_size` |
 | `verl_v1` | `num_warmup_batches` (1.0), `max_off_policy_threshold` (8), `max_off_policy_strategy` (drop), `pause_mode` (abort) | `max_off_policy_threshold` | `(max(h, ceil(num_warmup_batches)) + 2) * batch_size`, with `h` the threshold or 1 |
 | `skyrl` | `max_staleness_steps` (4), `pause_mode` (in_place) | `max_staleness_steps` | `(max_staleness_steps + 2) * batch_size` |

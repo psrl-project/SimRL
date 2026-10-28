@@ -137,6 +137,7 @@ class ComposedTraining(TrainingLatencyModel):
         *,
         gpu: str,
         tensor_parallel: int = 1,
+        context_parallel: int = 1,
         recompute: str = "none",
         dtype: str = "bfloat16",
         gradient_dtype: str = "float32",
@@ -150,6 +151,7 @@ class ComposedTraining(TrainingLatencyModel):
         ops = TrainingOps.from_checkpoint(
             checkpoint,
             tensor_parallel=tensor_parallel,
+            context_parallel=context_parallel,
             recompute=recompute,
             dtype=dtype,
             gradient_dtype=gradient_dtype,
@@ -313,7 +315,7 @@ class ComposedTraining(TrainingLatencyModel):
 
         Returns:
             dict[str, float]: Seconds per term. Keys are ``gemm_fwd``, ``gemm_bwd``,
-                ``attn_fwd``, ``attn_bwd``, ``elementwise``, ``tp_collective``,
+                ``attn_fwd``, ``attn_bwd``, ``gdn``, ``elementwise``, ``tp_collective``,
                 ``pp_comm``, ``logits`` and ``optimizer``. Summing them gives
                 `predict_microbatches`.
 
@@ -327,13 +329,26 @@ class ComposedTraining(TrainingLatencyModel):
                 f"parallelism.tp {parallelism.tp} does not match ops.tensor_parallel "
                 f"{self._ops.tensor_parallel}. Construct a TrainingOps with the same TP degree."
             )
-        token_count = self._slot_token_count(microbatches)
+        if parallelism.cp != self._ops.context_parallel:
+            raise ValueError(
+                f"parallelism.cp {parallelism.cp} does not match ops.context_parallel "
+                f"{self._ops.context_parallel}. Construct a TrainingOps with the same CP degree."
+            )
+        full_token_count = self._slot_token_count(microbatches)
         num_microbatches = len(microbatches)
         slots = pipeline_slots(num_microbatches, parallelism.pp)
         # Each slot is one pipeline stage's work. A multiplier declared per *model* is
         # scaled by this ratio. A multiplier declared per *step* is not.
         stage_fraction = 1.0 / parallelism.pp
-        layers = self._ops.num_layers * stage_fraction
+        # Context parallelism shards the sequence dimension, so a rank's GEMMs,
+        # elementwise kernels and logits see only `1 / cp` of this microbatch's tokens.
+        # `full_token_count` stays undivided for `pack_lengths` below: the gated-delta-net
+        # kernel reorganises into a head-sharded layout internally and processes the WHOLE
+        # local sequence for its share of heads, which is why `TrainingOps` divides the GDN
+        # head count by CP at construction instead of dividing its token count here. No
+        # `cp > 1` step has been measured for this term on any architecture; see
+        # `HydraulisLatencyModel` for the same caveat on the fitted parametric model.
+        token_count = full_token_count // parallelism.cp or 1
 
         terms = {
             "gemm_fwd": sum(
@@ -341,8 +356,8 @@ class ComposedTraining(TrainingLatencyModel):
                 for query, mult in self._ops.forward_gemm_queries(token_count)
             ),
             "gemm_bwd": sum(
-                self._db.query_gemm(query) * layers
-                for query, _ in self._ops.backward_gemm_queries(token_count)
+                self._db.query_gemm(query) * mult * stage_fraction
+                for query, mult in self._ops.backward_gemm_queries(token_count)
             ),
             "elementwise": sum(
                 self._db.query_elementwise(query) * mult * stage_fraction
@@ -357,13 +372,15 @@ class ComposedTraining(TrainingLatencyModel):
         # Attention is priced per sequence in the pack, not over the pack total: a varlen
         # kernel does not attend across a `cu_seqlens` boundary, so the quadratic work is
         # `sum_i s_i^2`. See `TrainingOps.attention_queries` for the five 12288-token
-        # records that isolate this.
-        #
-        # The forward is measured once and charged for each forward-shaped pass, so the
-        # recompute replay cannot drift from the GEMM path's own doubling. The backward has
-        # its own measured table rather than being a multiple of forward: the ratio is
-        # 2.24-2.42 and drifts with sequence length, so no single scalar is right.
-        pack_lengths = self._slot_pack_lengths(microbatches, token_count)
+        # records that isolate this. Lengths are the FULL (not CP-divided) pack: a ring
+        # attention step still computes against the whole sequence, just split across `cp`
+        # ranks, which is why the division by `cp` is applied to the summed result below
+        # rather than to the lengths fed into the kernel query.
+        pack_lengths = self._slot_pack_lengths(microbatches, full_token_count)
+
+        # Attention runs only on the softmax layers of a hybrid model, so it is charged on
+        # its own layer count rather than on `num_layers`.
+        attention_layers = self._ops.attention_layers * stage_fraction
 
         def attention_s(direction: str) -> float:
             return sum(
@@ -373,8 +390,22 @@ class ComposedTraining(TrainingLatencyModel):
                 )
             )
 
-        terms["attn_fwd"] = attention_s("forward") * self._ops.attention_passes() * layers
-        terms["attn_bwd"] = attention_s("backward") * layers
+        # Ring attention spreads the fixed `O(sum(s_i^2))` pairwise cost evenly over the
+        # `cp` ranks that jointly hold the sequence, so the per-rank share divides by `cp`
+        # rather than by `cp^2` (which dividing the lengths themselves would give).
+        terms["attn_fwd"] = (
+            attention_s("forward") * self._ops.attention_passes() * attention_layers
+        ) / parallelism.cp
+        terms["attn_bwd"] = (attention_s("backward") * attention_layers) / parallelism.cp
+
+        # The gated delta net replaces attention on the remaining layers of a hybrid model.
+        # Its multiplier already carries the layer count and the pass count, and its head
+        # count already carries the CP division (see `TrainingOps.__init__`), so this term
+        # is not divided by `cp` again.
+        terms["gdn"] = sum(
+            self._db.query_gdn(query) * mult
+            for query, mult in self._ops.gdn_queries(pack_lengths)
+        ) * stage_fraction
 
         # Logits run once per step on the last pipeline stage, over every token rather than
         # one per request. A missing dgrad slice is skipped rather than clamped onto a

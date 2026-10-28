@@ -5,5 +5,5 @@
 PRESET=openrlhf
 PRIMARY_KNOB=policy.async_queue_size
 PRIMARY_VALUES=(1 2 3 4 5)
-PRIMARY_LABEL="openrlhf async_queue_size (in-flight batch lumps)"
+PRIMARY_LABEL="openrlhf async_queue_size"
 PINS=(policy.partial_rollout_enable=true)

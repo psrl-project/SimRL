@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from ..component.rollout.engine import Request
 from ..workload.grouped import GroupedWorkload
 from .report import StalenessReport, summarize
+
+if TYPE_CHECKING:
+    from .dynamic_parallel import DynamicParallelConfig
 
 
 def clip_length(length: int, max_length: int | None) -> int:
@@ -105,12 +109,23 @@ class SimConfig:
     0 derives `(staleness_horizon + 1) * batch_size`, or `2 * batch_size` when
     the policy declares no horizon.
     """
+    ingress_lifetime_cap: bool = False
+    """Whether the regular per-publish ingress top-up stops once
+    `n_versions * batch_size` groups have ever been granted. See
+    `JobConfig.ingress_lifetime_cap` (`srl/config/schema.py`) for why this
+    defaults off.
+    """
     n_versions: int = 20
     sync_time: float = 0.0
     training_tp: int = 1
     training_pp: int = 1
     training_dp: int = 1
     training_cp: int = 1
+    training_pipeline_layout: tuple[int, ...] | None = None
+    """Explicit per-stage transformer-layer counts for training. See
+    `TrainingParallelism.pipeline_layout`. None (the default) means every stage
+    holds `num_layers / training_pp` layers.
+    """
     training_micro_batch_size: int = 1
     training_max_tokens_per_microbatch: int | None = None
     """Token budget per training microbatch. None groups by `training_micro_batch_size`.
@@ -165,6 +180,8 @@ class SimConfig:
     """Whether preemption loopbacks skip instances with a local queue."""
     enable_group_sticky: bool = False
     """Pin a prompt group's responses to the instance that took the first one."""
+    enable_trajectory_sticky: bool = True
+    """Pin a resumed request (abort or preemption loopback) back to its prior instance."""
     weight_load_time: float = 0.0
     """Rollout-side weight-load latency after a training step publishes.
 
@@ -188,6 +205,13 @@ class SimConfig:
     max_prompt_length: int | None = None
     max_output_length: int | None = None
     n_instances: int = 1
+    dynamic_parallel: DynamicParallelConfig | None = None
+    """A fleet of slots at possibly-mixed TP degrees, reshaped mid-round by a planner, in place
+    of the plain `n_instances`-uniform-TP1-instances fleet. None keeps the static path exactly as
+    it has always behaved; `n_instances` is ignored when this is set, since instance count is
+    then `len(SlotTable.from_degrees(tp_degrees, n_gpus).slots)`, not a scalar. Requires
+    `backend="native"` and a `rollout_costs` map on `Simulator.__init__` covering every degree in
+    `tp_degrees`."""
     livelock_rounds: int = 50
     undoable_events: frozenset[str] = frozenset(
         {"request_complete", "preempt", "iteration_done"}

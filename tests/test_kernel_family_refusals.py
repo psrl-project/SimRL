@@ -94,10 +94,17 @@ def test_head_counts_are_refused_as_well(tmp_path):
         family_for(model).head_counts(model, tensor_parallel=1)
 
 
-def test_a_moe_architecture_is_also_unregistered(tmp_path):
-    """Two independent guards: the architecture is unknown AND the keys disqualify it."""
+def test_an_unregistered_moe_architecture_is_refused_independently_of_its_keys(tmp_path):
+    """Two independent guards: an architecture with no registered family is refused before its
+    disqualifying keys would even matter.
+
+    Uses a placeholder name rather than a real one on purpose: `Qwen3MoeForCausalLM` served this
+    role until a family was registered for it (`families_qwen3_moe.py`), which would otherwise
+    make this test start asserting the opposite of what it means to check the moment support for
+    a real architecture is added.
+    """
     model = load_hf_model_descriptor(
-        _checkpoint(tmp_path, architectures=["Qwen3MoeForCausalLM"], num_experts=128)
+        _checkpoint(tmp_path, architectures=["SomeFutureMoeForCausalLM"], num_experts=128)
     )
-    with pytest.raises(ProfileValidationError, match="Qwen3MoeForCausalLM"):
+    with pytest.raises(ProfileValidationError, match="SomeFutureMoeForCausalLM"):
         transformer_gemm_shapes(model, tensor_parallel=1)

@@ -83,6 +83,10 @@ FALLBACK_FLOORS_S: dict[str, dict[str, float]] = {
         # that. See `profiler/kernel/runner/gdn.py` for the evidence and the phase caveat.
         "gdn_context": 16e-6,
         "gdn_decode": 32e-6,
+        # PLACEHOLDER pending the first real `moe` sweep + `srl-profile kernels fit-floor`
+        # run. Not a measurement: must be replaced before trusting a `moe` prediction at
+        # small token counts.
+        "moe": 20e-6,
         **_COLLECTIVE_FALLBACK_S,
     },
     "flashinfer": {
@@ -386,4 +390,78 @@ def gdn_decode_sol(
     qk = 2 * nbytes * batch_size * num_key_heads * head_dim
     vo = 2 * nbytes * batch_size * num_value_heads * head_dim
     memory_s = (state_bytes + qk + vo) / spec.memory_bandwidth_bytes_per_s
+    return SolComponents(math_s=math_s, memory_s=memory_s, floor_s=floor_s)
+
+
+def _expected_activated_experts(num_experts: int, num_tokens: int, top_k: int) -> float:
+    """Return the expected distinct-expert count a step of `num_tokens` tokens activates.
+
+    Coupon-collector complement, continuous in `num_tokens` rather than rounded to an
+    integer: this feeds a PCHIP spline over `num_tokens`, and rounding here would put an
+    artificial kink into the implied utility curve that the real measured kernel does not
+    have. Assumes a balanced router, the same assumption `ModelOps._activated_experts` made
+    before this replaced it — moved here because this is now the roofline that normalises
+    real measured `fused_experts()` latency into utility, rather than a correction bolted onto
+    an unmeasured dense-GEMM query after the fact.
+    """
+    draws = max(float(num_tokens), 1.0) * top_k
+    return num_experts * (1.0 - (1.0 - 1.0 / num_experts) ** draws)
+
+
+def moe_sol(
+    spec: GpuSpec,
+    *,
+    num_tokens: int,
+    hidden_size: int,
+    intermediate_size: int,
+    num_experts: int,
+    top_k: int,
+    dtype: str,
+    floor_s: float = 0.0,
+) -> SolComponents:
+    """
+    Return the roofline latency of one routed-MoE grouped-GEMM call (gate_up + down fused).
+
+    Compute scales with `num_tokens * top_k`: each token visits `top_k` experts, and the
+    grouped GEMM processes one row per (token, expert) assignment. The weight-read term
+    scales with the number of DISTINCT experts a step activates, which saturates well below
+    `num_experts` once enough tokens have collectively touched most of them (see
+    `_expected_activated_experts`) rather than growing with every token. This is the same
+    physical correction `ModelOps.expert_weight_bytes` used to bolt onto a dense-GEMM query
+    after the fact; it is now priced inside the roofline the real measured `fused_experts()`
+    latency is normalised against, so a measured row absorbs whatever real routing skew and
+    achieved bandwidth actually occurred rather than assuming the idealised balanced/peak case.
+
+    Args:
+        spec (GpuSpec): Target hardware.
+        num_tokens (int): Tokens in the step, across the whole packed batch.
+        hidden_size (int): Model hidden size, unsharded. TP shards `intermediate_size`
+            instead and all-reduces afterward, so this axis is never divided here — the same
+            convention every dense GEMM shape in this tree already uses.
+        intermediate_size (int): Expert width on this rank, already divided by TP.
+        num_experts (int): Routed experts per layer.
+        top_k (int): Experts each token visits (`num_experts_per_tok`).
+        dtype (str): Compute dtype.
+        floor_s (float): Fitted dispatch floor in seconds, applied inside the `max`.
+
+    Returns:
+        SolComponents: Compute, memory, and floor components in seconds.
+    """
+    _require_positive(
+        num_tokens=num_tokens,
+        hidden_size=hidden_size,
+        intermediate_size=intermediate_size,
+        num_experts=num_experts,
+        top_k=top_k,
+    )
+    element_bytes = dtype_bytes(dtype)
+    activated = min(_expected_activated_experts(num_experts, num_tokens, top_k), float(num_experts))
+    rows = float(num_tokens) * top_k
+    math_s = (
+        2.0 * rows * hidden_size * (2 * intermediate_size)  # gate_up: (rows, H) @ (H, 2I)
+        + 2.0 * rows * intermediate_size * hidden_size  # down: (rows, I) @ (I, H)
+    ) / spec.flops_for(dtype)
+    weight_bytes = activated * 3.0 * intermediate_size * hidden_size * element_bytes
+    activation_bytes = 2.0 * num_tokens * hidden_size * element_bytes  # read + write
+    memory_s = (weight_bytes + activation_bytes) / spec.memory_bandwidth_bytes_per_s
     return SolComponents(math_s=math_s, memory_s=memory_s, floor_s=floor_s)

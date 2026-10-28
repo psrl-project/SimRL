@@ -1,0 +1,48 @@
+# Kernel profiling for Qwen3.8-27B at TP=2.
+#
+# The family is `qwen35_dense`: 16 of 64 layers run softmax attention and 48 run a gated
+# delta net. Both layer types are measured, because the two projection sets differ and a
+# table fitted on one would leave the other unmeasured.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy10/share_303541817/lhy/models/Qwen3.8-27B}
+hardware:
+  gpu_name: H20
+  gpu_count: 2
+  gpu_memory_mib: 97871
+output_dir: ../../../outputs/profile/qwen35_27b/kernel_tp2
+experiment_name: qwen35-27b
+parallelism:
+  tensor_parallel: 2
+
+gemm:
+  token_counts: [1, 2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+
+attention:
+  batch_sizes: [1, 2, 4, 8, 16, 32, 48, 64]
+  context_seq_lens: [128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+  generation_steps: [0, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
+  block_size: 16
+  window_size: 0
+  # 16 full-attention layers holding 4 KV heads of 256 dimensions each. The cap is on the
+  # measured tensor rather than the model, so it stays at the dense default.
+  max_context_tokens: 262144
+
+gdn:
+  # Two axes, one per phase. The context kernel is varlen, so a packed batch is one row
+  # behind cu_seqlens. The decode kernel's cost does not depend on KV depth, because the
+  # recurrent state is fixed size, so sweeping history there would fit noise.
+  total_tokens: [128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
+  batch_sizes: [1, 2, 4, 8, 16, 32, 48, 64, 128, 256]
+
+elementwise:
+  token_counts: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
+collective:
+  message_bytes: [4096, 65536, 524288, 4194304, 33554432, 134217728, 536870912]
+  topologies: [[2, 1], [4, 1], [8, 1]]
+  dtypes: [bfloat16, float32]
+
+measurement:
+  warmup_iterations: 5
+  active_iterations: 20
+  dtype: bfloat16
+  kv_cache_dtype: bfloat16

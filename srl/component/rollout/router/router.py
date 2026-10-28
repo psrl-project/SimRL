@@ -88,12 +88,21 @@ class Router:
         gate: AdmissionGate | None = None,
         sort_key: SortKey = SortKey.SMALL_ID,
         enable_group_sticky: bool = False,
+        enable_trajectory_sticky: bool = True,
         max_waiting_after_preempt: int | None = None,
         cost_model=None,
         queue_window: int = 32,
     ):
         self.strategy = strategy
         self.instances = instances
+        self.awake: frozenset[int] | None = None
+        """Instance ids eligible for placement right now, or None for all of them.
+
+        `self.instances` must stay dense and positionally indexed by `instance_id`
+        (`_place` calls `self.instances[instance_id]` directly), so a `SlotFleet` with
+        sleeping slots cannot express "not serving" by shrinking this list -- it sets
+        `awake` instead and leaves every slot's instance in place forever.
+        """
         self.gate = gate or AdmissionGate()
         self.cost_model = cost_model
         """Shared rollout cost model, for a strategy that prices a hypothetical batch.
@@ -111,6 +120,19 @@ class Router:
         scale with a backlog that reaches several hundred after a weight update.
         """
         self.enable_group_sticky = enable_group_sticky
+        self.enable_trajectory_sticky = enable_trajectory_sticky
+        """Pin a resumed request to the instance it was already on.
+
+        Covers both loopback paths that re-enqueue an already-placed request:
+        a weight-update abort (`simulator.py::_publish_weights`) and a
+        preemption overflow (`reclaim_preempted`) -- both reach `_candidates`
+        the same way a brand-new request does, and `req.instance_id` already
+        survives either one untouched (`instance.py::_release` never clears
+        it), so no new state is needed to know where to pin it back to.
+        Default True: unlike `enable_group_sticky` (an optional SMG feature),
+        none of the systems this study models migrate a resumed trajectory
+        across instances at all.
+        """
         self.max_waiting_after_preempt = max_waiting_after_preempt
 
         self._group_pin: dict[int, int] = {}
@@ -175,6 +197,13 @@ class Router:
 
     # --- dispatch --------------------------------------------------------
 
+    def _active_instances(self) -> list[NativeInstance]:
+        """Instances a placement or context build may consider: every instance when `awake`
+        is unset, or only the awake subset when a `SlotFleet` has narrowed it."""
+        if self.awake is None:
+            return self.instances
+        return [inst for inst in self.instances if inst.instance_id in self.awake]
+
     def _view(self, inst: NativeInstance) -> InstanceView:
         load = inst.get_load()
         return InstanceView(
@@ -202,12 +231,15 @@ class Router:
     ) -> list[tuple[int, InstanceView]]:
         """Eligible instances for `req`, as `(instance_id, view)` pairs.
 
-        A group-sticky pin narrows the set but never empties it: SMG treats the
-        pin as soft, falling through when the pinned instance cannot help, and
-        a hard pin here would dwell a request behind one busy instance while
-        others idle.
+        Both pins narrow the set but never empty it: SMG treats a pin as
+        soft, falling through when the pinned instance cannot help, and a
+        hard pin here would dwell a request behind one busy instance while
+        others idle. Trajectory-sticky is checked first -- it is the more
+        specific of the two (this exact request's own last placement, not
+        just its group's), and for a request's very first placement
+        `req.instance_id` is still None so it defers to the group pin.
         """
-        all_views = [(inst.instance_id, self._view(inst)) for inst in self.instances]
+        all_views = [(inst.instance_id, self._view(inst)) for inst in self._active_instances()]
         is_preempt_loopback = id(req) in self._preempt_loopbacks
         views = [
             pair
@@ -225,6 +257,10 @@ class Router:
             context,
         )
         views = [views[index] for index in allowed]
+        if self.enable_trajectory_sticky and req.instance_id is not None:
+            narrowed = [pair for pair in views if pair[0] == req.instance_id]
+            if narrowed:
+                return narrowed
         if self.enable_group_sticky:
             pinned = self._group_pin.get(req.group_id)
             if pinned is not None:
@@ -324,7 +360,7 @@ class Router:
 
     def _routing_context(self, blocked_versions: list[int], t: float) -> RoutingContext:
         """Build the strategy context for one version-queue attempt."""
-        tps = [inst.tp for inst in self.instances]
+        tps = [inst.tp for inst in self._active_instances()]
         return RoutingContext(
             blocked_versions=tuple(blocked_versions),
             fleet_min_tp=min(tps),

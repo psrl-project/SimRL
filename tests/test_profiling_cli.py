@@ -354,7 +354,7 @@ def test_kernels_cli_exposes_run_with_family_and_holdout():
 def test_kernels_run_rejects_an_unmeasured_family():
     parser = build_profile_parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["kernels", "run", "--config", "c.yaml", "--family", "moe"])
+        parser.parse_args(["kernels", "run", "--config", "c.yaml", "--family", "not_a_real_family"])
 
 
 def test_kernels_run_accepts_every_registered_family():

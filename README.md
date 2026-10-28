@@ -11,9 +11,9 @@
 # SimRL
 
 SimRL is a discrete-event simulator for asynchronous, disaggregated RL post-training of large language
-models. You profile a real system once, fit cost models from those measurements, then simulate
-configurations you never ran (a different parallelism layout, a different staleness policy, a different
-rollout-to-training ratio) in seconds rather than GPU-hours.
+models. Profile a system, fit cost models from those measurements, then simulate configurations you
+never ran (a different parallelism layout, a different staleness policy, a different routing strategy)
+in seconds on CPU.
 
 ## 🧭 What you can do with SimRL
 
@@ -21,20 +21,20 @@ rollout-to-training ratio) in seconds rather than GPU-hours.
 
 - 🔄 **Simulate how a framework behaves.** More than ten typed presets each reimplement one real
   system's admission, runtime and filtering logic, so a run tells you how that system handles your
-  workload. For example: with staleness bounded at 2 and the same batch size, does PSRL stay
-  latency-bound while verl's overage queue slowly fills up?
+  workload. *For example: how PSRL and verl each behave on the same workload, under their own
+  configurations.*
 - 🏗️ **Design a deployment.** Compare GPU splits between rollout and training, instance counts, and
-  TP/PP/DP/EP layouts under the same workload. For example: on 32 GPUs, is 20/12 with TP2 rollout
-  better than 16/16 with TP4, and where is the training step no longer the bottleneck?
+  TP/PP/DP/EP layouts under the same workload. *For example: on 32 GPUs, is 20/12 with TP2 rollout
+  better than 16/16 with TP4, and where is the training step no longer the bottleneck?*
 - 🔮 **Predict at runtime.** Derive placement and finish times from a snapshot of the live system, so a
-  scheduler can resize or re-parallelise instead of guessing. For example: rollout load spikes and
-  training falls idle, so how many engines can move to training without stalling the next batch?
+  scheduler can resize or re-parallelise instead of guessing. *For example: rollout load spikes and
+  training falls idle, so how many engines can move to training without stalling the next batch?*
 - 🤖 **Auto research.** Strategies are a registry. A proposal agent designs a policy, a validation agent
-  simulates it against a baseline, and an analysis agent writes the lesson back. For example: on
+  simulates it against a baseline, and an analysis agent writes the lesson back. *For example: on
   this workload, is `kv_cache_aware` routing better than `throughput_balance`, and under what
-  length dispersion does the answer flip?
+  length dispersion does the answer flip?*
 
-## 🔬 How it is built
+## 🔬 How SimRL is built
 
 ![How SimRL is built](assets/simrl-architecture-plain.png)
 
@@ -73,13 +73,11 @@ bash examples/simulate/psrl_aligned.sh
 ```
 
 This reproduces the real PSRL run SimRL is aligned against (`qwen3_8b_megatron_simulate`: 160 prompt
-groups, 5 training steps, 2 rollout instances). The router's per-instance residency cap is disabled by
-default (`ACTIVE_CAP=0`), matching the real run's own cap effectively never binding at this workload size.
-`examples/simulate/psrl_aligned.sh` resolves or caches what it needs: the workload trace, the KV
-capacity, and the profiled training/rollout cost artifacts for this mesh. See the script for the exact
-knobs and how to point it at a different run. This is `instance_load.png`, one of the six plots the run
-writes out: router queue depth, the training phase band, and per-instance request/KV occupancy over the
-run's 5 versions.
+groups, 5 training steps, 2 rollout instances). `examples/simulate/psrl_aligned.sh` resolves or caches
+what it needs: the workload trace, the KV capacity, and the profiled training/rollout cost artifacts
+for this mesh. See the script for the exact knobs and how to point it at a different run. This is
+`instance_load.png`, one of the six plots the run writes out: router queue depth, the training phase
+band, and per-instance request/KV occupancy over the run's 5 versions.
 
 ![Instance load from the PSRL-aligned simulation](assets/simrl-psrl-instance-load.png)
 

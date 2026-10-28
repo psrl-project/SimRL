@@ -1,356 +1,358 @@
 # Staleness-throughput sweep results
 
-88 points across 12 presets, one figure per preset under `<preset>/figures/staleness_throughput.png`.
+131 points across 16 presets, one figure per preset (two for `slime`) under
+`<preset>/figures/staleness_throughput.png`.
 Design: `/apdcephfs_zwfy/share_303760348/lhy/SimRL/docs/superpowers/specs/2026-10-23-staleness-throughput-sweep-design.md`.
+
+This regime moves `BATCH_SIZE` 8 -> 32 and the trace/cap from
+`qwen3_8b_dapo_38912_tp1` (cap 38912) to `qwen3_8b_dapo_tp1` (cap 10240),
+matching a separate real-run comparison at the same batch/cap. Moving
+`BATCH_SIZE` surfaced two classes of grid pin that were implicitly
+calibrated against the old value of 8 rather than expressed as a formula:
+
+- `slime_l1`/`slime_flush` pinned `policy.server_concurrency=32` as a bare
+  constant. `slime`'s own admission threshold is
+  `max(1, server_concurrency * N_INSTANCES // GROUP_SIZE) * group_prefetch_factor`
+  groups, so 32 cleared `BATCH_SIZE=8` with room to spare but fails
+  `slime.validate()`'s `threshold >= batch_size` assertion outright at
+  `BATCH_SIZE=32` for most of `slime_l1`'s own axis and all of
+  `slime_flush`'s. Both grids now pin
+  `server_concurrency=$((BATCH_SIZE * GROUP_SIZE / N_INSTANCES))`, the same
+  formula style `nemo_rl_in_order/grid.sh` already used for its own
+  batch-dependent pin, which keeps `per_engine == BATCH_SIZE` at the
+  regime's own `N_INSTANCES`/`GROUP_SIZE` regardless of `BATCH_SIZE`.
+- `nemo_rl`/`nemo_rl_in_order` left `policy.max_inflight_prompts` at its
+  class default (32). `NeMoRLPolicyConfig.ingress_window_groups` shows the
+  effective admission window is
+  `min(max_inflight_prompts, max_buffered_rollouts, gate_window * BATCH_SIZE)`,
+  so at `BATCH_SIZE=32` the unscaled 32 sits at exactly 1x batch size and
+  became the binding term at every point on both axes, silently flattening
+  both figures to the regime's synchronous floor regardless of the swept
+  knob -- no assertion fired, nothing in `sweep.sh`'s own gates caught it,
+  the figures were simply uninformative. Both grids now also pin
+  `max_inflight_prompts=$((BATCH_SIZE * 6))`, the same margin
+  `nemo_rl_in_order/grid.sh` already used for `max_buffered_rollouts`.
+
+The other twelve presets' admission math is expressed directly against
+`st.batch_size`/`st.group_size` in the policy's own code (`roll`, `trl`,
+`psrl`, `verl`, `verl_v1`, `dressage`, `openrlhf`) or defaults its one
+capacity knob to `None` (unbounded, `areal`, `skyrl`, `prime_rl`), so none of
+them needed a grid change. `prime_rl`'s own flat figure is a different,
+already-documented property (its paired `target_lag` admission knob, not
+the swept `max_off_policy_steps`) and is unrelated to this class of bug; see
+its own section below.
 
 ## Regime
 
-Pinned identically for every preset, from `common.sh`:
+Pinned identically for every preset, from `common.sh`, except the four
+exports below `sweep.sh`/`run_all.sh` were called with:
 
 ```
 backend      cpp (SIMRL_BACKEND), pinned rather than auto so every point comes from one engine
-trace        outputs/workload/qwen3_8b_dapo_38912_tp1/joint.jsonl
-             1024 groups x 8, cap 38912, mean 10660 tok, median 8673, p95 25251,
-             truncated_fraction 0.0045
+trace        outputs/workload/qwen3_8b_dapo_tp1/joint.jsonl
+             1024 groups x 8, cap 10240, mean 7804 tok, median 8690, p95 10240,
+             truncated_fraction 0.408
 model        Qwen3-8B
 rollout      2 instances x TP1          (2 GPUs)
 training     hydraulis TP2 / PP3 / DP1  (6 GPUs)
-batch_size   32 groups      group_size 8      n_versions 12
+batch_size   32 groups      group_size 8      n_versions 10
 rollout cost composed, kernel table outputs/profile/qwen3_8b/kernel_tp1/kernel
 train cost   outputs/cost/qwen3_8b_tp2_pp3_thd/training_hydraulis.json
 ```
 
-At cap 38912 a single sequence cannot be split, so the longest microbatch, the
-microbatch count, the activation footprint, and the quadratic attention term
-all sit outside the training cost model's fitted domain (`tokens`,
-`pipeline_slots`, `activation_bytes`, `sum_squared_tokens`, the last
-exceeding its fitted bound by 8.27x, the worst of the four). Every figure
-carries that footnote. Training span in these runs is indicative. The
-rollout numbers and the staleness composition are the claims the figures
-make.
+41% of this trace's groups are truncated at the 10240 cap (`p95` already sits
+on the cap), a much heavier truncation rate than the previous regime's 38912
+cap (0.45%). At cap 10240 the longest microbatch, 10240 tokens, sits inside
+the training cost model's fitted domain (`[4096, 22528]` per this run's own
+log output), so none of the previous regime's extrapolation caveat on
+`tokens`/`activation_bytes`/`pipeline_slots`/`sum_squared_tokens` applies
+here -- the training-span numbers in this file are not indicative-only this
+time, though the rollout numbers and staleness composition remain the
+figures' real claim.
+
+`slime_l1` and `slime_flush` additionally override `N_VERSIONS=32` (their
+own grids, unrelated to the `BATCH_SIZE` fix above): their knob range tops
+out at `group_prefetch_factor`/`flush_cache_interval=8`, and 10 versions
+would report the run's own length rather than the mechanism.
 
 ## Sweep execution
 
-`MAX_PARALLEL=16 bash examples/simulate/staleness_throughput/run_all.sh` ran all 88
-points. 87 finished and fed their preset's figure. One point, `nemo_rl` at
-`max_staleness_versions=0`, livelocked: 0 versions simulated, 0 requests consumed,
-the engine's own "Simulation livelocked" warning. Reading `srl/policy/nemo_rl.py`
-explains why. The `windowed` sampler's admission gate is
-
-```python
-if self._dispatch_index >= st.train_version + self._gate_window():
-    return 0
-```
-
-and `_gate_window()` returns `staleness_window` for `windowed`. At
-`max_staleness_versions=0` this is `0 >= 0 + 0`, true from the very first cohort,
-so admission never opens at all, for the entire run. This is a sixth instance of
-the axis-floor pattern the README's "Axis floors" table already documents for
-five knobs across four other presets (`verl_v1` twice, `slime`, `openrlhf`,
-`dressage`), just reached through a livelock rather than an assertion, and only
-visible once `nemo_rl` is swept against `sampler=windowed`, which is itself a
-pin added for this preset.
-`nemo_rl`'s figure is drawn from its remaining five points, `max_staleness_versions`
-1 through 5, built from the same `request.jsonl` streams `sweep.sh` already wrote
-for those points, through the standalone `srl-staleness-plot` CLI rather than by
-editing the harness. The consumption-set gate still holds: all five points consumed
-3072 trajectories, same as every other preset's points. `nemo_rl`'s grid, like the
-other five floor exceptions, has had its 0 point dropped from `PRIMARY_VALUES`
-in the final fix wave of this task, once the harness's own `load_manifest` was
-also hardened to refuse a livelocked point cleanly rather than crash on it.
-
-Every other preset's 6 (or 5, or `verl_v1`'s 25) points consumed exactly
-3072 trajectories each, satisfying `sweep.sh`'s consumption-set gate. The
-engine `.so` md5 was unchanged
-across the whole sweep. Wall time for the 88 points was a few minutes.
+`BATCH_SIZE=32 N_VERSIONS=10 MAX_OUTPUT_LENGTH=10240
+TRACE=outputs/workload/qwen3_8b_dapo_tp1/joint.jsonl REUSE=false bash
+examples/simulate/staleness_throughput/run_all.sh` ran all 16 presets.
+All 131 points finished and fed their preset's figure; none livelocked, none
+were dropped from `PRIMARY_VALUES`, and none left `sweep.sh`'s
+consumption-set gate unsatisfied. Every point in every preset consumed
+exactly 2560 trajectories (`BATCH_SIZE * GROUP_SIZE * N_VERSIONS = 32*8*10`),
+except `slime_l1`/`slime_flush`, whose own `N_VERSIONS=32` override gives
+8192 (`32*8*32`) -- both counts uniform across each preset's own points,
+satisfying the gate. The engine `.so` md5 was unchanged across the whole
+sweep.
 
 ## Per-point table
 
-`span` is seconds, `maxS` is the highest `staleness_true` any consumed trajectory
-in that run reached, `waste%` is discarded tokens over total generated tokens, and
-the spread is consumed tokens by staleness level. `verl_v1`'s points are named
-`s<secondary>_p<primary>`, one `s` value per `max_off_policy_threshold` panel.
+`span` is seconds, `maxS` is the highest `staleness_true` any consumed
+trajectory in that run reached, `waste%` is discarded tokens over total
+generated tokens, and the spread is consumed tokens by staleness level.
+Two-knob presets (`verl_v1`, `verl_v1_wait`, `prime_rl_lag`) name points
+`s<secondary>_p<primary>`, one `s` value per secondary-knob panel.
 
 ```
-preset      point     span  maxS  waste%  spread
-areal          p0    21656     0     0.0  S0:32.5M
-areal          p1    15733     2     0.0  S0:4.1M S1:20.5M S2:8.0M
-areal          p2    15842     4     0.0  S0:2.0M S1:6.0M S2:17.3M S3:6.8M S4:0.4M
-areal          p3    15889     5     0.0  S0:1.9M S1:3.4M S2:11.5M S3:11.4M S4:4.1M S5:0.2M
-areal          p4    15888     5     0.0  S0:1.9M S1:3.0M S2:7.3M S3:10.2M S4:8.4M S5:1.8M
-areal          p5    15874     6     0.0  S0:1.9M S1:2.7M S2:5.2M S3:7.8M S4:8.2M S5:5.2M S6:1.6M
-dressage       p1    14854     3     0.0  S0:2.4M S1:15.7M S2:13.6M S3:0.8M
-dressage       p2    14854     3     0.0  S0:2.4M S1:15.7M S2:13.6M S3:0.8M
-dressage       p3    14854     3     0.0  S0:2.4M S1:15.7M S2:13.6M S3:0.8M
-dressage       p4    14854     3     0.0  S0:2.4M S1:15.7M S2:13.6M S3:0.8M
-dressage       p5    14854     3     0.0  S0:2.4M S1:15.7M S2:13.6M S3:0.8M
-nemo_rl        p0  LIVELOCKED: 0 versions, 0 requests consumed (see above)
-nemo_rl        p1    21762     0     0.0  S0:32.5M
-nemo_rl        p2    15574     2     0.0  S0:4.4M S1:19.7M S2:8.4M
-nemo_rl        p3    15559     3     0.0  S0:2.4M S1:15.5M S2:14.1M S3:0.6M
-nemo_rl        p4    15559     3     0.0  S0:2.4M S1:15.5M S2:14.1M S3:0.6M
-nemo_rl        p5    15559     3     0.0  S0:2.4M S1:15.5M S2:14.1M S3:0.6M
-openrlhf       p1    16620     1     0.0  S0:2.4M S1:30.1M
-openrlhf       p2    15114     4     0.0  S0:2.1M S1:6.6M S2:17.2M S3:6.5M S4:0.1M
-openrlhf       p3    15080     5     0.0  S0:1.9M S1:3.6M S2:14.2M S3:10.3M S4:2.5M S5:0.1M
-openrlhf       p4    15164     5     0.0  S0:1.9M S1:3.1M S2:9.4M S3:12.0M S4:5.4M S5:0.8M
-openrlhf       p5    15176     6     0.0  S0:1.9M S1:3.1M S2:6.6M S3:7.4M S4:9.4M S5:3.6M S6:0.5M
-prime_rl       p0    21762     0     0.0  S0:32.5M
-prime_rl       p1    21762     0     0.0  S0:32.5M
-prime_rl       p2    21762     0     0.0  S0:32.5M
-prime_rl       p3    21762     0     0.0  S0:32.5M
-prime_rl       p4    21762     0     0.0  S0:32.5M
-prime_rl       p5    21762     0     0.0  S0:32.5M
-psrl           p0    21656     0     0.0  S0:32.5M
-psrl           p1    16179     1     0.0  S0:1.9M S1:30.6M
-psrl           p2    15811     2     0.0  S0:1.9M S1:3.8M S2:26.8M
-psrl           p3    15872     3     0.0  S0:1.9M S1:2.6M S2:8.8M S3:19.3M
-psrl           p4    15923     4     0.0  S0:1.9M S1:2.5M S2:7.1M S3:11.8M S4:9.2M
-psrl           p5    15941     5     0.0  S0:1.9M S1:2.5M S2:5.9M S3:7.4M S4:9.6M S5:5.2M
-roll           p0    21762     0     0.0  S0:32.5M
-roll           p1    17123     1    18.0  S0:5.6M S1:23.9M
-roll           p2    16909     2    14.2  S0:2.3M S1:8.1M S2:19.8M
-roll           p3    16557     3    10.0  S0:2.0M S1:3.6M S2:12.7M S3:12.6M
-roll           p4    16483     4     9.8  S0:2.0M S1:3.0M S2:8.7M S3:11.1M S4:5.9M
-roll           p5    16461     5     8.6  S0:2.0M S1:3.0M S2:7.5M S3:8.2M S4:5.9M S5:4.5M
-skyrl          p0    21762     0     0.0  S0:32.5M
-skyrl          p1    15014     2     0.0  S0:4.1M S1:20.3M S2:8.1M
-skyrl          p2    15228     4     0.0  S0:1.9M S1:5.2M S2:18.9M S3:6.3M S4:0.3M
-skyrl          p3    15282     5     0.0  S0:1.9M S1:2.9M S2:8.5M S3:14.2M S4:4.8M S5:0.2M
-skyrl          p4    15118     6     0.0  S0:1.9M S1:3.4M S2:9.3M S3:8.6M S4:7.6M S5:1.6M S6:0.1M
-skyrl          p5    15134     6     0.0  S0:1.9M S1:3.1M S2:6.4M S3:7.2M S4:7.4M S5:5.1M S6:1.4M
-slime          p1    17428     1     0.0  S0:2.4M S1:30.1M
-slime          p2    17050     2     0.0  S0:2.4M S1:16.6M S2:13.5M
-slime          p3    16927     3     0.0  S0:2.4M S1:10.7M S2:11.0M S3:8.5M
-slime          p4    16825     4     0.0  S0:2.4M S1:9.1M S2:8.5M S3:7.6M S4:5.0M
-slime          p5    16836     5     0.0  S0:2.4M S1:7.8M S2:5.7M S3:4.8M S4:5.8M S5:6.0M
-trl            p0    21220     1    12.8  S0:12.6M S1:25.0M
-trl            p1    16620     1     0.0  S0:2.4M S1:30.1M
-trl            p2    15806     3     9.1  S0:2.4M S1:8.3M S2:18.7M S3:1.6M
-trl            p3    15976     4     8.7  S0:1.9M S1:4.1M S2:16.4M S3:8.4M S4:0.2M
-trl            p4    15290     5     5.0  S0:2.0M S1:3.0M S2:9.8M S3:14.2M S4:2.7M S5:0.0M
-trl            p5    15526     6     5.7  S0:2.1M S1:3.2M S2:7.2M S3:8.0M S4:8.3M S5:2.8M S6:0.1M
-verl           p0    21656     0     0.0  S0:32.5M
-verl           p1    15669     3     0.0  S0:4.4M S1:19.9M S2:7.8M S3:0.4M
-verl           p2    15797     4     0.0  S0:2.0M S1:5.8M S2:17.3M S3:7.3M S4:0.2M
-verl           p3    15784     5     0.0  S0:1.9M S1:3.1M S2:10.2M S3:12.9M S4:4.3M S5:0.2M
-verl           p4    15810     6     0.0  S0:1.9M S1:2.9M S2:6.2M S3:9.9M S4:9.6M S5:1.9M S6:0.1M
-verl           p5    15792     6     0.0  S0:1.9M S1:2.9M S2:6.8M S3:8.1M S4:6.9M S5:4.6M S6:1.4M
-verl_v1     s1_p1    21762     0     0.0  S0:32.5M
-verl_v1     s1_p2    21113     1    11.8  S0:27.2M S1:4.0M
-verl_v1     s1_p3    20747     3    17.7  S0:17.6M S1:10.1M S2:3.3M S3:0.5M
-verl_v1     s1_p4    19783     3    23.5  S0:8.3M S1:11.8M S2:9.1M S3:2.0M
-verl_v1     s1_p5    19921     4    22.4  S0:2.7M S1:10.0M S2:13.0M S3:4.9M S4:1.2M
-verl_v1     s2_p1    21762     0     0.0  S0:32.5M
-verl_v1     s2_p2    16483     2     7.9  S0:9.1M S1:21.2M S2:1.0M
-verl_v1     s2_p3    17990     3    15.1  S0:6.7M S1:18.6M S2:5.2M S3:0.7M
-verl_v1     s2_p4    18889     3    20.5  S0:4.3M S1:15.1M S2:9.8M S3:1.9M
-verl_v1     s2_p5    19685     4    21.3  S0:2.4M S1:10.6M S2:13.3M S3:4.5M S4:1.2M
-verl_v1     s3_p1    21762     0     0.0  S0:32.5M
-verl_v1     s3_p2    15733     2     0.0  S0:4.1M S1:20.5M S2:8.0M
-verl_v1     s3_p3    16590     3     7.3  S0:2.2M S1:9.7M S2:17.9M S3:1.7M
-verl_v1     s3_p4    18039     3    14.2  S0:2.1M S1:8.9M S2:17.1M S3:3.4M
-verl_v1     s3_p5    18965     4    18.6  S0:2.2M S1:6.6M S2:15.8M S3:5.5M S4:1.6M
-verl_v1     s4_p1    21762     0     0.0  S0:32.5M
-verl_v1     s4_p2    15733     2     0.0  S0:4.1M S1:20.5M S2:8.0M
-verl_v1     s4_p3    15901     3     1.3  S0:2.0M S1:6.3M S2:17.3M S3:6.7M
-verl_v1     s4_p4    16398     4     6.6  S0:2.0M S1:3.9M S2:13.8M S3:10.8M S4:0.9M
-verl_v1     s4_p5    17986     4    12.3  S0:2.0M S1:4.7M S2:11.2M S3:11.1M S4:2.9M
-verl_v1     s5_p1    21762     0     0.0  S0:32.5M
-verl_v1     s5_p2    15733     2     0.0  S0:4.1M S1:20.5M S2:8.0M
-verl_v1     s5_p3    15842     4     0.0  S0:2.0M S1:6.0M S2:17.3M S3:6.8M S4:0.4M
-verl_v1     s5_p4    15906     4     0.5  S0:1.9M S1:3.5M S2:11.5M S3:11.5M S4:4.0M
-verl_v1     s5_p5    16576     5     8.0  S0:2.1M S1:3.2M S2:9.5M S3:10.0M S4:6.1M S5:0.4M
+preset            point      span  maxS  waste%  spread
+psrl                 p0      8992     0     0.0  S0:20.2M
+psrl                 p1      6801     1     0.0  S0:1.9M S1:18.3M
+psrl                 p2      7104     2     0.0  S0:1.9M S1:1.9M S2:16.4M
+psrl                 p3      7257     3     0.0  S0:1.9M S1:1.9M S2:4.0M S3:12.4M
+psrl                 p4      7247     4     0.0  S0:1.9M S1:1.9M S2:4.2M S3:4.7M S4:7.4M
+psrl                 p5      7282     5     0.0  S0:1.9M S1:1.9M S2:3.3M S3:5.0M S4:5.4M S5:2.8M
+verl_v1          s1_p1..5 11791-33885  0  50.7-83.2  S0 only throughout, waste grows with threshold
+verl_v1          s2_p1..5  6739-16769  1   4.5-64.0  S0,S1
+verl_v1          s3_p1..5  6650-12299  2   0.0-49.6  S0..S2
+verl_v1          s4_p1..5  6650-9600   3   0.0-31.4  S0..S3
+verl_v1          s5_p1..5  6650-7796   4   0.0-13.1  S0..S4
+verl_v1_wait     s1_p1..5  9559-11884  1-5  0.0      S0..S5, grows with warmup not threshold
+verl_v1_wait     s2_p1..5  6801-9253   1-5  0.0      S0..S5
+verl_v1_wait     s3_p1..5  6650-8757   2-5  0.0      S0..S5
+verl_v1_wait     s4_p1..5  6650-8387   2-5  0.0      S0..S5
+verl_v1_wait     s5_p1..5  6650-7839   2-5  0.0      S0..S5
+verl                 p0      8992     0     0.0  S0:20.2M
+verl                 p1      6650     2     0.0  S0:2.4M S1:16.3M S2:1.4M
+verl                 p2      6963     3     0.0  S0:1.9M S1:2.8M S2:13.3M S3:2.0M
+verl                 p3      7109     4     0.0  S0:1.9M S1:2.2M S2:4.4M S3:10.0M S4:1.5M
+verl                 p4      7109     5     0.0  S0:1.9M S1:2.0M S2:4.2M S3:4.8M S4:6.6M S5:0.6M
+verl                 p5      7124     6     0.0  S0:1.9M S1:2.0M S2:3.2M S3:4.8M S4:5.3M S5:2.6M S6:0.3M
+areal                p0      8992     0     0.0  S0:20.2M
+areal                p1      6817     2     0.0  S0:2.3M S1:16.4M S2:1.2M
+areal                p2      7103     3     0.0  S0:1.9M S1:2.9M S2:13.0M S3:2.1M
+areal                p3      7210     4     0.0  S0:1.9M S1:2.1M S2:4.5M S3:10.0M S4:1.5M
+areal                p4      7217     5     0.0  S0:1.9M S1:2.0M S2:4.0M S3:4.6M S4:6.6M S5:1.0M
+areal                p5      7217     6     0.0  S0:1.9M S1:2.1M S2:3.7M S3:4.3M S4:5.5M S5:2.2M S6:0.3M
+roll                 p0      8992     0     0.0  S0:20.2M
+roll                 p1      6778     1     5.0  S0:2.6M S1:17.3M
+roll                 p2      7158     2     6.4  S0:1.9M S1:3.7M S2:14.1M
+roll                 p3      7155     3     5.0  S0:1.9M S1:2.2M S2:5.3M S3:10.4M
+roll                 p4      7174     4     3.8  S0:1.9M S1:2.0M S2:4.5M S3:5.1M S4:6.3M
+roll                 p5      7156     5     3.1  S0:1.9M S1:2.0M S2:3.4M S3:4.9M S4:5.4M S5:2.3M
+slime_l1             p1     20385     2     0.0  S0:2.2M S1:29.4M S2:32.1M
+slime_l1             p2     21398     3     0.0  S0:1.9M S1:5.5M S2:36.2M S3:20.2M
+slime_l1             p4     21663     6     0.0  S0:1.9M S1:2.1M S2:5.1M S3:16.7M S4:30.2M S5:7.8M S6:0.0M
+slime_l1             p8     21768     9     0.0  S0:1.9M S1:1.9M S2:2.3M S3:4.4M S4:8.9M S5:11.6M S6:12.5M S7:12.2M S8:6.4M S9:1.5M
+slime_flush          p0     19715     3     0.0  S0:1.9M S1:4.7M S2:44.0M S3:13.2M
+slime_flush          p1     21398     3     0.0  S0:1.9M S1:5.5M S2:36.2M S3:20.2M
+slime_flush          p2     20563     3     0.0  S0:1.9M S1:4.7M S2:36.9M S3:20.3M
+slime_flush          p4     20084     3     0.0  S0:1.9M S1:4.4M S2:40.8M S3:16.7M
+slime_flush          p8     19864     3     0.0  S0:1.9M S1:4.7M S2:42.5M S3:14.6M
+skyrl                p0      8992     0     0.0  S0:20.2M
+skyrl                p1      6297     2     0.0  S0:2.4M S1:16.2M S2:1.4M
+skyrl                p2      6519     3     0.0  S0:1.9M S1:3.0M S2:13.0M S3:2.1M
+skyrl                p3      6609     4     0.0  S0:1.9M S1:2.1M S2:5.0M S3:9.4M S4:1.6M
+skyrl                p4      6598     5     0.0  S0:1.9M S1:2.0M S2:4.0M S3:4.5M S4:6.5M S5:1.0M
+skyrl                p5      6599     6     0.0  S0:1.9M S1:2.1M S2:3.7M S3:4.0M S4:5.1M S5:2.8M S6:0.3M
+openrlhf             p1      8992     0     0.0  S0:20.2M
+openrlhf             p2      6297     2     0.0  S0:2.4M S1:16.2M S2:1.4M
+openrlhf             p3      6519     3     0.0  S0:1.9M S1:3.0M S2:13.0M S3:2.1M
+openrlhf             p4      6609     4     0.0  S0:1.9M S1:2.1M S2:5.0M S3:9.4M S4:1.6M
+openrlhf             p5      6598     5     0.0  S0:1.9M S1:2.0M S2:4.0M S3:4.5M S4:6.5M S5:1.0M
+dressage             p1      8751     1    30.6  S0:3.0M S1:17.1M
+dressage             p2      6208     3     0.0  S0:2.1M S1:9.4M S2:8.5M S3:0.1M
+dressage             p3      6208     3     0.0  S0:2.1M S1:9.4M S2:8.5M S3:0.1M
+dressage             p4      6208     3     0.0  S0:2.1M S1:9.4M S2:8.5M S3:0.1M
+dressage             p5      6208     3     0.0  S0:2.1M S1:9.4M S2:8.5M S3:0.1M
+nemo_rl              p1      8992     0     0.0  S0:20.2M
+nemo_rl              p2      6650     2     0.0  S0:2.4M S1:16.3M S2:1.4M
+nemo_rl              p3      6963     3     0.0  S0:1.9M S1:2.8M S2:13.3M S3:2.0M
+nemo_rl              p4      7109     4     0.0  S0:1.9M S1:2.2M S2:4.4M S3:10.0M S4:1.5M
+nemo_rl              p5      7109     5     0.0  S0:1.9M S1:2.0M S2:4.2M S3:4.8M S4:6.6M S5:0.6M
+nemo_rl_in_order     p1      8992     0     0.0  S0:20.2M
+nemo_rl_in_order     p2      6748     1     0.0  S0:1.9M S1:18.3M
+nemo_rl_in_order     p3      7095     2     0.0  S0:1.9M S1:2.0M S2:16.2M
+nemo_rl_in_order     p4      7259     3     0.0  S0:1.9M S1:2.0M S2:5.1M S3:11.2M
+nemo_rl_in_order     p5      7237     4     0.0  S0:1.9M S1:2.0M S2:2.3M S3:6.4M S4:7.5M
+trl                  p0     11140     0    50.9  S0:18.5M
+trl                  p1      6481     1     5.3  S0:2.8M S1:17.0M
+trl                  p2      6658     2     4.6  S0:1.9M S1:4.1M S2:13.7M
+trl                  p3      6714     3     3.5  S0:1.9M S1:2.0M S2:6.5M S3:9.3M
+trl                  p4      6683     4     2.4  S0:1.9M S1:2.1M S2:4.1M S3:6.4M S4:5.4M
+trl                  p5      6702     5     2.7  S0:1.9M S1:2.0M S2:4.0M S3:4.5M S4:6.3M S5:1.2M
+prime_rl             p0      9101     0     0.0  S0:20.2M
+prime_rl             p1      9101     0     0.0  S0:20.2M
+prime_rl             p2      9101     0     0.0  S0:20.2M
+prime_rl             p3      9101     0     0.0  S0:20.2M
+prime_rl             p4      9101     0     0.0  S0:20.2M
+prime_rl             p5      9101     0     0.0  S0:20.2M
+prime_rl_lag     s1_p1        9101     0     0.0  S0:20.2M
+prime_rl_lag     s1_p2        6794     1     1.8  S0:3.1M S1:16.9M
+prime_rl_lag     s1_p3        7062     1    11.0  S0:3.1M S1:16.4M
+prime_rl_lag     s1_p4        6947     1    12.0  S0:4.4M S1:15.0M
+prime_rl_lag     s1_p5        7028     1    13.2  S0:4.9M S1:14.5M
+prime_rl_lag     s3_p1        9101     0     0.0  S0:20.2M
+prime_rl_lag     s3_p2        6443     2     0.0  S0:2.5M S1:16.0M S2:1.5M
+prime_rl_lag     s3_p3        6582     3     0.0  S0:1.9M S1:2.9M S2:13.2M S3:2.1M
+prime_rl_lag     s3_p4        6709     3     4.1  S0:1.9M S1:2.1M S2:6.1M S3:9.7M
+prime_rl_lag     s3_p5        7292     3    12.1  S0:1.9M S1:3.9M S2:5.3M S3:8.5M
 ```
 
-A number that recurs across many presets' tightest setting is worth naming once:
-span 21656 to 21762, throughput 1494 to 1502 tok/s, everything at `S0`, 0% waste.
-Two rollout GPUs against six training GPUs on this long-tailed trace leaves
-rollout far enough behind training that the run is fully synchronous: no token is
-ever stale no matter which preset's admission or L3 knob happens to be the one
-pinned tight enough to cause it. This is the regime property the design doc's
-probe already recorded for `verl_v1` at `num_warmup_batches=1`. It recurs here
-under several different names.
+A number that recurs across many presets' tightest setting is worth naming
+once: span 8992, throughput 2243 tok/s, everything at `S0`, 0% waste. Two
+rollout GPUs against six training GPUs on this trace leaves rollout far
+enough behind training that the run is fully synchronous, independent of
+which preset's own knob happens to be the one pinned tight enough to cause
+it: `psrl`, `verl`, `areal`, `roll`, `skyrl` all hit it at knob=0, and
+`openrlhf`/`nemo_rl`/`nemo_rl_in_order` hit the identical number at their own
+floor (knob=1, since their axes start there). `prime_rl` sits close but not
+identical (9101 tok/s=2216, every point, see its own section) and `trl`'s
+own knob=0 is a different, higher number (11140) because `trl` discards even
+at its tightest setting rather than simply not admitting ahead.
 
 ## Per-preset findings
 
-**psrl.** Fully informative, and the cleanest figure in the set. `staleness`
-caps the composition at exactly `S <= staleness` at every point (`maxS` tracks
-the knob 0 through 5 exactly) with `waste%` at 0.0 throughout. Span drops from
-the synchronous floor (21656s) to 16179s at `staleness=1` and settles to about
-15810 to 15940s from `staleness=2` on. The bound is free in this regime: it
-reshapes which `S` level a token lands in without ever discarding one.
+**psrl.** Free bound, `maxS` tracks the knob exactly 0 through 5, 0.0% waste
+throughout. Span drops from the 8992s floor to 6801s at `staleness=1` and
+settles to 7100-7280s from 2 on.
 
-**verl_v1.** The two-knob grid (`num_warmup_batches` x `max_off_policy_threshold`,
-25 points) is the richest figure and reproduces the probe that set this regime.
-At `num_warmup_batches=1` every `max_off_policy_threshold` panel's first point
-sits on the synchronous floor, because warmup=1 alone is tight enough to prevent
-rollout from ever running ahead (the same mechanism the design doc already
-documents). Once warmup is 2 or higher, tightening `max_off_policy_threshold`
-visibly grows a hatched `l3_stale` segment (up to 23.5% waste at
-`max_off_policy_threshold=1`, `num_warmup_batches=4`) while the composition
-narrows toward low `S`. Both axes are doing
-real work here, and the trade the harness exists to show, a tighter bound costing
-span and discarded tokens at once, is visible directly in the figure.
+**verl_v1.** The two-knob grid (`num_warmup_batches` x
+`max_off_policy_threshold`, 25 points) remains the richest figure. At
+`num_warmup_batches=1`, `maxS` stays 0 at every threshold but span grows
+from 11791s to 33885s and waste from 50.7% to 83.2% as the threshold
+loosens: admission's warmup credit does not block rollout running ahead
+here, it is the discard/replace cycle itself inflating total generated work
+while keeping the consumed set clean. From `num_warmup_batches=2` on,
+tightening `max_off_policy_threshold` grows a visible `l3_stale` segment
+(up to 64.0% waste at `threshold=2, warmup=5`) while `maxS` stays capped at
+or below the threshold (no exceedance anywhere in this preset: the drop
+strategy holds its own bound exactly). Both axes do real work.
 
-**verl (legacy).** `staleness_threshold` is a sample-overage ratio, not a version
-count, and its axis label says so. `waste%` is 0.0 at every point: the ratio
-gates how many groups are admitted between syncs rather than discarding anything
-after the fact. The composition still broadens steadily from `S0`-only at 0 to a
-spread reaching `S6` at 5, and span drops from 21656s to about 15670 to 15810s
-once the knob is above 0. Informative, with the caveat its own grid comment
-carries: the shared 0 to 5 axis is not commensurable with the other eleven
-presets' version counts.
+**verl_v1_wait.** `waste%` is 0.0 at every one of its 25 points -- `wait`
+never discards, it only stalls sampling while something still-generating
+has crossed the window, and an already-finished straggler is never
+re-examined. `maxS` tracks `num_warmup_batches`, not
+`max_off_policy_threshold`, confirming the real system's documented absence
+of a bound for this strategy: the figure's own cap marker fires (red cross)
+at 15 of its 25 points, everywhere `threshold <= warmup`, exactly the set
+where the wait strategy's own absence of enforcement is visible.
 
-**areal.** Confirmed non-bound, by the same test `skyrl` fails below:
-`maxS` overshoots the knob at every point once admission opens (knob 0
-through 5: `+0, +1, +2, +2, +1, +1`) with 0.0 waste throughout, so nothing
-ever pulls it back. This is not a coincidence: `skyrl`'s own policy
-docstring states it uses "the same formula as AReaL", and the data confirms
-the two behave identically by this test. Span settles to about 15730 to
-15890s once the knob is above 0. Informative about admission's effect on
-span, but not a staleness bound.
+**verl (legacy).** `staleness_threshold` is a sample-overage ratio, not a
+version count, and its axis label says so, so there is no cap rule for it
+and no exceedance to check. `waste%` is 0.0 at every point. The composition
+broadens from `S0`-only at 0 to a spread reaching `S6` at 5, and span drops
+from 8992s to about 6650-7124s once the knob is above 0.
 
-**roll.** One of three presets, alongside `trl` and `verl_v1`, whose figure
-shows real discard cost. `async_generation_ratio`'s ceiling acts as both the
-admission window and an L2 GC, so unlike `psrl`'s free bound, `roll` pays
-for its cap: waste falls from 18.0% at knob=1 to 8.6% at knob=5 as the
-window loosens, visible as a shrinking hatched segment on top of each bar.
-`maxS` tracks the knob exactly throughout (0 through 5, no overshoot).
-Informative, and its own figure is the clearest illustration in the set that
-a version-window cap is not automatically free.
+**areal.** Confirmed non-bound by the same test `skyrl` fails below: `maxS`
+overshoots the knob by exactly +1 at every point once admission opens (knob
+1 through 5 all read `knob+1`), with 0.0% waste throughout, so nothing ever
+pulls it back. The figure's cap marker fires at all 5 nonzero points. Span
+settles to about 6817-7217s once the knob is above 0.
 
-**slime.** `update_weights_interval`'s floor is 1, not 0 (it is a loop interval,
-not a threshold), so there is no synchronous-floor point on this preset's own
-axis. Even at interval=1 the composition already spans `S0` and `S1`. `maxS`
-tracks the knob exactly (1 through 5) with 0.0 waste throughout, and span
-improves only modestly across the range, 17428s down to about 16825s. Informative,
-the mildest of the clean version-cap presets in this regime.
+**roll.** Real discard cost: `async_generation_ratio`'s ceiling acts as
+both the admission window and an L2 GC, so unlike `psrl`'s free bound,
+`roll` pays for its cap -- waste falls from 5.0% at knob=1 to 3.1% at
+knob=5 as the window loosens. `maxS` tracks the knob exactly throughout (0
+through 5, no overshoot, no cap-marker fire).
 
-**skyrl.** Confirmed non-bound, but not a flat figure. The test is not
-`waste% = 0`: `psrl`, `slime`, `nemo_rl`, `roll` and `trl` below are all
-genuine bounds, and three of them have 0.0 waste too. The test is whether
-`maxS` ever gets pulled back toward the knob at all, by waiting (`psrl`,
-`slime`, `nemo_rl`) or by discarding (`roll`, `trl`). `skyrl` and `areal`
-above do neither: `maxS` overshoots the knob by one or two at every point
-once admission opens (knob 0 through 5: `+0, +1, +2, +2, +2, +1`, not
-monotone, since nothing in this regime ever exceeds `S6`) and nothing is
-ever discarded to correct it, at any knob setting. The size of an overshoot
-is not itself the signal: within `verl_v1`'s tightest threshold panel, one
-point overshoots by `+3` and a different point in that same panel discards
-up to 23.5%, and the panel is still a genuine bound throughout, because it
-discards somewhere at every point past the first. Span and throughput both
-move substantially
-too (21762s at knob=0 to between 15014s and 15282s from knob=1 on, a real
-change in bar height), because the knob still drives an admission quota
-even though it never caps the composition once rollout is admitted. This
-matches the grid's own description: an admission quota and a violation
-counter, never a filter. Staleness does develop here (`maxS` is well above
-0 once the knob opens), so this is not the regime failing to let staleness
-develop. The mechanism itself is simply not a staleness bound, exactly as
-the spec predicted, just not one that also holds span constant.
+**slime.** `slime_l1/` sweeps `group_prefetch_factor` 1, 2, 4, 8 at
+`server_concurrency=128` (this run's `BATCH_SIZE`-scaled pin, see "Sweep
+execution"), a group threshold of 32, 64, 128, 256 against a batch of 32.
+`maxS` runs 2, 3, 6, 9, monotonically, and the composition broadens hugely
+by factor=8 (`S0` through `S9`). Throughput falls steadily (3127 to 2926
+tok/s) as the KV pool gets more oversubscribed; waste stays 0.0 throughout,
+since `slime` never discards. `slime_flush/` sweeps `flush_cache_interval`
+0, 1, 2, 4, 8 at a fixed threshold of 64 groups: `maxS` is flat at 3
+throughout and the spread barely moves, while span moves 19715s (never
+flush) to 21398s (flush every publication, the worst of the five) back down
+to 19864s at flush=8 -- confirming the knob changes re-prefill cost, not
+staleness, exactly as its own grid comment claims. Neither axis has a cap
+rule (`slime` bounds work and KV lifetime, not a trajectory's age), so no
+exceedance check applies to either figure.
 
-**openrlhf.** Same shape as `skyrl` and `areal`, and the same conclusion, by
-the same test: `maxS` overshoots the knob at every point past the first
-(`+0, +2, +2, +1, +1` for knob 1 through 5, again not monotone) with 0.0
-waste throughout, so nothing ever pulls it back. This is consistent with
-`async_queue_size` bounding in-flight batch lumps rather than per-sample
-age. Span moves too (16620s at knob=1 down to between 15080s and 15176s
-from knob=2 on), the same admission effect `skyrl` shows. Staleness clearly
-develops (up to `S6`), so this is case (a), not case (b): a confirmed
-non-bound. The mandatory `partial_rollout_enable=true` pin is exercised at
-every point.
+**skyrl.** Confirmed non-bound: `maxS` overshoots the knob by exactly +1 at
+every nonzero point (1->2, 2->3, 3->4, 4->5, 5->6), with 0.0% waste
+throughout -- the cap marker fires at all 5. Span moves from the 8992s
+floor to 6297-6609s once the knob opens, a real admission effect, but the
+composition is never pulled back once admitted; `max_staleness_steps` is an
+admission quota and a violation counter, never a filter, exactly as the
+grid's own description states.
 
-**dressage.** The one preset whose entire swept range is a literal plateau: all
-five points (`keep_versions` 1 through 5) are byte-identical, span 14854s,
-`maxS=3`, 0.0% waste, same token spread down to the megabyte. This is not case
-(b): the composition is a real, non-degenerate distribution (`S0` through `S3`),
-so admission did open and staleness did develop. It is also not case (a) by
-mechanism: `keep_versions` is described as an actual L3 filter (drop trajectories
-outside the `keep` most-recently-novel distinct versions), the same genre of
-bound as `psrl` or `trl`. What the data shows is that none of 1 through 5 is
-tight enough to trigger that filter even once in this regime: the first distinct
-version that would need dropping apparently lies beyond `keep=5`. This is the
-plateau the design doc's own caveat anticipated ("the 0..5 ceiling might already
-be past unbounded on some axes"), landing on `dressage`'s axis instead of the
-ones the spec guessed at. Per that caveat, the right next step is to re-centre
-just this preset's axis to a wider range, not to widen all twelve. That is future
-work, out of scope here.
+**openrlhf.** `maxS` tracks the knob with no overshoot in this regime
+(1->0, 2->2, 3->3, 4->4, 5->5), unlike `skyrl`/`areal` above -- the cap
+marker does not fire anywhere here. This is a property of this particular
+batch/trace combination, not evidence `async_queue_size` became an
+age-based bound: the knob still counts whole-batch lumps rather than
+per-sample age (per its own docstring), and the exact alignment at
+`BATCH_SIZE=32` should not be read past this regime. Waste is 0.0%
+throughout; span moves from the 8992s floor to 6297-6609s once the
+mandatory `partial_rollout_enable=true` pin's queue opens.
 
-**nemo_rl.** Three distinct regimes on one axis. `max_staleness_versions=0`
-livelocked outright in the original 88-point sweep (see "Sweep execution"
-above), a floor exception like five other presets already carry, just
-discovered here. The grid's own `PRIMARY_VALUES` has since been corrected to
-drop that value, matching the other five floor exceptions.
-`max_staleness_versions=1`
-reproduces the regime's synchronous floor exactly (span 21762s, `maxS=0`,
-matching `prime_rl`'s baseline and `roll`, `skyrl` and `verl_v1`'s own floor
-points, one of the two floor numbers this regime produces, the other being
-21656s on `areal`, `psrl` and `verl` legacy): one unit of lookahead is not
-enough room for staleness to develop when rollout is this far behind
-training. From 2 onward the knob is informative, `maxS` reaches 2 then 3,
-span drops to 15574s then settles to 15559s, and 3, 4 and 5 are then
-byte-identical to each other (a smaller, partial plateau:
-this regime's natural staleness ceiling for `nemo_rl` is `S3`, and loosening the
-window past 3 has nothing further to bind). The axis genuinely is a staleness
-bound. Its lowest legal point just happens to coincide with this regime's known
-synchronous-floor pattern.
+**dressage.** `keep_versions=1` is its own point (span 8751s, `maxS=1`,
+30.6% waste); 2 through 5 are byte-identical (span 6208s, `maxS=3`, 0.0%
+waste, same spread down to the tenth of a megabyte) -- a real,
+non-degenerate `S0`-`S3` composition, so admission did open and this is not
+a flat-admission trap, just a plateau past `keep_versions=2` in this regime.
+The cap marker fires once, at `keep_versions=2` (achieved 3 against a cap of
+2); `keep_versions=1`, `3`, `4`, `5` all stay at or under their own cap.
 
-**trl.** The most direct bound in the study, and the busiest figure: a hatched
-`l3_stale` segment appears at knob=0 (12.8% waste) and knob=2 through 5
-(9.1%, 8.7%, 5.0%, 5.7%), vanishing only at knob=1. The window's own slack
-is widest at knob=0, its worst point: `maxS=1` there too, but 66.5% of its
-consumed tokens sit above the knob at `S1` (25.0M of 37.6M), against 0 to
-5.2% above the knob at every other setting. From knob=1 on the discard
-holds `maxS` within one of the knob (exact at knob=1, `+1` from knob=2 on,
-knob=5 reaching `S6`) rather than letting it run further. Span
-is not monotone across the range (15976s at knob=3 down to 15290s at knob=4,
-back up to 15526s at knob=5), unlike
-the cleaner caps. Informative, and the figure that most directly shows a
-staleness bound charging a real, non-trivial, and non-monotonic cost.
+**nemo_rl.** `max_staleness_versions` holds its own bound exactly once
+admission has the headroom this run's grid fix gives it (see "Sweep
+execution"): knob=1 sits on the 8992s synchronous floor (`maxS=0`, under its
+own cap of 1), and knob 2 through 5 all read `maxS == knob`, 0.0% waste
+throughout, no cap-marker fire anywhere. Span drops to 6650s at knob=2 and
+settles at 7109s for both knob=4 and knob=5 (same wall time, a still-shifting
+composition underneath).
 
-**prime_rl.** Genuinely flat, unlike `skyrl` and `openrlhf` above (their span
-and composition both move): `waste%` is 0.0 and `maxS` is 0 at every single
-point, knob 0 through 5, every bar is the regime's exact synchronous-floor
-number (span 21762s, all 32.5M tokens at `S0`), and the figure's legend
-never needs an `S1` entry. This is case
-(b), the regime never letting staleness develop, but for a specific, traceable
-reason rather than bad luck: reading `srl/policy/prime_rl.py`, `admit_quota`
-gates admission on `target_lag` (`dispatch_index >= train_version + target_lag`),
-not on `max_off_policy_steps`, the knob this preset's grid actually sweeps.
-`max_off_policy_steps` only drives the publish-time cancel and the ready-pool
-sweep, both of which require something to already be stale before they can act.
-`target_lag` defaults to 1 and is left at that default here (the design spec's
-knob table lists it as this preset's deferred secondary knob). At `target_lag=1`,
-rollout being this far behind training means dispatch can never build up enough of
-a lead for anything to become stale, so `max_off_policy_steps`'s cancel horizon
-never has anything to catch at any of its six tested values. `max_off_policy_steps`
-genuinely is meant to be a staleness bound. This preset's own axis simply cannot
-reach it while its paired admission knob sits at the regime's synchronous floor.
+**nemo_rl_in_order.** Same fix, and now fully informative across the whole
+swept range rather than plateauing: `max_lookahead_versions` 1 through 5
+give `maxS` 0, 1, 2, 3, 4 (the knob's own `-1` offset, since dispatch
+reserves one step ahead of its own admitted cohort), 0.0% waste, no
+overshoot. Span runs 6748-7259s across knob 2-5, after the 8992s floor at
+knob=1.
 
-## The two predictions checked
+**trl.** The most direct, and the only strictly costly, bound in the set:
+`maxS` tracks the knob exactly, 0 through 5, no overshoot anywhere, but
+waste is never 0 -- 50.9% at knob=0 (the strict `S0` bound's full cost
+against this trace, not a free pass), falling to 2.4-5.3% from knob=1 on,
+non-monotonically (5.3, 4.6, 3.5, 2.4, 2.7). Span: 11140s at knob=0 (not the
+shared 8992s floor, because `trl` discards even at its tightest setting
+rather than simply failing to admit ahead), dropping to 6481s at knob=1 and
+settling around 6660-6714s from 2 on.
 
-The spec predicted `skyrl` and `openrlhf` would be flat. Neither is: both
-show the admission quota moving span substantially once the knob opens. What
-the spec actually meant, and what holds, is that neither knob ever pulls
-`maxS` back toward itself, by waiting or by discarding, with 0.0 waste
-throughout confirming nothing is ever corrected. Each knob is an admission
-quota or an in-flight cap rather than an age-based ceiling. `areal`, not
-named in the spec's prediction at all, turns out to fail the identical
-test by the identical mechanism (its own policy's docstring is the one
-`skyrl` cites as sharing its formula). The spec's own word choice, "flat,"
-conflated the span claim with the composition claim. Only `prime_rl` is
-actually flat in the literal sense, every one of its points landing on the
-same number, because its paired admission knob (`target_lag`, left at its
-default) rather than the swept `max_off_policy_steps` is what pins it to
-the regime's synchronous floor. `dressage` is the preset whose whole tested
-range turned out to be one plateau, exactly the risk the spec's "0..5
-ceiling might already be unbounded" caveat called out, just not on the axis
-the spec guessed at (`verl_v1` and `max_off_policy_threshold=5` turned out
-to still be informative, not flat). `nemo_rl` carries a smaller version of
-the same plateau from `max_staleness_versions=3` onward, alongside a newly
-found floor at 0.
+**prime_rl.** Genuinely flat: every one of its 6 points reads span 9101s,
+`maxS=0`, 0.0% waste, tok/s 2216, all 20.2M tokens at `S0`. This is the
+regime never letting staleness develop, for a specific, already-documented
+reason: `admit_quota` gates on `target_lag` (`dispatch_index >= train_version
++ target_lag`), not on `max_off_policy_steps`, the knob this grid actually
+sweeps. `target_lag` defaults to 1 and stays there in this grid, so dispatch
+can never build enough of a lead for anything to become stale, at any of the
+six `max_off_policy_steps` values tested. Not the same bug class as the
+`slime`/`nemo_rl` grid fixes above: nothing here is an unscaled absolute
+constant, `target_lag=1` is a deliberate default this preset's own grid
+leaves alone on purpose, by design (see `prime_rl_lag` below, which exists
+specifically to open this gap).
 
-No preset is compared against another as a system anywhere above: every span,
-waste share and composition described is that preset's own knob compared against
-itself.
+**prime_rl_lag.** `target_lag` 1 through 5, paneled against
+`max_off_policy_steps` at 1 and 3, opens exactly the admission gap
+`prime_rl`'s own flat figure identifies. At `max_off_policy_steps=1`, `maxS`
+caps at 1 once `target_lag>=2` (waste climbing 1.8% to 13.2% as the window
+loosens further, now with `l2_cancel` alongside `l3_stale`); at
+`max_off_policy_steps=3`, `maxS` reaches and holds at 3 once `target_lag>=3`
+(waste 0.0% through `target_lag=3`, then 4.1% and 12.1%). No exceedance in
+either panel: the bound holds once admission actually gives it something to
+catch, confirming `max_off_policy_steps` genuinely is a staleness bound,
+exactly what this sweep arm was built to show.
+
+## The cap marker, checked against this run
+
+`srl/visualizer/staleness_sweep.py` draws a point whose achieved `maxS`
+exceeds its own designed ceiling (per `_CAP_RULES`) as a red `x` on the
+staleness line, distinct from the orange circle used for in-bound points --
+not merely a printed number next to an unmarked line. Across this run's 16
+presets it fires on real data: all 15 of `verl_v1_wait`'s
+`threshold <= warmup` points (by design -- the `wait` strategy's documented
+absence of a bound), all 5 of `areal`'s and `skyrl`'s nonzero points (both
+confirmed non-bounds), and 1 of `dressage`'s 5 points
+(`keep_versions=2`). `psrl`, `roll`, `trl`, `verl` (no cap rule, a ratio
+axis), `openrlhf`, `nemo_rl`, `nemo_rl_in_order`, `prime_rl`,
+`prime_rl_lag`, and `verl_v1`'s own drop-strategy grid show no exceedance
+anywhere; `slime`'s two axes carry no cap rule at all.
+
+No preset is compared against another as a system anywhere above: every
+span, waste share and composition described is that preset's own knob
+compared against itself.

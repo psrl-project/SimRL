@@ -1,7 +1,11 @@
-# Collective-only config. See qwen3_8b_h20_tp4.yaml for why GEMM and attention are absent.
 # At eight ranks NCCL symmetric memory becomes reachable (it needs world_size >= 4) and vLLM's
 # custom all-reduce is clamped to 256 KiB, so this is the degree where the dispatch is expected
 # to split across backends by message size. `kernel_source` records which one fired.
+#
+# gemm/attention/elementwise mirror qwen3_8b_h20_tp1.yaml's rollout-only grid (not tp2's, which
+# adds training-only families this degree has no use for yet): the workload-shape axes do not
+# depend on tensor_parallel, only the measured latency does, and `--family` lets each be swept
+# independently of collective.
 model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}
 hardware:
   gpu_name: H20
@@ -14,6 +18,20 @@ output_dir: ../../../outputs/profile/qwen3_8b/kernel_tp8
 experiment_name: qwen3-8b
 parallelism:
   tensor_parallel: 8
+
+gemm:
+  token_counts: [1, 2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
+attention:
+  batch_sizes: [1, 2, 4, 8, 16, 32, 48, 64]
+  context_seq_lens: [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+  generation_steps: [0, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+  block_size: 16
+  window_size: 0
+  max_context_tokens: 262144
+
+elementwise:
+  token_counts: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 
 collective:
   # Message sizes are swept directly rather than derived from token counts: the five

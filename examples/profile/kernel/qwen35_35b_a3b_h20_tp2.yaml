@@ -29,6 +29,11 @@ parallelism:
 gemm:
   token_counts: [1, 2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 
+moe:
+  # Routed-MoE grouped GEMM (`fused_experts`). One axis spans both decode- and prefill-shaped
+  # regimes: unlike `gdn:`, there is no phase split here (see `cost/kernel/ops/moe.py`).
+  num_tokens: [1, 2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
 attention:
   batch_sizes: [1, 2, 4, 8, 16, 32, 48, 64]
   context_seq_lens: [128, 256, 512, 1024, 2048, 4096, 8192, 16384]

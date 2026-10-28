@@ -55,9 +55,21 @@ class Simulator:
         recompute_cost: RecomputeCostModel | None = None,
         store: JsonlStore | None = None,
         backend: str = "native",
+        rollout_costs: dict[int, RolloutCostModel] | None = None,
     ):
+        """
+        Args:
+            rollout_cost: The single-TP cost model used by the static `n_instances` fleet, and
+                also the model `Router` uses to price a hypothetical batch when
+                `cfg.dynamic_parallel` is set (the router has no per-degree pricing yet, so this
+                is a representative placeholder in that case, not a real per-slot model).
+            rollout_costs: TP degree -> cost model, required instead of `rollout_cost` building
+                any instances when `cfg.dynamic_parallel` is set. Must cover every degree in
+                `cfg.dynamic_parallel.tp_degrees`.
+        """
         self.rollout_cost = rollout_cost
         self.policy = policy
+        self.policy.validate(cfg.batch_size, cfg.group_size, cfg.n_instances)
         self.workload = cfg.workload
         self.cfg = cfg
         # Upper-cased to match `EventKind.name`, so the per-event test is one set lookup.
@@ -75,6 +87,7 @@ class Simulator:
             pp=cfg.training_pp,
             dp=cfg.training_dp,
             cp=cfg.training_cp,
+            pipeline_layout=cfg.training_pipeline_layout,
         )
         self.sync_cost = sync_cost or FixedSyncCost(cfg.sync_time)
         # No recompute model means no log-prob pass is charged. A real PPO/GRPO
@@ -110,23 +123,27 @@ class Simulator:
         else:
             self._Request = Request
             self.instances: list[NativeInstance] = []
-            for i in range(cfg.n_instances):
-                self.instances.append(
-                    NativeInstance(
-                        rollout_cost,
-                        token_budget=cfg.token_budget,
-                        kv_blocks=cfg.kv_blocks,
-                        block_size=cfg.block_size,
-                        max_running=cfg.max_concurrent,
-                        max_concurrency=cfg.max_concurrency,
-                        instance_id=i,
-                        reject_if_kv_full=cfg.reject_if_kv_full,
-                        reject_if_waiting=cfg.reject_if_waiting,
-                        reject_if_running_full=cfg.reject_if_running_full,
-                        enable_prefix_caching=cfg.enable_prefix_caching,
-                        eviction=build_eviction(cfg.eviction_strategy),
+            if cfg.dynamic_parallel is None:
+                for i in range(cfg.n_instances):
+                    self.instances.append(
+                        NativeInstance(
+                            rollout_cost,
+                            token_budget=cfg.token_budget,
+                            kv_blocks=cfg.kv_blocks,
+                            block_size=cfg.block_size,
+                            max_running=cfg.max_concurrent,
+                            max_concurrency=cfg.max_concurrency,
+                            instance_id=i,
+                            reject_if_kv_full=cfg.reject_if_kv_full,
+                            reject_if_waiting=cfg.reject_if_waiting,
+                            reject_if_running_full=cfg.reject_if_running_full,
+                            enable_prefix_caching=cfg.enable_prefix_caching,
+                            eviction=build_eviction(cfg.eviction_strategy),
+                        )
                     )
-                )
+            # Else: left empty. `SlotFleet` builds every slot's instance below, once `self.router`
+            # exists for it to rebind -- building a placeholder fleet here and discarding it would
+            # cost a full instance construction pass for nothing.
 
         self.router = Router(
             strategy=build_strategy(cfg.routing_strategy, **cfg.routing_strategy_args),
@@ -139,12 +156,21 @@ class Simulator:
             sort_key=SortKey(cfg.router_sort_key),
             queue_window=cfg.router_queue_window,
             enable_group_sticky=cfg.enable_group_sticky,
+            enable_trajectory_sticky=cfg.enable_trajectory_sticky,
             max_waiting_after_preempt=cfg.max_waiting_after_preempt,
             # The Python model even on the C++ backend, which holds a translated
             # copy and exposes no handle to it. A strategy pricing a hypothetical
             # batch must reach the same coefficients the engine runs on.
             cost_model=rollout_cost,
         )
+
+        self._dynamic_fleet = None
+        self._reshape_planner = None
+        if cfg.dynamic_parallel is not None:
+            self._dynamic_fleet, self._reshape_planner = self._build_dynamic_fleet(
+                cfg, rollout_costs
+            )
+            self.instances = self._dynamic_fleet.instances
 
         bind_runtime = getattr(self.router.strategy, "bind_runtime", None)
         if callable(bind_runtime):
@@ -161,7 +187,7 @@ class Simulator:
         # A flow limit on dataset ingress, not a staleness bound. See `_stage`.
         self._ingress_group_credits = 0
         self._ingress_granted = 0
-        self._ingress_cap = cfg.n_versions * cfg.batch_size
+        self._ingress_cap = cfg.n_versions * cfg.batch_size if cfg.ingress_lifetime_cap else math.inf
         self._grant_ingress_credits(cfg.ingress_window_groups or self._default_ingress_groups(cfg))
         self.pending: dict[int, list[Request]] = {}
         """Finished responses whose group is not complete yet, by group id.
@@ -194,6 +220,80 @@ class Simulator:
         # here, so this class only ever calls high-level telemetry methods).
         self.telemetry = SimTelemetry(store, enabled=cfg.log_telemetry)
 
+    def _build_dynamic_fleet(
+        self, cfg: SimConfig, rollout_costs: dict[int, RolloutCostModel] | None
+    ) -> tuple["SlotFleet", "ReshapePlanner"]:
+        """Build the slot fleet and planner `cfg.dynamic_parallel` declares.
+
+        Local import: the single-TP static path (`cfg.dynamic_parallel is None`, still the
+        common case) must not pay for importing this package at all.
+        """
+        from .dynamic_parallel import SlotFleet, SlotTable, build_reshape_planner
+
+        dp = cfg.dynamic_parallel
+        if rollout_costs is None:
+            raise ValueError("cfg.dynamic_parallel requires Simulator(rollout_costs=...).")
+        missing = sorted(set(dp.tp_degrees) - set(rollout_costs))
+        if missing:
+            raise ValueError(f"dynamic_parallel uses TP {missing} but rollout_costs has no model for it.")
+
+        table = SlotTable.from_degrees(dp.tp_degrees, dp.n_gpus)
+        initial_tp = dp.initial_tp if dp.initial_tp is not None else min(dp.tp_degrees)
+        instance_cfg = dict(
+            token_budget=cfg.token_budget,
+            block_size=cfg.block_size,
+            max_running=cfg.max_concurrent,
+            max_concurrency=cfg.max_concurrency,
+            reject_if_kv_full=cfg.reject_if_kv_full,
+            reject_if_waiting=cfg.reject_if_waiting,
+            reject_if_running_full=cfg.reject_if_running_full,
+            enable_prefix_caching=cfg.enable_prefix_caching,
+            eviction=build_eviction(cfg.eviction_strategy),
+        )
+        fleet = SlotFleet(
+            table=table,
+            cost_models=rollout_costs,
+            kv_blocks_per_tp=dp.kv_blocks_per_tp,
+            router=self.router,
+            instance_cfg=instance_cfg,
+            initial_awake=table.uniform_awake(initial_tp),
+            t=0.0,
+        )
+        planner = build_reshape_planner(dp.planner, **dp.planner_args)
+        return fleet, planner
+
+    def _maybe_reshape(self) -> bool:
+        """Ask the reshape planner for a new target awake set and apply it if it differs.
+
+        Must only be called at a committed point with no pending speculative events across the
+        fleet -- the same precondition `_align_instances` establishes -- since `SlotFleet.reshape`
+        reads every awake instance's current resident count. Returns whether a reshape happened.
+        """
+        from .dynamic_parallel import ReshapeState
+
+        fleet = self._dynamic_fleet
+        residents = {inst.instance_id: inst.n_active for inst in fleet.awake_instances}
+        state = ReshapeState(
+            t=self.t,
+            awake=fleet.awake,
+            residents=residents,
+            queue_depth=self.router.queue_len,
+            train_version=self.train_version,
+        )
+        target = self._reshape_planner.plan(fleet.table, state)
+        if target is None or target == fleet.awake:
+            return False
+        dp = self.cfg.dynamic_parallel
+        from_awake = fleet.awake
+        aborted = fleet.reshape(target, self.t, reconfig_time_s=dp.reconfig_time_s)
+        reprefill_tokens = sum(req.ctx for req in aborted)
+        if aborted:
+            self.router.enqueue(aborted, self.t)
+        self.telemetry.write_reshape(
+            self.t, fleet.table, from_awake, target, len(aborted), reprefill_tokens
+        )
+        return True
+
     @staticmethod
     def _default_ingress_groups(cfg: SimConfig) -> int:
         """Derive the ingress window when the caller did not supply the policy's.
@@ -205,16 +305,19 @@ class Simulator:
         return span * cfg.batch_size
 
     def _grant_ingress_credits(self, amount: int) -> int:
-        """Grant up to `amount` credits without the cumulative total crossing
-        `n_versions * batch_size`, the most this run will ever train on.
+        """Grant up to `amount` credits, capped at `n_versions * batch_size`
+        lifetime total when `cfg.ingress_lifetime_cap` is set (`_ingress_cap`
+        is `math.inf` otherwise, so `remaining` never binds and every
+        request is granted in full). See `JobConfig.ingress_lifetime_cap`
+        for why that cap is off by default.
 
         Scoped to the two speculative grant sites (the initial seed and the
         per-publish top-up). `_grant_drop_replacements` and `_apply_cancels`'s
-        non-DROP credit bypass this entirely: each backfills a group the cap
-        already counted once, before a policy discarded it permanently, so
-        capping them too would stop GC-style policies (ROLL, Dressage, TRL,
-        verl_v1's drop strategy, prime_rl's ready-pool sweep) from refilling
-        their working set once the cap is reached.
+        non-DROP credit bypass this entirely, capped or not: each backfills a
+        group the cap already counted once, before a policy discarded it
+        permanently, so capping them too would stop GC-style policies (ROLL,
+        Dressage, TRL, verl_v1's drop strategy, prime_rl's ready-pool sweep)
+        from refilling their working set once the cap is reached.
 
         Returns the amount actually granted, which may be less than requested.
         """
@@ -448,11 +551,30 @@ class Simulator:
         """Return the next training batch, or None while the policy's sampling gate is closed.
 
         The only place a batch is requested, so `run` and the engine's stop check cannot disagree.
+        Also the only place `on_batch_attempt` is called, but only when `consume` -- every real
+        system this policy layer models checks its own L3 bound live, right as a batch is
+        actually taken for training, not on a timer decoupled from consumption, and not on a
+        peek that merely asks whether one might be ready.
+
+        `consume=False` is `_run_engine`'s own `stop_on_batch` check, reached mid-event-loop
+        where another instance can still have an uncommitted, speculative event queued.
+        `on_batch_attempt`'s cancels run through `_apply_cancels`, which dispatches through the
+        router -- unsafe there, the same precondition `_maybe_reshape` documents -- so eviction
+        is deferred to the next `consume=True` call, always made from `run`'s own loop at a
+        fully-committed point. `peek_batch` alone (pre-eviction, a superset of what `take_batch`
+        can select) never under-reports availability, so deferring costs at most one extra
+        `_run_engine` round-trip, never a missed stop.
         """
         st = self._state()
         if not self.policy.can_sample(st):
             return None
-        return self.policy.take_batch(st) if consume else self.policy.peek_batch(st)
+        if consume:
+            cancels = self.policy.on_batch_attempt(st)
+            if cancels:
+                self._apply_cancels(cancels)
+                st = self._state()
+            return self.policy.take_batch(st)
+        return self.policy.peek_batch(st)
 
     def _collect(self, done: list[Request]) -> None:
         """Retire finished responses, releasing a group once it is whole."""
@@ -838,6 +960,14 @@ class Simulator:
                     if self._next_batch(consume=False) is not None:
                         if not cross_instance:
                             self._undo_and_align(events, queue, t_event)
+                        # The batch that is about to be consumed already left every
+                        # instance it ran on (it is sitting in `ready`/`pending`), so a
+                        # reshape here can only touch unrelated, still-resident requests
+                        # on other instances -- safe to decide the next round's shape
+                        # right as this one ends, which is exactly when a drained
+                        # instance is most likely to exist.
+                        if self._dynamic_fleet is not None:
+                            self._maybe_reshape()
                         self.telemetry.sync_all(self.instances)
                         break
 
@@ -852,6 +982,14 @@ class Simulator:
                 if self.router.has_dispatchable() or self._ingress_group_credits > 0:
                     if not cross_instance:
                         self._undo_and_align(events, queue, t_event)
+                    # A completion already aligned every instance and drained the undo
+                    # log here, which is exactly the precondition `_maybe_reshape` needs
+                    # (every awake instance's resident count is a committed value, not a
+                    # speculative one). Checked before dispatch so a merge this call
+                    # produces can receive the very work `_dispatch_router` is about to
+                    # place below.
+                    if self._dynamic_fleet is not None:
+                        self._maybe_reshape()
                     self.telemetry.sync_all(self.instances)
                     if not self._stage():
                         self._dispatch_router()
@@ -1092,16 +1230,22 @@ _BACKENDS = ("auto", "native", "cpp")
 
 
 def _python_engine_only_components(cfg: SimConfig) -> list[str]:
-    """Names of the configured router strategy and eviction that need the Python engine."""
+    """Names of the configured router strategy, eviction, and fleet shape that need the Python
+    engine."""
     registered = (
         (STRATEGY_REGISTRY, cfg.routing_strategy),
         (EVICTION_REGISTRY, cfg.eviction_strategy),
     )
-    return [
+    names = [
         name
         for registry, name in registered
         if getattr(registry.get(name), "python_engine_only", False)
     ]
+    if cfg.dynamic_parallel is not None:
+        # SlotFleet builds plain NativeInstance objects and reshapes them with Python-side
+        # abort/requeue bookkeeping; the C++ engine has no equivalent.
+        names.append("dynamic_parallel")
+    return names
 
 
 

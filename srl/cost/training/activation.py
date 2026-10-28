@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 from srl.profiler.schema import ModelDescriptor, SequenceStats
 
-from .base import TrainingOutOfDomainError, TrainingParallelism
+from .base import TrainingOutOfDomainError, TrainingParallelism, stage_layer_counts
 
 # Empirical multiplier on the logit term, covering loss-computation temporaries that
 # live alongside the logits and are not separately modelled.
@@ -97,17 +97,20 @@ class ActivationGeometry:
             activation_dtype_bytes=int(value.get("activation_dtype_bytes", 2)),
         )
 
-    def checkpoint_bytes_per_token(self, tensor_parallel: int) -> float:
+    def checkpoint_bytes_per_token(
+        self, tensor_parallel: int, *, context_parallel: int = 1
+    ) -> float:
         """
         Return bytes retained per token for layer-input checkpoints.
 
-        One hidden-sized tensor per layer plus the block's own input. Tensor
-        parallelism splits the hidden dimension of these tensors.
+        One hidden-sized tensor per layer plus the block's own input. Tensor parallelism
+        splits the hidden dimension of these tensors, and context parallelism splits the
+        sequence, so both divide the per-rank footprint.
         """
         per_token = (self.num_layers + 1) * self.hidden_size * self.activation_dtype_bytes
-        return per_token / tensor_parallel
+        return per_token / (tensor_parallel * context_parallel)
 
-    def logit_bytes_per_token(self) -> float:
+    def logit_bytes_per_token(self, *, context_parallel: int = 1) -> float:
         """
         Return bytes retained per token for the output projection.
 
@@ -123,9 +126,13 @@ class ActivationGeometry:
         it instead forced the fitted scale to 2.53 at TP=4 and 4.59 at TP=8, which is
         the signature of a wrong term rather than a machine-specific correction.
 
+        Context parallelism does divide it, because training computes logits over the
+        local sequence slice rather than gathering first.
+
         `LOGIT_OVERHEAD` covers the loss-computation temporaries. See its definition.
         """
-        return self.vocab_size * self.activation_dtype_bytes * LOGIT_OVERHEAD
+        per_token = self.vocab_size * self.activation_dtype_bytes * LOGIT_OVERHEAD
+        return per_token / context_parallel
 
 
 def in_flight_microbatches(num_microbatches: int, pipeline_parallel: int) -> int:
@@ -150,28 +157,43 @@ def activation_bytes(
     """
     Predict activation bytes on the most loaded pipeline stage.
 
-    Under 1F1B the warmup depth and the logit footprint sit on opposite ends of the
-    pipeline, so the worst stage is whichever of the two ends is larger:
+    Under 1F1B, stage `i` (0-indexed) keeps up to `pp - i` microbatches in flight
+    before its first backward -- `pp` at the first stage, falling to 1 at the last,
+    which is also the only stage holding the logits. Without `pipeline_layout`
+    every stage holds the same `num_layers / pp` checkpoint bytes, so a stage
+    further into the pipeline is strictly dominated by the first (more concurrency,
+    same per-microbatch cost) and only the two ends ever need comparing -- which is
+    why the measured peak rank at PP=4 was identical for one and four microbatches:
+    27.81 GiB in both cases. Scaling checkpoints by `min(num_microbatches, pp)` on
+    the peak stage would have predicted 0.56 GiB of difference. Modelling both ends
+    and taking the larger reproduces it, and it is also why the *non*-peak ranks did
+    move slightly with the microbatch count.
 
-    - The first stage keeps up to `pp` microbatches in flight before its first
-      backward, but holds no logits.
-    - The last stage holds the logits, yet its warmup depth is one: it backpropagates
-      each microbatch immediately after receiving it.
-
-    That asymmetry is why the measured peak rank at PP=4 was identical for one and four
-    microbatches: 27.81 GiB in both cases. Scaling checkpoints by
-    `min(num_microbatches, pp)` on the peak stage would have predicted 0.56 GiB of
-    difference. Modelling both ends and taking the larger reproduces it, and it is also
-    why the *non*-peak ranks did move slightly with the microbatch count.
+    `parallelism.pipeline_layout`, when set, breaks that domination: a middle stage
+    carrying far more layers than either end can out-cost both despite its lower
+    in-flight depth, so every stage is evaluated and the worst one returned, not
+    just the two ends.
 
     Taking the largest microbatch keeps this an upper bound for ragged batches.
     """
     if not microbatches:
         raise TrainingOutOfDomainError("Activation memory needs at least one microbatch.")
     peak_tokens = max(item.sum_tokens for item in microbatches)
-    checkpoints = geometry.checkpoint_bytes_per_token(parallelism.tp) * peak_tokens
-    stage_checkpoints = checkpoints / parallelism.pp
-    concurrent = in_flight_microbatches(len(microbatches), parallelism.pp)
-    first_stage = stage_checkpoints * concurrent
-    last_stage = stage_checkpoints + geometry.logit_bytes_per_token() * peak_tokens
-    return max(first_stage, last_stage)
+    checkpoints = (
+        geometry.checkpoint_bytes_per_token(
+            parallelism.tp, context_parallel=parallelism.cp
+        )
+        * peak_tokens
+    )
+    stage_layers = stage_layer_counts(geometry.num_layers, parallelism)
+    logits = geometry.logit_bytes_per_token(context_parallel=parallelism.cp) * peak_tokens
+    pp = parallelism.pp
+    worst = 0.0
+    for stage_index, layer_count in enumerate(stage_layers):
+        stage_checkpoints = checkpoints * (layer_count / geometry.num_layers)
+        concurrent = min(len(microbatches), pp - stage_index)
+        total = stage_checkpoints * concurrent
+        if stage_index == pp - 1:
+            total += logits
+        worst = max(worst, total)
+    return worst

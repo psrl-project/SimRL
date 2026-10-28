@@ -29,7 +29,12 @@ class TRLPolicyConfig:
     def horizon(self) -> int:
         return self.max_staleness
 
-    def ingress_window_groups(self, batch_size: int) -> int:
+    def ingress_window_groups(
+        self,
+        batch_size: int,
+        group_size: int = 1,
+        n_instances: int = 1,
+    ) -> int:
         cap = self.max_inflight_tasks
         if cap < 0:
             cap = max(self.max_staleness, 1) * batch_size

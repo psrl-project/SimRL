@@ -64,6 +64,10 @@ class Canvas:
     # smooths further at the cost of render time and file size.
     SUPERSAMPLE = 4
 
+    # PNGs are written at this multiple of the authored coordinates. The SVG
+    # carries the vector original, so this only trades file size for density.
+    PNG_SCALE = 3
+
     def __init__(self, name, w, h, title, out_dir):
         self.name, self.w, self.h, self.title, self.out_dir = name, w, h, title, out_dir
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -211,7 +215,9 @@ class Canvas:
         self.text(x + (w - width) / 2, y + (h - height) / 2, s, size, color, bold, maxw=w)
 
     def save(self):
-        self.im.resize((self.w, self.h), Image.LANCZOS).save(self.out_dir / f"{self.name}.png")
+        self.im.resize(
+            (self.w * self.PNG_SCALE, self.h * self.PNG_SCALE), Image.LANCZOS
+        ).save(self.out_dir / f"{self.name}.png", optimize=True)
         (self.out_dir / f"{self.name}.svg").write_text("\n".join(self.svg + ["</svg>"]), encoding="utf-8")
 
     def save_plain(self, crop_top, suffix="-plain"):
@@ -225,7 +231,9 @@ class Canvas:
         new_h = self.h - crop_top
         s = self.SUPERSAMPLE
         cropped = self.im.crop((0, crop_top * s, self.w * s, self.h * s))
-        cropped.resize((self.w, new_h), Image.LANCZOS).save(self.out_dir / f"{name}.png")
+        cropped.resize(
+            (self.w * self.PNG_SCALE, new_h * self.PNG_SCALE), Image.LANCZOS
+        ).save(self.out_dir / f"{name}.png", optimize=True)
         head = (
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{self.w}" height="{new_h}" '
             f'viewBox="0 {crop_top} {self.w} {new_h}" role="img"><title>{self.title}</title>'

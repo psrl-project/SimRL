@@ -85,3 +85,13 @@ phases:
       - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 32, num-prompts: 32}
       - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 48, num-prompts: 48}
       - {random-input-len: 1024, random-output-len: 8192, max-concurrency: 64, num-prompts: 64}
+      # verl_aligned.sh's separate_async comparison run spends most of its time above
+      # concurrency 64 (p90 ~216-220, peak 256), which this sweep never reached. Output
+      # length shrinks as concurrency climbs to stay inside the ~501k-token KV budget
+      # (31331 blocks x 16 tokens at gpu-memory-utilization=0.9, TP1) with headroom, so
+      # these points reach their own scheduler steps instead of truncating at the first
+      # preemption.
+      - {random-input-len: 1024, random-output-len: 3072, max-concurrency: 96,  num-prompts: 96}
+      - {random-input-len: 1024, random-output-len: 2048, max-concurrency: 128, num-prompts: 128}
+      - {random-input-len: 1024, random-output-len: 1024, max-concurrency: 192, num-prompts: 192}
+      - {random-input-len: 1024, random-output-len: 640,  max-concurrency: 256, num-prompts: 256}

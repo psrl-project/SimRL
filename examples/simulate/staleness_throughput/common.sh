@@ -5,9 +5,15 @@
 # from the environment, so a caller can move the whole study to another trace or
 # another GPU split without editing twelve grids.
 #
-# The split and mesh are the ones examples/simulate/psrl_aligned.sh transcribes
-# from the real PSRL run, so the cost models are asked for predictions in the
-# configuration they were matched against.
+# The GPU split and mesh are the ones examples/simulate/psrl_aligned.sh
+# transcribes from the real PSRL run, so the cost models are asked for
+# predictions in the configuration they were matched against. BATCH_SIZE and
+# N_VERSIONS are not: the real run's batch_size=32 was chosen there
+# specifically to keep the KV cache under pressure, which is irrelevant to
+# this study's own question (which policy schedules staleness better), and
+# at 32 the scheduling differences this study exists to show were mostly
+# hidden inside sampling noise. 8 and 10 are this study's own choice, settled
+# on after comparing psrl/nemo_rl/verl_v1 at both.
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export ROOT_DIR
@@ -21,11 +27,11 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export TRACE="${TRACE:-${ROOT_DIR}/outputs/workload/qwen3_8b_dapo_38912_tp1/joint.jsonl}"
 export MAX_OUTPUT_LENGTH="${MAX_OUTPUT_LENGTH:-38912}"
 
-export BATCH_SIZE="${BATCH_SIZE:-32}"
+export BATCH_SIZE="${BATCH_SIZE:-8}"
 export GROUP_SIZE="${GROUP_SIZE:-8}"
 # Staleness cannot exceed the number of versions a run contains, so a short run
 # reports its own length rather than the mechanism.
-export N_VERSIONS="${N_VERSIONS:-12}"
+export N_VERSIONS="${N_VERSIONS:-10}"
 
 export N_INSTANCES="${N_INSTANCES:-2}"
 export ROLLOUT_TP="${ROLLOUT_TP:-1}"
@@ -39,5 +45,5 @@ REUSE="${REUSE:-true}"
 
 # NOTE(claude): At cap 38912 an unsplittable sequence forms a microbatch wider
 # than the training sweep's domain on four features at once (tokens,
-# activation_bytes, pipeline_slots, sum_squared_tokens). Every figure carries this footnote.
-FOOTNOTE="${FOOTNOTE:-Training cost extrapolated beyond its fit domain (tokens, activation_bytes, pipeline_slots, sum_squared_tokens). Rollout and staleness are in domain.}"
+# activation_bytes, pipeline_slots, sum_squared_tokens). See the README's
+# "Gates" section rather than the figure for this caveat.

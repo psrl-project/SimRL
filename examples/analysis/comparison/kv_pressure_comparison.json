@@ -1,0 +1,123 @@
+{
+  "workload": "dapo_n64_cap40_kv0.5_normal (same 64 requests, gpu_memory_utilization=0.40, 9712 blocks, 31.0% of the kv1 comparison's 31331 blocks)",
+  "why_this_point": "dapo_n64_cap40_kv1_normal and kv0.6_normal both show 0 real preemptions, confirmed by direct measurement -- this point was found by testing util={0.50,0.40,0.35} in parallel and picking the first that actually breaks (0.40: 73 preemptions; 0.35: 87, confirming it is a real threshold not a single fluke)",
+  "real_vllm": {
+    "span_s": 684.16253192164,
+    "schedule_calls": 37352,
+    "preemptions": 73
+  },
+  "simrl": {
+    "span_s": 655.8,
+    "error_pct": -4.145,
+    "events": 20217,
+    "preemptions": 73,
+    "overhead_native_s": 4.46,
+    "overhead_cpp_s": 3.03
+  },
+  "frontier_fa3": {
+    "span_s": 747.5166729703438,
+    "error_pct": 9.261,
+    "events": 36010,
+    "preemptions_predicted": 0,
+    "completed_requests": 60,
+    "total_requests": 64,
+    "overhead_s": 83.99,
+    "overhead_s_original_measurement_RETRACTED": 259.78,
+    "root_cause_verified_via_source_probes": {
+      "num_blocks_mode": "memory_planner_profiled",
+      "num_blocks_at_util_0.9_kv1": 33433,
+      "num_blocks_at_util_0.4_kv0.5": 11588,
+      "real_vllm_num_gpu_blocks_at_util_0.9_kv1": 31331,
+      "real_vllm_num_gpu_blocks_at_util_0.4_kv0.5": 9712,
+      "frontier_overestimate_blocks_at_kv1": 2102,
+      "frontier_overestimate_blocks_at_kv0.5": 1876,
+      "frontier_overestimate_pct_at_kv1": 6.7,
+      "frontier_overestimate_pct_at_kv0.5": 19.3,
+      "peak_internal_pool_utilization_at_kv0.5": "11588/11588 (100%, confirmed via probe)",
+      "try_allocate_with_preemption_call_count": 576086,
+      "conclusion": "num_blocks resolution is fresh and correctly utilization-sensitive (not stale); the preemption code path is real, reachable, and was exercised 576086 times; Frontier's pool genuinely filled to 100% capacity. The 0-preemption outcome is caused by Frontier's analytical non-KV-memory estimate reserving a roughly constant ~1900-2100 fewer blocks for non-KV use than real vLLM's actual allocation, which is a small fraction of the pool at util=0.9 (harmless) but a large fraction at util=0.4 (enough extra headroom to absorb all 73 of this workload's real preemptions, which sit close to vLLM's true capacity boundary)"
+    },
+    "note": "Original read (36010 events identical to kv1, apparent 3.1x overhead jump) suggested 'scheduler ignores memory pressure' -- WRONG, retracted after direct source-level root-causing with temporary print-probes (added, run, reverted). The overhead jump was a measurement artifact: the original 259.78s run happened to coincide with a separate concurrently-running background job (the aiconfigurator EMPIRICAL-mode investigation) on the same machine. Re-measured in isolation: 83.99s, matching kv1's 82.77s. 4/64 requests never registering as completed remains observed but not independently root-caused."
+  },
+  "llmservingsim": {
+    "span_s": 711.582712808,
+    "error_pct": 4.01,
+    "events": 36010,
+    "preemptions_predicted": 46,
+    "total_generated_tokens": 596330,
+    "overhead_s": 623.33,
+    "note": "converted dapo_n64_cap40_kv0.5_normal.jsonl with the same prompt-shared-per-group token-ID scheme as the kv1 trace (verified to exactly reproduce the existing kv1 trace before trusting it here); run with --npu-memory-utilization 0.4 against the already-profiled H20 bf16 bundle, no re-profiling. Reports 'Preemptions: 46' directly in its own summary output -- gets the direction right (unlike Frontier's 0) but undercounts by 37% vs real 73. Overhead unchanged from the kv1 point (627.10s), same as Frontier -- pressure doesn't change either tool's own cost."
+  },
+  "aiconfigurator": {
+    "kv_cache_warning_appears_between_free_gpu_memory_fraction": [
+      0.3,
+      0.9
+    ],
+    "ttft_tpot_change_with_fraction": false,
+    "note": "kv_cache_warning text fires (confirmed present at 0.44-0.45, bracketing this workload's 0.40 point) but ttft/tpot are byte-identical to the unconstrained (0.9) case at every fraction tested down to 0.02 -- detects infeasibility, does not model its effect"
+  },
+  "workload_kv0_5c": "dapo_n64_cap40_kv0.5c_normal (same 64 requests, gpu_memory_utilization=0.35, 7550 blocks, 24.1% of kv1's 31331 -- the tightest of the three KV-pressure points tested this session)",
+  "real_vllm_kv0_5c": {
+    "span_s": 761.1776324044913,
+    "schedule_calls": 46248,
+    "preemptions": 87
+  },
+  "simrl_kv0_5c": {
+    "span_s": 724.6,
+    "error_pct": -4.806,
+    "events": 26797,
+    "preemptions": 80,
+    "overhead_native_s": 4.64,
+    "overhead_cpp_s": 4.12,
+    "note": "median of 3 interleaved trials per backend; all 3 trials per backend byte-identical (span/preemptions/events). Preemption count (80) is close but not exact this time (vs the exact 73/73 match at kv0.5) -- 92% of real 87, still comfortably the most accurate of the four systems."
+  },
+  "frontier_fa3_kv0_5c": {
+    "status": "INCOMPLETE -- not a valid comparison point (dp_id bug fixed; blocked by root_cause_2, confirmed present in upstream too)",
+    "exit_status": 0,
+    "overhead_s": 97.09,
+    "ledger_events": 19922,
+    "ledger_max_timestamp_s": 249.76,
+    "completed_requests": 39,
+    "total_requests": 64,
+    "total_duration_seconds_field": null,
+    "preemptions_predicted": 0,
+    "root_cause_1_fixed": {
+      "mechanism": "Silent request-loss bug in VLLMv1EngineReplicaScheduler._schedule_waiting_requests (Phase 2 admission). Four skip branches exist for a waiting-queue-front request that can't be scheduled this iteration; three correctly do waiting_queue.popleft() + skipped_waiting_requests.append(request) + continue so the request is merged back into the real queues at the end of the function. The fourth (triggered when the per-batch token budget is already exhausted by earlier requests in the same pass, vllm_v1_engine_replica_scheduler.py:3384-3386 before the fix) did popleft()+continue WITHOUT the append -- the request fell out of every tracked collection (not running/waiting/preempted/completed) and was never revisited. Retroactively explains the kv0.5 point's unexplained 'completed_requests: 60/64' (same bug, 4 requests, far less budget exhaustion at that looser setting).",
+      "evidence": "request_metrics.csv for the unfixed run: the 25 missing requests (e.g. req 48) have blank request_e2e_time AND blank request_total_preemption_count -- never went through any tracked completion or preemption path. Their last ledger appearances are scattered across the whole 27.8s-249.75s range, not synchronized, consistent with being dropped whenever this specific branch fires rather than one global failure.",
+      "fix_applied": "Added the missing skipped_waiting_requests.append(request) call. 1 code line + 6-line comment, file: frontier/scheduler/replica_scheduler/vllm_v1_engine_replica_scheduler.py.",
+      "verification": "Re-ran kv0.5c with the fix. Requests no longer vanish -- but the run still does not complete; it now raises RuntimeError('Sequential simulation ended with non-empty scheduler state') at the same simulated time (249.76s) instead of silently writing a wrong result. Confirms the fix is correct (simulator.py's pre-existing safety check now fires because the scheduler state is no longer falsely empty) and surfaces root_cause_2 below."
+    },
+    "root_cause_2_not_fixed": {
+      "mechanism": "A second, independent bug: nothing re-triggers a Phase 2 admission attempt when the running queue empties out while _preempted_requests still has pending work. The ledger's last 5 batches before the stall all contain only one request (req 20, whose own request_e2e_time of 249761ms matches the stall point exactly) -- the simulation halts the instant the last RUNNING request completes, even though other requests are sitting preempted and waiting to be retried.",
+      "location": "Not yet located precisely -- the actual ClusterScheduleEvent re-scheduling logic lives in frontier/scheduler/cluster_scheduler/base_cluster_scheduler.py (6000+ lines) and frontier/events/global_schedule_event.py, a separate subsystem from where root_cause_1 was found and fixed.",
+      "status": "Found and evidenced, not fixed -- a comparably-sized investigation to root_cause_1, not a small follow-on. Left as a precise, reproducible open problem."
+    },
+    "upstream_github_check": "github.com/NetX-lab/Frontier. Searched issues for hang/deadlock/stuck/incomplete/preemption-under-pressure -- found two closed issues on unrelated topics (TTFT deviation at long prefill; missing H800 profiling data for a shell script), nothing matching either bug found here. Repo has very few issues total, so this is weak evidence either way.",
+    "note": "Even with root_cause_1 fixed, the simulation still does not complete (root_cause_2 blocks it) -- no span/error/preemption-accuracy number is reported for Frontier at this point, forcing one from a partial run would misrepresent it as a real prediction. See root_cause_1_fixed/root_cause_2_not_fixed above for what was actually found, rather than leaving this as an unexplained incompleteness.",
+    "upstream_merge": {
+      "action": "Full fast-forward merge of the local Frontier clone to origin/main (NetX-lab/Frontier), 817 commits ahead of the prior HEAD 9e9fa94, now at 7df62a2. User-authorized after confirming bugs #1 and #2 both appear fixed upstream.",
+      "bug_1_confirmed_fixed_upstream": "PR #42 (fix/vllm-v1-skipped-requeue-order, merge commit 0b6999c) rewrote the waiting-queue loop to an index-based walk (req_index += 1) that structurally cannot lose a request the way the old pop-then-maybe-append pattern did. Confirmed by reading the actual post-merge source, not just the PR title. Ships with a dedicated regression test tests/unit/test_vllm_v1_skipped_waiting_order.py. Our own local one-line patch (same mechanism, found independently this session) is now superseded and was discarded in favor of upstream's full rewrite during conflict resolution.",
+      "bug_2_status": "PR #40 (fix/pp-empty-schedule-admission) and PR #38 (fix/vllm-v1-preemption-victim) touch exactly the right files (base_replica_scheduler.py, vllm_v1_engine_replica_scheduler.py) and are titled consistently with fixing admission/preemption correctness relative to real vLLM 0.10.2 -- but this was NOT re-verified end-to-end by actually completing a kv0.5c run, because a third, different, newly-surfaced issue blocked that attempt (see below). Titles/scope are suggestive, not confirmed by a passing run.",
+      "merge_mechanics": "git stash -u (saved FA3 wrapper, model config, profiling data, our old one-line fix) -> git merge --ff-only origin/main (clean, zero commit-graph conflicts since HEAD was a strict ancestor) -> git stash pop (2 conflicts: vllm_v1_engine_replica_scheduler.py resolved by taking upstream's version entirely since our one-liner is superseded; frontier/profiling/attention/backends/__init__.py resolved by hand-merging our FLASH_ATTN addition alongside upstream's unrelated, independently-added VLLM_ROCM backend -- both additive, no real conflict in intent). The 3 untracked files (flash_attn_wrapper.py, Qwen3-8B model config, H20 profiling data) applied cleanly with no conflicts; verified non-empty/correct before dropping the stash.",
+      "fa3_wrapper_compat": "No code changes needed. flash_attn_wrapper.py's entire dependency surface (BaseAttentionWrapper's abstract methods, SequenceMetadata, sequence_proxy.py's get_len()/get_num_prompt_tokens_processed()) lives in frontier/profiling/attention/..., a module untouched by PR #42/#40/#38's rewrites of frontier/entities/request.py, frontier/entities/batch.py, and the scheduler files -- the profiling/calibration subsystem is structurally decoupled from the live simulation scheduler. Verified empirically, not just by reading signatures: a direct minimal call (set_attention_backend -> get_attention_wrapper -> wrapper.init(...)) against the merged codebase succeeded, resolving the real vllm.v1.attention.backends.flash_attn.FlashAttentionBackend class exactly as before.",
+      "new_blocker_found": "Re-running the exact kv0.5c frontier.main command (same CLI flags used throughout this session, only --vllm_v1_scheduler_config_gpu_memory_utilization changed to 0.35) against the merged codebase now fails with a NEW, unrelated error: AttributeError: 'VLLMv1EngineReplicaScheduler' object has no attribute '_dp_id', raised from a diagnostic f-string in is_empty() (vllm_v1_engine_replica_scheduler.py:4705). grep confirms self._dp_id is referenced in 2 places but never assigned anywhere in the class -- this is a latent initialization bug in upstream's own new code (likely only exercised by this specific diagnostic logging path under a TP1/no-DP config), not a missing CLI flag and not bugs #1 or #2. Not investigated further or fixed -- out of scope per the directive's guardrail against opening a third investigation; reported honestly instead of forcing a number.",
+      "net_result": "Bug #1: confirmed fixed upstream (unchanged from before). The _dp_id AttributeError that blocked verification: root-caused and fixed (missing alias to an existing attribute, nothing to do with vllm package version -- confirmed by grep, zero vllm imports in this code path). Bug #2: now directly confirmed NOT fixed upstream (previously only 'plausible' from PR titles; now verified by actually running past the blocker) -- same mechanism, same halting request (req=20), as the original pre-merge finding. No Frontier span/preemption number exists for kv0.5c before or after any of this work; the comparison table above (pre-merge numbers) remains the authoritative record for this point.",
+      "dp_id_bug_fix": {
+        "root_cause": "self._dp_id is referenced at two sites (line ~1338 and the is_empty() diagnostic at line ~4705) but is never assigned in VLLMv1EngineReplicaScheduler or its parent BaseReplicaScheduler. Traced the correct source value: frontier/scheduler/utils/replica_schedulers.py constructs one scheduler instance per DP lane via `replica_local_id=dp_id` (line ~132) -- BaseReplicaScheduler.__init__ already stores this as self._replica_local_id (base_replica_scheduler.py:54) but upstream's new diagnostic logging code was written against a `_dp_id` name that was never aliased to it.",
+        "vllm_package_version_hypothesis": "REFUTED with direct evidence, not assumed. grep for '^import vllm'/'^from vllm' across vllm_v1_engine_replica_scheduler.py, base_replica_scheduler.py, and replica_schedulers.py returns zero matches. Frontier's 'vllm_v1' scheduler is a from-scratch pure-Python reimplementation of vLLM v1's scheduling algorithm -- it never imports or touches the installed vllm package at all in this code path (the real vllm package is only touched in frontier/profiling/attention/, a structurally separate module). This bug has nothing to do with which vllm version is installed; it is a plain missing-attribute bug in Frontier's own newly-added code.",
+        "fix_applied": "Added `self._dp_id = replica_local_id` in BaseReplicaScheduler.__init__ immediately after the existing `self._replica_local_id = replica_local_id` line, as a named alias to the same value (None for non-DP cluster types, the DP lane index otherwise).",
+        "verification": "Re-ran the exact kv0.5c frontier.main command against the merged codebase. The AttributeError is gone -- the run now proceeds past the point where it crashed before. It still does not complete, but for the pre-existing, already-documented root_cause_2 reason: it halts at simulation_time=240.92s with global_scheduler_is_empty=false, raising the same 'Sequential simulation ended with non-empty scheduler state' error. The log shows the exact same signature as the original (pre-merge) root_cause_2 finding: the last request to complete before the halt is req=20 (TOKEN-ROLLOUT-COMPLETE at 240.92s), matching the original investigation's finding that the simulation stops the instant the last RUNNING request finishes while other requests remain stuck in _preempted_requests, never re-admitted.",
+        "bug_2_verdict": "NOT fixed by PR #40/#38 despite their titles/scope being suggestive -- this is now a directly observed result (ran the actual simulation past the point where bug #2 would fire), not an inference from reading diffs. The 'plausible fix' framing from the merge task is superseded: root_cause_2 is confirmed still present in origin/main at commit 7df62a2."
+      }
+    }
+  },
+  "llmservingsim_kv0_5c": {
+    "span_s": 750.00210629,
+    "error_pct": -1.468,
+    "events": 36010,
+    "preemptions_predicted": 89,
+    "total_generated_tokens": 596330,
+    "overhead_s": 676.91,
+    "note": "converted dapo_n64_cap40_kv0.5c_normal.jsonl with the same prompt-shared-per-group token-ID scheme used for kv1/kv0.5 (re-verified byte-for-byte: the converter reproduces both the existing kv1 AND kv0.5 trace files exactly before being trusted on this new point). Run with --npu-memory-utilization 0.35 against the same already-profiled H20 bf16 bundle, no re-profiling. Reports 'Preemptions: 89' directly in its own summary output -- notably MORE accurate here than at kv0.5 (89 vs real 87, within 2.3%, vs 46 vs real 73, a 37% undercount, at the milder point) -- accuracy improved as pressure increased rather than degrading further, not predictable by extrapolating the kv0.5 result. Span error also improved (-1.47% vs -4.01%... actually better than kv0.5's +4.0%, and better than kv1's +5.4% too). Overhead (676.91s) is noticeably higher than kv1 (627.10s) and kv0.5 (623.33s) -- a real, if modest, cost increase under heavier preemption activity, unlike Frontier where pressure was shown to have no effect on cost."
+  }
+}

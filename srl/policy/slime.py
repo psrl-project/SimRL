@@ -1,97 +1,100 @@
-"""slime loop barrier staleness policy."""
+"""slime's fully-async staleness policy."""
 
 from __future__ import annotations
 
-from typing import get_args
-
 from ..component.rollout.engine import Request
-from .base import CompleteAction, PauseMode, SimState, StalenessPolicy
-from .rules import WatermarkGate
+from .base import PauseMode, SimState, StalenessPolicy
+
+
+def should_flush_cache(flush_cache_interval: int, weight_version: int) -> bool:
+    """Whether this weight publication aborts in-flight generation, as slime decides it.
+
+    The first publication always flushes, including after a resume. Later ones
+    flush when `(version - 1)` is a multiple of `flush_cache_interval`, and a
+    nonpositive interval never flushes again.
+    """
+    return weight_version == 1 or (
+        flush_cache_interval > 0 and (weight_version - 1) % flush_cache_interval == 0
+    )
 
 
 class SlimePolicy(StalenessPolicy):
     """
-    slime's staleness control via training loop barrier structure.
+    slime's staleness control in fully-async rollout.
 
-    No staleness parameter. The bound comes purely from the loop structure:
-    generation dispatched BEFORE weight push, consumed AFTER. Max staleness
-    equals update_weights_interval exactly.
+    Weights advance every training step. What a publication does to in-flight
+    generation is decided by `flush_cache_interval`, not by any staleness
+    comparison. Admission counts prompt groups the way the rollout worker does:
+    at most `threshold` still generating and `threshold` already complete.
+
+    Args:
+        server_concurrency (int): `--sglang-server-concurrency`, per rollout engine.
+        group_prefetch_factor (int): `--fully-async-group-prefetch-factor`.
+        flush_cache_interval (int): `--flush-cache-interval`. One aborts every
+            publication, a larger value aborts every N-th, and a nonpositive
+            value aborts only at the first.
+        max_inflight (int | None): Hard cap on the same count, from `rollout.max_inflight`.
     """
 
     name = "slime"
 
     def __init__(
         self,
-        update_weights_interval: int = 1,
-        over_sampling_ratio: float = 1.0,
-        pause_mode: PauseMode = "abort",
+        server_concurrency: int = 64,
+        group_prefetch_factor: int = 1,
+        flush_cache_interval: int = 1,
         max_inflight: int | None = None,
-    ):
-        assert update_weights_interval >= 1, "update_weights_interval must be >= 1."
-        assert over_sampling_ratio >= 1.0, "over_sampling_ratio must be >= 1.0."
-        assert pause_mode in get_args(PauseMode), f"Unsupported pause_mode {pause_mode!r}."
-        self.interval = update_weights_interval
-        self.over_sampling_ratio = over_sampling_ratio
-        self.pause = pause_mode
+    ) -> None:
+        assert server_concurrency >= 1, (
+            f"server_concurrency must be >= 1, got {server_concurrency!r}."
+        )
+        assert group_prefetch_factor >= 1, (
+            f"group_prefetch_factor must be >= 1, got {group_prefetch_factor!r}."
+        )
+        self.server_concurrency = server_concurrency
+        self.group_prefetch_factor = group_prefetch_factor
+        self.flush_cache_interval = flush_cache_interval
         self.max_inflight = max_inflight
 
-        self.remaining = 0
-        self._rollout_version = 0
-        self._steps_since_push = 0
-        self.stall_since: float | None = None
-        self.stall_time = 0.0
+    def threshold_groups(
+        self,
+        group_size: int,
+        n_instances: int,
+    ) -> int:
+        """The prompt-group count slime's worker tops up against."""
+        per_engine = max(1, self.server_concurrency * n_instances // group_size)
+        threshold = per_engine * self.group_prefetch_factor
+        if self.max_inflight is not None:
+            threshold = min(threshold, self.max_inflight)
+        return threshold
+
+    def validate(self, batch_size: int, group_size: int, n_instances: int) -> None:
+        threshold = self.threshold_groups(group_size, n_instances)
+        if threshold < batch_size:
+            raise ValueError(
+                f"slime admits at most {threshold} prompt groups but a training batch "
+                f"needs {batch_size}. Raise server_concurrency or group_prefetch_factor."
+            )
 
     def admit_quota(self, st: SimState) -> int:
-        # Counted in prompt groups, then converted: a group is indivisible.
-        room = WatermarkGate(self.over_sampling_ratio).quota(self.remaining, st.batch_size)
-        if self.max_inflight is not None:
-            room = min(room, self.max_inflight - len(st.inflight) // st.group_size)
-        return max(0, room) * st.group_size
-
-    def on_admit(self, group: list[Request], st: SimState) -> None:
-        self.remaining += 1
-
-    def on_group_complete(self, group: list[Request], st: SimState) -> CompleteAction:
-        # Over-sampling surplus is dropped a whole group at a time, so a late
-        # sibling never gets orphaned by its group already being full.
-        if len(st.ready_groups) < st.batch_size:
-            return CompleteAction.KEEP
-        return CompleteAction.DROP
+        threshold = self.threshold_groups(st.group_size, st.n_instances)
+        active = len(st.groups) - len(st.ready_groups)
+        if active >= threshold or len(st.ready_groups) >= threshold:
+            return 0
+        return st.group_size
 
     def peek_batch(self, st: SimState) -> list[Request] | None:
         if len(st.ready_groups) < st.batch_size:
             return None
         return [req for group in st.ready_groups[: st.batch_size] for req in group]
 
-    def take_batch(self, st: SimState) -> list[Request] | None:
-        chosen = self.peek_batch(st)
-        if chosen is None:
-            return None
-        if self.stall_since is not None:
-            self.stall_time += st.now - self.stall_since
-            self.stall_since = None
-        self.remaining = 0
-        return chosen
-
-    def on_batch_unavailable(self, st: SimState) -> None:
-        if st.inflight and self.stall_since is None:
-            self.stall_since = st.now
-
-    def rollout_version_after_train(self, st: SimState) -> int:
-        self._steps_since_push += 1
-        if self._steps_since_push >= self.interval:
-            self._steps_since_push = 0
-            self._rollout_version = st.train_version
-        return self._rollout_version
-
-    def will_sync_after_train(self, st: SimState) -> bool:
-        return self._steps_since_push + 1 >= self.interval
-
     def pause_mode(self, st: SimState) -> PauseMode:
-        return self.pause
+        if should_flush_cache(self.flush_cache_interval, st.train_version):
+            return "abort"
+        return "in_place"
 
     def check_invariants(self, st: SimState) -> None:
-        assert st.train_version - self._rollout_version <= self.interval, (
-            f"Version gap {st.train_version - self._rollout_version} exceeds "
-            f"interval {self.interval}."
+        assert st.rollout_version == st.train_version, (
+            f"slime publishes every step, so rollout version {st.rollout_version!r} "
+            f"must equal train version {st.train_version!r}."
         )

@@ -45,7 +45,9 @@ def _run(preset_name: str, backend: str):
         batch_size=BATCH_SIZE,
         group_size=workload.group_size,
         staleness_horizon=preset.horizon,
-        ingress_window_groups=preset.ingress_window_groups(BATCH_SIZE),
+        ingress_window_groups=preset.ingress_window_groups(
+            BATCH_SIZE, group_size=workload.group_size
+        ),
         n_versions=N_VERSIONS,
         workload=workload,
     )

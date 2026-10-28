@@ -257,6 +257,8 @@ def build_training_cost(cfg: DictConfig) -> TrainingCostModel:
             value = cfg.get(field, None)
             if value is not None and "selectors" in parameters:
                 selectors[field] = value
+        if "allow_pp_extrapolation" in parameters:
+            selectors["allow_pp_extrapolation"] = cfg.get("allow_pp_extrapolation", False)
         return model_type.from_artifact(artifact_path, **selectors)
     raise ValueError(f"Unknown training cost model: {name!r}.")
 
@@ -264,11 +266,13 @@ def build_training_cost(cfg: DictConfig) -> TrainingCostModel:
 def build_training_parallelism(cfg: DictConfig) -> TrainingParallelism:
     """Build the simulator's explicit training topology."""
     value = cfg.get("parallelism", {})
+    layout = value.get("pipeline_layout", None)
     return TrainingParallelism(
         tp=value.get("tp", 1),
         pp=value.get("pp", 1),
         dp=value.get("dp", 1),
         cp=value.get("cp", 1),
+        pipeline_layout=tuple(layout) if layout else None,
     )
 
 
@@ -519,12 +523,17 @@ def run_simulate(cfg: DictConfig) -> None:
     group_size = job.group_size if job.group_size is not None else workload.group_size
     preset = preset_config(cfg.policy)
     policy = build_policy(preset, max_inflight=rollout.get("max_inflight", None))
-    ingest_groups = preset.ingress_window_groups(batch_size=job.batch_size)
+    ingest_groups = preset.ingress_window_groups(
+        batch_size=job.batch_size,
+        group_size=group_size,
+        n_instances=rollout.n_instances,
+    )
     sim_cfg = SimConfig(
         batch_size=job.batch_size,
         group_size=group_size,
         staleness_horizon=preset.horizon,
         ingress_window_groups=ingest_groups,
+        ingress_lifetime_cap=job.get("ingress_lifetime_cap", False),
         n_versions=job.n_versions,
         sync_time=cfg.sync_cost.get("sync_time", 0.0),
         weight_load_time=cfg.sync_cost.get("weight_load_time", 0.0),
@@ -533,6 +542,7 @@ def run_simulate(cfg: DictConfig) -> None:
         training_pp=training_parallelism.pp,
         training_dp=training_parallelism.dp,
         training_cp=training_parallelism.cp,
+        training_pipeline_layout=training_parallelism.pipeline_layout,
         training_micro_batch_size=training.get("micro_batch_size", 1),
         # None keeps count-based grouping. Set it to the real trainer's
         # `ppo_max_token_len_per_gpu * sp_size` to reproduce dynamic batching.
@@ -560,6 +570,7 @@ def run_simulate(cfg: DictConfig) -> None:
             "reject_preempted_on_waiting", False
         ),
         enable_group_sticky=router.get("enable_group_sticky", False),
+        enable_trajectory_sticky=router.get("enable_trajectory_sticky", True),
         max_waiting_after_preempt=router.get("max_waiting_after_preempt", None),
         n_instances=rollout.n_instances,
         workload=workload,

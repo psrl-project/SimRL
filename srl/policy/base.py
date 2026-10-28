@@ -181,6 +181,18 @@ class StalenessPolicy(ABC):
     def on_batch_unavailable(self, st: SimState) -> None:
         """Called when no training batch is currently available."""
 
+    def on_batch_attempt(self, st: SimState) -> list[Cancel]:
+        """Re-evaluate the ready pool immediately before a batch-assembly attempt.
+
+        Called before every `peek_batch`/`take_batch`, the same event every
+        real async-RL framework surveyed in this project couples its own L3
+        staleness check to (check live, right as a batch is assembled),
+        rather than a periodic sweep decoupled from consumption. Returned
+        cancels run through the same machinery `on_publish` uses, so
+        replacement credit and L2/L3 telemetry tagging are unchanged.
+        """
+        return []
+
     def on_publish(self, new_version: int, st: SimState) -> list[Cancel]:
         """Decide which live groups the newly published `new_version` makes worthless.
 
@@ -220,3 +232,6 @@ class StalenessPolicy(ABC):
 
     def check_invariants(self, st: SimState) -> None:
         """Assert this policy's own contract."""
+
+    def validate(self, batch_size: int, group_size: int, n_instances: int) -> None:
+        """Reject a configuration the policy can only judge once the run shape is known."""

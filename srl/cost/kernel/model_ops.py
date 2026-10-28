@@ -21,10 +21,15 @@ from pathlib import Path
 from ...profiler.hf import model_descriptor_from_yaml
 from ...profiler.kernel.grid.attention import rank_head_counts
 from ...profiler.kernel.grid.gdn import gdn_head_counts
-from ...profiler.kernel.grid.gemm import logits_gemm_shape, transformer_gemm_shapes
+from ...profiler.kernel.grid.gemm import (
+    linear_attention_gemm_shapes,
+    logits_gemm_shape,
+    transformer_gemm_shapes,
+)
+from ...profiler.kernel.grid.moe import moe_dims
 from ...profiler.kernel.utils.model_dims import model_head_dim
 from ...profiler.schema import ModelDescriptor, ProfileValidationError
-from .database import AttentionQuery, CommQuery, GdnQuery, GemmQuery
+from .database import AttentionQuery, CommQuery, GdnQuery, GemmQuery, MoeQuery
 from .hardware import dtype_bytes
 
 
@@ -75,12 +80,6 @@ class ModelOps:
         self._hidden_size = int(model.hidden_size)
         self._dtype = dtype
         self._element_bytes = dtype_bytes(dtype)
-        self._projection_ops = tuple(
-            GemmOp(name=shape.name, n=shape.n, k=shape.k, per_layer=True)
-            for shape in transformer_gemm_shapes(model, tensor_parallel=tensor_parallel)
-        )
-        logits = logits_gemm_shape(model, tensor_parallel=tensor_parallel)
-        self._logits_op = GemmOp(name=logits.name, n=logits.n, k=logits.k, per_layer=False)
 
         # Hybrid attention. A model with `full_attention_interval: N` runs softmax attention
         # on every N-th layer and a gated delta net on the rest, so the two kernels must be
@@ -106,6 +105,29 @@ class ModelOps:
             self._attention_layers = self._num_layers
             self._gdn_layers = 0
             self._gdn_heads = None
+
+        # Routed MoE. One MoE block attaches to EVERY layer regardless of attention kind:
+        # `families_moe.py`'s `_moe_mlp_shapes` is called from both `gemm_shapes` (softmax
+        # layers) and `linear_attention_gemm_shapes` (GDN layers) with identical parameters.
+        # So `moe_layers` below is `num_layers`, not `attention_layers` or `gdn_layers` alone.
+        self._moe_intermediate_size = (
+            moe_dims(model, tensor_parallel=tensor_parallel).intermediate_size
+            if self._num_experts
+            else None
+        )
+
+        self._projection_ops = tuple(
+            GemmOp(name=shape.name, n=shape.n, k=shape.k, per_layer=True)
+            for shape in transformer_gemm_shapes(model, tensor_parallel=tensor_parallel)
+        )
+        # The linear-attention layer runs a different projection set. Leaving it empty for a
+        # pure-softmax model keeps `gemm_queries` byte-identical there.
+        self._linear_projection_ops = tuple(
+            GemmOp(name=shape.name, n=shape.n, k=shape.k, per_layer=True)
+            for shape in linear_attention_gemm_shapes(model, tensor_parallel=tensor_parallel)
+        )
+        logits = logits_gemm_shape(model, tensor_parallel=tensor_parallel)
+        self._logits_op = GemmOp(name=logits.name, n=logits.n, k=logits.k, per_layer=False)
 
     @classmethod
     def from_checkpoint(
@@ -247,121 +269,72 @@ class ModelOps:
                 the layer count for a per-layer op and 1 for the logits projection.
         """
         queries: list[tuple[GemmQuery, int]] = []
+        # Each set is multiplied by its own layer count, and the two counts sum to
+        # `num_layers`. A block that both layer types share, such as a MoE expert stack,
+        # therefore lands on every layer exactly once without a separate multiplier.
         for op in self._projection_ops:
-            if op.name.startswith("expert_") and self._num_experts:
-                # One query per layer, not one per activated expert. The real kernel is a
-                # GROUPED gemm: a single launch covers every expert the step routes to.
-                # This form omits expert weight-read traffic, which `expert_weight_bytes`
-                # prices separately. See `docs/composed-rollout.md` for the known gap.
-                queries.append((GemmQuery(m=token_count, n=op.n, k=op.k), self._num_layers))
+            # The routed-expert GEMMs are priced by `moe_queries` instead, off a real
+            # measured `fused_experts()` table rather than this dense-GEMM shape. `router`
+            # and a model's optional shared expert (every token traverses it unconditionally)
+            # stay here: `fused_experts()` does not cover either.
+            if op.name in ("expert_gate_up", "expert_down"):
                 continue
-            queries.append((GemmQuery(m=token_count, n=op.n, k=op.k), self._num_layers))
+            queries.append((GemmQuery(m=token_count, n=op.n, k=op.k), self._attention_layers))
+        for op in self._linear_projection_ops:
+            if op.name in ("expert_gate_up", "expert_down"):
+                continue
+            queries.append((GemmQuery(m=token_count, n=op.n, k=op.k), self._gdn_layers))
         queries.append((GemmQuery(m=request_count, n=self._logits_op.n, k=self._logits_op.k), 1))
         return tuple(queries)
 
-    def expert_weight_bytes(self, token_count: int) -> int:
+    @property
+    def moe_layers(self) -> int:
+        """Return how many layers run a routed MoE block (0 for a dense model)."""
+        return self._num_layers if self._num_experts else 0
+
+    def moe_query(self, num_tokens: int, *, backend: str | None = None) -> MoeQuery:
         """
-        Return the expert weight bytes one step reads from HBM, across all layers.
-
-        Zero for a dense model. For a mixture-of-experts block this is the term the fused
-        per-token GEMM shape cannot express, and on a small batch it dominates the step: the
-        real kernel is a grouped GEMM that reads every ACTIVATED expert's weights whether
-        that expert received two tokens or two hundred, while an `m=token_count` GEMM query
-        implies only `experts_per_tok` copies.
-
-        Measured consequence on Qwen3.5-35B-A3B: a 64-token decode step activates 221 of 256
-        experts, so the real traffic is 1536 MiB per layer against the 48 MiB the query
-        implies.
-
-        Kept out of `gemm_sol` on purpose. That function also normalises MEASURED rows into
-        utility, and every measured row is a dense GEMM with one weight copy. Adding an
-        expert multiplier there would corrupt the interpolation surface rather than only the
-        prediction. Kept out of the query shape too, because a shape the sweep never measured
-        raises `KernelCoverageError`, and decomposing into one GEMM per expert overcharges by
-        3x in the other direction (each tiny GEMM then pays a launch floor that physically
-        occurs once per layer).
+        Build the query for one routed-MoE grouped-GEMM call on this rank.
 
         Args:
-            token_count (int): Tokens in the step.
+            num_tokens (int): Tokens in the step, across the whole packed batch.
+            backend (str | None): Table backend, or None for the default.
 
         Returns:
-            int: Bytes of expert weights read, summed over every layer.
-        """
-        if not self._num_experts:
-            return 0
-        activated = self._activated_experts(token_count)
-        per_expert = 0
-        for op in self._projection_ops:
-            if not op.name.startswith("expert_"):
-                continue
-            # The fused shape already carries `experts_per_tok` on one axis, so dividing the
-            # product by it recovers ONE expert's weight element count regardless of which
-            # axis that was.
-            per_expert += op.n * op.k // self._experts_per_tok
-        return per_expert * activated * self._element_bytes * self._num_layers
+            MoeQuery: Ready to pass to `KernelDatabase.query_moe`.
 
-    def expert_weight_bytes_counted(self, token_count: int) -> int:
-        """Return the expert weight bytes the GEMM queries already charge.
-
-        One `(k, n)` copy per expert projection per layer, which is what an
-        `m=token_count` query's `k * n` memory term carries. Subtracted from
-        `expert_weight_bytes` so the grouped-GEMM weight read is added once, not twice.
+        Raises:
+            ProfileValidationError: If this model has no routed experts.
         """
-        if not self._num_experts:
-            return 0
-        counted = sum(
-            op.n * op.k for op in self._projection_ops if op.name.startswith("expert_")
+        if self._moe_intermediate_size is None:
+            raise ProfileValidationError(
+                "This model has no routed experts, so there is no MoE call to price."
+            )
+        return MoeQuery(
+            num_tokens=num_tokens,
+            hidden_size=self._hidden_size,
+            intermediate_size=self._moe_intermediate_size,
+            num_experts=self._num_experts,
+            top_k=self._experts_per_tok,
+            dtype=self._dtype,
+            backend=backend,
         )
-        return counted * self._element_bytes * self._num_layers
 
-    def tokens_per_expert(self, token_count: int) -> float:
+    def moe_queries(self, token_count: int) -> tuple[tuple[MoeQuery, int], ...]:
         """
-        Return the mean token count one activated expert receives.
-
-        `token_count * experts_per_tok / activated_experts`, floored at 1. This is the factor
-        a grouped GEMM amortises its weight read over: an expert serving one token must fetch
-        its whole matrix for that token, while an expert serving fifty fetches it once for
-        all fifty.
-
-        At decode it is ~1 by construction (64 tokens x topk 8 over 221 experts is 2.3), so
-        the weight read is charged almost in full. At a 4096-token prefill it is 128, so the
-        same read costs a 128th as much per step. That matches the measured 4.24 ms
-        256-token step, since the unamortised figure exceeds the device's total
-        traffic budget for that step.
+        Return the MoE query of one step, with its multiplier.
 
         Args:
-            token_count (int): Tokens in the step.
+            token_count (int): Tokens the grouped GEMM runs over.
 
         Returns:
-            float: Mean tokens per activated expert, at least 1.0.
+            tuple[tuple[MoeQuery, int], ...]: Empty for a dense model, else a single
+                `(query, num_layers)` pair -- every layer carries an MoE block regardless of
+                whether it runs softmax attention or a gated delta net.
         """
-        if not self._num_experts:
-            return 1.0
-        activated = self._activated_experts(token_count)
-        return max(float(token_count) * self._experts_per_tok / activated, 1.0)
-
-    def _activated_experts(self, token_count: int) -> int:
-        """
-        Return how many distinct experts a step of `token_count` tokens touches per layer.
-
-        Each token independently picks `experts_per_tok` of `num_experts`, so the expected
-        number of distinct experts hit is the classic coupon-collector complement
-        `E * (1 - (1 - 1/E)^(t * k))`, saturating at `E`. A balanced router is assumed, which
-        is what auxiliary-loss training optimises for.
-
-        This matters because it is the weight-read multiplier. At one token only `k` experts
-        are read. By 64 tokens almost every expert is, so the expert weight traffic grows 28x
-        over that range while a per-token shape would call it constant.
-
-        Args:
-            token_count (int): Tokens in the step.
-
-        Returns:
-            int: Distinct experts activated, in `[1, num_experts]`.
-        """
-        draws = max(int(token_count), 1) * self._experts_per_tok
-        expected = self._num_experts * (1.0 - (1.0 - 1.0 / self._num_experts) ** draws)
-        return max(1, min(self._num_experts, int(round(expected))))
+        if self._moe_intermediate_size is None:
+            return ()
+        return ((self.moe_query(token_count), self.moe_layers),)
 
     def comm_queries(self, token_count: int) -> tuple[tuple[CommQuery, int], ...]:
         """

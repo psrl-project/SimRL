@@ -87,7 +87,7 @@ def build_launch_spec(
         "recipe": {
             "family": config.model_family_name,
             "name": config.model_recipe_name,
-            "task": "pretrain",
+            "task": config.model_task,
         },
         "model_path": config.model.name,
         "parallelism": {
@@ -122,6 +122,7 @@ def build_launch_spec(
         "recompute": candidate.recompute,
         "recompute_method": RECOMPUTE_METHOD,
         "recompute_num_layers": RECOMPUTE_NUM_LAYERS,
+        "mtp_num_layers": config.mtp_num_layers,
         "train_iters": config.max_steps,
         "warmup_steps": config.warmup_steps,
         "vocab_size": int(vocab_size),
@@ -224,6 +225,7 @@ def prepare_bridge_candidate(
         "effective_sequence_shape": list(effective_sequence_shape(candidate)),
         "recompute_method": RECOMPUTE_METHOD,
         "recompute_num_layers": RECOMPUTE_NUM_LAYERS,
+        "mtp_num_layers": config.mtp_num_layers,
         # Recorded so the collected record's architecture matches what actually ran.
         # The memory model derives its activation footprint from the layer count, so a
         # descriptor left at the checkpoint's depth would misprice an overridden run.

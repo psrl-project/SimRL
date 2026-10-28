@@ -1,0 +1,52 @@
+# See qwen3_8b_merge_check_tp1.yaml. TP2: concurrency = 2*residents.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy10/share_303541817/lhy/models/Qwen3-8B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 2
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen3_8b/vllm_merge_check_tp2
+experiment_name: qwen3-8b-merge-check
+num_runs: 1
+server_ready_timeout: 1800
+
+run:
+  max_parallel: 1
+  max_concurrent_startups: 1
+
+serve:
+  args:
+    dtype: bfloat16
+    max-model-len: 32768
+    max-num-batched-tokens: 32768
+    gpu-memory-utilization: 0.9
+  parameters:
+    - tensor-parallel-size: 2
+      pipeline-parallel-size: 1
+      max-num-seqs: 256
+
+bench:
+  args:
+    request-rate: "inf"
+    random-range-ratio: 0.0
+    seed: 42
+
+phases:
+  decode:
+    parameters:
+      - {random-input-len: 4000,  random-output-len: 100, max-concurrency: 2,  num-prompts: 2}
+      - {random-input-len: 4000,  random-output-len: 100, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 4000,  random-output-len: 100, max-concurrency: 8,  num-prompts: 8}
+      - {random-input-len: 4000,  random-output-len: 100, max-concurrency: 40, num-prompts: 40}
+      - {random-input-len: 12000, random-output-len: 100, max-concurrency: 2,  num-prompts: 2}
+      - {random-input-len: 12000, random-output-len: 100, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 12000, random-output-len: 100, max-concurrency: 8,  num-prompts: 8}
+      - {random-input-len: 12000, random-output-len: 100, max-concurrency: 40, num-prompts: 40}
+      - {random-input-len: 25000, random-output-len: 100, max-concurrency: 2,  num-prompts: 2}
+      - {random-input-len: 25000, random-output-len: 100, max-concurrency: 4,  num-prompts: 4}
+      - {random-input-len: 25000, random-output-len: 100, max-concurrency: 8,  num-prompts: 8}
+      - {random-input-len: 25000, random-output-len: 100, max-concurrency: 40, num-prompts: 40}

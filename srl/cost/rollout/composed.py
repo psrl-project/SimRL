@@ -84,6 +84,14 @@ collective tables but no end-to-end baseline.
 
 ## Hybrid attention and mixture-of-experts (measured on Qwen3.5-35B-A3B, 2026-10-08)
 
+**The table below predates the `moe` kernel-table replacement and needs re-measurement.** It
+was collected against `_expert_weight_seconds`, an analytical weight-read correction bolted
+onto the generic dense-GEMM query (priced at the device's idealised peak bandwidth, assuming
+balanced routing). That method is retired: `_moe_seconds` now sums `ModelOps.moe_queries`
+against a real measured `fused_experts()` table instead (see `cost/kernel/ops/moe.py`), which
+removes both approximations by construction. Keep the historical numbers here only as the
+last validated baseline until the new mechanism is measured end to end and this table updated.
+
 Two model structures beyond the dense case are priced here, with one accurate phase and one
 known-inaccurate one. The accuracy table against the real vLLM TP=1 baseline:
 
@@ -99,10 +107,10 @@ known-inaccurate one. The accuracy table against the real vLLM TP=1 baseline:
 - Attention is split by layer kind. 10 of 40 layers run softmax attention and 30 run a gated
   delta net, whose prefill is LINEAR in tokens rather than quadratic. Charging all 40 as one
   kind is a ~4x error either way.
-- `_expert_weight_seconds` adds the grouped expert GEMM's weight read. A 64-token step
-  activates 221 of 256 experts and must stream all their weights from HBM, 51.8 GiB against
-  the 1.9 GiB an `m=token_count` GEMM query implies, about 16 ms of a 29 ms step and the
-  single largest missing term in the model.
+- The grouped expert GEMM's weight read was added in (then via the retired analytical
+  correction, now via the `moe` table). A 64-token step activates 221 of 256 experts and must
+  stream all their weights from HBM, 51.8 GiB against the 1.9 GiB an `m=token_count` GEMM
+  query implies, about 16 ms of a 29 ms step and the single largest missing term in the model.
 
 **Prefill over-predicts by ~1.4x, and the cause is a per-call floor that this model makes
 dominant rather than anything new.** The dispatch floor is not peculiar to GDN: measured at
@@ -328,7 +336,7 @@ class ComposedRollout(RolloutCostModel):
         total += self._ops.attention_layers * self._memo_attention_seconds(workload, request_count)
         if self._ops.gdn_layers:
             total += self._ops.gdn_layers * self._gdn_seconds(workload, request_count)
-        total += self._expert_weight_seconds(token_count)
+        total += self._moe_seconds(token_count)
         return total
 
     def _predict_uncached(self, workload: RolloutWorkload) -> float:
@@ -343,7 +351,7 @@ class ComposedRollout(RolloutCostModel):
         total += self._ops.attention_layers * self._attention_seconds(workload, request_count)
         if self._ops.gdn_layers:
             total += self._ops.gdn_layers * self._gdn_seconds(workload, request_count)
-        total += self._expert_weight_seconds(token_count)
+        total += self._moe_seconds(token_count)
         return total
 
     def _gemm_comm_sum(self, token_count: int, request_count: int) -> float:
@@ -439,44 +447,26 @@ class ComposedRollout(RolloutCostModel):
         self._gemm_comm_memo.clear()
         self._attention_memo.clear()
 
-    def _expert_weight_seconds(self, token_count: int) -> float:
-        """Return the extra time to stream activated experts' weights from HBM (0 if dense).
+    def _moe_seconds(self, token_count: int) -> float:
+        """Return one step's routed-expert cost, summed over every MoE layer (0 if dense).
 
-        The grouped expert GEMM reads every routed expert's weights whatever its token share,
-        while the `m=token_count` query above charges only `experts_per_tok` copies. At
-        decode that difference IS the step: 221 of 256 experts at 64 tokens, 51.8 GiB against
-        the 1.9 GiB the query implies, which is about 16 ms of a 29 ms measured step and
-        closed a 3x underprediction.
-
-        Charged in full rather than amortised over each expert's token share, which was
-        tried and is the worse trade. Dividing by `tokens_per_expert` is physically the right
-        story for prefill: a 256-token step measures 4.24 ms, admitting only 15.8 GiB of
-        traffic at 4 TB/s against this term's 60 GiB, so the weights plainly do stay resident
-        across the tokens sharing them. But at decode that divisor is 2.3 rather than 1 (64
-        tokens x topk 8 spread over 221 experts), and applying it moved decode from 10.2% to
-        21.4% MRE while improving prefill only from 118% to 79%. Decode is where this term is
-        load-bearing and where the model is used, so it stays uncapped.
-
-        The consequence is a known over-prediction of small prefill steps, which the module
-        docstring records alongside the GDN floor that shares the blame.
-
-        Priced at the device's own bandwidth rather than through a measured table, because no
-        measured GEMM row carries more than one weight copy, which is also why this cannot
-        live in `gemm_sol` without corrupting the utility surface that normalises those rows.
+        Replaces the retired `_expert_weight_seconds` analytical weight-read correction. The
+        `moe` kernel table is measured directly off vLLM's real `fused_experts()` dispatch
+        (the Triton grouped GEMM `UnquantizedMoeBackend.TRITON` selects on this hardware), so
+        it already carries both the compute AND the activated-expert weight-read traffic the
+        old correction approximated analytically at the device's idealised peak bandwidth.
+        See `srl/cost/kernel/sol.py::moe_sol` for the roofline that normalises it into utility.
         """
-        # `getattr` rather than a direct call: `_ops` is a protocol satisfied by test
-        # doubles and by any future op list, and a model with no experts has no reason to
-        # implement this. Absent means dense, which is zero.
-        weight_bytes = getattr(self._ops, "expert_weight_bytes", None)
-        if weight_bytes is None:
+        # `getattr` rather than a direct call: `_ops` is a protocol satisfied by test doubles
+        # and by any future op list, and a dense model has no reason to implement this.
+        # Absent or empty means dense, which is zero.
+        queries = getattr(self._ops, "moe_queries", None)
+        if queries is None:
             return 0.0
-        total = weight_bytes(token_count)
-        if total <= 0:
-            return 0.0
-        excess = total - self._ops.expert_weight_bytes_counted(token_count)  # type: ignore[attr-defined]
-        if excess <= 0:
-            return 0.0
-        return excess / self._database.gpu_spec.memory_bandwidth_bytes_per_s
+        total = 0.0
+        for query, multiplier in queries(token_count):
+            total += multiplier * self._database.query_moe(query)
+        return total
 
     def _attention_seconds(self, workload: RolloutWorkload, request_count: int) -> float:
         """Return one layer's attention cost, adding both phases for a mixed step."""

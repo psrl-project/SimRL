@@ -37,10 +37,14 @@ from .grid.families import family_for
 _FUSION_RULES: dict[str, tuple[str, ...]] = {
     "qkv_proj": ("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"),
     "gate_up_proj": ("mlp.gate_proj", "mlp.up_proj"),
+    # A gated delta-net layer's four small input projections fuse into two engine modules.
+    "in_proj_qkvz": ("linear_attn.in_proj_qkv", "linear_attn.in_proj_z"),
+    "in_proj_ba": ("linear_attn.in_proj_b", "linear_attn.in_proj_a"),
 }
 
 _PASSTHROUGH: dict[str, str] = {
     "o_proj": "self_attn.o_proj",
+    "out_proj": "linear_attn.out_proj",
     "down_proj": "mlp.down_proj",
     # Mixture-of-experts. The router's weight hangs off a bare module, and the expert stacks
     # are 3-D parameters that `_linear_shapes` reports as their per-expert 2-D slice.
@@ -128,6 +132,21 @@ def _linear_shapes(model: Any) -> dict[str, tuple[int, int]]:
             continue
         shapes[name] = (int(parameter.shape[1]), int(parameter.shape[2]))
     return shapes
+
+
+def _linear_attention_declared(
+    family: Any,
+    descriptor: ModelDescriptor,
+    tensor_parallel: int,
+) -> dict[str, tuple[int, int]]:
+    """Return the linear-attention block's declared shapes, or an empty dict."""
+    getter = getattr(family, "linear_attention_gemm_shapes", None)
+    if getter is None:
+        return {}
+    shapes = getter(descriptor, tensor_parallel=tensor_parallel)
+    if not shapes:
+        return {}
+    return {shape.name: (shape.n, shape.k) for shape in shapes}
 
 
 def _layer_index(name: str) -> int | None:
@@ -287,14 +306,41 @@ def verify_shapes(
         if name.endswith(_LOGITS_MODULE):
             observed[logits.name] = shape
 
-    comparisons = tuple(
+    comparisons = [
         ShapeComparison(name=name, declared=value, observed=observed.get(name))
         for name, value in sorted(declared.items())
-    )
+    ]
+
+    # A hybrid model has a second block that `gemm_shapes` does not describe. Comparing only
+    # the softmax layers would pass a family whose linear-attention projections are wrong,
+    # and those are 48 of this model's 64 layers.
+    linear_declared = _linear_attention_declared(family, descriptor, tensor_parallel)
+    if linear_declared:
+        linear_names = set(linear_declared)
+        linear_layers = [
+            layer for layer in sorted(per_layer) if linear_names <= set(fuse(per_layer[layer]))
+        ]
+        if linear_layers:
+            linear_reference = fuse(per_layer[linear_layers[0]])
+            comparisons.extend(
+                ShapeComparison(
+                    name=f"linear_attention.{name}",
+                    declared=value,
+                    observed=linear_reference.get(name),
+                )
+                for name, value in sorted(linear_declared.items())
+            )
+            heterogeneous += tuple(
+                sorted(
+                    layer
+                    for layer in linear_layers
+                    if fuse(per_layer[layer]) != linear_reference
+                )
+            )
     return VerificationReport(
         architecture=str(descriptor.architecture),
         family=family.name,
         layer_count=len(per_layer),
-        comparisons=comparisons,
-        heterogeneous_layers=heterogeneous,
+        comparisons=tuple(comparisons),
+        heterogeneous_layers=tuple(sorted(set(heterogeneous))),
     )

@@ -55,6 +55,7 @@ class TestRegistry:
             "throughput_balance",
             "length_aware",
             "inventory_deadline",
+            "tier_threshold",
             "slack_lane",
             "length_lane",
         }

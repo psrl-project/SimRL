@@ -159,6 +159,31 @@ class Qwen35MoeFamily:
                 hidden_size,
             ),
             GemmShape("o_proj", hidden_size, heads * head_dim),
+        ]
+        shapes.extend(
+            self._moe_mlp_shapes(
+                model,
+                tensor_parallel=tensor_parallel,
+                hidden_size=hidden_size,
+                num_experts=num_experts,
+                experts_per_tok=experts_per_tok,
+                moe_inter=moe_inter,
+            )
+        )
+        return tuple(shapes)
+
+    def _moe_mlp_shapes(
+        self,
+        model: ModelDescriptor,
+        *,
+        tensor_parallel: int,
+        hidden_size: int,
+        num_experts: int,
+        experts_per_tok: int,
+        moe_inter: int,
+    ) -> tuple[GemmShape, ...]:
+        """Return the routed and shared expert projections every layer runs."""
+        shapes = [
             # The router is not sharded: every rank scores every expert so the
             # dispatch decision is identical across ranks.
             GemmShape("router", num_experts, hidden_size),
@@ -180,6 +205,73 @@ class Qwen35MoeFamily:
                     GemmShape("shared_down", hidden_size, shared_inter),
                 )
             )
+        return tuple(shapes)
+
+    def linear_attention_gemm_shapes(
+        self, model: ModelDescriptor, *, tensor_parallel: int
+    ) -> tuple[GemmShape, ...]:
+        """
+        Return one gated-delta-net layer's per-rank projection shapes.
+
+        The linear layers carry the same MoE block as the softmax layers and a different
+        attention projection, so pricing them with the softmax `qkv_proj` prices the wrong
+        width on every one of them.
+
+        Args:
+            model (ModelDescriptor): Architecture read from the checkpoint.
+            tensor_parallel (int): Ranks the block is sharded across.
+
+        Returns:
+            tuple[GemmShape, ...]: `in_proj_qkvz`, `in_proj_ba`, `out_proj`, then the same
+                routed and shared expert projections `gemm_shapes` returns.
+
+        Raises:
+            ProfileValidationError: If the architecture is incomplete or a dimension is not
+                divisible by `tensor_parallel`.
+        """
+        if tensor_parallel <= 0:
+            raise ProfileValidationError(
+                f"tensor_parallel must be positive, got {tensor_parallel!r}."
+            )
+        if model.hidden_size is None:
+            raise ProfileValidationError("Model is missing hidden_size.")
+        hidden_size = model.hidden_size
+        key_heads = _require_divisible(
+            _required(model, "linear_num_key_heads"), tensor_parallel, name="linear_num_key_heads"
+        )
+        value_heads = _require_divisible(
+            _required(model, "linear_num_value_heads"),
+            tensor_parallel,
+            name="linear_num_value_heads",
+        )
+        key_dim = _required(model, "linear_key_head_dim")
+        value_dim = int(model.extra.get("linear_value_head_dim") or key_dim)
+        experts_per_tok = _required(model, "num_experts_per_tok")
+        moe_inter = _require_divisible(
+            _required(model, "moe_intermediate_size"),
+            tensor_parallel,
+            name="moe_intermediate_size",
+        )
+        num_experts = _required(model, "num_experts")
+        shapes = [
+            GemmShape(
+                "in_proj_qkvz",
+                2 * key_heads * key_dim + 2 * value_heads * value_dim,
+                hidden_size,
+            ),
+            GemmShape("in_proj_ba", 2 * value_heads, hidden_size),
+            GemmShape("out_proj", hidden_size, value_heads * value_dim),
+        ]
+        shapes.extend(
+            self._moe_mlp_shapes(
+                model,
+                tensor_parallel=tensor_parallel,
+                hidden_size=hidden_size,
+                num_experts=num_experts,
+                experts_per_tok=experts_per_tok,
+                moe_inter=moe_inter,
+            )
+        )
         return tuple(shapes)
 
     def logits_shape(self, model: ModelDescriptor, *, tensor_parallel: int) -> GemmShape:

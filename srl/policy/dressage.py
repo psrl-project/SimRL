@@ -16,6 +16,15 @@ class DressagePolicy(StalenessPolicy):
     trajectory may span, retrying from scratch past the cap. L3 keeps the
     last `keep_versions` distinct observed versions, keyed on each group's
     *last* trainable token version, not its earliest.
+
+    Dressage is the one system in this study with a genuinely two-check L3:
+    `keep_group` at each group's own completion (`on_group_complete` here),
+    *and* `generate_rollout_async`'s retroactive `filter_pending`, which
+    re-sweeps the whole pending pool and actively evicts (with backfill)
+    whenever a newer version arrives -- not a periodic sweep, but inline
+    with every batch-assembly attempt (`on_batch_attempt` here). Both checks
+    stay; `peek_batch` itself is a plain FIFO selection, since eligibility is
+    enforced by eviction, not by filtering what can be selected.
     """
 
     name = "dressage"
@@ -74,6 +83,22 @@ class DressagePolicy(StalenessPolicy):
 
     def peek_batch(self, st: SimState) -> list[Request] | None:
         return FIFO().select(st.ready_groups, st.batch_size)
+
+    def on_batch_attempt(self, st: SimState) -> list[Cancel]:
+        # A group's own completion-time check only compares it against
+        # versions already observed before it finished. Re-derived here,
+        # live, against the current (possibly grown) `self._versions`, so a
+        # group that was fine at completion but has since fallen outside the
+        # window while waiting in the ready pool is actively evicted (with
+        # dataset backfill) rather than merely skipped -- the real system's
+        # `filter_pending`, inline with every batch-assembly attempt.
+        cancels = [
+            Cancel(group[0].group_id, CancelAction.REPLACE)
+            for group in st.ready_groups
+            if self._window.is_stale(max(req.v_max for req in group), self._versions)
+        ]
+        self.gc_dropped += len(cancels)
+        return cancels
 
     def on_publish(self, new_version: int, st: SimState) -> list[Cancel]:
         cancels = self._span_cap.on_publish(PolicyContext(state=st), new_version)

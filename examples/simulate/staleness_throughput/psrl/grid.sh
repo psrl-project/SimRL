@@ -6,8 +6,12 @@
 PRESET=psrl
 PRIMARY_KNOB=policy.staleness
 PRIMARY_VALUES=(0 1 2 3 4 5)
-PRIMARY_LABEL="psrl staleness (versions)"
-PINS=()
+PRIMARY_LABEL="psrl staleness"
+# Pinned to 40: capping per-instance rollout concurrency (psrl_aligned.sh's
+# own ACTIVE_CAP knob, default 0 = uncapped) raised throughput 14-20% at
+# staleness>=3 with no change to the achieved max staleness, so 40 replaces
+# the uncapped default here rather than staying a side-by-side comparison.
+PINS=(rollout.router.max_concurrent_seqs_per_instance=40)
 
 # SECONDARY_KNOB=policy.proactive_filter
 # SECONDARY_VALUES=(false true)

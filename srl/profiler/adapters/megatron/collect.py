@@ -197,9 +197,15 @@ def collect_bridge_record(
         gradient_dtype=config.gradient_dtype,
         optimizer_state_dtype=config.optimizer_state_dtype,
         distributed_optimizer=config.distributed_optimizer,
-        parameter_count=(
-            int(metrics.get("parameter_count", config.model.parameter_count or 0)) or None
-        ),
+        # None rather than the checkpoint's declared count when unmeasured: a candidate
+        # that OOMs before `srl_metrics.json` is written never learns what Megatron
+        # actually built, and this checkpoint's provider adds an MTP head and a vision
+        # tower the HF config does not enumerate, so the declared count is not even a
+        # good guess. Reporting it as though it were measured let an OOM candidate and
+        # its successful siblings split into two `_CellKey`s in `HydraulisTrainingCost`,
+        # since the key includes `parameter_count`. The fitter resolves a missing count
+        # from a sibling record at the same (tp, pp) instead.
+        parameter_count=int(metrics["parameter_count"]) if metrics.get("parameter_count") else None,
         warmup_steps=config.warmup_steps,
         packing=candidate.packing,
     )

@@ -3,5 +3,5 @@
 PRESET=trl
 PRIMARY_KNOB=policy.max_staleness
 PRIMARY_VALUES=(0 1 2 3 4 5)
-PRIMARY_LABEL="trl max_staleness (versions)"
+PRIMARY_LABEL="trl max_staleness"
 PINS=()

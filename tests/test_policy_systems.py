@@ -7,19 +7,19 @@ import pytest
 from srl.component.rollout.engine import Request
 from srl.cost.rollout import UnifiedRoofline
 from srl.cost.training import FixedTrainingLatency, FixedTrainingMemory, TrainingCostModel
-from srl.policy.base import Cancel, CancelAction, CompleteAction, PolicyContext, SimState
+from srl.policy.base import Cancel, CancelAction, CompleteAction, PolicyContext, SimState, StalenessPolicy
 from srl.policy.dressage import DressagePolicy
 from srl.policy.ledger import GroupView
 from srl.policy.nemo_rl import NeMoRLPolicy
 from srl.policy.openrlhf import OpenRLHFPolicy
 from srl.policy.prime_rl import PrimeRLPolicy
-from srl.policy.rules import WarnOnly
+from srl.policy.rules import FIFO, WarnOnly
 from srl.policy.skyrl import SkyRLPolicy
 from srl.policy.trl import TRLPolicy
 from srl.policy.verl_v1 import VerlV1Policy
 from srl.simulator import SimConfig, Simulator
-from srl.workload.grouped import GroupedWorkload
 from srl.workload.distributions import uniform
+from srl.workload.grouped import GroupedWorkload
 
 
 def _group_view(group_id: int, admit_version: int, status: str = "done") -> GroupView:
@@ -32,6 +32,104 @@ def _group_view(group_id: int, admit_version: int, status: str = "done") -> Grou
         complete_time=0.0,
         members=(group_id,),
     )
+
+
+class _EvictOnSightPolicy(StalenessPolicy):
+    """Minimal policy proving `on_batch_attempt`'s `Cancel` is applied before
+    `peek_batch`/`take_batch` runs: admits freely, never filters on its own
+    in `peek_batch`, but evicts `self.evict_group_id` (with REPLACE, so the
+    run can still finish) the first time it sees it sitting in `ready_groups`."""
+
+    def __init__(self, evict_group_id: int) -> None:
+        self.evict_group_id = evict_group_id
+        self.evicted = False
+
+    def admit_quota(self, st: SimState) -> int:
+        return 100
+
+    def on_batch_attempt(self, st: SimState) -> list[Cancel]:
+        if not self.evicted and any(g[0].group_id == self.evict_group_id for g in st.ready_groups):
+            self.evicted = True
+            return [Cancel(self.evict_group_id, CancelAction.REPLACE)]
+        return []
+
+    def peek_batch(self, st: SimState) -> list[Request] | None:
+        return FIFO().select(st.ready_groups, st.batch_size)
+
+
+class TestSimulatorBatchAttemptHook:
+    """`_next_batch` must apply `on_batch_attempt`'s cancels before calling
+    `peek_batch`/`take_batch`, so a group it evicts is never consumed."""
+
+    def test_a_group_evicted_on_sight_is_never_consumed(self) -> None:
+        workload = GroupedWorkload.from_lengths([150], uniform(16, 50, 150, seed=7))
+        cfg = SimConfig(
+            batch_size=1,
+            n_versions=4,
+            workload=workload,
+            ingress_window_groups=8,
+            ingress_lifetime_cap=True,
+        )
+        policy = _EvictOnSightPolicy(evict_group_id=0)
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.1), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+        result = sim.run()
+
+        assert not result.livelocked
+        assert policy.evicted, "on_batch_attempt must have seen group 0 and evicted it."
+        assert 0 not in {req.group_id for req in result.consumed}, (
+            "a group on_batch_attempt evicts must never reach consumption."
+        )
+        assert any(req.group_id == 0 for req in result.dropped), (
+            "the evicted group must show up as dropped, not silently vanish."
+        )
+
+    def test_on_batch_attempt_only_runs_at_the_consume_point(self) -> None:
+        """`_run_engine`'s `stop_on_batch` check calls `_next_batch(consume=False)`
+        from inside its own event loop, where another instance can still
+        have an uncommitted, speculative event queued. A policy's cancel
+        there would reach `_apply_cancels`, which dispatches through the
+        router -- and the router asserts no instance has a pending
+        speculative event when it does (confirmed live: this exact path
+        raised `AssertionError: Router dispatch ran inside a speculative
+        engine event` during this refactor's own real-regime sweep, with
+        multiple instances and leftover ingress credit). Only the
+        `consume=True` point in `run()`'s own loop, always reached at a
+        fully-committed point, may run `on_batch_attempt`."""
+        workload = GroupedWorkload.from_lengths([150], uniform(16, 50, 50, seed=7))
+        cfg = SimConfig(batch_size=1, n_versions=4, workload=workload, ingress_window_groups=8)
+
+        class _CountingPolicy(StalenessPolicy):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def admit_quota(self, st: SimState) -> int:
+                return 0
+
+            def on_batch_attempt(self, st: SimState) -> list[Cancel]:
+                self.calls += 1
+                return []
+
+            def peek_batch(self, st: SimState) -> list[Request] | None:
+                return None
+
+        policy = _CountingPolicy()
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.1), FixedTrainingMemory(0)),
+            policy=policy,
+            cfg=cfg,
+        )
+
+        sim._next_batch(consume=False)
+        assert policy.calls == 0, "on_batch_attempt must not run during the speculative peek."
+
+        sim._next_batch(consume=True)
+        assert policy.calls == 1, "on_batch_attempt must run at the safe, committed consume point."
 
 
 def _verl_v1_sim(
@@ -71,8 +169,10 @@ class _CountingPolicy(VerlV1Policy):
         return allowed
 
 
-class TestVerlV1OnPublish:
-    """State-level proof of the L3 span check, isolated from admission timing."""
+class TestVerlV1BatchAttempt:
+    """State-level proof of the L3 span check, now live at every
+    batch-assembly attempt via `on_batch_attempt` rather than a
+    publish-triggered sweep -- isolated from admission timing."""
 
     def test_drop_evicts_a_finished_group_past_the_threshold(self) -> None:
         policy = VerlV1Policy(max_off_policy_threshold=1, max_off_policy_strategy="drop")
@@ -81,7 +181,7 @@ class TestVerlV1OnPublish:
         running = _group_view(group_id=2, admit_version=0, status="running")
         st = SimState(train_version=3, groups=(stale, fresh, running))
 
-        cancels = policy.on_publish(3, st)
+        cancels = policy.on_batch_attempt(st)
 
         assert cancels == [Cancel(0, CancelAction.REPLACE)], (
             "only the finished group past the span threshold is evicted. A "
@@ -93,7 +193,7 @@ class TestVerlV1OnPublish:
         running_but_ancient = _group_view(group_id=5, admit_version=0, status="running")
         st = SimState(train_version=10, groups=(running_but_ancient,))
 
-        assert policy.on_publish(10, st) == [], "drop never cancels in-flight generation."
+        assert policy.on_batch_attempt(st) == [], "drop never cancels in-flight generation."
 
     def test_wait_blocks_while_any_running_group_is_stale(self) -> None:
         policy = VerlV1Policy(max_off_policy_threshold=1, max_off_policy_strategy="wait")
@@ -108,7 +208,61 @@ class TestVerlV1OnPublish:
         st = SimState(train_version=10, groups=(done_and_stale,))
 
         assert policy.can_sample(st) is True
-        assert policy.on_publish(10, st) == []
+        assert policy.on_batch_attempt(st) == []
+
+    def test_a_group_that_finishes_already_stale_is_evicted_before_the_next_attempt(self) -> None:
+        """Replaces the old two-trigger-point race test: with a single live
+        check, a straggler that finishes already stale is evicted the very
+        next time a batch is attempted -- no publish-vs-consumption gap
+        remains to script (matches RESULTS.md's old threshold=1-but-maxS=3-4
+        finding, now impossible by construction)."""
+        policy = VerlV1Policy(max_off_policy_threshold=1, max_off_policy_strategy="drop")
+        straggler = _group_view(group_id=1, admit_version=0, status="done")
+        st = SimState(train_version=1, groups=(straggler,))  # span = 1-0+1 = 2 > 1
+
+        cancels = policy.on_batch_attempt(st)
+
+        assert cancels == [Cancel(1, CancelAction.REPLACE)], (
+            "a group that finished already stale must be evicted the next time "
+            "a batch-assembly attempt happens, before it can ever be selected"
+        )
+
+
+class TestVerlV1AdmissionFreesOnDrop:
+    """Real verl's drop refill (`ReplayBufferAsync.wait_for_sampleable`'s
+    `self.refill_fn` call, which reaches `_add_prompts_to_generate` ->
+    `generate_sequences` directly) submits a replacement prompt to the
+    rollout engine with no quota check at all. The old `on_batch_attempt`
+    returned `OffPolicySpan`'s cancels without touching `_credit`, so a
+    replacement group was only staged (via the simulator's own
+    `_ingress_group_credits`, fed through `_apply_cancels`) -- it still had
+    to wait for `_credit` to grow, which only happens on
+    `on_train_version_advance`, once per version. In steady state (no spare
+    credit left over from the warmup head start), that meant eviction
+    produced no admission until the next version anyway, understating real
+    drop's recurring per-step eviction-and-refill (measured via a real
+    separate_async run: 32 groups evicted every step, not once) down to a
+    one-time transient the simulator's own warmup overshoot happened to
+    cover."""
+
+    def test_a_drop_eviction_frees_quota_for_its_own_replacement(self) -> None:
+        policy = VerlV1Policy(num_warmup_batches=1.0, max_off_policy_threshold=1, max_off_policy_strategy="drop")
+        st = SimState(batch_size=4, group_size=1, train_version=3)
+        # Exhaust every group of startup credit (warmup batch + round 1's own share).
+        for group_id in range(8):
+            policy.on_admit(_req_group(group_id), st)
+        assert policy.admit_quota(st) == 0, "startup credit is fully consumed, no spare room left"
+
+        stale = _group_view(group_id=0, admit_version=0, status="done")
+        st = SimState(batch_size=4, group_size=1, train_version=3, groups=(stale,))
+
+        cancels = policy.on_batch_attempt(st)
+
+        assert cancels == [Cancel(0, CancelAction.REPLACE)]
+        assert policy.admit_quota(st) == 1, (
+            "the evicted group's replacement must be admittable immediately, "
+            "not stalled until the next on_train_version_advance"
+        )
 
 
 class TestVerlV1Unbounded:
@@ -117,7 +271,28 @@ class TestVerlV1Unbounded:
             policy = VerlV1Policy(max_off_policy_threshold=None, max_off_policy_strategy=strategy)
             st = SimState(train_version=5, groups=(_group_view(0, admit_version=0, status="running"),))
             assert policy.can_sample(st) is True
-            assert policy.on_publish(5, st) == []
+            assert policy.on_batch_attempt(st) == []
+
+
+class TestVerlV1Warmup:
+    """The blog's own worked example: `train_batch_size=4, num_warmup_batches=4`
+    -- startup admits `4*4=16` extra prompts, AND round 1 also normally
+    admits 4 more, for 20 total before round 1's training even completes
+    ("启动时先额外准入 4x4=16 个 prompt，首轮再正常准入 4 个，合计 20 个").
+    The old `_credit` initialization only counted the warmup half; the other
+    `+batch_size` only arrived via `on_train_version_advance`, which fires on
+    a version advance -- i.e. only after round 1 finishes -- so round 1
+    itself ran under-provisioned by one batch relative to the real system."""
+
+    def test_round_one_gets_warmup_plus_its_own_normal_admission(self) -> None:
+        policy = VerlV1Policy(num_warmup_batches=4.0)
+        st = SimState(batch_size=4, group_size=1, train_version=0)
+
+        assert policy.admit_quota(st) == 20, (
+            "16 warmup prompts (4 warmup batches x batch_size 4) plus "
+            "round 1's own normal admission of 4, matching the real "
+            "system's startup example"
+        )
 
 
 class TestVerlV1Integration:
@@ -382,6 +557,73 @@ class TestDressageDistinctVersionWindow:
             policy.on_admit(group, st)
             assert policy.on_group_complete(group, st) == CompleteAction.KEEP
         assert policy.gc_dropped == 0
+
+
+class TestDressageRetroactiveEviction:
+    """A group's own completion-time check only compares its position against
+    versions already observed before it finished. The real system also
+    re-evaluates the whole pending pool inline with batch assembly
+    (`filter_pending`), retroactively evicting an already-accepted group
+    that falls outside the window in the meantime ("batch 还在攒的时候，新
+    版本到达会驱逐已经收的旧版本") -- not a `peek_batch`-only passive filter,
+    but an active eviction with dataset backfill, mirrored here by
+    `on_batch_attempt`, called live immediately before every batch-assembly
+    attempt."""
+
+    def test_a_group_kept_at_completion_is_evicted_once_newer_versions_arrive(self) -> None:
+        policy = DressagePolicy(keep_versions=1)
+        st = SimState(batch_size=1)
+        straggler = _dressage_group(0, 0)
+        policy.on_admit(straggler, st)
+        assert policy.on_group_complete(straggler, st) == CompleteAction.KEEP, (
+            "version 0 is the only, and therefore newest, version observed so far"
+        )
+
+        # A newer version now arrives and completes too.
+        fresh = _dressage_group(1, 1)
+        policy.on_admit(fresh, st)
+        assert policy.on_group_complete(fresh, st) == CompleteAction.KEEP
+
+        # straggler (v0) is now the older of 2 observed versions under
+        # keep_versions=1: it has fallen outside the window, even though it
+        # was fine at its own completion.
+        cancels = policy.on_batch_attempt(SimState(batch_size=1, ready_groups=[straggler, fresh]))
+
+        assert cancels == [Cancel(0, CancelAction.REPLACE)], (
+            "straggler must be actively evicted (with backfill), not merely skipped"
+        )
+        assert policy.gc_dropped == 1
+
+    def test_a_group_still_within_the_window_is_not_evicted(self) -> None:
+        policy = DressagePolicy(keep_versions=2)
+        st = SimState(batch_size=1)
+        straggler = _dressage_group(0, 0)
+        policy.on_admit(straggler, st)
+        assert policy.on_group_complete(straggler, st) == CompleteAction.KEEP
+
+        fresh = _dressage_group(1, 1)
+        policy.on_admit(fresh, st)
+        assert policy.on_group_complete(fresh, st) == CompleteAction.KEEP
+
+        cancels = policy.on_batch_attempt(SimState(batch_size=1, ready_groups=[straggler, fresh]))
+
+        assert cancels == [], "both versions are still within a keep_versions=2 window."
+
+    def test_peek_batch_is_a_plain_fifo_selection(self) -> None:
+        """Eligibility now lives in `on_batch_attempt`, which actively evicts;
+        `peek_batch` itself no longer filters -- a passive filter here would
+        leave a stale group simply unselected rather than evicted and
+        backfilled, reproducing the undershoot `on_batch_attempt` exists to
+        fix."""
+        policy = DressagePolicy(keep_versions=1)
+        straggler = _dressage_group(0, 0)
+        fresh = _dressage_group(1, 1)
+        st = SimState(batch_size=2, ready_groups=[straggler, fresh])
+
+        batch = policy.peek_batch(st)
+
+        assert batch is not None
+        assert {req.group_id for req in batch} == {0, 1}
 
 
 class TestDressageWatermarks:
@@ -694,103 +936,87 @@ class TestTRLBoundedQueue:
         assert TRLPolicy().pause_mode(SimState()) == "in_place"
 
 
-class TestTRLVersionWindow:
-    """Reproduces the brief's scenario: groups admitted at [0, 3, 5], max_staleness=4, v_train=5."""
+class TestTRLBatchAttempt:
+    """Reproduces the brief's scenario: groups admitted at [0, 3, 5], max_staleness=4, v_train=5.
+    Checked live, immediately before every batch-assembly attempt, via
+    `on_batch_attempt` -- not a periodic publish-triggered sweep."""
 
     def test_only_the_group_more_than_four_versions_stale_is_dropped(self) -> None:
         policy = TRLPolicy(max_staleness=4, max_inflight_tasks=10)
         groups = tuple(_group_view(v, admit_version=v) for v in (0, 3, 5))
         st = SimState(groups=groups, train_version=5)
 
-        cancels = policy.on_publish(5, st)
+        cancels = policy.on_batch_attempt(st)
 
         assert {c.group_id for c in cancels} == {0}
         assert all(c.action == CancelAction.REPLACE for c in cancels), "TRL refills a dropped slot."
         assert policy.gc_dropped == 1
 
-
-class TestTRLCompletionCheck:
-    """VersionWindow only sweeps `status=="done"` groups at `on_publish`. A group
-    can become done strictly between one publish and the next `take_batch` call,
-    already past `max_staleness` relative to the already-published `train_version`,
-    with no sweep running in that gap to catch it before FIFO consumes it."""
-
-    def test_a_group_that_completes_already_stale_is_dropped_immediately(self) -> None:
+    def test_a_group_within_budget_is_not_evicted(self) -> None:
         policy = TRLPolicy(max_staleness=2, max_inflight_tasks=10)
-        group = _req_group(1)  # v_traj=0
-        st = SimState(batch_size=2, group_size=1, train_version=3)
+        groups = (_group_view(1, admit_version=0),)
+        st = SimState(groups=groups, train_version=2)
 
-        action = policy.on_group_complete(group, st)
+        assert policy.on_batch_attempt(st) == []
+        assert policy.gc_dropped == 0
 
-        assert action == CompleteAction.DROP
+    def test_only_done_groups_are_evicted_never_in_flight_ones(self) -> None:
+        policy = TRLPolicy(max_staleness=1, max_inflight_tasks=10)
+        running_but_ancient = _group_view(5, admit_version=0, status="running")
+        st = SimState(groups=(running_but_ancient,), train_version=10)
+
+        assert policy.on_batch_attempt(st) == [], (
+            "on_batch_attempt must never touch in-flight generation -- TRL has no L2."
+        )
+
+
+class TestTRLGuaranteesTheBoundEndToEnd:
+    """With a single check left (`on_batch_attempt`, fired right before every
+    batch-assembly attempt instead of a decoupled publish sweep), a straggler
+    that finishes already stale is evicted the very next time a batch is
+    attempted, before it can ever be selected -- no race window between a
+    publish sweep and the next consumption remains to script."""
+
+    def test_a_straggler_that_finishes_already_stale_is_evicted_before_the_next_attempt(self) -> None:
+        policy = TRLPolicy(max_staleness=2, max_inflight_tasks=10)
+        straggler = _req_group(1)  # v_traj=0
+        policy.on_admit(straggler, SimState(batch_size=2, group_size=1, train_version=0))
+
+        # The group finishes at train_version=3: staleness 3 > budget 2, already stale.
+        straggler_view = _group_view(1, admit_version=0, status="done")
+        st = SimState(groups=(straggler_view,), train_version=3)
+
+        cancels = policy.on_batch_attempt(st)
+
+        assert {c.group_id for c in cancels} == {1}, (
+            "a group that finished already stale must be evicted the next time "
+            "a batch-assembly attempt happens, before it can ever be selected"
+        )
         assert policy.gc_dropped == 1
 
-    def test_a_group_that_completes_exactly_at_the_budget_is_kept(self) -> None:
-        policy = TRLPolicy(max_staleness=2, max_inflight_tasks=10)
+
+class TestTRLAdmissionFreesOnCompletion:
+    """Real TRL frees an inflight slot the instant generation completes,
+    independent of whether training has consumed it yet: "生成完成后就释放
+    位置，有空位就准入新任务，不必等训练侧取样" (blog, TRL L1). The old
+    `_buffered` bookkeeping instead held the slot until `take_batch` or an
+    explicit drop, over-restricting admission relative to the real system."""
+
+    def test_a_kept_completion_frees_its_slot_before_consumption(self) -> None:
+        policy = TRLPolicy(max_staleness=4, max_inflight_tasks=1)
+        st = SimState(batch_size=2, group_size=1, train_version=0)
         group = _req_group(1)  # v_traj=0
-        st = SimState(batch_size=2, group_size=1, train_version=2)
+        policy.on_admit(group, st)
+        assert policy.admit_quota(st) == 0, "the single slot is occupied while generating"
 
         action = policy.on_group_complete(group, st)
 
         assert action == CompleteAction.KEEP
-        assert policy.gc_dropped == 0
-
-
-class TestTRLReplacesGroupsDroppedAtCompletion:
-    """The real-regime sweep's `trl` points livelocked after the completion-time
-    fix landed: `on_group_complete`'s DROP routes through
-    `_grant_drop_replacements` -> `replacement_groups_on_drop`, a different
-    mechanism than the pre-existing `on_publish`/`VersionWindow` path (which
-    replenishes via `Cancel(..., REPLACE)` instead). The base class default is
-    0, so every completion-time drop was permanently shrinking the dataset."""
-
-    def test_a_completion_time_drop_is_credited_like_rolls_expiry(self) -> None:
-        policy = TRLPolicy(max_staleness=2, max_inflight_tasks=10)
-        straggler = _req_group(1)
-        assert policy.replacement_groups_on_drop([straggler], SimState()) == 1
-
-
-class TestTRLGuaranteesTheBoundEndToEnd:
-    """Scripts the exact race a real 88-point sweep's telemetry exposed: a
-    group's last member finished at t=4175.1, strictly between the publish(v=3)
-    sweep at t=3909.5 (which ran too early, the group was not yet "done") and
-    the next consumption at t=4970.6 (which had no sweep due before it). The
-    group was consumed with staleness 3 against a configured max of 2.
-
-    This proves the fix end to end through the policy's own hooks -- admit,
-    publish, complete, publish again -- without depending on Simulator timing
-    to reproduce the race, which proved unreliable to script at full-simulation
-    scale (see the plan's TRL fix notes for background)."""
-
-    def test_a_group_that_finishes_between_two_publishes_is_never_consumed_stale(self) -> None:
-        policy = TRLPolicy(max_staleness=2, max_inflight_tasks=10)
-        straggler = _req_group(1)  # v_traj=0
-        quick = _req_group(2)  # v_traj=0
-        policy.on_admit(straggler, SimState(batch_size=2, group_size=1, train_version=0))
-        policy.on_admit(quick, SimState(batch_size=2, group_size=1, train_version=0))
-
-        # Publish v=1, v=2: the ready pool is still empty, nothing to sweep.
-        for v in (1, 2):
-            assert policy.on_publish(v, SimState(train_version=v, groups=())) == []
-
-        # `quick` finishes now, at train_version=2: staleness 2-0=2, within budget.
-        at_v2 = SimState(batch_size=2, group_size=1, train_version=2)
-        assert policy.on_group_complete(quick, at_v2) == CompleteAction.KEEP
-
-        # Publish v=3 while `straggler` is still generating (status != "done"),
-        # so VersionWindow's status=="done" sweep correctly skips it here.
-        assert policy.on_publish(3, SimState(train_version=3, groups=())) == []
-
-        # `straggler` finishes now: strictly after publish(3) already ran, with
-        # no publish due before the next take_batch would otherwise consume it.
-        at_v3 = SimState(batch_size=2, group_size=1, train_version=3)
-        action = policy.on_group_complete(straggler, at_v3)
-
-        assert action == CompleteAction.DROP, (
-            "the gap a publish-only sweep misses: straggler finished already "
-            "stale, strictly between one publish and the next"
+        assert policy.admit_quota(st) == 1, (
+            "the slot frees on completion, before this group has been consumed"
         )
-        assert policy.gc_dropped == 1
+
+
 
 
 class TestPrimeRLAdmission:
@@ -816,6 +1042,94 @@ class TestPrimeRLAdmission:
             PrimeRLPolicy(action="bogus")
 
 
+class TestPrimeRLAdmissionFreesOnCompletion:
+    """Real prime-rl frees an inflight slot the instant generation completes,
+    independent of whether training has consumed it yet ("有空位才继续准入，
+    生成完成后再释放"). `PrimeRLPolicy` never overrode `on_group_complete` at
+    all, inheriting the base class's no-op -- so `_inflight_groups` held a
+    slot occupied until consumption, over-restricting admission relative to
+    the real system, the same bug TRL's `max_inflight_tasks` had."""
+
+    def test_a_kept_completion_frees_its_slot_before_consumption(self) -> None:
+        policy = PrimeRLPolicy(max_off_policy_steps=4, max_inflight=1, target_lag=100)
+        st = SimState(batch_size=2, group_size=1, train_version=0)
+        group = _req_group(1)  # v_traj=0
+        policy.on_admit(group, st)
+        assert policy.admit_quota(st) == 0, "the single slot is occupied while generating"
+
+        action = policy.on_group_complete(group, st)
+
+        assert action == CompleteAction.KEEP
+        assert policy.admit_quota(st) == 1, (
+            "the slot frees on completion, before this group has been consumed"
+        )
+
+
+class TestPrimeRLBatchAttempt:
+    """The ready-pool sweep (`VersionWindow`) now runs live, immediately
+    before every batch-assembly attempt, via `on_batch_attempt` -- not a
+    periodic publish-triggered sweep. Matches real prime-rl's
+    `TrainSink.take_batch()`, which calls `self._drop_stale()` right before
+    assembling the batch, every single attempt."""
+
+    def test_a_group_that_completes_already_stale_is_evicted(self) -> None:
+        policy = PrimeRLPolicy(max_off_policy_steps=2, max_inflight=100, target_lag=100)
+        stale = _group_view(group_id=1, admit_version=0, status="done")
+        st = SimState(train_version=3, groups=(stale,))  # 3-0=3 > 2
+
+        cancels = policy.on_batch_attempt(st)
+
+        assert cancels == [Cancel(1, CancelAction.REPLACE)]
+        assert policy.gc_dropped == 1
+
+    def test_a_group_within_budget_is_not_evicted(self) -> None:
+        policy = PrimeRLPolicy(max_off_policy_steps=2, max_inflight=100, target_lag=100)
+        fresh = _group_view(group_id=1, admit_version=0, status="done")
+        st = SimState(train_version=2, groups=(fresh,))  # 2-0=2, not > 2
+
+        assert policy.on_batch_attempt(st) == []
+        assert policy.gc_dropped == 0
+
+    def test_running_groups_are_not_touched_here_thats_l2s_job_in_on_publish(self) -> None:
+        policy = PrimeRLPolicy(max_off_policy_steps=0, max_inflight=100, target_lag=100)
+        running = _group_view(group_id=1, admit_version=0, status="running")
+        st = SimState(train_version=10, groups=(running,))
+
+        assert policy.on_batch_attempt(st) == [], (
+            "on_batch_attempt only sweeps the ready pool (VersionWindow filters "
+            "status=='done'); in-flight staleness is CancelBelowVersion's job in on_publish."
+        )
+
+
+class TestPrimeRLPublishDoesNotDoubleFreeACompletedSlot:
+    """A group cancelled by `on_publish`'s L2 sweep (`CancelBelowVersion`, which
+    has no status filter of its own) already freed its slot at its own
+    `on_group_complete`; `on_publish` must not free it again, or
+    `_inflight_groups` drifts negative and opens up admission room it
+    shouldn't have. Mirrors `nemo_rl`'s `windowed` sampler, which already
+    gets this right by checking each cancelled group's actual status."""
+
+    def test_a_done_groups_slot_is_not_freed_twice(self) -> None:
+        policy = PrimeRLPolicy(max_off_policy_steps=1, max_inflight=10, target_lag=100)
+        st0 = SimState(batch_size=2, group_size=1, train_version=0)
+        group = _req_group(1)  # v_traj=0
+        policy.on_admit(group, st0)
+        assert policy.admit_quota(st0) == 9
+
+        # Completes within budget at train_version=0: kept, slot freed here.
+        action = policy.on_group_complete(group, SimState(batch_size=2, group_size=1, train_version=0))
+        assert action == CompleteAction.KEEP
+
+        # Publish v=2: the group is status=="done" and 2-0=2 > threshold(1),
+        # so VersionWindow's sweep cancels it -- its slot was already freed.
+        done_view = _group_view(1, admit_version=0, status="done")
+        cancels = policy.on_publish(2, SimState(train_version=2, groups=(done_view,)))
+        assert {c.group_id for c in cancels} == {1}
+
+        # _inflight_groups must not have gone negative from a double free.
+        assert policy.admit_quota(SimState(batch_size=2, group_size=1, train_version=2)) == 10
+
+
 class TestPrimeRLIngressWindow:
     def test_scales_with_target_lag_once_it_exceeds_the_staleness_bound(self) -> None:
         from srl.config.policies.prime_rl import PrimeRLPolicyConfig
@@ -835,25 +1149,10 @@ class TestPrimeRLIngressWindow:
         assert cfg.ingress_window_groups(batch_size=8) == 50
 
 
-class TestPrimeRLPublishDedup:
-    """A finished stale group is matched by both CancelBelowVersion and VersionWindow.
-
-    Without deduplication by group id, `_inflight_groups` would be
-    decremented twice for one group, leaking capacity the policy believes
-    is still occupied.
-    """
-
-    def test_a_stale_done_group_is_cancelled_exactly_once(self) -> None:
-        policy = PrimeRLPolicy(max_off_policy_steps=0, max_inflight=10)
-        st = SimState(batch_size=1, group_size=1, train_version=0)
-        policy.on_admit(_req_group(0), st)
-
-        stale_done = _group_view(group_id=0, admit_version=0, status="done")
-        cancels = policy.on_publish(1, SimState(groups=(stale_done,), train_version=1))
-
-        assert cancels == [Cancel(0, CancelAction.REPLACE)], "the ready-pool sweep always refills, winning over DROP."
-        assert policy.gc_dropped == 1
-        assert policy._inflight_groups == 0, "one admit, one cancel: never negative, never stuck at 1."
+class TestPrimeRLPublish:
+    """`on_publish` is now L2 only (`CancelBelowVersion`): confirms it still
+    correctly cancels a genuinely in-flight stale group after the L3 half
+    (`VersionWindow`) moved out to `on_batch_attempt`."""
 
     def test_a_stale_running_group_is_also_cancelled(self) -> None:
         policy = PrimeRLPolicy(max_off_policy_steps=0, max_inflight=10)
@@ -863,7 +1162,10 @@ class TestPrimeRLPublishDedup:
         stale_running = _group_view(group_id=0, admit_version=0, status="running")
         cancels = policy.on_publish(1, SimState(groups=(stale_running,), train_version=1))
 
-        assert cancels == [Cancel(0, CancelAction.DROP)], "pause_mode=in_place leaves this as the only interrupt path."
+        assert cancels == [Cancel(0, CancelAction.REPLACE)], (
+            "pause_mode=in_place leaves this as the only interrupt path; real prime-rl "
+            "backfills a cancelled straggler the same way its ready-pool sweep already does."
+        )
 
 
 class _FirstCancelObservingPolicy(PrimeRLPolicy):
@@ -895,14 +1197,12 @@ class TestPrimeRLIntegration:
         )
         result = sim.run()
 
-        # Not asserting full completion: PrimeRL's ready-pool sweep defaults to
-        # action="drop", which never replaces a group it expires, and total
-        # admission is capped at what n_versions*batch_size will ever consume
-        # (see `Simulator._grant_ingress_credits`), so repeatedly dropping this
-        # straggler without replacement can exhaust the pool before all 20 steps
-        # complete. What this test actually verifies -- the straggler is
-        # cancelled at the right version and nothing stale is ever trained --
-        # holds regardless of how far the run gets.
+        # The runtime cancel now defaults to action="replace" (matching the
+        # ready-pool sweep's own refill=True), so repeatedly cancelling this
+        # straggler backfills the pool instead of draining it: the run
+        # reaches all 20 steps rather than exhausting admission early.
+        assert not result.livelocked
+        assert result.versions_done == 20
         assert policy.first_cancel_version == 1, "a straggler admitted at v0 is stale the moment v1 publishes."
         assert policy.gc_dropped > 0
         assert all(req.staleness_true() <= 0 for req in result.consumed), (

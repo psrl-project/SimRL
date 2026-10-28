@@ -3,5 +3,5 @@
 PRESET=skyrl
 PRIMARY_KNOB=policy.max_staleness_steps
 PRIMARY_VALUES=(0 1 2 3 4 5)
-PRIMARY_LABEL="skyrl max_staleness_steps (versions, warn-only)"
+PRIMARY_LABEL="skyrl max_staleness_steps"
 PINS=()

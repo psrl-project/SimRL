@@ -41,5 +41,16 @@ class NeMoRLPolicyConfig:
             return self.max_lookahead_versions
         return None
 
-    def ingress_window_groups(self, batch_size: int) -> int:
-        return self.max_buffered_rollouts + batch_size
+    def ingress_window_groups(
+        self,
+        batch_size: int,
+        group_size: int = 1,
+        n_instances: int = 1,
+    ) -> int:
+        # Matches NeMoRLPolicy.admit_quota's three gates exactly: the two
+        # pool caps, and the dispatch-lookahead gate (gate_window*batch_size
+        # groups ahead of train_version at most). None free on an individual
+        # completion, only on take_batch, so staging beyond the tightest of
+        # the three is a permanent router surplus.
+        gate_window = self.max_lookahead_versions if self.sampler == "in_order" else self.max_staleness_versions
+        return min(self.max_inflight_prompts, self.max_buffered_rollouts, gate_window * batch_size)

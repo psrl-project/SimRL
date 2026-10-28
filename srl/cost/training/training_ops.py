@@ -58,12 +58,18 @@ from typing import TYPE_CHECKING
 
 from ...profiler.hf import model_descriptor_from_yaml
 from ...profiler.kernel.grid.attention import rank_head_counts
-from ...profiler.kernel.grid.gemm import logits_gemm_shape, transformer_gemm_shapes
+from ...profiler.kernel.grid.gdn import gdn_head_counts
+from ...profiler.kernel.grid.gemm import (
+    linear_attention_gemm_shapes,
+    logits_gemm_shape,
+    transformer_gemm_shapes,
+)
 from ...profiler.kernel.utils.model_dims import model_head_dim, model_intermediate_size
 from ...profiler.schema import ModelDescriptor, ProfileValidationError
 from ..kernel.database import (
     CommQuery,
     ElementwiseQuery,
+    GdnQuery,
     GemmQuery,
     OptimizerQuery,
     TrainingAttentionQuery,
@@ -126,6 +132,7 @@ class TrainingOps:
         model: ModelDescriptor,
         *,
         tensor_parallel: int,
+        context_parallel: int = 1,
         dp: int = 1,
         recompute: str = "none",
         dtype: str = "bfloat16",
@@ -139,6 +146,15 @@ class TrainingOps:
         Args:
             model (ModelDescriptor): Architecture read from a checkpoint.
             tensor_parallel (int): Ranks each TP group spans.
+            context_parallel (int): Ranks the sequence dimension is additionally sharded
+                across. Megatron's gated-delta-net layer shards by head rather than by
+                token under CP (`GatedDeltaNet.cp_size`), so this further divides the
+                per-rank head count `gdn_head_counts` already divided by `tensor_parallel`.
+                It does not change any GEMM shape: those stay sharded by `tensor_parallel`
+                alone, and the caller is responsible for passing a `token_count` that
+                already reflects the CP-local token share. No `cp > 1` step has been
+                measured for this term; see `HydraulisLatencyModel` for the analytical
+                treatment this mirrors.
             dp (int): Data-parallel degree. Sets DP gradient collective sizes.
             recompute (str): ``"full"`` charges forward collectives twice. ``"none"`` does not.
             dtype (str): Activation dtype, which sets TP collective message sizes.
@@ -153,7 +169,8 @@ class TrainingOps:
 
         Raises:
             ProfileValidationError: If the architecture is incomplete or any dimension
-                is not divisible by ``tensor_parallel``.
+                is not divisible by ``tensor_parallel`` or, for the GDN head counts, by
+                ``tensor_parallel * context_parallel``.
         """
         if model.num_layers is None:
             raise ProfileValidationError("Model is missing num_layers.")
@@ -167,6 +184,7 @@ class TrainingOps:
         )
         self._head_dim = model_head_dim(model)
         self._tensor_parallel = int(tensor_parallel)
+        self._context_parallel = int(context_parallel)
         self._dp = int(dp)
         self._recompute = recompute
         if model.hidden_size is None:
@@ -184,6 +202,33 @@ class TrainingOps:
         self._projection_shapes = tuple(
             transformer_gemm_shapes(model, tensor_parallel=tensor_parallel)
         )
+        # A hybrid model runs a different projection set on its linear-attention layers.
+        # Leaving this empty for a pure-softmax model keeps every multiplier below identical.
+        self._linear_projection_shapes = tuple(
+            linear_attention_gemm_shapes(model, tensor_parallel=tensor_parallel)
+        )
+        interval = model.extra.get("full_attention_interval")
+        if interval and int(interval) > 1:
+            self._attention_layers = self._num_layers // int(interval)
+            self._gdn_layers = self._num_layers - self._attention_layers
+            key_heads, value_heads, head_dim = gdn_head_counts(
+                model, tensor_parallel=tensor_parallel
+            )
+            for name, heads in (("linear_num_key_heads", key_heads), ("linear_num_value_heads", value_heads)):
+                if heads % self._context_parallel:
+                    raise ProfileValidationError(
+                        f"{name} ({heads}) per TP rank must be divisible by "
+                        f"context_parallel ({self._context_parallel})."
+                    )
+            self._gdn_heads = (
+                key_heads // self._context_parallel,
+                value_heads // self._context_parallel,
+                head_dim,
+            )
+        else:
+            self._attention_layers = self._num_layers
+            self._gdn_layers = 0
+            self._gdn_heads = None
         # The logits projection. Unlike inference, training computes logits for EVERY
         # position rather than one per request, so its `m` is the token count. It runs
         # once per step on the last pipeline stage, not once per layer.
@@ -197,6 +242,7 @@ class TrainingOps:
         path: str | Path,
         *,
         tensor_parallel: int = 1,
+        context_parallel: int = 1,
         dp: int = 1,
         recompute: str = "none",
         dtype: str = "bfloat16",
@@ -210,6 +256,7 @@ class TrainingOps:
         return cls(
             model,
             tensor_parallel=tensor_parallel,
+            context_parallel=context_parallel,
             dp=dp,
             recompute=recompute,
             dtype=dtype,
@@ -224,9 +271,24 @@ class TrainingOps:
         return self._num_layers
 
     @property
+    def attention_layers(self) -> int:
+        """Return how many layers run softmax attention."""
+        return self._attention_layers
+
+    @property
+    def gdn_layers(self) -> int:
+        """Return how many layers run a gated delta net (0 for a pure-softmax model)."""
+        return self._gdn_layers
+
+    @property
     def tensor_parallel(self) -> int:
         """Return the TP degree these ops were sharded for."""
         return self._tensor_parallel
+
+    @property
+    def context_parallel(self) -> int:
+        """Return the CP degree these ops were sharded for."""
+        return self._context_parallel
 
     @property
     def recompute(self) -> str:
@@ -257,10 +319,15 @@ class TrainingOps:
             tuple[tuple[GemmQuery, int], ...]: ``(query, multiplier)`` pairs.
         """
         passes = 2 if self._recompute == "full" else 1
-        return tuple(
-            (GemmQuery(m=token_count, n=s.n, k=s.k), self._num_layers * passes)
+        queries = [
+            (GemmQuery(m=token_count, n=s.n, k=s.k), self._attention_layers * passes)
             for s in self._projection_shapes
+        ]
+        queries.extend(
+            (GemmQuery(m=token_count, n=s.n, k=s.k), self._gdn_layers * passes)
+            for s in self._linear_projection_shapes
         )
+        return tuple(queries)
 
     def attention_passes(self) -> int:
         """
@@ -289,12 +356,18 @@ class TrainingOps:
             tuple[tuple[GemmQuery, int], ...]: ``(query, multiplier)`` pairs.
         """
         dgrad = tuple(
-            (GemmQuery(m=token_count, n=s.k, k=s.n), self._num_layers)
+            (GemmQuery(m=token_count, n=s.k, k=s.n), self._attention_layers)
             for s in self._projection_shapes
+        ) + tuple(
+            (GemmQuery(m=token_count, n=s.k, k=s.n), self._gdn_layers)
+            for s in self._linear_projection_shapes
         )
         wgrad = tuple(
-            (GemmQuery(m=s.n, n=s.k, k=token_count), self._num_layers)
+            (GemmQuery(m=s.n, n=s.k, k=token_count), self._attention_layers)
             for s in self._projection_shapes
+        ) + tuple(
+            (GemmQuery(m=s.n, n=s.k, k=token_count), self._gdn_layers)
+            for s in self._linear_projection_shapes
         )
         return dgrad + wgrad
 
@@ -509,6 +582,52 @@ class TrainingOps:
         if backend is not None:
             fields["backend"] = backend
         return TrainingAttentionQuery(**fields)  # type: ignore[arg-type]
+
+    def gdn_queries(
+        self,
+        lengths: Sequence[int],
+        *,
+        backend: str | None = None,
+    ) -> tuple[tuple[GdnQuery, int], ...]:
+        """
+        Return the gated-delta-net calls one training microbatch issues.
+
+        The measured `gdn_context` table prices a forward scan. Training runs that scan once
+        in the forward pass, once more in the recompute replay, and once in the backward, so
+        the multiplier is three under full recompute and two without it. The backward kernel
+        is not separately measured, and charging it at forward cost is the same approximation
+        `elementwise_queries` makes for the same reason.
+
+        Args:
+            lengths (Sequence[int]): Per-sequence lengths in the microbatch.
+            backend (str | None): Override the query's default backend.
+
+        Returns:
+            tuple[tuple[GdnQuery, int], ...]: `(query, multiplier)` pairs, empty when the
+                model has no linear-attention layers.
+
+        Raises:
+            ValueError: If `lengths` is empty.
+        """
+        if not self._gdn_heads:
+            return ()
+        if not lengths:
+            raise ValueError("A training microbatch must hold at least one sequence.")
+        key_heads, value_heads, head_dim = self._gdn_heads
+        passes = 3 if self._recompute == "full" else 2
+        return (
+            (
+                GdnQuery(
+                    phase="context",
+                    num_key_heads=key_heads,
+                    num_value_heads=value_heads,
+                    head_dim=head_dim,
+                    total_tokens=int(sum(lengths)),
+                    backend=backend,
+                ),
+                self._gdn_layers * passes,
+            ),
+        )
 
     def tp_comm_queries(
         self, token_count: int

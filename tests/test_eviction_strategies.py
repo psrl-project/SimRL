@@ -23,7 +23,7 @@ def _req(rid: int, generated: int = 0, dispatch_time: float = 0.0, prompt_len: i
 
 class TestRegistry:
     def test_every_built_in_strategy_is_registered(self):
-        assert set(EVICTION_REGISTRY) == {"vllm_lru", "longest_ctx", "latest_deadline"}
+        assert set(EVICTION_REGISTRY) == {"vllm_lru", "longest_ctx", "shortest_ctx", "latest_deadline"}
 
     def test_an_unknown_name_lists_the_known_ones(self):
         with pytest.raises(KeyError, match="longest_ctx"):
@@ -54,6 +54,13 @@ class TestLongestCtx:
         strategy = build_eviction("longest_ctx")
         candidates = [_req(i, generated=g) for i, g in enumerate([100, 9000, 500])]
         assert strategy.select(candidates, now=10.0) is candidates[1]
+
+
+class TestShortestCtx:
+    def test_the_shallowest_context_pays(self):
+        strategy = build_eviction("shortest_ctx")
+        candidates = [_req(i, generated=g) for i, g in enumerate([100, 9000, 500])]
+        assert strategy.select(candidates, now=10.0) is candidates[0]
 
 
 class TestEngineUsesTheStrategy:

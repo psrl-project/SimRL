@@ -111,8 +111,8 @@ class SimTelemetry:
             f"instance/{inst.instance_id}",
             t=inst.t_local,
             instance_id=inst.instance_id,
-            # Per sample rather than once, because `DynamicParallelFleet` may
-            # re-shape the fleet at a weight update.
+            # Per sample rather than once, because a `SlotFleet` may reshape mid-round:
+            # a sleeping slot's degree never changes, but its awake/asleep state does.
             tp=inst.tp,
             num_running_reqs=len(running),
             num_waiting_reqs=len(waiting),
@@ -337,6 +337,44 @@ class SimTelemetry:
         if extrapolation_notes:
             payload["extrapolation_notes"] = extrapolation_notes
         self.store.write("train", **payload)
+
+    # --- dynamic-parallel reshapes ("reshape" stream) --------------------
+
+    def write_reshape(
+        self,
+        t: float,
+        table,
+        from_awake: frozenset[int],
+        to_awake: frozenset[int],
+        n_aborted: int,
+        reprefill_tokens: int,
+    ) -> None:
+        """
+        Log one committed fleet reshape.
+
+        Args:
+            t: Simulation time the reshape committed at.
+            table: The run's `SlotTable`, read only for `describe()` and each slot's TP degree.
+            from_awake: Awake set immediately before this reshape.
+            to_awake: Awake set immediately after.
+            n_aborted: Requests `SlotFleet.reshape` aborted off slots leaving the awake set.
+            reprefill_tokens: Total context those requests must re-prefill, charged by
+                `abort_all` the same way a weight-update rebuild already charges it.
+        """
+        if self._suppressed("reshape"):
+            return
+        self.store.write(
+            "reshape",
+            t=t,
+            from_awake=sorted(from_awake),
+            to_awake=sorted(to_awake),
+            from_shape=table.describe(from_awake),
+            to_shape=table.describe(to_awake),
+            slots_slept=sorted(from_awake - to_awake),
+            slots_woken=sorted(to_awake - from_awake),
+            n_aborted=n_aborted,
+            reprefill_tokens=reprefill_tokens,
+        )
 
     # --- staleness inventory ("buffer" stream) ---------------------------
 

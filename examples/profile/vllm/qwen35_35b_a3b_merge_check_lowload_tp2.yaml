@@ -1,0 +1,51 @@
+# Real end-to-end verification at extreme low residents (2/4/8) for Qwen3.5-35B-A3B
+# (hybrid MoE+GDN) at TP2, mirroring qwen3_30b_a3b_merge_check_lowload_tp2.yaml.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy10/share_303541817/lhy/models/Qwen3.5-35B-A3B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 2
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen35_35b_a3b/vllm_merge_check_lowload_tp2
+experiment_name: qwen35-35b-a3b-merge-check-lowload
+num_runs: 1
+server_ready_timeout: 2400
+
+run:
+  max_parallel: 1
+  max_concurrent_startups: 1
+
+serve:
+  args:
+    dtype: bfloat16
+    max-model-len: 32768
+    max-num-batched-tokens: 65536
+    gpu-memory-utilization: 0.9
+    trust-remote-code: true
+  parameters:
+    - tensor-parallel-size: 2
+      pipeline-parallel-size: 1
+      max-num-seqs: 1024
+
+bench:
+  args:
+    request-rate: "inf"
+    random-range-ratio: 0.0
+    seed: 42
+
+phases:
+  decode:
+    parameters:
+      - {random-input-len: 4000,  random-output-len: 100, max-concurrency: 2, num-prompts: 2}
+      - {random-input-len: 4000,  random-output-len: 100, max-concurrency: 4, num-prompts: 4}
+      - {random-input-len: 4000,  random-output-len: 100, max-concurrency: 8, num-prompts: 8}
+      - {random-input-len: 12000, random-output-len: 100, max-concurrency: 2, num-prompts: 2}
+      - {random-input-len: 12000, random-output-len: 100, max-concurrency: 4, num-prompts: 4}
+      - {random-input-len: 12000, random-output-len: 100, max-concurrency: 8, num-prompts: 8}
+      - {random-input-len: 25000, random-output-len: 100, max-concurrency: 2, num-prompts: 2}
+      - {random-input-len: 25000, random-output-len: 100, max-concurrency: 4, num-prompts: 4}
+      - {random-input-len: 25000, random-output-len: 100, max-concurrency: 8, num-prompts: 8}

@@ -3,5 +3,5 @@
 PRESET=areal
 PRIMARY_KNOB=policy.max_head_offpolicyness
 PRIMARY_VALUES=(0 1 2 3 4 5)
-PRIMARY_LABEL="areal max_head_offpolicyness (versions)"
+PRIMARY_LABEL="areal max_head_offpolicyness"
 PINS=()

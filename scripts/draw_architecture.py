@@ -80,7 +80,7 @@ def build(out_dirs=None):
         c = Canvas("simrl-architecture", 1660, 1190, "How SimRL is built", out_dir)
         c.text(60, 44, "How SimRL is built", 54, INK, True)
         c.text(60, 104,
-               "Profile a real system once, fit cost models to the records, then simulate on CPU.",
+               "Profile a system, fit cost models to the records, then simulate on CPU.",
                31, MUTED)
 
         # -- Measure ---------------------------------------------------------

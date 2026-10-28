@@ -106,6 +106,8 @@ _TERM_SHARES = {
     # The bytes actually moving at a stage boundary, as distinct from `bubble`, which is
     # the stage waiting. 57-270 us per crossing against step times of 1.06-72 s.
     "pp_comm": 0.0,
+    # Qwen3-8B is a pure-softmax model, so it has no gated-delta-net layers to charge.
+    "gdn": 0.0,
 }
 _SHARE_TOLERANCE_PP = 1.0
 

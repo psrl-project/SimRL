@@ -39,6 +39,17 @@ class ModelFamily(Protocol):
     def head_counts(self, model: ModelDescriptor, *, tensor_parallel: int) -> tuple[int, int]:
         """Return this rank's `(num_heads, num_kv_heads)`."""
 
+    def linear_attention_gemm_shapes(
+        self, model: ModelDescriptor, *, tensor_parallel: int
+    ) -> tuple[Any, ...] | None:
+        """Return one linear-attention layer's projections, or None when every layer is softmax.
+
+        A hybrid model runs two different blocks, so a single shape set cannot describe it.
+        Callers multiply `gemm_shapes` by the full-attention layer count and this by the
+        remainder.
+        """
+        return None
+
 
 FAMILY_REGISTRY: dict[str, ModelFamily] = {}
 
@@ -103,4 +114,6 @@ def family_for(model: ModelDescriptor) -> ModelFamily:
 # each test imported the family module itself: the same trap the cost layer's ops/__init__.py
 # documents. The import is at the end to avoid a cycle: families_dense imports this module.
 from . import families_dense as _families_dense  # noqa: E402,F401  (registers dense architectures)
+from . import families_hybrid as _families_hybrid  # noqa: E402,F401  (registers hybrid architectures)
 from . import families_moe as _families_moe  # noqa: E402,F401  (registers MoE architectures)
+from . import families_qwen3_moe as _families_qwen3_moe  # noqa: E402,F401  (registers plain-MoE architectures)

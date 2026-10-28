@@ -32,10 +32,15 @@ class VerlLogLayout:
             by its own pid), so every match is read and merged.
         stats_glob: Per-replica engine occupancy, one JSON object per line.
             `{r}` in the filename is the replica rank.
+        train_metrics_filename: One JSON object per training step, written by
+            `write_step_metrics` straight from `trainer_base.py`'s own
+            `fit()` loop. Optional: an older telemetry directory predating
+            this file is still convertible, just without a `train` stream.
     """
 
     request_trace_glob: str = "request_trace_pid*.jsonl"
     stats_glob: str = "stats_r*.jsonl"
+    train_metrics_filename: str = "train_metrics.jsonl"
 
 
 @dataclass
@@ -46,12 +51,15 @@ class ConversionSummary:
         instance_ids: Replica ranks written as `instance/*` streams.
         n_instance_rows: Occupancy samples written across all instances.
         n_request_rows: Completed requests read from the trace files.
+        n_train_rows: Training steps written as `train` stream rows. Zero
+            when `train_metrics.jsonl` is absent, not an error.
         duration_s: Wall-clock span covered by the instance streams.
     """
 
     instance_ids: list[int] = field(default_factory=list)
     n_instance_rows: int = 0
     n_request_rows: int = 0
+    n_train_rows: int = 0
     duration_s: float = 0.0
 
 
@@ -77,11 +85,18 @@ def convert_verl_logs(
     records came from. Times are rebased so that zero is the first engine
     stats sample, matching the simulator's time-since-start axis.
 
-    A `train` stream analogous to PSRL's recompute/train/sync phases is not
-    written here: `trainer_base.py`'s per-step metrics mirror
-    (`train_metrics.jsonl`) carries different fields than PSRL's three-phase
-    breakdown, and reshaping it is deferred to whoever consumes it directly
-    once the real run's actual field names are in hand.
+    Also writes a `train` stream when `train_metrics.jsonl` is present,
+    mapping `trainer_base.py`'s own step-timing fields onto the simulator's
+    three-phase breakdown: `timing_s/old_log_prob` is verl's own recompute
+    (the forward pass that recomputes log probs under the current policy
+    before the step trains on them) as `recompute_time`, `timing_s/
+    update_actor` (the gradient step itself) as `train_time`, and `timing_s/
+    update_weights` as `sync_time`. `timing_s/gen` (time blocked inside
+    `replay_buffer.sample()`, i.e. waiting on rollout) and `timing_s/adv`
+    (advantage estimation, sub-millisecond here) are deliberately excluded
+    from the block: the first is rollout, not training, and the second is
+    folded into `train_time` automatically by the plotter's own
+    unattributed-time rule rather than drawn as its own band.
 
     Args:
         log_dir: A verl run's telemetry directory (`VERL_TELEMETRY_LOG_DIR`).
@@ -130,11 +145,33 @@ def convert_verl_logs(
     request_paths = sorted(log_dir.glob(layout.request_trace_glob))
     n_request_rows = sum(len(_read_jsonl(p)) for p in request_paths)
 
+    n_train_rows = 0
+    train_metrics_path = log_dir / layout.train_metrics_filename
+    if train_metrics_path.is_file():
+        for row in _read_jsonl(train_metrics_path):
+            recompute_time = float(row.get("timing_s/old_log_prob", 0.0) or 0.0)
+            train_time = float(row.get("timing_s/update_actor", 0.0) or 0.0)
+            sync_time = float(row.get("timing_s/update_weights", 0.0) or 0.0)
+            end = row["ts"] - origin
+            start = end - (recompute_time + train_time + sync_time)
+            store.write(
+                "train",
+                start=start,
+                end=end,
+                version=row.get("step"),
+                recompute_time=recompute_time,
+                train_time=train_time,
+                sync_time=sync_time,
+            )
+            n_train_rows += 1
+
     srl_logger.info(
-        "Converted %d instance rows across replicas %s and counted %d completed requests from %s.",
+        "Converted %d instance rows across replicas %s, counted %d completed requests, "
+        "and wrote %d train rows from %s.",
         n_instance_rows,
         sorted(stats_rows),
         n_request_rows,
+        n_train_rows,
         str(log_dir),
     )
 
@@ -142,6 +179,7 @@ def convert_verl_logs(
         instance_ids=sorted(stats_rows),
         n_instance_rows=n_instance_rows,
         n_request_rows=n_request_rows,
+        n_train_rows=n_train_rows,
         duration_s=duration_s,
     )
 

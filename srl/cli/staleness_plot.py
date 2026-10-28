@@ -65,9 +65,7 @@ def main() -> None:
     )
     parser.add_argument("manifest", type=Path, help="TSV of panel/label/run_dir rows, one per bar.")
     parser.add_argument("--primary-label", required=True, help="X axis label, naming the knob and its unit.")
-    parser.add_argument("--title", required=True, help="Figure title.")
     parser.add_argument("--out", type=Path, required=True, help="Destination PNG.")
-    parser.add_argument("--footnote", default="", help="Caveat text drawn bottom left.")
     parser.add_argument(
         "--logs-subdir", default="logs", help="Name of the logs subdirectory under each run_dir."
     )
@@ -90,9 +88,7 @@ def main() -> None:
     path = plot_staleness_throughput(
         panels,
         primary_label=args.primary_label,
-        title=args.title,
         out_path=args.out,
-        footnote=args.footnote,
     )
 
     header = f"  {'panel':<12}{'point':>8}{'span':>10}{'tok/s':>9}{'waste%':>8}  staleness"

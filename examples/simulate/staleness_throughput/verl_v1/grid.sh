@@ -4,7 +4,7 @@
 PRESET=verl_v1
 PRIMARY_KNOB=policy.num_warmup_batches
 PRIMARY_VALUES=(1 2 3 4 5)
-PRIMARY_LABEL="verl_v1 num_warmup_batches (batches prefetched)"
+PRIMARY_LABEL="verl_v1 num_warmup_batches"
 SECONDARY_KNOB=policy.max_off_policy_threshold
 SECONDARY_VALUES=(1 2 3 4 5)
 PINS=()

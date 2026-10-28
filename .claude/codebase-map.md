@@ -170,11 +170,11 @@ srl/
 │       │   ├── families.py      # ModelFamily, FAMILY_REGISTRY, imports the families at its tail
 │       │   ├── families_dense.py, families_moe.py
 │       │   ├── shape.py         # GemmShape
-│       │   └── gemm, attention, attention_training, elementwise, gdn, optimizer
+│       │   └── gemm, attention, attention_training, elementwise, gdn, moe, optimizer
 │       ├── sweep/           # One *Sweep parsed from each op's YAML subtree. TORCH-FREE
 │       ├── runner/          # The GPU measurement loops, torch imported inside run()
 │       │   ├── base.py          # KernelRunner: time()/row(), not the loop
-│       │   ├── attention.py, attention_training.py, gemm.py, elementwise.py, gdn.py,
+│       │   ├── attention.py, attention_training.py, gemm.py, elementwise.py, gdn.py, moe.py,
 │       │   ├── optimizer.py
 │       │   └── _vllm_attn.py, _flashinfer_attn.py  # backend probes
 │       └── utils/           # timing.py (the one torch importer), model_dims.py, validators.py

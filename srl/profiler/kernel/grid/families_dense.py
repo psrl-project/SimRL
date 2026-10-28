@@ -134,6 +134,12 @@ class DenseLlamaFamily:
         self._reject_unsupported(model)
         return rank_head_counts(model, tensor_parallel=tensor_parallel)
 
+    def linear_attention_gemm_shapes(
+        self, model: ModelDescriptor, *, tensor_parallel: int
+    ) -> tuple[GemmShape, ...] | None:
+        """Return None, because every layer of this block is a softmax attention layer."""
+        return None
+
 
 DENSE_LLAMA_FAMILY = DenseLlamaFamily()
 

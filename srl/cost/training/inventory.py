@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .base import TrainingParallelism
+from .base import TrainingParallelism, stage_layer_counts
 
 _DTYPE_BYTES = {
     "fp32": 4,
@@ -85,23 +85,30 @@ def heaviest_stage_parameters(
 
     Tensor parallelism splits every tensor, including the embedding, so it divides the
     result uniformly.
+
+    `parallelism.pipeline_layout`, when set, carves the layers unevenly instead of
+    `num_layers / pp` each: every stage's own total (its share of `layer_parameters`
+    plus an embedding copy if it is stage 0 or the last stage) is computed and the
+    worst of them returned, so a deliberately rebalanced end stage can lose the
+    "heaviest" title to a middle stage carrying more layers, which a single
+    uniform-share-plus-embedding number could never represent.
     """
     if parameter_count <= 0 or num_layers <= 0:
         raise ValueError("parameter_count and num_layers must be positive.")
     if parallelism.pp == 1:
         return parameter_count / parallelism.tp
-    if num_layers % parallelism.pp != 0:
-        raise ValueError(
-            f"num_layers {num_layers} is not divisible by pipeline degree {parallelism.pp}."
-        )
+    stage_layers = stage_layer_counts(num_layers, parallelism)
     embedding = hidden_size * vocab_size
     # Untied weights mean two separate vocabulary-sized tensors, one per end stage.
     embedding_copies = 1 if tied_embeddings else 2
     layer_parameters = parameter_count - embedding * embedding_copies
     if layer_parameters <= 0:
         raise ValueError("Embeddings cannot exceed the total parameter count.")
-    per_stage_layers = layer_parameters / parallelism.pp
-    return (per_stage_layers + embedding) / parallelism.tp
+    per_layer = layer_parameters / num_layers
+    stage_totals = [per_layer * count for count in stage_layers]
+    stage_totals[0] += embedding
+    stage_totals[-1] += embedding
+    return max(stage_totals) / parallelism.tp
 
 
 def parameter_inventory(
@@ -131,7 +138,9 @@ def parameter_inventory(
     model_parallel = parallelism.tp * parallelism.pp
     if local_parameters is None:
         local_parameters = parameter_count / model_parallel
-    optimizer_shard = parallelism.dp if distributed_optimizer else 1
+    # Megatron reduces gradients over the combined DP and CP groups, and the distributed
+    # optimizer shards over that same group, so context parallel ranks split one state copy.
+    optimizer_shard = parallelism.dp * parallelism.cp if distributed_optimizer else 1
     parameter_bytes = dtype_bytes(parameter_dtype)
     gradient_bytes = dtype_bytes(gradient_dtype)
     optimizer_bytes = dtype_bytes(optimizer_state_dtype)

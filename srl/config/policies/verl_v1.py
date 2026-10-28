@@ -32,7 +32,13 @@ class VerlV1PolicyConfig:
     def horizon(self) -> int | None:
         return self.max_off_policy_threshold
 
-    def ingress_window_groups(self, batch_size: int) -> int:
-        h = self.max_off_policy_threshold or 1
-        burst = math.ceil(self.num_warmup_batches)
-        return (max(h, burst) + 2) * batch_size
+    def ingress_window_groups(
+        self,
+        batch_size: int,
+        group_size: int = 1,
+        n_instances: int = 1,
+    ) -> int:
+        # Mirrors VerlV1Policy.admit_quota's own initial credit exactly.
+        # _credit never shrinks except via eviction, so staging more is a
+        # permanent, unused router surplus, not a transient one.
+        return math.floor(self.num_warmup_batches * batch_size) + batch_size

@@ -410,10 +410,10 @@ def test_unsupported_pause_mode_is_rejected() -> None:
         _sim(Blocking(), batch_size=2, n_versions=3).run()
 
 
-def test_slime_pauses_only_at_a_push() -> None:
+def test_slime_aborts_on_the_flush_schedule() -> None:
     from srl.policy.slime import SlimePolicy
 
-    sim = _sim(SlimePolicy(update_weights_interval=2), batch_size=2, n_versions=6)
+    sim = _sim(SlimePolicy(flush_cache_interval=2), batch_size=2, n_versions=6)
     pauses: list[int] = []
     for inst in sim.instances:
         original = inst.abort_all
@@ -424,7 +424,32 @@ def test_slime_pauses_only_at_a_push() -> None:
 
         inst.abort_all = spy
     sim.run()
-    assert pauses, "the push steps must pause in-flight generation."
-    assert all(version % 2 == 0 for version in pauses), (
-        f"slime paused between pushes at versions {pauses}."
+    assert pauses, "the flush steps must abort in-flight generation."
+    from srl.policy.slime import should_flush_cache
+
+    assert all(should_flush_cache(2, version) for version in pauses), (
+        f"slime flushed outside its interval at versions {pauses}."
     )
+
+
+def test_slime_flushes_at_the_first_publication_and_every_interval() -> None:
+    from srl.policy.slime import should_flush_cache
+
+    assert [v for v in range(1, 8) if should_flush_cache(2, v)] == [1, 3, 5, 7]
+    assert [v for v in range(1, 5) if should_flush_cache(0, v)] == [1]
+    assert [v for v in range(1, 5) if should_flush_cache(1, v)] == [1, 2, 3, 4]
+
+
+def test_slime_threshold_matches_the_worker_formula() -> None:
+    from srl.policy.slime import SlimePolicy
+
+    policy = SlimePolicy(server_concurrency=14, group_prefetch_factor=2)
+    assert policy.threshold_groups(group_size=4, n_instances=3) == max(1, 14 * 3 // 4) * 2
+
+
+def test_slime_refuses_a_threshold_below_one_batch() -> None:
+    from srl.policy.slime import SlimePolicy
+
+    policy = SlimePolicy(server_concurrency=8)
+    with pytest.raises(ValueError, match="prompt groups"):
+        policy.validate(batch_size=8, group_size=8, n_instances=1)

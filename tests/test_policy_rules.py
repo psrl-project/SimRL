@@ -12,7 +12,6 @@ from srl.policy.rules import (
     LegacyOverage,
     ProgressQuota,
     VersionWindow,
-    WatermarkGate,
 )
 from srl.component.rollout.engine import Request
 
@@ -63,20 +62,6 @@ class TestFIFO:
         groups = [self._group(2, 5.0), self._group(0, 1.0), self._group(1, 1.0)]
         selected = FIFO().select(groups, batch_size=2)
         assert [req.group_id for req in selected] == [0, 1]
-
-
-class TestWatermarkGate:
-    def test_denies_when_remaining_fills_the_batch(self) -> None:
-        rule = WatermarkGate(over_sampling_ratio=1.0)
-        assert rule.quota(remaining=4, batch_size=4) == 0
-
-    def test_room_is_the_oversampled_batch(self) -> None:
-        rule = WatermarkGate(over_sampling_ratio=1.5)
-        assert rule.quota(remaining=0, batch_size=4) == 6
-
-    def test_room_is_at_least_one(self) -> None:
-        rule = WatermarkGate(over_sampling_ratio=0.1)
-        assert rule.quota(remaining=0, batch_size=4) == 1
 
 
 class TestLegacyOverage:

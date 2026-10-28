@@ -10,37 +10,41 @@
 # already structured JSON (verl-new's telemetry_sink.py), so this script's
 # trace extraction calls srl.telemetry.verl_log instead of srl.telemetry.psrl_log.
 #
-# Current agreement (srl-compare against the run's own converted logs), at
-# the MAX_OFF_POLICY_STRATEGY=drop default below, which is what the launch
-# script itself now runs by default: peak running requests +0.0%, peak KV
-# utilisation +0.0%, mean running requests -15.6%, mean KV utilisation
-# -12.1%, span -18.3%, idle fraction +0.246 (simulated 0.261 vs real 0.015).
-# Train/step timing is not part of this comparison. convert_verl_logs writes
-# no train stream for a real verl run (see srl/telemetry/verl_log.py's own
-# docstring), so there is nothing on the real side for srl-compare's
-# train/step column to compare against.
+# Current agreement (srl-compare against output/telemetry_drop, the run's
+# own converted logs), at the MAX_OFF_POLICY_STRATEGY=drop default below,
+# which is what the launch script itself now runs by default: span +1.1%,
+# train/step +7.9%, recompute/step -16.3%, sync/step -100.0% (simulated
+# sync_time is always 0 -- weight sync is not modeled as its own phase, a
+# small, separate gap from the one this comment used to describe here),
+# peak running requests +0.0%, mean running (busy) -4.7%, peak KV util
+# +0.0%, mean KV util (busy) -5.7%, idle fraction 0.032 vs 0.015. Train/step
+# timing is not part of this comparison beyond what's above. convert_verl_logs
+# writes no train stream for a real verl run (see srl/telemetry/verl_log.py's
+# own docstring), so there is nothing on the real side for srl-compare's
+# train/step column to compare against beyond the timing_s/* fields it does
+# carry.
 #
-# Root cause of the idle-fraction gap (found by segmenting each instance's
-# own num_running_reqs==0 stretches, not just reading the aggregate
-# srl-compare number): the real drop run is idle only at startup (~70s) and
-# shutdown (~34s) -- under 1.5% total, with ZERO idle stretches between its 5
-# train steps. The simulated drop run instead shows one ~300-350s idle
-# stretch before EVERY train step (~26% total) -- the same shape the real
-# WAIT run has (idle ~31-32%, one ~300-400s gap per step; see telemetry/ via
-# MAX_OFF_POLICY_STRATEGY=wait below). So the simulated drop run is
-# reproducing wait's admission cadence, not drop's. The cause: SimRL's
-# verl_v1 policy grants a new version's full batch_size*group_size admission
+# This comment used to report a much larger gap here (span -18.3%, idle
+# fraction simulated 0.261 vs real 0.015), diagnosed as SimRL's verl_v1
+# policy granting a new version's full batch_size*group_size admission
 # credit only once per train-version advance (admit_quota), identically for
-# wait and drop -- only the per-group eviction/refill (OffPolicySpan's
-# CancelAction.REPLACE, verified above to match ReplayBufferAsync's
-# refill_fn one group at a time) differs between the two strategies in this
-# policy. The real system's drop strategy evidently lets rollout keep
-# admitting the NEXT version's prompts on its own GPU pool while the CURRENT
-# version's recompute/train still runs on the training GPU pool (that overlap
-# is the whole point of separate_async's GPU disaggregation) -- SimRL's
-# admission timing model does not yet capture that inter-version overlap, so
-# it under-estimates drop's rollout utilisation. Not yet fixed -- flagged
-# here rather than hidden.
+# wait and drop -- under-modeling the inter-version overlap separate_async's
+# GPU disaggregation is meant to buy under drop (rollout keeps admitting the
+# NEXT version's prompts on its own GPU pool while the CURRENT version's
+# recompute/train still runs on the training pool). That diagnosis held:
+# `cdb049e "grant verl_v1 admission credit on drop eviction, not just
+# version-advance"` now grants a fresh admission credit on every per-group
+# drop eviction too (matching ReplayBufferAsync.wait_for_sampleable's
+# refill_fn, called in the same loop iteration as the eviction), not only on
+# a full version-advance. Separately -- and this is why re-measuring the old
+# numbers directly would not have reproduced them even pre-fix -- the
+# canonical output_dir this script defaults to had gone stale: it last held
+# a run from 2026-10-25 09:13, before output/telemetry_drop existed
+# (2026-10-26 01:35) and before the launch script's own default switched
+# wait->drop, so it was silently comparing a leftover wait-strategy
+# simulation against drop-strategy real telemetry. VERL_LOG_DIR below
+# defaults to telemetry_drop, not the plain telemetry/ directory, for this
+# reason -- telemetry/ still holds that same stale pre-switch wait capture.
 #
 # Both real and simulated drop runs independently confirm the system runs at
 # staleness 0, not 1: the real run's own training/off_policy/trajectory_
@@ -90,7 +94,7 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-VERL_LOG_DIR="${VERL_LOG_DIR:-/apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_compare/output/telemetry}"
+VERL_LOG_DIR="${VERL_LOG_DIR:-/apdcephfs_zwfy10_303541817/share_303541817/lhy/verl-new/examples/psrl_compare/output/telemetry_drop}"
 MODEL_PATH="${MODEL_PATH:-/apdcephfs_zwfy/share_303760348/lhy/models/Qwen3-8B}"
 TRACE="${TRACE:-${ROOT_DIR}/outputs/workload/verl_aligned/joint.jsonl}"
 # rollout.n: responses per prompt. Both the trace's group arity and the
@@ -131,7 +135,12 @@ export WORKLOAD=dapo_trace
 # are 1:1 with trainer.v1.sampler in the real launch script. The launch
 # script itself now defaults to drop (see its own header for why), so this
 # defaults to drop too -- pass MAX_OFF_POLICY_STRATEGY=wait explicitly to
-# reproduce the historical wait-strategy numbers below instead.
+# reproduce the historical wait-strategy numbers below instead. That
+# historical run's own trace came from output/telemetry (not telemetry_drop,
+# this script's own default since the header fix above) -- pass
+# VERL_LOG_DIR back to the plain telemetry/ directory too if reproducing it
+# from scratch, so the workload trace and the strategy being simulated come
+# from the same real run.
 #
 # NUM_WARMUP_BATCHES=1 is the literal
 # trainer.v1.separate_async.num_warmup_batches=1 from the launch script, and

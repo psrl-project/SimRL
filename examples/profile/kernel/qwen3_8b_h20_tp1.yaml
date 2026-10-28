@@ -14,7 +14,11 @@ gemm:
   token_counts: [1, 2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 
 attention:
-  batch_sizes: [1, 2, 4, 8, 16, 32, 48, 64]
+  # verl_aligned.sh's separate_async comparison run spends 68-69% of its wall-clock
+  # time above batch_size=64 (p90 running-request count ~216-220, peak 256), a
+  # regime this sweep never measured -- ComposedRollout's decode prediction was
+  # extrapolating past its last point. 96/128/192/256 extend coverage to that peak.
+  batch_sizes: [1, 2, 4, 8, 16, 32, 48, 64, 96, 128, 192, 256]
   context_seq_lens: [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
   generation_steps: [0, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
   block_size: 16

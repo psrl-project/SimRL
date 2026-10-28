@@ -34,6 +34,11 @@ class DressagePolicyConfig:
     def horizon(self) -> int | None:
         return self.keep_versions or None
 
-    def ingress_window_groups(self, batch_size: int) -> int:
+    def ingress_window_groups(
+        self,
+        batch_size: int,
+        group_size: int = 1,
+        n_instances: int = 1,
+    ) -> int:
         cap = self.max_active_groups if self.max_active_groups is not None else batch_size
         return cap + 2 * batch_size

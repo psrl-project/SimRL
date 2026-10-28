@@ -20,6 +20,7 @@ flowchart LR
     E -->|group complete| P{policy.on_group_complete}
     P -->|KEEP| B[ready groups]
     P -->|DROP| X[dropped]
+    B -->|policy.on_batch_attempt| B
     B -->|policy.take_batch| T[Training step]
     T -->|deadline| U[Publish]
     U -->|policy.on_publish| C[Cancels]
@@ -40,8 +41,11 @@ One iteration of `Simulator.run` does the following.
 3. **Generate.** `_run_engine` advances every instance in global time order and collects
    finished responses. A group is released to the policy only when all of its responses
    are done (`on_group_complete` returns `KEEP` or `DROP`).
-4. **Consume.** When `policy.can_sample` is open and `take_batch` returns
-   `batch_size` complete groups, the step starts.
+4. **Consume.** When `policy.can_sample` is open, `on_batch_attempt` runs live,
+   immediately before the batch is actually taken, giving the policy one more chance to
+   cancel (and backfill) a ready group the sampling pool itself tracks as stale -- the same
+   event every real system's own L3 check ties itself to, rather than a sweep decoupled from
+   consumption. If `take_batch` then returns `batch_size` complete groups, the step starts.
 5. **Train.** The step lasts `train + sync + recompute` seconds. Rollout keeps generating
    until that deadline, then speculative events past the deadline are undone and all
    instances are aligned to it.
@@ -125,7 +129,7 @@ Two small cost models are added to every training step.
 
 `sync_cost`, weight synchronisation to the rollout fleet
 : `name: fixed` charges `sync_time` seconds, and only when the policy's
-  `will_sync_after_train` is true (slime skips it between pushes). `name: bandwidth`
+  `will_sync_after_train` is true. `name: bandwidth`
   exists in `build_sync_cost`, but the simulator calls it as
   `sync_time(0, n_instances, 0)`, so it divides by a zero bandwidth. Use `fixed`.
   `sync_cost.weight_load_time` is separate: the rollout-side pause charged at publish when

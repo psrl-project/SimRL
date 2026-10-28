@@ -183,6 +183,21 @@ held for it but has not finished generating, so buffer `b` cannot become READY u
 `buffer_id - v_traj == staleness_horizon` means the reservation sits at its limit and cannot be
 moved to a later buffer.
 
+### `reshape.jsonl`: dynamic-parallel fleet reshapes
+
+One record per committed change to which GPU-disjoint slot subset is awake, written only when
+`SimConfig.dynamic_parallel` is set (see `srl/simulator/dynamic_parallel/`). Not deduplicated:
+every reshape is a distinct event, not a continuous occupancy sample.
+
+| Field | Meaning |
+|---|---|
+| `t` | time the reshape committed at |
+| `from_awake`, `to_awake` | slot ids awake immediately before/after, sorted |
+| `from_shape`, `to_shape` | human-readable shape, e.g. `2xTP4 + 4xTP1` |
+| `slots_slept`, `slots_woken` | slot ids that changed awake state in this reshape |
+| `n_aborted` | requests aborted off slots leaving the awake set |
+| `reprefill_tokens` | total context those requests must re-prefill |
+
 ### `gateway.jsonl`: router queue
 
 One record per change in the router's queue, deduplicated the same way.

@@ -28,5 +28,10 @@ class PsrlPolicyConfig:
     def horizon(self) -> int:
         return self.staleness
 
-    def ingress_window_groups(self, batch_size: int) -> int:
+    def ingress_window_groups(
+        self,
+        batch_size: int,
+        group_size: int = 1,
+        n_instances: int = 1,
+    ) -> int:
         return (self.staleness + 1) * batch_size

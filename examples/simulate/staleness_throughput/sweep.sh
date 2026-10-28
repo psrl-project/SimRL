@@ -26,7 +26,12 @@ PINS=()
 source "${GRID}"
 
 OUT_DIR="${SCRIPT_DIR}/${PRESET_DIR%/}/figures"
-RUNS="${RUN_BASE}/${PRESET}"
+# Keyed on the directory, not $PRESET: a preset directory may sweep a
+# secondary knob of a policy another directory already sweeps (e.g.
+# `prime_rl_lag` sweeping `target_lag` against the same `policy=prime_rl`
+# `prime_rl/` sweeps `max_off_policy_steps` against), and $PRESET has to stay
+# the real Hydra policy name for `POLICY="${PRESET}"` below to resolve.
+RUNS="${RUN_BASE}/${PRESET_DIR%/}"
 mkdir -p "${OUT_DIR}" "${RUNS}"
 
 # NOTE(claude): A rebuild of the engine mid-sweep kills running simulations with
@@ -43,7 +48,7 @@ else
 fi
 
 n_points=$(( ${#PRIMARY_VALUES[@]} * ${#PANEL_KEYS[@]} ))
-echo "Sweeping ${PRESET}: ${PRIMARY_KNOB} = ${PRIMARY_VALUES[*]}"
+echo "Sweeping ${PRESET_DIR%/} (policy=${PRESET}): ${PRIMARY_KNOB} = ${PRIMARY_VALUES[*]}"
 if [[ -n "${SECONDARY_KNOB}" ]]; then
     echo "  panels: ${SECONDARY_KNOB} = ${SECONDARY_VALUES[*]}"
 fi
@@ -113,6 +118,4 @@ fi
 echo ""
 srl-staleness-plot "${MANIFEST}" \
     --primary-label "${PRIMARY_LABEL}" \
-    --title "${PRESET}: generation throughput by staleness of the data it produced" \
-    --out "${OUT_DIR}/staleness_throughput.png" \
-    --footnote "${FOOTNOTE}"
+    --out "${OUT_DIR}/staleness_throughput.png"

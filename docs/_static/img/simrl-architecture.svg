@@ -2,7 +2,7 @@
 <style>@font-face{font-family:"Kalam";src:url("../../../../blog/figure-style/fonts/Kalam-Regular.ttf");font-weight:400}@font-face{font-family:"Kalam";src:url("../../../../blog/figure-style/fonts/Kalam-Bold.ttf");font-weight:700}@font-face{font-family:"LXGW WenKai";src:url("../../../../blog/figure-style/fonts/LXGWWenKai-Regular.ttf");font-weight:400}@font-face{font-family:"LXGW WenKai";src:url("../../../../blog/figure-style/fonts/LXGWWenKai-Regular.ttf");font-weight:700}</style>
 <rect width="1660" height="1190" fill="#FFFFFF"/>
 <text x="60" y="88" font-size="54" font-weight="700" fill="#252B31"><tspan x="60.00" font-family="Kalam">How SimRL is built</tspan></text>
-<text x="60" y="129" font-size="31" font-weight="400" fill="#657079"><tspan x="60.00" font-family="Kalam">Profile a real system once, fit cost models to the records, then simulate on CPU.</tspan></text>
+<text x="60" y="129" font-size="31" font-weight="400" fill="#657079"><tspan x="60.00" font-family="Kalam">Profile a system, fit cost models to the records, then simulate on CPU.</tspan></text>
 <rect x="60" y="150" width="1540" height="272" rx="4.5" fill="#E8F1FC"/>
 <text x="86" y="212" font-size="40" font-weight="700" fill="#436B9E"><tspan x="86.00" font-family="Kalam">1</tspan></text>
 <text x="126" y="212" font-size="40" font-weight="700" fill="#252B31"><tspan x="126.00" font-family="Kalam">Measure</tspan></text>

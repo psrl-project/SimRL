@@ -3,5 +3,5 @@
 PRESET=roll
 PRIMARY_KNOB=policy.async_generation_ratio
 PRIMARY_VALUES=(0 1 2 3 4 5)
-PRIMARY_LABEL="roll async_generation_ratio (ceiling is the version window)"
+PRIMARY_LABEL="roll async_generation_ratio"
 PINS=()

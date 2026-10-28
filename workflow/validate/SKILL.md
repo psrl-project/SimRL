@@ -35,6 +35,17 @@ real simulator output.
 For a long sweep, delegate to the `validate` subagent so run logs stay out of the
 caller's context.
 
+**Model split, to control cost.** Writing the experiment script (step 2) and reading the gated
+result to write the report (step 6) are the steps that need judgment -- which arms, which workload
+shape, which failure is a real gate miss versus an unwired flag, what the report's "Not
+established" section should say. Do those at the caller's own model (Sonnet or above). The
+mechanical middle -- smoke it, run the sweep, check `gates.py`, write `results.json` and plots
+(steps 3-5) -- is comparatively rote once the script exists, and is the part worth delegating to
+the `validate` subagent with an explicit `model: "haiku"` override on that `Agent` call. Do not
+delegate script-authoring or report-writing to a Haiku-backed call: that is where a wrong workload
+shape, a silently-dropped failing point, or an overclaimed "Not established" section would slip
+through uncaught.
+
 ## Workflow
 
 0. **Preflight.** `python workflow/validate/scripts/preflight.py`. It needs

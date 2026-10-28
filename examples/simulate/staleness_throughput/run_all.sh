@@ -12,16 +12,20 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PRESETS=(
     psrl
     verl_v1
+    verl_v1_wait
     verl
     areal
     roll
-    slime
+    slime_l1
+    slime_flush
     skyrl
     openrlhf
     dressage
     nemo_rl
+    nemo_rl_in_order
     trl
     prime_rl
+    prime_rl_lag
 )
 
 declare -A status

@@ -1,9 +1,16 @@
 # Collective-only config. The tp=4 and tp=8 sweeps exist to complete the all_reduce
 # `world_size` slices, which cannot be interpolated: a 2-rank all-reduce and an 8-rank one run
 # different schedules over different link topologies, so `world_size` is a slice column and each
-# degree needs its own measurement. GEMM and attention are deliberately absent: no composed
-# rollout is scored at tp=4 here, so sweeping them would cost hours and write tables nothing
-# reads. Run with FAMILY=collective.
+# degree needs its own measurement. Run with FAMILY=collective.
+#
+# GEMM/attention/elementwise are absent from this file, but `output_dir`'s `kernel/h20/{gemm,
+# attention,elementwise}` tables are already populated (composed rollout is scored at tp=4, e.g.
+# `workflow/validate/experiments/real_dapo_tail.py`'s TP sweep) -- they predate this file's
+# collective-only trim and were never re-swept here, not evidence they are unneeded.
+# `kernel/h20/collective` itself was lost to a since-fixed symlink/fit-floor mishap
+# (`memory/fit-floor-writes-through-symlinked-table-dirs.md`) and restored on 2026-10-23 via
+# `cp -a` from `kernel_tp2/kernel/h20/collective`, which already covers world_size 2/4/8 in one
+# table -- not a fresh sweep of this file.
 model: ${oc.env:MODEL_PATH,/path/to/Qwen3-8B}
 hardware:
   gpu_name: H20

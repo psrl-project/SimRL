@@ -384,6 +384,8 @@ def build_config(spec: dict[str, Any]) -> ConfigContainer:
     else:
         raise ValueError(f"Unsupported recompute mode {spec['recompute']!r}.")
     cfg.model.recompute_modules = None
+    if spec.get("mtp_num_layers") is not None:
+        cfg.model.mtp_num_layers = int(spec["mtp_num_layers"])
 
     if spec.get("num_layers_override") is not None:
         cfg.model.num_layers = int(spec["num_layers_override"])

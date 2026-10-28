@@ -19,7 +19,7 @@
 | `psrl` | `proactive_filter=False`、`proactive_threshold=0` | **`max_staleness`**（来自 `SimConfig.staleness_horizon`，对应 preset 的 `staleness`，不是构造函数参数）。`proactive_*` 只是主动淘汰 RESERVED 条目的辅助开关 |
 | `areal` | `max_inflight=None` | **`max_staleness`**（来自 `SimConfig.staleness_horizon`，对应 preset 的 `max_head_offpolicyness`）。`max_inflight` 只是额外的并发上限 |
 | `roll` | `max_inflight=None` | **`max_staleness`**（来自 `SimConfig.staleness_horizon`，对应 preset 的 `async_generation_ratio`，取整后用作窗口宽度） |
-| `slime` | `update_weights_interval=1`、`over_sampling_ratio=1.0`、`pause_mode`、`max_inflight=None` | **`update_weights_interval`**——没有真正的 staleness 阈值，最大 staleness 恒等于这个值 |
+| `slime` | `server_concurrency=64`、`group_prefetch_factor=1`、`flush_cache_interval=1`、`max_inflight=None` | 没有 staleness 阈值。**`group_prefetch_factor`**（与 `server_concurrency` 的乘积决定准入阈值）只改变积压量，`flush_cache_interval` 只改变权重同步时是否 abort 在途生成 |
 | `verl` | `staleness_threshold=0.1`、`require_batches=1`、`max_inflight=None` | **`staleness_threshold`**，但它是样本超发比例，不是版本数，不能换算成逐 token 的 staleness 上界 |
 | `verl_v1` | `num_warmup_batches=1.0`、`max_off_policy_threshold=8`、`max_off_policy_strategy="drop"`、`pause_mode` | **`max_off_policy_threshold`**，且只在 `max_off_policy_strategy="drop"` 时才是硬上界；`"wait"` 不淘汰已完成的超限 group |
 | `skyrl` | `max_staleness_steps=4`、`pause_mode`、`max_inflight=None` | `max_staleness_steps` 只驱动准入额度和违规计数，从不丢弃，因此不提供硬上界 |
@@ -47,9 +47,9 @@
 - **L3**：`peek_batch`/`take_batch` 只从未被 GC 的 cohort 里取，相当于一个消费下限。
 
 ### `slime`（[`slime.py`](slime.py)）
-- **L1**：`WatermarkGate` 按过采样比例限制在途 group 数。
-- **L2**：无版本相关取消；`pause_mode` 只决定权重更新时在途请求是否保留 KV。
-- **L3**：无过滤，整批 FIFO 取出。最大 staleness 完全由 `update_weights_interval` 这个循环结构决定，不依赖任何版本比较。
+- **L1**：按 `sglang_server_concurrency × 引擎数 ÷ 每组响应数 × prefetch factor` 得到 prompt group 阈值；只要「仍在生成」和「已完成待取样」两部分都低于阈值就继续准入。
+- **L2**：没有按 staleness 的取消。每次权重发布时按 `--flush-cache-interval` 选择 `abort`（丢 KV、保留已生成前缀、重新排队）或 `in_place`（保留 KV 继续生成）。这是为 KV 正确性服务的动作，不重置 staleness。
+- **L3**：无过滤。`--buffer-sort-by-staleness` 只影响生成侧的续跑顺序，`--mask-offpolicy-in-partial-rollout` 只改 loss mask，都不在本策略的取 batch 路径上。
 
 ### `verl`（legacy，[`verl.py`](verl.py)）
 - **L1**：`LegacyOverage` 维护一个随权重同步重置的窗口（占用量租约）。

@@ -31,12 +31,45 @@ class TrainingParallelism:
     # candidates with the same mesh and different EP run different all-to-all traffic and
     # hold a different number of experts per rank. See `profiler/schema.Parallelism.ep`.
     ep: int = 1
+    pipeline_layout: tuple[int, ...] | None = None
+    """Explicit per-stage transformer-layer counts, stage 0 first.
+
+    None (the default) means every stage holds `num_layers / pp` layers, which is
+    what every formula and every artifact fitted before this field existed already
+    assumes. Set this when the layers do not divide evenly across `pp` stages, or
+    to rebalance stage load against the embedding/output-projection weight that
+    only stage 0 and stage `pp - 1` carry -- Megatron's own
+    `--pipeline-model-parallel-layout` does the same thing on the training side.
+    Length must equal `pp`; the sum is this query's own `num_layers` wherever a
+    formula only has the layout to go on (see `heaviest_stage_share`), and is
+    cross-checked against an externally known `num_layers` wherever one is
+    available (see `stage_layer_counts`).
+    """
 
     def __post_init__(self) -> None:
         if min(self.tp, self.pp, self.dp, self.cp, self.ep) <= 0:
             raise ValueError("Training parallelism dimensions must be positive.")
-        if self.cp != 1:
-            raise TrainingOutOfDomainError("Hydraulis V1 only supports CP=1.")
+        if self.pipeline_layout is not None:
+            if len(self.pipeline_layout) != self.pp:
+                raise ValueError(
+                    f"pipeline_layout has {len(self.pipeline_layout)} stages, "
+                    f"expected pp={self.pp}."
+                )
+            if any(count <= 0 for count in self.pipeline_layout):
+                raise ValueError("Every pipeline stage must hold at least one layer.")
+
+    @property
+    def heaviest_stage_share(self) -> float:
+        """This query's own largest pipeline stage, as a fraction of its layers.
+
+        `1 / pp` without `pipeline_layout` (every stage is the same size, matching
+        every formula and artifact fitted before this existed). With one, the
+        layout is self-describing -- its own sum is this query's `num_layers` --
+        so no external layer count is needed to answer "which stage is heaviest."
+        """
+        if self.pipeline_layout is None:
+            return 1.0 / float(self.pp)
+        return max(self.pipeline_layout) / float(sum(self.pipeline_layout))
 
     @property
     def world_size(self) -> int:
@@ -57,6 +90,29 @@ class TrainingParallelism:
     @classmethod
     def from_profile_parallelism(cls, value: Parallelism) -> TrainingParallelism:
         return cls(tp=value.tp, pp=value.pp, dp=value.dp, cp=value.cp, ep=value.ep)
+
+
+def stage_layer_counts(num_layers: int, parallelism: TrainingParallelism) -> tuple[int, ...]:
+    """Per-stage transformer-layer counts, stage 0 first.
+
+    Uniform `num_layers / pp` without `parallelism.pipeline_layout` -- the same
+    "not divisible" refusal every artifact fitted before this field existed
+    already raises, unmoved. An explicit layout is returned as given, after
+    checking it sums to `num_layers`: a layout for the wrong architecture is a
+    mismatch to catch here, not a typo to silently reinterpret.
+    """
+    layout = parallelism.pipeline_layout
+    if layout is None:
+        if num_layers % parallelism.pp != 0:
+            raise ValueError(
+                f"num_layers {num_layers} is not divisible by pipeline degree {parallelism.pp}."
+            )
+        return tuple(num_layers // parallelism.pp for _ in range(parallelism.pp))
+    if sum(layout) != num_layers:
+        raise ValueError(
+            f"pipeline_layout sums to {sum(layout)}, expected num_layers={num_layers}."
+        )
+    return layout
 
 
 def _attention_workload(length: int) -> int:

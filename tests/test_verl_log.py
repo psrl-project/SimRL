@@ -65,6 +65,12 @@ def _convert(tmp_path, log_dir, **kwargs):
     return summary, JsonlStore(tmp_path / "logs")
 
 
+def _write_train_metrics(path, steps: list[dict]) -> None:
+    with path.open("w", encoding="utf-8") as f:
+        for row in steps:
+            f.write(json.dumps(row) + "\n")
+
+
 class TestInstanceStreams:
     def test_all_replicas_are_converted(self, tmp_path):
         log_dir = _build_log_dir(tmp_path)
@@ -89,6 +95,78 @@ class TestRequestCounting:
         log_dir = _build_log_dir(tmp_path)
         summary, _ = _convert(tmp_path, log_dir)
         assert summary.n_request_rows == 16
+
+
+class TestTrainStream:
+    def test_absent_train_metrics_writes_nothing(self, tmp_path):
+        log_dir = _build_log_dir(tmp_path)
+        summary, store = _convert(tmp_path, log_dir)
+        assert summary.n_train_rows == 0
+        assert list(store.iter("train")) == []
+
+    def test_train_metrics_map_onto_the_three_phase_breakdown(self, tmp_path):
+        log_dir = _build_log_dir(tmp_path)
+        _write_train_metrics(
+            log_dir / "train_metrics.jsonl",
+            [
+                {
+                    "step": 1,
+                    "ts": 1100.0,
+                    "timing_s/gen": 60.0,
+                    "timing_s/old_log_prob": 5.0,
+                    "timing_s/adv": 0.1,
+                    "timing_s/update_actor": 20.0,
+                    "timing_s/update_weights": 1.0,
+                },
+                {
+                    "step": 2,
+                    "ts": 1200.0,
+                    "timing_s/gen": 55.0,
+                    "timing_s/old_log_prob": 6.0,
+                    "timing_s/adv": 0.1,
+                    "timing_s/update_actor": 22.0,
+                    "timing_s/update_weights": 1.5,
+                },
+            ],
+        )
+
+        summary, store = _convert(tmp_path, log_dir)
+
+        assert summary.n_train_rows == 2
+        rows = sorted(store.iter("train"), key=lambda r: r["start"])
+        first, second = rows
+        # Origin is 1000.0, the earliest stats_r*.jsonl sample.
+        assert first["end"] == pytest.approx(100.0)
+        assert first["recompute_time"] == pytest.approx(5.0)
+        assert first["train_time"] == pytest.approx(20.0)
+        assert first["sync_time"] == pytest.approx(1.0)
+        assert first["start"] == pytest.approx(100.0 - (5.0 + 20.0 + 1.0))
+        assert first["version"] == 1
+        assert second["version"] == 2
+
+    def test_timing_s_gen_is_excluded_from_the_block(self, tmp_path):
+        """`gen` is rollout time, not training: including it would make the
+        train block overlap the instance stream's own busy period instead of
+        sitting after it."""
+        log_dir = _build_log_dir(tmp_path)
+        _write_train_metrics(
+            log_dir / "train_metrics.jsonl",
+            [
+                {
+                    "step": 1,
+                    "ts": 1100.0,
+                    "timing_s/gen": 1000.0,
+                    "timing_s/old_log_prob": 5.0,
+                    "timing_s/update_actor": 20.0,
+                    "timing_s/update_weights": 1.0,
+                }
+            ],
+        )
+
+        _, store = _convert(tmp_path, log_dir)
+
+        [row] = list(store.iter("train"))
+        assert row["end"] - row["start"] == pytest.approx(26.0)
 
 
 class TestBadInput:

@@ -41,14 +41,21 @@ then provides three things:
   the policy's admission quota so that the candidate set the router orders does not change
   with the policy.
 
-  Two grants feed this window, and both stop at one cumulative ceiling. The seed is
-  `min(ingress_window_groups(batch_size), n_versions * batch_size)`. Each publish then asks
-  for another `batch_size`, and receives only what is left of the ceiling, so a late publish
-  can receive nothing. `n_versions * batch_size` is exactly what training will ever consume,
-  and a group staged past it is generated and then discarded. Policies that replace dropped
-  groups are outside this ceiling. Their replacement credit backfills a group the ceiling
-  already counted, so a GC-style policy can keep refilling its working set once the ceiling
-  is reached.
+  Two grants feed this window: a seed before the first publish, and a `batch_size`
+  top-up at each later publish. With `job.ingress_lifetime_cap` off (the default), both
+  are granted in full for the life of the run. Turning it on clamps both to a shared
+  lifetime ceiling of `n_versions * batch_size`, so a late publish can receive less or
+  nothing. Policies that replace dropped groups are unaffected either way, since their
+  replacement credit backfills a group the ceiling already counted.
+
+  `ingress_lifetime_cap` defaults off because no real system surveyed for this project
+  manages admission against a lifetime budget. `psrl`, `areal`, `slime` and `dressage`
+  run a continuous dispatcher that checks for a next step on its own. `verl_v1`, `roll`,
+  `openrlhf`, legacy verl, `skyrl`, `nemo_rl`, `trl` and `prime_rl` submit a fixed batch
+  every step for as long as their loop runs, with no pre-allocated total. Turn the flag
+  on only for a policy whose real system is verified to manage a bounded lifetime budget
+  this way. See `JobConfig.ingress_lifetime_cap` (`srl/config/schema.py`) for the
+  measured effect of each setting.
 
 There is no `job.max_staleness`. Change the bound through the preset's own field, for
 example `policy.staleness=1` for `psrl`.
@@ -65,6 +72,7 @@ example `policy.staleness=1` for `psrl`.
 | `on_route(req, instance_id, st)` | after every placement, including re-placements | no-op |
 | `on_group_complete(group, st)` | when the last response of a group finishes. `CompleteAction.KEEP` moves it to `ready_groups`, `DROP` discards the whole group | `KEEP` |
 | `can_sample(st)` | before each batch request. `False` keeps generating | `True` |
+| `on_batch_attempt(st)` | immediately before every `peek_batch`/`take_batch` call, but only applied (via `_apply_cancels`) when actually taking -- the engine loop's own stop-check peek runs read-only, since it can fire mid-event with another instance's event still uncommitted. Returns `Cancel` entries | `[]` |
 | `peek_batch(st)` / `take_batch(st)` | peek is also used by the engine loop's stop check. Take consumes. A batch is `batch_size` whole groups | abstract / `peek_batch` |
 | `on_batch_unavailable(st)` | each time no batch can be formed | no-op |
 | `will_sync_after_train(st)` | when pricing a step. `False` skips `sync_time` | `True` |
@@ -98,11 +106,19 @@ request lists. `SimState.groups` is a tuple of immutable `GroupView`s, one per l
 The ledger is updated from committed completions only, so it never reflects a segment that
 a speculative event may still undo. Groups leave the ledger when consumed or dropped.
 
-### Publish hook and cancels
+### Publish hook, batch-attempt hook, and cancels
 
-`on_publish` replaces any notion of "expiry": at the moment a training step publishes, the
-policy returns `Cancel(group_id, action, reason=None)` for live groups, running or done,
-that the new version makes worthless.
+`on_publish` and `on_batch_attempt` both return `Cancel(group_id, action, reason=None)`
+entries, applied identically through `_apply_cancels`, and together replace any notion of
+"expiry": `on_publish` fires at the moment a training step publishes, for the runtime
+(L2) cancels real systems trigger on a weight update; `on_batch_attempt` fires live,
+immediately before the policy actually takes a training batch, for the sampling-pool (L3)
+checks every real system in this study ties to the act of assembling a batch rather than to
+a publish timer decoupled from consumption (`trl`, `verl_v1`'s `drop` strategy, and
+`prime_rl`'s L3 half all use it this way; `dressage` uses it for its retroactive,
+active-eviction resweep of the whole ready pool, alongside its own unrelated
+completion-time check in `on_group_complete`). A policy with no separate L3 mechanism
+simply leaves `on_batch_attempt` at its no-op default and does everything in `on_publish`.
 
 | `CancelAction` | Effect |
 |---|---|
@@ -130,7 +146,7 @@ cancel of a group still generating, `l3_stale` for a finished group (also the de
   Their segment list records which version produced which tokens, so `v_min` and `v_max`
   differ for such requests.
 
-If the served version did not change (slime between pushes) nothing is paused either way.
+If the served version did not change, nothing is paused either way.
 
 ## The rule library
 
@@ -140,14 +156,13 @@ L1 is admission, L2 is the runtime cancel at publish, L3 is sampling.
 | Layer | Primitive | What it does | Used by |
 |---|---|---|---|
 | L1 | `ProgressQuota(ofp)` | `(ofp + train_version + 1) * batch_size - (accepted + running)` groups | areal, skyrl |
-| L1 | `WatermarkGate(over_sampling_ratio)` | 0 while `remaining >= batch_size`, else `max(1, round(ratio * batch_size))` | slime |
 | L1 | `LegacyOverage(threshold, require_batches)` | bounded hand-off queue plus a sample-overage counter | verl |
 | L2 | `CancelBelowVersion(horizon, action)` | cancel live groups with `admit_version < new_version - horizon` | nemo_rl, prime_rl |
 | L2 | `VersionSpanCap(max_preempts, action)` | cancel groups whose members span more than `max_preempts + 1` distinct versions, counting the version being published | dressage |
 | L3 | `FIFO` | oldest first by `(dispatch_time, group_id)` of the first member | areal, skyrl, openrlhf, dressage, trl, prime_rl, nemo_rl |
-| L3 | `OffPolicySpan(threshold, strategy)` | `span = train_version - admit_version + 1`. `drop` replaces finished groups past the threshold at publish, `wait` blocks sampling while a running group has reached it | verl_v1 |
+| L3 | `OffPolicySpan(threshold, strategy)` | `span = train_version - admit_version + 1`. `drop` replaces finished groups past the threshold at every batch-assembly attempt, `wait` blocks sampling while a running group has reached it | verl_v1 |
 | L3 | `WarnOnly(threshold)` | counts taken groups past the threshold, never drops | skyrl |
-| L3 | `VersionWindow(threshold, refill)` | at publish, finished groups with `new_version - admit_version > threshold` are cancelled, `REPLACE` when `refill` else `DROP` | trl, prime_rl |
+| L3 | `VersionWindow(threshold, refill)` | at every batch-assembly attempt, finished groups with `new_version - admit_version > threshold` are cancelled, `REPLACE` when `refill` else `DROP` | trl, prime_rl |
 | L3 | `DistinctVersionWindow(keep)` | keep the last `keep` distinct observed versions in arrival order. `keep <= 0` is off | dressage |
 
 ## Presets at a glance
@@ -159,7 +174,7 @@ Defaults are those of the dataclasses in `srl/config/policies/`. `B` is `job.bat
 | `psrl` | `staleness` (2) | `(staleness + 1) * B` | abort | no |
 | `areal` | `max_head_offpolicyness` (0) | `(2 * ofp + 1) * B` | abort | yes |
 | `roll` | `ceil(async_generation_ratio)` (1) | `(ceil(ratio) + 2) * B` | abort | yes |
-| `slime` | none | `(ceil(over_sampling_ratio) + 2) * B` | abort | yes |
+| `slime` | none | `2 * max(T, B) + B`, `T` = threshold groups | per `flush_cache_interval` | yes |
 | `verl` | `ceil(staleness_threshold)` (2) | `(ceil(threshold) + 1) * B` | abort | yes |
 | `verl_v1` | `max_off_policy_threshold` (8, or none) | `(max(h, ceil(warmup)) + 2) * B`, `h` = threshold or 1 | abort | no |
 | `skyrl` | `max_staleness_steps` (4) | `(steps + 2) * B` | in place | yes |
@@ -172,10 +187,11 @@ Defaults are those of the dataclasses in `srl/config/policies/`. `B` is `job.bat
 Where `rollout.max_inflight` is honoured it caps concurrently generating prompt groups at
 that value. Presets that ignore it have their own caps, listed below.
 
-The **Initial ingress groups** column is the formula the preset declares. The seed actually
-granted is that value clamped to `n_versions * B`, the cumulative ceiling described under
-`ingress_window_groups` above. A five-version run at `B = 4` can never stage more than 20 groups
-whatever the column says.
+The **Initial ingress groups** column is the formula the preset declares. With
+`job.ingress_lifetime_cap` set, the seed actually granted is that value clamped to
+`n_versions * B`, the lifetime ceiling described under `ingress_window_groups` above --
+a five-version run at `B = 4` can then never stage more than 20 groups whatever the
+column says. With the (default) flag off, the formula's value is granted as-is.
 
 ## Per-system presets
 
@@ -240,18 +256,20 @@ training step. Admission is `budget - (running + completed)` groups.
 
 ### `slime`
 
-`update_weights_interval: 1`, `over_sampling_ratio: 1.0`, `pause_mode: abort`.
+`server_concurrency: 64`, `group_prefetch_factor: 1`, `flush_cache_interval: 1`.
 
-No staleness parameter. The bound comes from the loop structure. `admit_quota` is 0 while
-`remaining >= B`, else `max(1, round(over_sampling_ratio * B))` groups, where `remaining`
-counts groups admitted since the last take and resets to 0 on take. Surplus groups beyond a
-full batch are dropped whole at completion. The batch is the first `B` ready groups.
+No staleness parameter. Weights publish every training step. `admit_quota` returns one group
+while fewer than `threshold` groups are still generating and fewer than `threshold` are
+complete and waiting, with `threshold = max(1, server_concurrency * n_instances // group_size)
+* group_prefetch_factor`. The running count comes from the ledger (`len(groups) -
+len(ready_groups)`), so a group with some members finished still counts as active. The batch
+is the first `B` ready groups in arrival order.
 
-`rollout_version_after_train` advances the served version only every
-`update_weights_interval` steps, and `will_sync_after_train` is true only at that push, so
-sync and weight-load costs are charged only then. `check_invariants` asserts
-`train_version - served_version <= interval`. `stall_time` accumulates time spent with
-work in flight but no batch.
+`pause_mode` follows `flush_cache_interval`: the first publication always aborts in-flight
+generation, later ones abort when `(version - 1)` is a multiple of the interval, and a
+nonpositive interval never aborts again. In place otherwise. An aborted flat sample keeps its
+segments and is requeued, so its `v_min` survives the abort. Nothing is ever discarded.
+`validate` refuses a configuration whose threshold is below one batch.
 
 ### `verl`
 

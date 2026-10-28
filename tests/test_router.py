@@ -340,9 +340,15 @@ class TestRerouteAccounting:
         assert req.num_reroutes == 1
 
     def test_a_cross_instance_reroute_is_counted_separately(self):
-        """The quantity the real run puts at 58.5%, so it must be measurable."""
+        """The quantity the real run puts at 58.5%, so it must be measurable.
+
+        Trajectory-sticky is on by default (see TestTrajectorySticky), which
+        would pin this reroute right back to `origin` regardless of load, so
+        this test -- specifically about the free-reroute balance path -- opts
+        out of it.
+        """
         instances = _instances(2)
-        router = _router(instances)
+        router = _router(instances, enable_trajectory_sticky=False)
         req = _req(0)
         router.enqueue([req], t=0.0)
         router.dispatch(t=0.0)
@@ -407,6 +413,81 @@ class TestGroupSticky:
             router.enqueue([_req(rid, group_id=7)], t=float(rid))
             router.dispatch(t=float(rid))
         assert sorted(inst.n_active for inst in instances) == [0, 3]
+
+
+class TestTrajectorySticky:
+    """Partial rollout resumes on the instance it was already on.
+
+    verl and every other system this study models re-dispatch a resumed
+    trajectory back to whatever worker already had it -- there is no
+    cross-instance migration logic in the loopback path at all, so the
+    faithful default is on, unlike `enable_group_sticky` (a genuinely
+    optional SMG feature that defaults off). `req.instance_id` already
+    survives an abort (`instance.py::_release` never touches it), so the
+    prior instance is always available without new state.
+    """
+
+    def test_default_is_enabled(self):
+        router = _router(_instances(2))
+        assert router.enable_trajectory_sticky is True
+
+    def test_resumed_request_returns_to_its_prior_instance(self):
+        instances = _instances(2)
+        router = _router(instances)
+        req = _req(0)
+        router.enqueue([req], t=0.0)
+        router.dispatch(t=0.0)
+        origin = req.instance_id
+        instances[origin].cancel([req], keep_tokens=True, requeue=False)
+        # Load the origin so a load-balancing strategy, left unchecked, would
+        # send this request to the other instance instead.
+        for filler in range(5):
+            instances[origin].add_request(_req(100 + filler), 0.0)
+        router.enqueue([req], t=1.0)
+        router.dispatch(t=1.0)
+        assert req.instance_id == origin
+
+    def test_disabled_falls_back_to_free_reroute(self):
+        instances = _instances(2)
+        router = _router(instances, enable_trajectory_sticky=False)
+        req = _req(0)
+        router.enqueue([req], t=0.0)
+        router.dispatch(t=0.0)
+        origin = req.instance_id
+        instances[origin].cancel([req], keep_tokens=True, requeue=False)
+        for filler in range(5):
+            instances[origin].add_request(_req(100 + filler), 0.0)
+        router.enqueue([req], t=1.0)
+        router.dispatch(t=1.0)
+        assert req.instance_id != origin
+
+    def test_the_pin_is_soft_when_the_prior_instance_cannot_help(self):
+        """A hard pin would strand a resumed request forever once its prior
+        instance fills up. SMG's own group pin falls through the same way."""
+        instances = _instances(2)
+        router = _router(
+            instances,
+            gate=AdmissionGate(max_concurrent_seqs_per_instance=1),
+        )
+        req = _req(0)
+        router.enqueue([req], t=0.0)
+        router.dispatch(t=0.0)
+        origin = req.instance_id
+        instances[origin].cancel([req], keep_tokens=True, requeue=False)
+        # Fill the origin to its cap so it can no longer take the resume.
+        instances[origin].add_request(_req(100), 0.0)
+        router.enqueue([req], t=1.0)
+        router.dispatch(t=1.0)
+        assert req.instance_id != origin
+
+    def test_first_placement_is_unaffected(self):
+        """A request with no prior instance has nothing to stick to, so the
+        very first placement is ordinary balance routing either way."""
+        instances = _instances(2)
+        router = _router(instances)
+        router.enqueue([_req(i) for i in range(4)], t=0.0)
+        router.dispatch(t=0.0)
+        assert [inst.n_active for inst in instances] == [2, 2]
 
 
 class TestPreemptLoopback:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .admission import LegacyOverage, ProgressQuota, WatermarkGate
+from .admission import LegacyOverage, ProgressQuota
 from .runtime import CancelBelowVersion, VersionSpanCap
 from .sampling import FIFO, DistinctVersionWindow, OffPolicySpan, VersionWindow, WarnOnly
 
@@ -16,5 +16,4 @@ __all__ = [
     "VersionSpanCap",
     "VersionWindow",
     "WarnOnly",
-    "WatermarkGate",
 ]

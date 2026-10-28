@@ -88,7 +88,7 @@ def test_writing_no_rows_is_rejected(tmp_path):
 
 def test_unknown_op_name_is_rejected(tmp_path):
     with pytest.raises(Exception):
-        _writer(tmp_path).table_path("moe")
+        _writer(tmp_path).table_path("not_a_real_op")
 
 
 def test_attention_rows_are_rejected_against_the_gemm_op(tmp_path):

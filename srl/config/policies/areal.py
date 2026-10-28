@@ -23,6 +23,11 @@ class ArealPolicyConfig:
     def horizon(self) -> int:
         return self.max_head_offpolicyness
 
-    def ingress_window_groups(self, batch_size: int) -> int:
+    def ingress_window_groups(
+        self,
+        batch_size: int,
+        group_size: int = 1,
+        n_instances: int = 1,
+    ) -> int:
         # `max_head_offpolicyness` is both the progress offset and the version span.
         return (2 * self.max_head_offpolicyness + 1) * batch_size

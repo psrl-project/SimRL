@@ -15,7 +15,7 @@ class PrimeRLPolicyConfig:
     max_off_policy_steps: int = 8
     max_inflight: int = 1024
     target_lag: int = 1
-    action: str = "drop"
+    action: str = "replace"
 
     def build(self, max_inflight: int | None = None) -> PrimeRLPolicy:
         policy = PrimeRLPolicy(
@@ -31,7 +31,12 @@ class PrimeRLPolicyConfig:
     def horizon(self) -> int:
         return self.max_off_policy_steps
 
-    def ingress_window_groups(self, batch_size: int) -> int:
+    def ingress_window_groups(
+        self,
+        batch_size: int,
+        group_size: int = 1,
+        n_instances: int = 1,
+    ) -> int:
         lag_bound = (self.target_lag + 1) * batch_size
         staleness_bound = (self.max_off_policy_steps + 2) * batch_size
         return min(self.max_inflight, max(lag_bound, staleness_bound))

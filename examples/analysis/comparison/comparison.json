@@ -1,0 +1,36 @@
+{
+  "workload": "dapo_n64_cap40_kv1_normal (64 requests, Qwen3-8B, TP1, cap=40, H20)",
+  "1_discrete_event_count": {
+    "real_vllm_steps": 36013,
+    "simrl_run_sim_events": 6584,
+    "frontier_flashinfer_events": 36010,
+    "frontier_fa3_events": 36010,
+    "aiconfigurator_events": null,
+    "aiconfigurator_events_reason": "aiconfigurator has no discrete-event or trace-replay mode -- cli_estimate() is one closed-form steady-state formula evaluation, not a stepped simulation",
+    "llmservingsim_events": 36010
+  },
+  "2_simulator_overhead_wall_clock_seconds": {
+    "simrl_run_sim_native": 3.42,
+    "simrl_run_sim_cpp": 2.56,
+    "frontier_flashinfer_warm_cache": 86.19,
+    "frontier_flashinfer_logging_disabled": 75.62,
+    "frontier_fa3_warm_cache": 82.77,
+    "aiconfigurator_cli_estimate": 3.41,
+    "llmservingsim": 627.1
+  },
+  "3_end_to_end_accuracy": {
+    "real_vllm_span_s": 656.9763861261308,
+    "simrl_span_s": 640.4064881608149,
+    "simrl_error_pct": -2.522145135690574,
+    "frontier_flashinfer_span_s": 470.51193870526095,
+    "frontier_flashinfer_error_pct": -28.38221454508582,
+    "frontier_fa3_span_s": 770.2689325067294,
+    "frontier_fa3_error_pct": 17.244538582068284,
+    "aiconfigurator_span_s": 168.24158217858184,
+    "aiconfigurator_error_pct": -74.39153282652663,
+    "aiconfigurator_span_note": "not a replay prediction -- total_output_tokens / cli_estimate's steady-state tokens/s at one representative (isl=mean, osl=mean, batch_size=40) point; see README",
+    "llmservingsim_span_s": 692.134,
+    "llmservingsim_error_pct": 5.351427329249455,
+    "llmservingsim_note": "skipped skew (heterogeneous-decode-batch) calibration for time -- a disclosed fidelity tradeoff, not a structural limitation; see README"
+  }
+}

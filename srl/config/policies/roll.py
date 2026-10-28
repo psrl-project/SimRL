@@ -24,5 +24,13 @@ class RollPolicyConfig:
     def horizon(self) -> int:
         return math.ceil(self.async_generation_ratio)
 
-    def ingress_window_groups(self, batch_size: int) -> int:
-        return (math.ceil(self.async_generation_ratio) + 2) * batch_size
+    def ingress_window_groups(
+        self,
+        batch_size: int,
+        group_size: int = 1,
+        n_instances: int = 1,
+    ) -> int:
+        # Matches RollPolicy._configure's own budget exactly. completed_prompts
+        # never decrements on an ordinary take_batch, so staging beyond this
+        # is a permanent, not transient, router surplus.
+        return (math.ceil(self.async_generation_ratio) + 1) * batch_size

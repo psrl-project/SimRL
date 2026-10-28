@@ -63,14 +63,14 @@ step = sum over projections   (layers * gemm latency)              # plus the lo
      + sum over collectives   (multiplier * comm latency)          # empty at tp = 1
      + attention_layers * per-layer attention latency
      + gdn_layers       * per-layer gated-delta-net latency        # 0 for a dense model
-     + expert weight-read excess                                  # 0 for a dense model
+     + moe_layers       * per-layer routed-expert grouped-GEMM latency  # 0 for a dense model
 ```
 
 - **GEMMs.** Each projection is queried at `(m = tokens, n, k)` with the layer count as its
   multiplier. The logits projection runs once per step over `request_count` tokens, because an
-  engine computes logits only for each sequence's last token. A mixture-of-experts block issues
-  one grouped GEMM per layer rather than one per activated expert: decomposing it per expert
-  charges launch floor per tiny GEMM and is badly wrong in the other direction.
+  engine computes logits only for each sequence's last token. A mixture-of-experts block's
+  router (and its optional shared expert, which every token traverses unconditionally) stay on
+  this table; the routed experts themselves do not -- see "Routed experts" below.
 - **Attention.** `context_attention` and `generation_attention` are queried per layer, and each
   is multiplied by its **own** layer count. A dense model has `attention_layers = num_layers` and
   `gdn_layers = 0`. A hybrid model such as Qwen3.5-35B-A3B runs softmax attention on 10 of its 40
@@ -92,13 +92,15 @@ step = sum over projections   (layers * gemm latency)              # plus the lo
 - **GDN.** Priced separately from softmax attention because its cost function is different: the
   chunked prefill is varlen and linear in the packed token total, and the recurrent decode has no
   history-depth axis at all.
-- **Expert weight read.** A grouped expert GEMM reads every activated expert's weights whatever
-  its token share, while an `m = tokens` GEMM query charges only the selected copies.
-  `_expert_weight_seconds` adds the excess, priced at the device's memory bandwidth rather than
-  through a table, because no measured GEMM row carries more than one weight copy. It is charged
-  in full rather than amortised per expert's token share: dividing by tokens per expert is
-  physically defensible for prefill but raised decode error, and decode is where the term is
-  load-bearing.
+- **Routed experts.** Priced from a dedicated `moe` kernel table, measured directly off vLLM's
+  real `fused_experts()` dispatch (the Triton grouped GEMM `UnquantizedMoeBackend.TRITON`
+  selects on H20/SM90), rather than from the generic GEMM table plus an analytical weight-read
+  correction. A grouped expert GEMM reads every activated expert's weights whatever its token
+  share, and the real measured kernel absorbs that traffic (plus whatever real routing skew and
+  achieved bandwidth occur at each swept shape) directly, with no separate correction term
+  needed. `ModelOps.moe_queries` emits one query per step, multiplied by `num_layers`: every
+  layer carries an MoE block regardless of whether it runs softmax attention or a gated delta
+  net. See `cost/kernel/ops/moe.py` and `cost/kernel/sol.py::moe_sol`.
 
 **Elementwise is measured but not summed.** Rope, norms, activations and `tensor_plumbing` have a
 perf table, and `ComposedRollout` deliberately does not add them. The measured GEMM and attention

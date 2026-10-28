@@ -29,5 +29,10 @@ class VerlPolicyConfig:
     def horizon(self) -> int:
         return math.ceil(self.staleness_threshold)
 
-    def ingress_window_groups(self, batch_size: int) -> int:
+    def ingress_window_groups(
+        self,
+        batch_size: int,
+        group_size: int = 1,
+        n_instances: int = 1,
+    ) -> int:
         return (math.ceil(self.staleness_threshold) + 1) * batch_size

@@ -1,13 +1,16 @@
-"""Applying a fleet plan: rebuild the instance list at a weight update.
+"""Owning every TP slot a run may use, and reshaping which GPU-disjoint subset is awake.
 
-A weight update invalidates every KV block anyway. `abort_all` frees them and
-`reset_hashes` clears the prefix-cache map, so this is the one moment a rebuild
-costs nothing beyond scheduling metadata. There is no KV to migrate.
+A slot's TP degree never changes: `SlotFleet` builds one `NativeInstance` per slot at
+construction and never discards or renumbers it, so per-instance telemetry history (`step_stats`,
+`instance_id`) lines up for the whole run -- `Simulator.instances[event.instance_id]` indexing
+depends on this. Only the *awake* subset is handed to the router; a sleeping slot holds no
+requests and produces no events (`Simulator._seed_events` already skips `n_active == 0`), so its
+telemetry row stays flat at zero until it wakes.
 
-Instances are reused when their TP degree is unchanged, which keeps their
-`step_stats` history: telemetry reads it per instance, so discarding an instance
-would reset every per-instance row at each weight update and make span and
-utilisation comparisons against a measured run wrong.
+Reshaping costs real work: `abort_all` drops the KV of every request leaving an awake slot,
+charging `reprefill_tokens` exactly the way a weight-update rebuild always has (see
+`component/rollout/engine/instance.py:abort_all`). The caller must re-enqueue the returned
+requests into the router.
 """
 
 from __future__ import annotations
@@ -19,118 +22,147 @@ from ...component.rollout.engine import NativeInstance, Request
 if TYPE_CHECKING:
     from ...component.rollout.router import Router
     from ...cost.rollout.base import RolloutCostModel
-    from .plan import FleetPlan
+    from .plan import Slot, SlotTable
 
 
-class DynamicParallelFleet:
-    """Owns the rollout instances and re-shapes them on demand."""
+class SlotFleet:
+    """Owns every slot's instance and tracks which GPU-disjoint subset is awake."""
 
     def __init__(
         self,
+        table: "SlotTable",
         cost_models: dict[int, "RolloutCostModel"],
         kv_blocks_per_tp: dict[int, int],
         router: "Router",
         instance_cfg: dict,
-        initial_plan: "FleetPlan",
+        initial_awake: frozenset[int],
         t: float = 0.0,
     ) -> None:
         """
-        Build the starting fleet and bind it to the router.
+        Build every slot's instance once and wake the starting subset.
 
         Args:
-            cost_models: TP degree -> cost model, one per degree the plan may use.
-            kv_blocks_per_tp: TP degree -> KV capacity in blocks. Genuinely differs
-                per degree: sharding weights across more ranks frees memory for
-                cache, so a TP=2 rank holds more blocks than a TP=1 rank, not fewer.
-            router: The router to rebind on every rebuild. Must be the same object
-                the simulator dispatches through.
-            instance_cfg: Engine knobs shared by every instance (token budget, block
-                size, admission gates, prefix caching).
-            initial_plan: The starting layout.
-            t: Simulation time the first instances start at.
+            table: The fixed catalogue of slots this run may ever use.
+            cost_models: TP degree -> cost model, one per degree the table declares.
+            kv_blocks_per_tp: TP degree -> KV capacity in blocks while a slot of that degree is
+                awake. Sized by the caller for whatever memory model the run assumes (e.g. a
+                sleeping slot releasing its memory back to the pool via vLLM sleep mode).
+            router: The router to rebind on every reshape. Must be the same object the simulator
+                dispatches through.
+            instance_cfg: Engine knobs shared by every instance (token budget, block size,
+                admission gates, prefix caching, eviction).
+            initial_awake: Slot ids awake at `t`. Must be GPU-disjoint.
+            t: Simulation time every instance starts at.
         """
+        self._table = table
         self._cost_models = cost_models
         self._kv_blocks_per_tp = kv_blocks_per_tp
         self._router = router
         self._instance_cfg = instance_cfg
-        self.instances: list[NativeInstance] = []
-        self.plan = initial_plan
-        self.n_rebuilds = 0
-        self.n_heterogeneous_plans = 0
-        self._apply(initial_plan, t)
+        unknown = sorted({slot.tp for slot in table.slots} - set(cost_models))
+        if unknown:
+            raise ValueError(f"Slot table uses TP {unknown} but no cost model was supplied for it.")
+        unknown_kv = sorted({slot.tp for slot in table.slots} - set(kv_blocks_per_tp))
+        if unknown_kv:
+            raise ValueError(f"Slot table uses TP {unknown_kv} but no KV capacity was supplied for it.")
+        if not table.awake_is_valid(initial_awake):
+            raise ValueError(f"Initial awake set {sorted(initial_awake)} is not GPU-disjoint.")
 
-    def rebuild(self, plan: "FleetPlan", t: float) -> list[Request]:
+        self._by_slot_id: dict[int, NativeInstance] = {
+            slot.slot_id: self._new_instance(slot) for slot in table.slots
+        }
+        for inst in self._by_slot_id.values():
+            inst.t_local = t
+        self.awake: frozenset[int] = frozenset()
+        self.n_reshapes = 0
+        self.n_heterogeneous_awakes = 0
+        self._set_awake(initial_awake)
+
+    @property
+    def table(self) -> "SlotTable":
+        return self._table
+
+    @property
+    def instances(self) -> list[NativeInstance]:
+        """Every slot's instance, in slot-id order -- what `Simulator.instances` binds to.
+
+        Fixed length and fixed order for the whole run: position `i` is always slot id `i`'s
+        instance, awake or not, which is what keeps `Simulator`'s index-by-instance-id bookkeeping
+        valid across a reshape.
         """
-        Abort everything in flight, re-shape the fleet, and hand the work back.
+        return [self._by_slot_id[slot.slot_id] for slot in self._table.slots]
+
+    @property
+    def awake_instances(self) -> list[NativeInstance]:
+        """Currently awake instances only -- what the router may place work on."""
+        return [self._by_slot_id[sid] for sid in sorted(self.awake)]
+
+    def reshape(self, awake: frozenset[int], t: float, reconfig_time_s: float = 0.0) -> list[Request]:
+        """
+        Abort everything leaving the awake set, wake the rest, and hand aborted work back.
 
         Args:
-            plan: The new layout.
-            t: Current simulation time. Newly built instances start here, since a
-                fresh instance would otherwise sit at 0.0 and trip the simulator's
-                clock-alignment assertion later, far from the cause.
+            awake: Target slot ids. Must be GPU-disjoint per `table.awake_is_valid`.
+            t: Current simulation time.
+            reconfig_time_s: Pause charged only to slots newly woken by this call. An
+                already-awake slot keeps its KV and its clock untouched -- only the slots
+                actually involved in the transition pause.
 
         Returns:
-            The aborted requests, for the caller to re-enqueue into the router.
-            They keep their generated tokens and version segments. Only the KV is
-            lost, which is what a weight update means.
+            Requests aborted off slots leaving the awake set: generated tokens and version
+            segments intact, KV gone. The caller must re-enqueue them into the router.
         """
+        if not self._table.awake_is_valid(awake):
+            raise ValueError(f"Awake set {sorted(awake)} is not GPU-disjoint.")
+        leaving = self.awake - awake
+        waking = awake - self.awake
         aborted: list[Request] = []
-        for inst in self.instances:
-            aborted.extend(inst.abort_all(requeue=False))
-        self._apply(plan, t)
-        self.n_rebuilds += 1
-        if plan.is_heterogeneous:
-            self.n_heterogeneous_plans += 1
+        for slot_id in leaving:
+            aborted.extend(self._by_slot_id[slot_id].abort_all(requeue=False))
+        self._set_awake(awake, t=t, waking=waking, reconfig_time_s=reconfig_time_s)
+        self.n_reshapes += 1
+        if len({self._table.by_id[sid].tp for sid in awake}) > 1:
+            self.n_heterogeneous_awakes += 1
         return aborted
 
-    def _apply(self, plan: "FleetPlan", t: float) -> None:
-        """Materialise `plan`, reusing instances whose TP degree is unchanged."""
-        unknown = sorted(set(plan.tp_per_instance) - set(self._cost_models))
-        if unknown:
-            raise ValueError(
-                f"Plan uses TP {unknown} but no cost model was supplied for it."
-            )
-
-        # Reuse pool keyed on TP alone. Reading the degree off `inst.tp` rather than
-        # off the cost model is deliberate: only ComposedRollout carries a TP degree,
-        # so deriving it would make reuse silently never fire for the fitted models.
-        pool: dict[int, list[NativeInstance]] = {}
-        for inst in self.instances:
-            pool.setdefault(inst.tp, []).append(inst)
-
-        rebuilt: list[NativeInstance] = []
-        for instance_id, tp in enumerate(plan.tp_per_instance):
-            available = pool.get(tp)
-            if available:
-                inst = available.pop(0)
-                inst.instance_id = instance_id
-                # Never rewind a clock: a reused instance may already be ahead of a
-                # caller-supplied `t`, and moving it backwards would surface as a
-                # failure at some later alignment rather than here.
+    def _set_awake(
+        self,
+        awake: frozenset[int],
+        t: float | None = None,
+        waking: frozenset[int] | None = None,
+        reconfig_time_s: float = 0.0,
+    ) -> None:
+        """Commit the new awake set and rebind the router to it."""
+        self.awake = frozenset(awake)
+        if t is not None:
+            for slot_id in self.awake:
+                inst = self._by_slot_id[slot_id]
+                # Never rewind a clock: an already-awake slot may be ahead of `t`.
                 inst.t_local = max(inst.t_local, t)
-            else:
-                inst = self._new_instance(instance_id, tp)
-                inst.t_local = t
-            rebuilt.append(inst)
+            for slot_id in waking or ():
+                inst = self._by_slot_id[slot_id]
+                inst.t_local = max(inst.t_local, t + reconfig_time_s)
+        # `router.instances` stays the full, dense, position-equals-instance_id list for the
+        # whole run -- `Router._place` indexes it positionally. `awake` is the narrowing filter;
+        # see `Router._active_instances`.
+        self._router.instances = self.instances
+        self._router.awake = self.awake
 
-        self.instances = rebuilt
-        self.plan = plan
-        self._router.instances = rebuilt
-
-    def _new_instance(self, instance_id: int, tp: int) -> NativeInstance:
-        """Construct one instance at the given TP degree."""
+    def _new_instance(self, slot: "Slot") -> NativeInstance:
+        """Construct the one instance this slot will ever have."""
         cfg = self._instance_cfg
         return NativeInstance(
-            cost=self._cost_models[tp],
+            cost=self._cost_models[slot.tp],
             token_budget=cfg["token_budget"],
-            kv_blocks=self._kv_blocks_per_tp[tp],
+            kv_blocks=self._kv_blocks_per_tp[slot.tp],
             block_size=cfg["block_size"],
             max_running=cfg["max_running"],
             max_concurrency=cfg["max_concurrency"],
-            instance_id=instance_id,
-            tp=tp,
+            instance_id=slot.slot_id,
+            tp=slot.tp,
             reject_if_kv_full=cfg["reject_if_kv_full"],
             reject_if_waiting=cfg["reject_if_waiting"],
             reject_if_running_full=cfg["reject_if_running_full"],
             enable_prefix_caching=cfg["enable_prefix_caching"],
+            eviction=cfg.get("eviction"),
         )

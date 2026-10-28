@@ -124,7 +124,7 @@ def _generate_bridge_candidates(
     )
     world_size = int(search.get("world_size", config.hardware.gpu_count))
     micro_batch_size = int(search.get("micro_batch_size", 1))
-    pipeline_parallel_sizes = _as_int_list(search["pipeline_parallel_sizes"])
+    pipeline_parallel_sizes = _as_int_list(search.get("pipeline_parallel_sizes", [1]))
     if "num_microbatches" in search:
         num_microbatches = _as_int_list(search["num_microbatches"])
     else:
@@ -143,6 +143,47 @@ def _generate_bridge_candidates(
         raise ValueError("search_space.sequence_lengths is required.")
     recompute = search.get("recompute", search.get("recompute_modes", "full"))
     recompute_modes = [str(recompute)] if isinstance(recompute, str) else [str(item) for item in recompute]
+    # Explicit (TP, PP, CP) triples keep a sweep to the topologies it was designed around.
+    # Crossing independent size lists instead evaluates every combination, which for a model
+    # with three plausible tensor degrees and four pipeline depths is a ten-hour sweep whose
+    # extra cells answer no question.
+    if "topologies" in search:
+        triples = [tuple(int(item) for item in value) for value in search["topologies"]]
+        for triple in triples:
+            if len(triple) != 3:
+                raise ValueError(
+                    "search_space.topologies entries must be [tensor, pipeline, context] "
+                    f"degrees, got {triple!r}."
+                )
+        candidates: list[TrainingCandidate] = []
+        for tp, pp, cp in triples:
+            candidates.extend(
+                enumerate_training_candidates(
+                    world_sizes=[world_size],
+                    tensor_parallel_sizes=[tp],
+                    pipeline_parallel_sizes=[pp],
+                    context_parallel_sizes=[cp],
+                    micro_batch_sizes=[micro_batch_size],
+                    num_microbatches=num_microbatches,
+                    sequence_shapes=sequence_shapes,
+                    schedules=[str(item) for item in search.get("schedules", ["1f1b"])],
+                    recompute_modes=recompute_modes,
+                    constraints=constraints,
+                    repeats=1,
+                    packing=str(search.get("packing", "bshd")),
+                    data_parallel_sizes=(
+                        _as_int_list(search["data_parallel_sizes"])
+                        if "data_parallel_sizes" in search
+                        else None
+                    ),
+                    expert_parallel_sizes=(
+                        _as_int_list(search["expert_parallel_sizes"])
+                        if "expert_parallel_sizes" in search
+                        else None
+                    ),
+                )
+            )
+        return candidates
     return enumerate_training_candidates(
         world_sizes=[world_size],
         tensor_parallel_sizes=_as_int_list(search["tensor_parallel_sizes"]),

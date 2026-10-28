@@ -3,5 +3,5 @@
 PRESET=prime_rl
 PRIMARY_KNOB=policy.max_off_policy_steps
 PRIMARY_VALUES=(0 1 2 3 4 5)
-PRIMARY_LABEL="prime_rl max_off_policy_steps (versions)"
+PRIMARY_LABEL="prime_rl max_off_policy_steps"
 PINS=()

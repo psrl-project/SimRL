@@ -326,6 +326,51 @@ class GdnQuery:
 
 
 @dataclass(frozen=True)
+class MoeQuery:
+    """One routed-MoE grouped-GEMM call to price, across every activated expert.
+
+    Separate from `GemmQuery` because `router` stays on that table (the gating decision runs
+    before this kernel and is not part of it), while this prices `fused_experts()` itself:
+    gate_up + down, with the activated-expert weight-read traffic the dense table's
+    `m=token_count` shape cannot express.
+    """
+
+    num_tokens: int
+    hidden_size: int
+    intermediate_size: int
+    num_experts: int
+    top_k: int
+    dtype: str = "bfloat16"
+    backend: str | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("num_tokens", "hidden_size", "intermediate_size", "num_experts", "top_k"):
+            if getattr(self, name) <= 0:
+                raise KernelCoverageError(f"MoE {name} must be positive, got {getattr(self, name)!r}.")
+
+    @property
+    def op_name(self) -> str:
+        """Return the parquet op name this query reads."""
+        return "moe"
+
+    @property
+    def slice_key(self) -> tuple[Any, ...]:
+        """Return the categorical key in `MOE_OP.slice_columns` order."""
+        return (
+            self.hidden_size,
+            self.intermediate_size,
+            self.num_experts,
+            self.top_k,
+            canonical_dtype(self.dtype),
+        )
+
+    @property
+    def coords(self) -> tuple[float, ...]:
+        """Return interpolation coordinates in `MOE_OP.axis_columns` order."""
+        return (float(self.num_tokens),)
+
+
+@dataclass(frozen=True)
 class OptimizerQuery:
     """One fused optimizer step to price, over one rank's parameter shard.
 
@@ -434,6 +479,7 @@ _AnyQuery = (
     | AttentionQuery
     | TrainingAttentionQuery
     | ElementwiseQuery
+    | MoeQuery
     | OptimizerQuery
     | CommQuery
 )
@@ -572,6 +618,21 @@ class KernelDatabase:
 
         Args:
             query (GdnQuery): Per-rank shape and phase.
+
+        Returns:
+            float: `SOL(query) / interpolated utility`, in seconds.
+
+        Raises:
+            KernelCoverageError: If no table or slice covers the query.
+        """
+        return self._price(query)
+
+    def query_moe(self, query: MoeQuery) -> float:
+        """
+        Return the predicted latency in seconds of one routed-MoE grouped-GEMM call.
+
+        Args:
+            query (MoeQuery): Per-rank shape, across every activated expert.
 
         Returns:
             float: `SOL(query) / interpolated utility`, in seconds.

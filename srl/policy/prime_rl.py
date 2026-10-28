@@ -1,9 +1,9 @@
-"""prime-rl staleness policy: dispatch-lag admission plus a publish-time sweep."""
+"""prime-rl staleness policy: dispatch-lag admission, L2 cancel on publish, L3 checked live at batch assembly."""
 
 from __future__ import annotations
 
 from ..component.rollout.engine import Request
-from .base import Cancel, CancelAction, PauseMode, PolicyContext, SimState, StalenessPolicy
+from .base import Cancel, CancelAction, CompleteAction, PauseMode, PolicyContext, SimState, StalenessPolicy
 from .rules import FIFO, CancelBelowVersion, VersionWindow
 
 
@@ -15,11 +15,24 @@ class PrimeRLPolicy(StalenessPolicy):
     groups the staleness window actually cancels, matching prime-rl's design
     goal of decoupling generation from training syncs.
 
-    `on_version_pending` is prime-rl's own name for the publish-time cancel
-    over live groups. `_drop_stale` is its name for the ready-pool sweep.
-    Both key on the same `max_off_policy_steps` horizon, so a finished group
-    past the horizon is found by both and must be deduplicated by group id
-    before it is charged against `_inflight_groups` once, not twice.
+    `max_inflight` bounds concurrent generation, not buffer residency: a
+    slot frees the moment a task finishes generating, whatever its eventual
+    staleness verdict ("有空位才继续准入，生成完成后再释放"), so new work is
+    admitted without waiting on training to consume this one.
+
+    prime-rl has two genuinely separate staleness mechanisms, not one:
+    `on_version_pending` cancels still-generating groups too far behind a
+    newly published version (L2, kept here in `on_publish`). `_drop_stale`
+    re-checks the ready pool immediately before it assembles a training
+    batch (L3, `TrainSink.take_batch()` calls it right before selecting) --
+    not on a publish timer decoupled from consumption. `on_batch_attempt`
+    mirrors that: called live, right before every batch-assembly attempt.
+
+    `action` defaults to `"replace"`, not `"drop"`: the ready-pool sweep
+    (`VersionWindow(refill=True)`) already backfills every group it expires,
+    and the runtime cancel matches it, so a wider `target_lag` that produces
+    more cancelled stragglers does not permanently shrink the dataset pool
+    relative to the sweep's own replacement behavior.
     """
 
     name = "prime_rl"
@@ -29,7 +42,7 @@ class PrimeRLPolicy(StalenessPolicy):
         max_off_policy_steps: int = 8,
         max_inflight: int = 1024,
         target_lag: int = 1,
-        action: str = "drop",
+        action: str = "replace",
     ):
         assert max_off_policy_steps >= 0, "max_off_policy_steps must be >= 0."
         assert max_inflight > 0, "max_inflight must be > 0."
@@ -66,26 +79,42 @@ class PrimeRLPolicy(StalenessPolicy):
             self._dispatch_index += 1
             self._admitted_in_cohort = 0
 
+    def on_group_complete(self, group: list[Request], st: SimState) -> CompleteAction:
+        # Generation concurrency frees the instant a task finishes, whatever
+        # its eventual staleness verdict -- same timing fix as TRL and
+        # verl_v1's admission bookkeeping. Staleness itself is checked later,
+        # live, by `on_batch_attempt`.
+        self._inflight_groups -= 1
+        return CompleteAction.KEEP
+
     def peek_batch(self, st: SimState) -> list[Request] | None:
         return FIFO().select(st.ready_groups, st.batch_size)
 
     def take_batch(self, st: SimState) -> list[Request] | None:
-        batch = self.peek_batch(st)
-        if batch is None:
-            return None
-        self._inflight_groups -= len({req.group_id for req in batch})
-        return batch
+        # No `_inflight_groups` decrement here: every batch member already
+        # freed its slot at its own `on_group_complete`, well before this
+        # consumption.
+        return self.peek_batch(st)
 
     def on_publish(self, new_version: int, st: SimState) -> list[Cancel]:
+        # L2 only: cancel still-generating groups too far behind the newly
+        # published version. L3 (the ready-pool sweep) now runs live, in
+        # `on_batch_attempt`, not here.
         ctx = PolicyContext(state=st)
-        running_cancels = self._runtime_cancel.on_publish(ctx, new_version)
-        ready_cancels = self._window.on_publish(ctx, new_version)
-        # A finished group can match both: the ready-pool sweep always refills,
-        # which takes priority over the runtime cancel's configured action.
-        by_group_id = {c.group_id: c for c in running_cancels}
-        by_group_id.update({c.group_id: c for c in ready_cancels})
-        cancels = list(by_group_id.values())
-        self._inflight_groups -= len(cancels)
+        cancels = self._runtime_cancel.on_publish(ctx, new_version)
+        # A done group already freed its slot at its own `on_group_complete`;
+        # only a still-generating group cancelled here needs it freed now.
+        # `CancelBelowVersion` has no status filter of its own, so this guard
+        # still matters even though L3's own done-group sweep moved out.
+        status_by_id = {g.group_id: g.status for g in st.groups}
+        for cancel in cancels:
+            if status_by_id.get(cancel.group_id) != "done":
+                self._inflight_groups -= 1
+        self.gc_dropped += len(cancels)
+        return cancels
+
+    def on_batch_attempt(self, st: SimState) -> list[Cancel]:
+        cancels = self._window.on_publish(PolicyContext(state=st), st.train_version)
         self.gc_dropped += len(cancels)
         return cancels
 

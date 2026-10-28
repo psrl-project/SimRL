@@ -154,26 +154,42 @@ def latency_features(
     Establishing this needs a sweep that pins DP. Letting DP absorb whatever TP and
     PP leave over makes every PP comparison a DP comparison as well, which is why
     `enumerate_training_candidates` accepts an explicit `data_parallel_sizes`.
+
+    The token and quadratic terms are also divided by `cp`. Context parallelism shards
+    the sequence dimension, so a rank's GEMMs and elementwise kernels see `tokens / cp`
+    of this microbatch, and ring attention spreads the fixed `O(sum(s_i^2))` pairwise
+    cost evenly over the `cp` ranks that jointly hold the sequence. `microbatch_overhead`
+    and `per_step_overhead` are per-launch and per-step fixed costs that do not shrink
+    with how many tokens a launch carries, so they are left unscaled. No real `cp > 1`
+    step has been measured on any architecture this module has been fitted to, so this is
+    an analytical projection, not an interpolation: `HydraulisLatencyModel` flags every
+    `cp > 1` prediction with an explicit note for exactly that reason.
     """
     if not microbatches:
         raise ValueError("Latency features need at least one microbatch.")
     max_tokens = float(max(item.sum_tokens for item in microbatches))
     max_squared = float(max(item.sum_squared_tokens for item in microbatches))
     bubble = float(parallelism.pp - 1)
-    # Per-layer normalisation: one stage's share of the model.
-    stage_share = 1.0 / float(parallelism.pp)
+    # Per-layer normalisation: the bottleneck stage's own share of the model sets
+    # the step's critical path. `1 / pp` without `parallelism.pipeline_layout`
+    # (every stage is the same size); with one, the layout's own largest share,
+    # since that stage is what 1F1B's steady-state throughput waits on.
+    stage_share = parallelism.heaviest_stage_share
+    cp_share = 1.0 / float(parallelism.cp)
     return LatencyFeatures(
-        tokens=max_tokens,
+        tokens=max_tokens * cp_share,
         slots=pipeline_slots(len(microbatches), parallelism.pp),
-        sum_squared_tokens=max_squared,
+        sum_squared_tokens=max_squared * cp_share,
         weighted_tokens=(
             float(sum(item.sum_tokens for item in microbatches)) + bubble * max_tokens
         )
-        * stage_share,
+        * stage_share
+        * cp_share,
         weighted_sum_squared_tokens=(
             float(sum(item.sum_squared_tokens for item in microbatches)) + bubble * max_squared
         )
-        * stage_share,
+        * stage_share
+        * cp_share,
         weighted_slots=(float(len(microbatches)) + bubble) * stage_share,
     )
 

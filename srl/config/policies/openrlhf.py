@@ -31,5 +31,14 @@ class OpenRLHFPolicyConfig:
     def horizon(self) -> None:
         return None
 
-    def ingress_window_groups(self, batch_size: int) -> int:
-        return (self.async_queue_size + 1) * batch_size
+    def ingress_window_groups(
+        self,
+        batch_size: int,
+        group_size: int = 1,
+        n_instances: int = 1,
+    ) -> int:
+        # Matches OpenRLHFPolicy.admit_quota's own hard ceiling exactly:
+        # it blocks once `_lumps_in_flight >= async_queue_size`. A lump
+        # frees only on take_batch, not on an individual completion, so
+        # staging more is a permanent router surplus.
+        return self.async_queue_size * batch_size

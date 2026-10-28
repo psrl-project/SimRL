@@ -51,8 +51,6 @@ class TrainingCandidate:
     """
 
     def __post_init__(self) -> None:
-        if self.parallelism.cp != 1:
-            raise ProfileValidationError("Training candidate V1 only supports CP=1.")
         if self.schedule.lower() != "1f1b":
             raise ProfileValidationError("Training candidate V1 only supports the 1F1B schedule.")
         if self.micro_batch_size <= 0 or self.global_batch_size <= 0 or self.num_microbatches <= 0:
@@ -191,7 +189,7 @@ def enumerate_training_candidates(
         recompute_values,
     )
     for world_size, tp, pp, cp, ep, pinned_dp, mbs, nmb, raw_shape, schedule, recompute in dimensions:
-        if cp != 1 or schedule.lower() != "1f1b":
+        if schedule.lower() != "1f1b":
             continue
         model_parallel = tp * pp * cp
         if not tensor_parallel_is_valid(tp, constraints):

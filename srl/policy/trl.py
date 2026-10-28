@@ -1,4 +1,4 @@
-"""TRL staleness policy: one bounded task queue and a version window checked at dequeue."""
+"""TRL staleness policy: one bounded task queue, version-checked live at batch assembly."""
 
 from __future__ import annotations
 
@@ -9,14 +9,20 @@ from .rules import FIFO, VersionWindow
 
 class TRLPolicy(StalenessPolicy):
     """
-    TRL's online trainer: a single admitted-but-unconsumed task queue, drained
-    FIFO, bounded by `max_inflight_tasks`. `on_group_complete` re-applies the
-    same version check the moment a group finishes, since `train_version` by
-    then already reflects the latest published weights. This closes the gap a
-    publish-only sweep leaves: a group can become `status=="done"` strictly
-    between one `on_publish` call and the next `take_batch`, already past
-    `max_staleness` against the version already published, with no sweep due
-    until the next publish, which may arrive only after FIFO has consumed it.
+    TRL's online trainer: `max_inflight_tasks` bounds concurrent generation,
+    not buffer residency. A slot frees the moment a task finishes generating
+    -- whatever its eventual staleness verdict -- so new work is admitted
+    without waiting on the training side, matching how TRL releases a
+    generation slot on completion rather than on consumption. Buffered,
+    completed groups then drain FIFO, filtered live by `on_batch_attempt`.
+
+    `on_batch_attempt` re-applies the version check immediately before every
+    batch-assembly attempt, matching the real system: `RolloutQueueDataset`
+    checks the live model version the instant the trainer reads a sample,
+    not on a periodic sweep decoupled from consumption. There is a single
+    check, not two -- real TRL has no completion-time check of its own, and
+    checking live at every attempt (the simulator calls this hook before
+    every `peek_batch`/`take_batch`) needs none either.
 
     TRL actually drops individual stale samples once a group has been
     disaggregated into single completions. This simulator keeps prompt groups
@@ -52,37 +58,26 @@ class TRLPolicy(StalenessPolicy):
         self._buffered += 1
 
     def on_group_complete(self, group: list[Request], st: SimState) -> CompleteAction:
-        if st.train_version - group[0].v_traj > self.max_staleness:
-            self._buffered -= 1
-            self.gc_dropped += 1
-            return CompleteAction.DROP
+        # `max_inflight_tasks` bounds generation concurrency, not buffer
+        # residency: a slot frees the instant a task finishes generating,
+        # whatever its eventual staleness verdict, so new work can be admitted
+        # without waiting on the training side to consume this one. Staleness
+        # itself is checked later, live, by `on_batch_attempt`.
+        self._buffered -= 1
         return CompleteAction.KEEP
 
-    def replacement_groups_on_drop(
-        self,
-        groups: list[list[Request]],
-        st: SimState,
-    ) -> int:
-        """TRL replaces groups permanently removed by `on_group_complete`, the
-        same way the pre-existing `on_publish` sweep already does through
-        `Cancel(..., REPLACE)` -- a separate mechanism this hook does not cover."""
-        return len(groups)
+    def on_batch_attempt(self, st: SimState) -> list[Cancel]:
+        cancels = self._window.on_publish(PolicyContext(state=st), st.train_version)
+        self.gc_dropped += len(cancels)
+        return cancels
 
     def peek_batch(self, st: SimState) -> list[Request] | None:
         return FIFO().select(st.ready_groups, st.batch_size)
 
     def take_batch(self, st: SimState) -> list[Request] | None:
-        batch = self.peek_batch(st)
-        if batch is None:
-            return None
-        self._buffered -= len({req.group_id for req in batch})
-        return batch
-
-    def on_publish(self, new_version: int, st: SimState) -> list[Cancel]:
-        cancels = self._window.on_publish(PolicyContext(state=st), new_version)
-        self._buffered -= len(cancels)
-        self.gc_dropped += len(cancels)
-        return cancels
+        # No `_buffered` decrement here: every batch member already freed its
+        # slot at its own `on_group_complete`, well before this consumption.
+        return self.peek_batch(st)
 
     def pause_mode(self, st: SimState) -> PauseMode:
         return self.pause

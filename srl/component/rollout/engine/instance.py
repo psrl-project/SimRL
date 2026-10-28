@@ -55,7 +55,8 @@ class NativeInstance:
 
         Recorded here rather than derived from the cost model because only
         ComposedRollout carries a TP degree. The fitted models do not. A TP-aware
-        router reads it, and `DynamicParallelFleet` keys instance reuse on it.
+        router reads it, and `tier_threshold`-style strategies read it off every
+        candidate to split a heterogeneous `SlotFleet` into tiers.
         """
         self.enable_prefix_caching = enable_prefix_caching
         self.eviction = eviction

@@ -1,0 +1,50 @@
+# Real end-to-end decode-step verification for the TP1<->TP2<->TP4 merge comparison
+# (see the dynamic-parallel session discussion). TP1, concurrency=20 -- one side of the
+# "4xTP1(20 each) vs 1xTP4(80)" and "2xTP1(20 each) vs 1xTP2(40)" comparisons, matching
+# the composed-kernel-model's residents-per-sibling=20 anchor point exactly.
+#
+# random-output-len is short (100) relative to every random-input-len (4000/12000/25000)
+# so the measured decode window stays close to the nominal context depth throughout,
+# rather than averaging over a wide drift in context length.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy10/share_303541817/lhy/models/Qwen3.8-27B}
+
+hardware:
+  gpu_name: H20
+  gpu_count: 1
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen35_27b/vllm_merge_check_tp1
+experiment_name: qwen35-27b-merge-check
+num_runs: 1
+server_ready_timeout: 1800
+
+run:
+  max_parallel: 1
+  max_concurrent_startups: 1
+
+serve:
+  args:
+    dtype: bfloat16
+    max-model-len: 131072
+    max-num-batched-tokens: 32768
+    gpu-memory-utilization: 0.9
+  parameters:
+    - tensor-parallel-size: 1
+      pipeline-parallel-size: 1
+      max-num-seqs: 256
+
+bench:
+  args:
+    request-rate: "inf"
+    random-range-ratio: 0.0
+    seed: 42
+
+phases:
+  decode:
+    parameters:
+      - {random-input-len: 4000,  random-output-len: 100, max-concurrency: 20, num-prompts: 20}
+      - {random-input-len: 12000, random-output-len: 100, max-concurrency: 20, num-prompts: 20}
+      - {random-input-len: 25000, random-output-len: 100, max-concurrency: 20, num-prompts: 20}

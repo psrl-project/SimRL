@@ -28,5 +28,14 @@ class SkyRLPolicyConfig:
     def horizon(self) -> int:
         return self.max_staleness_steps
 
-    def ingress_window_groups(self, batch_size: int) -> int:
-        return (self.max_staleness_steps + 2) * batch_size
+    def ingress_window_groups(
+        self,
+        batch_size: int,
+        group_size: int = 1,
+        n_instances: int = 1,
+    ) -> int:
+        # Matches ProgressQuota's own initial ceiling exactly. `accepted`
+        # only ever grows, recovering room via train_version advancing,
+        # not via an ordinary take_batch, so staging more is a permanent
+        # router surplus.
+        return (self.max_staleness_steps + 1) * batch_size

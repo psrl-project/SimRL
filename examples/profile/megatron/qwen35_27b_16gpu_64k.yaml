@@ -1,0 +1,62 @@
+# Qwen3.8-27B training sweep at 16k and 32k context on one 8-GPU node.
+#
+# Static state, not activations, is what bounds this model on 8 GPUs: the distributed
+# optimizer alone is 12 bytes per parameter over the whole world, so every topology here
+# carries at least 38.8 GiB of optimizer state per rank before a single activation.
+# The topologies below therefore differ mainly in how they split the other 6 bytes
+# (bf16 parameter and fp32 gradient) and in where they put the sequence.
+#
+# `tp4/pp2`, `tp2/pp4` and `tp1/pp8` all put eight ranks on the model, which is the only
+# way to reach the 58.2 GiB static floor inside one node. `tp4/pp1` with DP=2 and
+# `tp4/pp1/cp2` show what giving up pipeline stages costs, and `tp2/pp2/cp2` trades
+# tensor for context parallelism at the same static footprint.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy10/share_303541817/lhy/models/Qwen3.8-27B}
+
+model_family_name: qwen_vl
+model_recipe_name: qwen35_vl_27b
+model_task: sft
+
+hardware:
+  gpu_name: H20
+  gpu_count: 16
+  gpu_memory_mib: 97871
+  node_count: 2
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen35_27b/megatron_16gpu_64k
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  max_steps: 3
+  warmup_steps: 1
+
+profiling:
+  # An OOM is a useful upper bound for the memory model and costs the latency fit nothing.
+  allow_incomplete: true
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+search_space:
+  # Explicit triples, not crossed size lists: the cross product of three tensor degrees,
+  # four pipeline depths and two context degrees is 24 cells, and only these five answer
+  # the question.
+  #
+  # The first four put all eight ranks on the model (tp * pp = 8, the minimum static
+  # footprint available inside one node) and differ in whether the model is split by
+  # tensor or pipeline parallelism. The last trades tensor for context parallelism at a
+  # static footprint that still fits, which is the lever that matters at long context.
+  topologies:
+    - [4, 2, 1]
+  # Pin DP=1 so a topology comparison is not also a data-parallel comparison.
+  data_parallel_sizes: [2]
+  micro_batch_size: 1
+  num_microbatches: [1]
+  sequence_lengths: [65536]
+  recompute: full

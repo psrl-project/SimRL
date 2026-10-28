@@ -15,5 +15,6 @@ from . import (  # noqa: F401
     round_robin,
     slack_lane,
     throughput_balance,
+    tier_threshold,
 )
 

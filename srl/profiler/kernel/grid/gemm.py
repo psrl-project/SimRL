@@ -54,6 +54,58 @@ def transformer_gemm_shapes(
     return tuple(family_for(model).gemm_shapes(model, tensor_parallel=tensor_parallel))
 
 
+def linear_attention_gemm_shapes(
+    model: ModelDescriptor,
+    *,
+    tensor_parallel: int,
+) -> tuple[GemmShape, ...]:
+    """
+    List one gated-delta-net layer's per-rank projections, empty for a pure-softmax model.
+
+    Args:
+        model (ModelDescriptor): Architecture read from the checkpoint.
+        tensor_parallel (int): Ranks the block is sharded across.
+
+    Returns:
+        tuple[GemmShape, ...]: The linear layer's projections, or an empty tuple when the
+            model has no linear-attention layers.
+
+    Raises:
+        ProfileValidationError: If no family is registered for the architecture, or if the
+            family cannot price the model.
+    """
+    family = family_for(model)
+    getter = getattr(family, "linear_attention_gemm_shapes", None)
+    if getter is None:
+        return ()
+    shapes = getter(model, tensor_parallel=tensor_parallel)
+    return () if shapes is None else tuple(shapes)
+
+
+def per_layer_gemm_shapes(
+    model: ModelDescriptor,
+    *,
+    tensor_parallel: int,
+) -> tuple[GemmShape, ...]:
+    """
+    List every distinct per-layer projection shape in the model's block.
+
+    A hybrid model runs two blocks, so a sweep that enumerated only `transformer_gemm_shapes`
+    would leave the linear layer's projections unmeasured and every query for them would
+    raise `KernelCoverageError`.
+
+    Args:
+        model (ModelDescriptor): Architecture read from the checkpoint.
+        tensor_parallel (int): Ranks the block is sharded across.
+
+    Returns:
+        tuple[GemmShape, ...]: Softmax-layer shapes followed by linear-layer shapes.
+    """
+    return transformer_gemm_shapes(model, tensor_parallel=tensor_parallel) + (
+        linear_attention_gemm_shapes(model, tensor_parallel=tensor_parallel)
+    )
+
+
 def logits_gemm_shape(
     model: ModelDescriptor,
     *,
@@ -96,7 +148,7 @@ def gemm_sweep_shapes(
     Returns:
         tuple[tuple[int, int, int], ...]: Deduplicated `(m, n, k)` triples, sorted.
     """
-    shapes = transformer_gemm_shapes(model, tensor_parallel=tensor_parallel)
+    shapes = per_layer_gemm_shapes(model, tensor_parallel=tensor_parallel)
     triples = {
         (token_count, shape.n, shape.k)
         for token_count in sweep.token_counts
@@ -172,7 +224,7 @@ def gemm_dgrad_shapes(
     Returns:
         tuple[tuple[int, int, int], ...]: Deduplicated `(m, n, k)` triples, sorted.
     """
-    shapes = transformer_gemm_shapes(model, tensor_parallel=tensor_parallel)
+    shapes = per_layer_gemm_shapes(model, tensor_parallel=tensor_parallel)
     triples = {
         (token_count, shape.k, shape.n)
         for token_count in sweep.token_counts
@@ -213,7 +265,7 @@ def gemm_wgrad_shapes(
     Returns:
         tuple[tuple[int, int, int], ...]: Deduplicated `(m, n, k)` triples, sorted.
     """
-    shapes = transformer_gemm_shapes(model, tensor_parallel=tensor_parallel)
+    shapes = per_layer_gemm_shapes(model, tensor_parallel=tensor_parallel)
     triples = {
         (shape.n, shape.k, token_count)
         for token_count in sweep.token_counts

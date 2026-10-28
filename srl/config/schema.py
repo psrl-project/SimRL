@@ -16,6 +16,13 @@ class ParallelismConfig:
     pp: int = 1
     dp: int = 1
     cp: int = 1
+    # Explicit per-stage transformer-layer counts, stage 0 first. Null (the default)
+    # means every stage holds num_layers / pp layers. Set this when the layers do
+    # not divide evenly across pp stages, or to rebalance stage load against the
+    # embedding/output-projection weight only stage 0 and the last stage carry --
+    # Megatron's own --pipeline-model-parallel-layout does the same thing on the
+    # training side. Length must equal pp. See TrainingParallelism.pipeline_layout.
+    pipeline_layout: list | None = None
 
 
 @dataclass
@@ -115,6 +122,11 @@ class TrainingCostConfig:
     #              Megatron latency: micro_batch_size, pipeline_slots, tokens
     #              Megatron memory:  activation_bytes, profiled_dp
     extrapolate: list = field(default_factory=list)
+    # Permit a Hydraulis memory query at a pp this artifact never measured, by
+    # borrowing the calibration from a pp it does hold at the same tp. See
+    # HydraulisTrainingCost.from_artifact's own docstring for why this is memory-only
+    # (latency already crosses any pp unconditionally) and why it is an opt-in.
+    allow_pp_extrapolation: bool = False
     gpu_memory_mib: int | None = None
     model_params: int = 0
     peak_flops: float = 312e12
@@ -181,6 +193,30 @@ class JobConfig:
     # Per-request caps applied after sampling. None means no truncation.
     max_prompt_length: int | None = None
     max_output_length: int | None = None
+    ingress_lifetime_cap: bool = False
+    """Whether the dataset's regular per-publish ingress top-up stops once
+    `n_versions * batch_size` groups have ever been granted (see
+    `Simulator._grant_ingress_credits`).
+
+    Off by default: no real system surveyed for this project tracks a
+    lifetime admission budget -- each either submits a fixed-size batch
+    every step unconditionally for as long as the step loop runs (verl v1,
+    ROLL, OpenRLHF, legacy verl, SkyRL, NeMo-RL, TRL, prime-rl), or runs a
+    continuous dispatcher explicitly stopped by its own "is there a next
+    step" check (PSRL, AReaL, slime, Dressage) rather than a pre-allocated
+    total. A real `n_versions`-step verl v1 run, measured against this cap
+    on vs. off: span error -1.9% vs. +4.9%, but idle fraction 0.087 vs.
+    0.048, mean running (busy) error -7.4% vs. -2.9%, mean KV util (busy)
+    error -7.7% vs. -4.9% -- every metric but span moved closer to the real
+    run with the cap off, because capped admission front-loads large bursts
+    early (warmup credit plus publishes landing close together) and starves
+    the run's final burst down to a handful of groups, which drains far
+    faster than a real step-sized batch and leaves nothing generating
+    through the last step's own training. Set this `true` to restore the
+    capped behaviour for a policy whose real system is known to manage a
+    bounded lifetime budget this way, once verified against its own
+    telemetry the way verl v1's was here.
+    """
 
 
 @dataclass
@@ -243,7 +279,7 @@ class RouterConfig:
     """
 
     eviction: str = "vllm_lru"
-    """vllm_lru | longest_ctx | latest_deadline.
+    """vllm_lru | longest_ctx | shortest_ctx | latest_deadline.
 
     Which resident the engine evicts when the KV pool cannot fund a decode
     step. Separate from `strategy` because the engine makes this call, not the
@@ -292,6 +328,14 @@ class RouterConfig:
     False matches the matched run, which scatters all 160 groups across both
     instances. Turning it on concentrates a group's KV so its siblings share
     the prompt prefix.
+    """
+    enable_trajectory_sticky: bool = True
+    """Pin a resumed request back to the instance it was already on.
+
+    Covers both a weight-update abort and a preemption loopback: neither verl
+    nor any other system this study models migrates a resumed trajectory
+    across instances, so True is the faithful default -- unlike
+    `enable_group_sticky`, which is a genuinely optional SMG feature.
     """
     max_waiting_after_preempt: int | None = None
     """Instance queue depth past which preempted requests return to the router.

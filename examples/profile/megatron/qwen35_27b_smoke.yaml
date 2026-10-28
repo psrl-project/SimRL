@@ -1,0 +1,44 @@
+# Bring-up candidate for Qwen3.8-27B on eight GPUs. Proves the recipe, the multimodal
+# provider's text-only path, and the launcher chain before any sweep is launched.
+model: ${oc.env:MODEL_PATH,/apdcephfs_zwfy10/share_303541817/lhy/models/Qwen3.8-27B}
+
+# Bridge resolves a recipe as `<family>.<name>_<task>_config`. Qwen3.5-VL ships no pretrain
+# entry for 27B, only SFT, so the task has to be named rather than inferred.
+model_family_name: qwen_vl
+model_recipe_name: qwen35_vl_27b
+model_task: sft
+
+hardware:
+  gpu_name: H20
+  gpu_count: 8
+  gpu_memory_mib: 97871
+  node_count: 1
+  gpus_per_node: 8
+  interconnect: NVLink
+
+output_dir: ../../../outputs/profile/qwen35_27b/megatron_smoke
+
+training:
+  compute_dtype: bf16
+  optimizer: adam
+  parameter_dtype: bf16
+  gradient_dtype: fp32
+  optimizer_state_dtype: fp32
+  distributed_optimizer: true
+  max_steps: 4
+  warmup_steps: 1
+
+profiling:
+  allow_incomplete: true
+
+environment:
+  HF_HUB_OFFLINE: "1"
+
+search_space:
+  tensor_parallel_sizes: [4]
+  pipeline_parallel_sizes: [2]
+  context_parallel_sizes: [1]
+  micro_batch_size: 1
+  num_microbatches: [1]
+  sequence_lengths: [4096]
+  recompute: full

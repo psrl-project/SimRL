@@ -229,6 +229,7 @@ def _roll_sim(group_size: int, store=None, n_versions: int = 10):
         group_size=group_size,
         staleness_horizon=2,
         ingress_window_groups=3 * 4,
+        ingress_lifetime_cap=True,
         n_versions=n_versions,
         workload=workload,
     )
@@ -321,18 +322,30 @@ class TestRollGarbageCollection:
 
 
 class TestSlimeBarrier:
-    def test_staleness_equals_interval(self):
+    def test_a_flush_does_not_reset_a_live_trajectory(self):
+        """An aborted flat sample keeps its prefix, so its age survives the abort.
+
+        This is the model's central claim about slime: `--flush-cache-interval`
+        interrupts generation for KV correctness, and the worker requeues the
+        partial response, so the earliest token still carries its original
+        version when the group is finally consumed.
+        """
+        workload = GroupedWorkload.from_lengths([150], [3000] + [50] * 11)
         cfg = SimConfig(
-            batch_size=4,
-            staleness_horizon=1,
-            n_versions=10,
+            batch_size=2,
+            staleness_horizon=0,
+            n_versions=40,
+            ingress_window_groups=24,
+            workload=workload,
         )
-        lengths = uniform(100, 50, 100, seed=0)
-        policy = SlimePolicy(update_weights_interval=2, pause_mode="in_place")
-        result = _run_sim(policy, lengths, cfg)
+        policy = SlimePolicy(flush_cache_interval=1)
+        result = _run_sim(policy, None, cfg)
+
         assert not result.livelocked
-        for r in result.consumed:
-            assert r.staleness_true() <= 2
+        assert any(req.num_aborts > 0 for req in result.consumed), "the flush must have aborted work."
+        assert any(
+            req.num_aborts > 0 and len(req.segments) > 1 for req in result.consumed
+        ), "an aborted trajectory must resume across the version boundary."
 
     def test_a_straggler_under_admission_alone_is_not_bounded(self):
         """A wide ingress window lets several cohorts stage ahead, so one can be
@@ -348,7 +361,7 @@ class TestSlimeBarrier:
         cfg = SimConfig(
             batch_size=2, staleness_horizon=0, n_versions=40, ingress_window_groups=24, workload=workload
         )
-        policy = SlimePolicy(update_weights_interval=1, over_sampling_ratio=4.0, pause_mode="in_place")
+        policy = SlimePolicy(group_prefetch_factor=8, flush_cache_interval=0)
         result = _run_sim(policy, None, cfg)
 
         assert not result.livelocked
@@ -465,6 +478,7 @@ class TestPartialRolloutPublish:
             batch_size=4,
             staleness_horizon=2,
             ingress_window_groups=3 * 4,
+            ingress_lifetime_cap=True,
             n_versions=4,
             n_instances=1,
             sync_time=0.25,
@@ -523,6 +537,7 @@ class TestPartialRolloutPublish:
             batch_size=4,
             staleness_horizon=2,
             ingress_window_groups=3 * 4,
+            ingress_lifetime_cap=True,
             n_versions=4,
             n_instances=1,
             sync_time=0.25,
@@ -577,6 +592,7 @@ class TestPartialRolloutPublish:
             batch_size=4,
             staleness_horizon=2,
             ingress_window_groups=3 * 4,
+            ingress_lifetime_cap=True,
             n_versions=4,
             n_instances=1,
             sync_time=0.25,
@@ -642,7 +658,7 @@ class TestIngressAdmissionCap:
 
     @pytest.mark.parametrize(
         "policy_factory",
-        [PSRLPolicy, ArealPolicy, VerlPolicy, lambda: SlimePolicy(update_weights_interval=1)],
+        [PSRLPolicy, ArealPolicy, VerlPolicy, lambda: SlimePolicy(flush_cache_interval=1)],
         ids=["psrl", "areal", "verl", "slime"],
     )
     def test_total_admission_never_exceeds_what_training_will_consume(self, policy_factory):
@@ -650,6 +666,7 @@ class TestIngressAdmissionCap:
             batch_size=4,
             staleness_horizon=3,
             n_versions=3,
+            ingress_lifetime_cap=True,
             workload=GroupedWorkload.from_lengths([512], uniform(80, 200, 400, seed=0)),
         )
         sim = Simulator(
@@ -661,6 +678,29 @@ class TestIngressAdmissionCap:
         result = sim.run()
         assert not result.livelocked
         assert sim._ingress_granted <= cfg.n_versions * cfg.batch_size
+
+    def test_the_cap_is_off_by_default(self):
+        """No real system surveyed for this project manages a lifetime
+        admission budget (see `JobConfig.ingress_lifetime_cap`), so the cap
+        is opt-in. A staleness window wide enough to admit well past
+        `n_versions * batch_size` must do so unless `ingress_lifetime_cap`
+        is explicitly set."""
+        cfg = SimConfig(
+            batch_size=4,
+            staleness_horizon=3,
+            n_versions=3,
+            workload=GroupedWorkload.from_lengths([512], uniform(80, 200, 400, seed=0)),
+        )
+        assert cfg.ingress_lifetime_cap is False
+        sim = Simulator(
+            rollout_cost=UnifiedRoofline(F=0.005, W=0.001, G=0.0001, A_p=0, A_d=1e-7),
+            training_cost=TrainingCostModel(FixedTrainingLatency(0.5), FixedTrainingMemory(0)),
+            policy=ArealPolicy(),
+            cfg=cfg,
+        )
+        result = sim.run()
+        assert not result.livelocked
+        assert sim._ingress_granted > cfg.n_versions * cfg.batch_size
 
     def test_gc_replacement_credit_is_allowed_to_exceed_the_base_cap(self):
         # ROLL's GC replaces a dropped group's credit (unlike the base seed

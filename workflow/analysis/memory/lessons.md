@@ -107,3 +107,25 @@ bullet when it stops being true.
   `cadence_report`'s `train_busy` alone, diff it against `train_seconds_total` (or sum
   `train_time+sync_time+recompute_time` from the raw `train.jsonl` directly) to rule out this
   per-step residual being mistaken for a training-cost effect.
+- 2026-10-28: `examples/simulate/staleness_throughput` sweeps suppress `instance` and
+  `rollout_step`, so they have no fleet telemetry. A replay through the same `common.sh` +
+  `psrl_aligned.sh` with `EXTRA_OVERRIDES` minus the `+log_exclude` reproduces `request.jsonl`
+  and `train.jsonl` byte for byte, which is the fidelity gate for these rows.
+- 2026-10-28: A request's last `generated` in `request.jsonl` is stale for anything still in
+  flight at run end (rows are written only at enqueue/admit/complete/consume). Fleet work must
+  come from `rollout_step` `n_decode` or the per-resident `generated` in `instance/*`, otherwise
+  the "generated but never consumed" tail is understated.
+- 2026-10-28: If the checkpoint at `rollout_cost.model_path` disappears, `resolve_kv_blocks`
+  misses `~/.cache/srl/kv_capacity.json` and tries to launch vLLM. The cache key is
+  `checkpoint_fingerprint` (config.json + safetensors index size), not the path, so any copy with
+  the same files hits the same entry. Verify with a control run before trusting it.
+- 2026-10-28: Fitting `rollout_step` segment `dt` against (steps, n_decode, n_prefill_computed)
+  by least squares gives a negative decode coefficient (steps and decode tokens are collinear, and
+  decode cost depends on context). To price re-prefill, run env-gated counterfactuals instead
+  (`pause_mode=in_place`, scaled `kv_blocks`), injected via a `sitecustomize.py` on `PYTHONPATH`.
+  Patch `Simulator.__init__`, not `srl.cli.main`: `python -m srl.cli.main` executes a fresh
+  `__main__` copy that ignores patches to the imported module.
+- 2026-10-28: Comparing prefetch depths over a short horizon, check that both arms consume the
+  same set (tokens per step). With ample KV and no abort, a deep prefetch consumes a shorter-biased
+  set within the window (short groups finish first under FIFO-among-ready), so a tokens/s gap can
+  appear at an identical step rate.

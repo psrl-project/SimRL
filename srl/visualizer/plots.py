@@ -43,7 +43,7 @@ _AQUA = "#1baf7a"
 # training window.
 _TRAIN_WINDOW_SHADE = "navajowhite"
 
-_FIG_DPI = 170
+_FIG_DPI = 300
 
 plt.rcParams.update(
     {
@@ -163,6 +163,11 @@ class SimPlotter:
     def _gateway_rows(self) -> list[dict]:
         return list(self.store.iter("gateway"))
 
+    def _reshape_times(self) -> list[float]:
+        """Commit times of every dynamic-parallel fleet reshape, or `[]` when the run never
+        configured one (`reshape` stream missing)."""
+        return [r["t"] for r in self.store.iter("reshape")]
+
     def _consume_rows(self) -> list[dict]:
         return [r for r in self.store.iter("request") if r.get("event") == "consume"]
 
@@ -190,6 +195,7 @@ class SimPlotter:
         intervals = self._train_intervals()
         phase_blocks = self._train_phase_spans()
         gateway_rows = self._gateway_rows()
+        reshape_times = self._reshape_times()
 
         n = len(instance_ids)
         heights = ([0.5] if gateway_rows else []) + [0.35] + [1] * n
@@ -211,6 +217,10 @@ class SimPlotter:
         for ax in [*([gateway_ax] if gateway_ax is not None else []), *axes]:
             for start, end in intervals:
                 ax.axvspan(start, end, color=_TRAIN_WINDOW_SHADE, alpha=0.35, zorder=0)
+            # A reshape is a point event, not a span: a solid shade would read as "the fleet
+            # was reshaping for this whole interval," which it is not -- only the instant marks.
+            for t in reshape_times:
+                ax.axvline(t, color="darkgreen", linestyle="--", linewidth=1.0, alpha=0.7, zorder=3)
 
         if gateway_ax is not None:
             ts = [r["t"] for r in gateway_rows]

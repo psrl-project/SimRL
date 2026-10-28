@@ -13,4 +13,4 @@ target_lag: 1
 # How CancelBelowVersion cancels a still-generating group past the horizon.
 # A finished group past the horizon is always replaced regardless of this
 # setting, since the ready-pool sweep (VersionWindow) never reads it.
-action: drop
+action: replace

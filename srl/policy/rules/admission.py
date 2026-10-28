@@ -20,18 +20,6 @@ class ProgressQuota:
         return (self.ofp + st.train_version + 1) * st.batch_size - (ctx.accepted + ctx.running)
 
 
-@dataclass
-class WatermarkGate:
-    """slime's loop barrier: deny while `remaining >= batch_size`, else allow over-sampled room."""
-
-    over_sampling_ratio: float
-
-    def quota(self, remaining: int, batch_size: int) -> int:
-        if remaining >= batch_size:
-            return 0
-        return max(1, round(self.over_sampling_ratio * batch_size))
-
-
 class LegacyOverage:
     """verl's sample-overage window: a bounded hand-off queue plus a staleness counter.
 

@@ -1,11 +1,17 @@
 # Staleness policy name.
 name: slime
 
-# Push new weights every N training steps (loop barrier interval).
-update_weights_interval: 1
+# `--sglang-server-concurrency`, per rollout engine. The worker's prompt-group
+# threshold is `max(1, this * n_instances // group_size) * group_prefetch_factor`.
+# 64 keeps the two-engine study above one training batch of 8 groups. A value
+# whose threshold is below `batch_size` is refused at run time.
+server_concurrency: 64
 
-# Admit this many times batch_size before waiting to collect a full batch.
-over_sampling_ratio: 1.0
+# `--fully-async-group-prefetch-factor`: how many times the group threshold is
+# enlarged so slow group members do not leave sample slots idle.
+group_prefetch_factor: 1
 
-# What a weight push does to in-flight generation.
-pause_mode: abort
+# `--flush-cache-interval`: 1 aborts in-flight generation at every weight
+# publication, N aborts every N-th and pauses in place otherwise, and a
+# nonpositive value aborts only at the first publication.
+flush_cache_interval: 1

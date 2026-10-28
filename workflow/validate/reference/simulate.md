@@ -54,6 +54,24 @@ Note `max_model_len` is not a knob. It is derived as `MAX_PROMPT_LENGTH + MAX_OU
 `examples/analysis/headroom_probe.py` builds arms on top of that, and `Point` is the workload
 declaration most existing sweeps use. Reuse these rather than rebuilding the workload plumbing.
 
+### KV pressure as a swept dimension
+
+`SimConfig.kv_blocks` is a plain int, so any in-process experiment can scale it to move an arm
+between "never preempts" and "preempts constantly" without touching the engine. The convention
+(see `experiments/lpt_single_instance.py`'s `Point.kv_scale`): keep a `kv_scale: float = 1.0` field
+on the point dataclass (1.0 reproduces the baseline exactly), and compute
+`kv_blocks = int(fa.MEDIUM_KV_TOKENS_PER_INSTANCE * point.kv_scale) // fa.MEDIUM_BLOCK_SIZE` in
+`build()`. `fa.MEDIUM_KV_TOKENS_PER_INSTANCE` (500,192) is the real measured TP1 H20 KV budget
+(cross-checked against `$HOME/.cache/srl/kv_capacity.json`'s own TP1 probe entry) -- a sweep point
+at `kv_scale < 1` is testing a smaller-memory GPU or a bigger model's KV footprint, not a made-up
+number. Check the resulting arm's `preemptions` count before reading anything into an
+eviction-strategy comparison: at `kv_scale=1.0` with this repo's real DAPO trace and `cap<=40`, the
+pool never saturates and every eviction strategy is untested. Before assuming a smaller `kv_scale`
+makes a "protect long" eviction strategy look better, check the *aggregate* preemption/reprefill
+cost across every consumed request, not just the step's binding request -- admission concentration
+(e.g. LPT) can raise total reprefill churn across the whole population faster than a protect-long
+eviction policy claws back for any one request.
+
 ## Output layout
 
 Every run writes into its `OUTPUT_DIR`:

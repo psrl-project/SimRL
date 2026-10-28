@@ -152,6 +152,7 @@ class CostArtifact:
         *,
         selector: dict[str, Any] | None = None,
         ignore_pp: bool = False,
+        ignore_cp: bool = False,
     ) -> ArtifactEntry:
         """Return an exact discrete entry and reject silent extrapolation.
 
@@ -165,20 +166,31 @@ class CostArtifact:
                 derived rather than looked up. Leave False for memory, which is not
                 a simple per-stage division: the 1F1B peak depends on which stage
                 is in flight.
+            ignore_cp: Match on whatever CP the entry carries rather than the requested
+                one, leaving context parallelism to the cost model's own arithmetic.
+                Training fitting only ever keeps `cp == 1` records (a GDN layer's CP
+                support cannot be exercised by every backend that fits this artifact),
+                so the sole entry for a cell is always labelled `cp=1`. A caller
+                requesting `cp > 1` must pass this to find it, and the division by the
+                real CP degree happens analytically in the feature computation, not in
+                this lookup. Unlike `ignore_pp`, this path has never been checked
+                against a measured `cp > 1` step on any architecture, so every caller
+                of it is expected to record that the result is an extrapolation.
         """
         requested = selector or {}
         matches = [
             entry
             for entry in self.entries
-            if self._parallelism_matches(entry.parallelism, parallelism, ignore_pp=ignore_pp)
+            if self._parallelism_matches(
+                entry.parallelism, parallelism, ignore_pp=ignore_pp, ignore_cp=ignore_cp
+            )
             and all(entry.selector.get(key) == value for key, value in requested.items())
         ]
         if len(matches) != 1:
-            mesh = (
-                f"tp={parallelism.tp} cp={parallelism.cp} ep={parallelism.ep}"
-                if ignore_pp
-                else repr(parallelism)
-            )
+            tp_part = f"tp={parallelism.tp}"
+            pp_part = "" if ignore_pp else f" pp={parallelism.pp}"
+            cp_part = "" if ignore_cp else f" cp={parallelism.cp}"
+            mesh = f"{tp_part}{pp_part}{cp_part} ep={parallelism.ep}"
             raise KeyError(
                 f"Expected exactly one artifact entry for parallelism {mesh} "
                 f"and selector {requested!r}, found {len(matches)}."
@@ -191,17 +203,20 @@ class CostArtifact:
         requested: Parallelism,
         *,
         ignore_pp: bool,
+        ignore_cp: bool,
     ) -> bool:
-        if not ignore_pp:
+        if not ignore_pp and not ignore_cp:
             return entry == requested
-        # `ep` is compared even when the pipeline depth is derived rather than looked up:
-        # expert parallelism changes the all-to-all traffic and the experts held per rank,
-        # so it is a different measurement, not a different slice of the same one. Omitting
-        # it would let an EP=1 cell answer an EP=4 query with no indication.
+        # `ep` is compared even when the pipeline depth or context degree is derived
+        # rather than looked up: expert parallelism changes the all-to-all traffic and
+        # the experts held per rank, so it is a different measurement, not a different
+        # slice of the same one. Omitting it would let an EP=1 cell answer an EP=4 query
+        # with no indication.
         return (
             entry.tp == requested.tp
-            and entry.cp == requested.cp
             and entry.ep == requested.ep
+            and (ignore_pp or entry.pp == requested.pp)
+            and (ignore_cp or entry.cp == requested.cp)
         )
 
     @classmethod

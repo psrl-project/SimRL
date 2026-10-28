@@ -21,6 +21,7 @@ from .collective import CollectiveSweep
 from .elementwise import ElementwiseSweep
 from .gdn import GdnSweep
 from .gemm import GemmSweep
+from .moe import MoeSweep
 from .optimizer import OptimizerSweep
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "ElementwiseSweep",
     "GdnSweep",
     "GemmSweep",
+    "MoeSweep",
     "OptimizerSweep",
     "TrainingAttentionSweep",
 ]

@@ -130,6 +130,16 @@ class MegatronBridgeConfig:
     experiment_name: str = ""
     model_family_name: str = "qwen"
     model_recipe_name: str = "qwen3_8b"
+    # Bridge names a recipe `<name>_<task>_config`, and not every family ships all tasks.
+    # Qwen3.5-VL declares only SFT recipes, so a 27B checkpoint cannot resolve a pretrain
+    # entry no matter which name is given.
+    model_task: str = "pretrain"
+    # Multi-token prediction. The library recipe auto-detects it from
+    # `mtp_num_hidden_layers` in the checkpoint and trains it. An RL run does not need the
+    # head, and it doubles the vocabulary-sized logits the last pipeline stage holds, so
+    # leaving it at the recipe's value prices a training mode the caller may not run.
+    # None keeps the recipe's own setting.
+    mtp_num_layers: int | None = None
     compute_dtype: str = "bf16"
     optimizer: str = "adam"
     parameter_dtype: str = "bf16"
@@ -204,6 +214,10 @@ class MegatronBridgeConfig:
             experiment_name=str(value.get("experiment_name", "")),
             model_family_name=family,
             model_recipe_name=recipe,
+            model_task=str(value.get("model_task", "pretrain")),
+            mtp_num_layers=(
+                int(training["mtp_num_layers"]) if "mtp_num_layers" in training else None
+            ),
             compute_dtype=str(training.get("compute_dtype", "bf16")),
             optimizer=str(training.get("optimizer", "adam")),
             parameter_dtype=str(training.get("parameter_dtype", "bf16")),

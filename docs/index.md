@@ -7,9 +7,9 @@ sd_hide_title: true
 ```{raw} html
 <div class="srl-hero">
   <p class="srl-hero-eyebrow">Discrete-event simulator for asynchronous RL post-training</p>
-  <h1 class="srl-hero-title">Predict what your rollout and training job does before you run it</h1>
+  <h1 class="srl-hero-title">Predict what your RL job does before you run it</h1>
   <p class="srl-hero-lede">
-    Profile a real system once, fit cost models to the records, then replay any
+    Profile a system, fit cost models to the records, then replay any
     configuration on CPU. Throughput, waiting time, KV occupancy, and training
     memory, without a GPU.
   </p>
@@ -42,42 +42,35 @@ development/index
 :gutter: 3
 
 :::{grid-item-card} Simulate a framework
-:link: /pipeline/simulation/policies
-:link-type: doc
 
 More than ten typed presets, each reimplementing one real system's admission, runtime and
-filtering logic. Does PSRL stay latency-bound while verl's overage queue fills up?
+filtering logic. *For example: how PSRL and verl each behave on the same workload, under their own
+configurations.*
 :::
 
 :::{grid-item-card} Size a deployment
-:link: /pipeline/cost-models/index
-:link-type: doc
 
-GPU splits between rollout and training, instance counts, TP, PP, DP and EP. On 32 GPUs, is
-20/12 with TP2 rollout better than 16/16 with TP4?
+GPU splits between rollout and training, instance counts, TP, PP, DP and EP. *On 32 GPUs, is
+20/12 with TP2 rollout better than 16/16 with TP4?*
 :::
 
 :::{grid-item-card} Place work at runtime
-:link: /pipeline/simulation/routing
-:link-type: doc
 
-Placement and finish times from a snapshot of the live system. Rollout load spikes, so how many
-engines can move to training without stalling the next batch?
+Placement and finish times from a snapshot of the live system. *Rollout load spikes, so how many
+engines can move to training without stalling the next batch?*
 :::
 
 :::{grid-item-card} Study a scheduler
-:link: /pipeline/simulation/index
-:link-type: doc
 
-Write a policy, replay it against the same workload as a baseline, and compare. Does
-`kv_cache_aware` routing beat `throughput_balance` on this trace?
+Write a policy, replay it against the same workload as a baseline, and compare. *Does
+`kv_cache_aware` routing beat `throughput_balance` on this trace?*
 :::
 
 ::::
 
 ## How it works
 
-SimRL separates three concerns that are usually tangled together.
+A run is three stages, each with one job.
 
 Profiling
 : A **profiler adapter** drives a real system, vLLM, Megatron-Bridge, an FSDP2 launcher, or

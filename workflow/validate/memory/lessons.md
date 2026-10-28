@@ -175,3 +175,11 @@ Never record result numbers. Remove a bullet when it stops being true.
   not evidence against the mechanism itself. Cheap to check: wrap the new function, recompute its
   own fallback path inline, and compare -- a handful of representative points is enough to see
   the pattern, no need to re-run the full grid under instrumentation.
+- 2026-10-28: A driver shaped like `_add_group_sticky_arms.py` (build every arm's rows in one
+  loop first, then gate-and-print in a separate second loop) emits zero of its per-row print
+  lines until every simulate call across every point/arm has finished -- grepping that print for
+  a progress signal reads as a stall for the whole simulate phase, even on a healthy run. Count
+  completed `tqdm` "100%" progress-bar terminations in the log instead to track progress (note a
+  single run can emit two near-identical 100% substrings, an instantaneous-rate one and a
+  final-rate one sharing the same `t=` value, so don't treat the count as an exact per-run
+  multiple), and corroborate with `ps`'s CPU-time-vs-wall-clock check, not the print stream alone.

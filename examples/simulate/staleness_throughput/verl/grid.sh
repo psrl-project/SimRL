@@ -4,7 +4,7 @@
 PRESET=verl
 PRIMARY_KNOB=policy.staleness_threshold
 PRIMARY_VALUES=(0 1 2 3 4 5)
-PRIMARY_LABEL="verl staleness_threshold (sample-overage ratio, not versions)"
+PRIMARY_LABEL="verl staleness_threshold"
 PINS=()
 
 # SECONDARY_KNOB=policy.require_batches

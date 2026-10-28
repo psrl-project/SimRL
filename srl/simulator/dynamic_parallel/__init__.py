@@ -1,20 +1,28 @@
 """Dynamic heterogeneous parallelism for the rollout fleet.
 
-Infrastructure only, nothing in `Simulator` constructs it yet. A fleet is a flat
-list of instances and a plan carries one TP degree per instance.
+- `SlotTable` (`plan.py`) is the fixed catalogue of every TP shape a run may use: each `Slot`
+  reserves a GPU-disjoint window and never changes degree.
+- `SlotFleet` (`fleet.py`) owns one instance per slot for the whole run and reshapes which
+  GPU-disjoint subset is awake, mid-round, at a completion event -- not only at a weight update.
+- `ReshapePlanner` / `ResidentThresholdPlanner` (`planner.py`) decide the target awake set from
+  the fleet's current occupancy.
 
-- `FleetPlan` (`plan.py`) records the TP degree of each instance and the GPU budget
-  invariant.
-- `DynamicParallelFleet` (`fleet.py`) applies a plan at a weight update, when no
-  KV state can survive the new weights.
+Wired into `Simulator` via `SimConfig.dynamic_parallel` (`native` backend only).
 """
 
 from __future__ import annotations
 
-from .fleet import DynamicParallelFleet
-from .plan import FleetPlan
+from .fleet import SlotFleet
+from .plan import DynamicParallelConfig, Slot, SlotTable
+from .planner import ReshapePlanner, ReshapeState, ResidentThresholdPlanner, build_reshape_planner
 
 __all__ = [
-    "DynamicParallelFleet",
-    "FleetPlan",
+    "DynamicParallelConfig",
+    "ReshapePlanner",
+    "ReshapeState",
+    "ResidentThresholdPlanner",
+    "Slot",
+    "SlotFleet",
+    "SlotTable",
+    "build_reshape_planner",
 ]

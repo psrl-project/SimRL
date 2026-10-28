@@ -80,10 +80,36 @@ class _CellKey:
         }
 
 
+def _measured_parameter_counts(
+    materialized: list[ProfileRecord],
+) -> dict[tuple[int, int], int]:
+    """
+    Return the Megatron-as-built parameter count observed for each (tp, pp) pair.
+
+    Only a record whose training step actually started reports this (via `srl_metrics.json`),
+    so an OOM candidate that died during model construction never does. Resolving its
+    parameter count from `record.model.parameter_count` instead would use the checkpoint's
+    declared count rather than what Megatron builds, which disagree whenever the provider
+    adds parameters the HF config does not enumerate: this checkpoint's MTP head and vision
+    tower push the real count from 27.78B to 29.07B. The gap is enough that `_CellKey` (which
+    includes `parameter_count`) would place the OOM record in a cell of its own, splitting
+    one real topology's successful and OOM evidence into two fits that `entry_for` cannot
+    tell apart at lookup time.
+    """
+    counts: dict[tuple[int, int], int] = {}
+    for record in materialized:
+        payload = record.payload
+        if not isinstance(payload, TrainingPayload) or payload.parameter_count is None:
+            continue
+        counts[(record.parallelism.tp, record.parallelism.pp)] = int(payload.parameter_count)
+    return counts
+
+
 def _training_records(records: list[ProfileRecord]) -> tuple[dict[_CellKey, list[ProfileRecord]], list[ProfileRecord]]:
     materialized = [record for record in records if record.record_type == "training"]
     if not materialized:
         raise ValueError("No training profiling records are available.")
+    measured_parameter_counts = _measured_parameter_counts(materialized)
     groups: dict[_CellKey, list[ProfileRecord]] = defaultdict(list)
     for record in materialized:
         payload = record.payload
@@ -91,7 +117,11 @@ def _training_records(records: list[ProfileRecord]) -> tuple[dict[_CellKey, list
             continue
         if record.parallelism.cp != 1 or payload.schedule.lower() != "1f1b":
             continue
-        parameter_count = payload.parameter_count or record.model.parameter_count
+        parameter_count = (
+            payload.parameter_count
+            or measured_parameter_counts.get((record.parallelism.tp, record.parallelism.pp))
+            or record.model.parameter_count
+        )
         if parameter_count is None:
             raise ValueError("Hydraulis memory fitting requires parameter_count.")
         key = _CellKey(
@@ -544,6 +574,7 @@ class HydraulisLatencyModel(TrainingLatencyModel):
         optimizer_state_dtype: str,
         distributed_optimizer: bool,
         extrapolate: frozenset[str] = frozenset(),
+        allow_context_parallel: bool = False,
     ):
         self.artifact = artifact
         self.parameter_dtype = parameter_dtype
@@ -551,6 +582,7 @@ class HydraulisLatencyModel(TrainingLatencyModel):
         self.optimizer_state_dtype = optimizer_state_dtype
         self.distributed_optimizer = distributed_optimizer
         self.extrapolate = extrapolate
+        self.allow_context_parallel = allow_context_parallel
 
     def predict(
         self,
@@ -565,7 +597,25 @@ class HydraulisLatencyModel(TrainingLatencyModel):
         workload: TrainingWorkload,
         parallelism: TrainingParallelism,
     ) -> tuple[float, list[str]]:
-        """Return (latency, extrapolation_notes) so the caller can record them."""
+        """Return (latency, extrapolation_notes) so the caller can record them.
+
+        Raises:
+            ValueError: If `parallelism.cp != 1` and `allow_context_parallel` was not
+                set at construction. Fitting only ever keeps `cp == 1` records (see
+                `_training_records`), so a `cp > 1` request can only be answered by the
+                analytical projection `latency_features` applies, never by a measured
+                cell. That projection has not been checked against a real `cp > 1` step
+                on any architecture, so returning it silently is refused by default.
+        """
+        if parallelism.cp != 1 and not self.allow_context_parallel:
+            raise ValueError(
+                f"Requested cp={parallelism.cp}, but no cp > 1 training step has ever "
+                "been measured, so this artifact holds no such cell. Construct with "
+                "allow_context_parallel=True to use the analytical projection in "
+                "latency_features instead (divides token-proportional and quadratic "
+                "terms by cp, leaves per-step and per-microbatch overheads unscaled), "
+                "and treat the result as unverified."
+            )
         canonical = parallelism.to_profile_parallelism(canonical_dp=True)
         entry = self.artifact.entry_for(
             canonical,
@@ -579,10 +629,19 @@ class HydraulisLatencyModel(TrainingLatencyModel):
             ),
             # One TP entry serves every PP. See `_pool_latency_cells`.
             ignore_pp=True,
+            # The only fitted cp is 1 (see `_training_records`), so a cp > 1 query must
+            # look past the entry's own cp label. The real cp is applied inside
+            # `latency_features`, not by this lookup.
+            ignore_cp=parallelism.cp != 1,
         )
         microbatches = workload.critical_rank_microbatches(parallelism)
         features = latency_features(microbatches, parallelism)
         notes: list[str] = []
+        if parallelism.cp != 1:
+            notes.append(
+                f"cp={parallelism.cp} is an analytical projection from the cp=1 fit, "
+                "not a measured cell. No real cp > 1 training step backs this number."
+            )
         for name, value in (
             ("tokens", features.tokens),
             ("pipeline_slots", features.slots),
@@ -612,6 +671,8 @@ class HydraulisMemoryModel(TrainingMemoryModel):
         optimizer_state_dtype: str,
         distributed_optimizer: bool,
         extrapolate: frozenset[str] = frozenset(),
+        allow_context_parallel: bool = False,
+        allow_pp_extrapolation: bool = False,
     ):
         self.artifact = artifact
         self.parameter_dtype = parameter_dtype
@@ -619,6 +680,8 @@ class HydraulisMemoryModel(TrainingMemoryModel):
         self.optimizer_state_dtype = optimizer_state_dtype
         self.distributed_optimizer = distributed_optimizer
         self.extrapolate = extrapolate
+        self.allow_context_parallel = allow_context_parallel
+        self.allow_pp_extrapolation = allow_pp_extrapolation
 
     def predict(
         self,
@@ -633,19 +696,67 @@ class HydraulisMemoryModel(TrainingMemoryModel):
         workload: TrainingWorkload,
         parallelism: TrainingParallelism,
     ) -> tuple[int, list[str]]:
-        """Return (peak_memory_bytes, extrapolation_notes) so the caller can record them."""
+        """Return (peak_memory_bytes, extrapolation_notes) so the caller can record them.
+
+        Raises:
+            ValueError: If `parallelism.cp != 1` and `allow_context_parallel` was not
+                set at construction. See `HydraulisLatencyModel.predict_with_notes` for
+                why: no `cp > 1` training step has ever been measured on any
+                architecture, so the division by `cp` in `activation_bytes` and in the
+                optimizer shard is an analytical projection, not an interpolation.
+            KeyError: If no entry matches `parallelism.pp` exactly and
+                `allow_pp_extrapolation` was not set at construction. Unlike latency,
+                this model does not pool PP into one fit (the 1F1B activation peak is
+                measured per cell, not derived), so a `pp` this artifact never
+                profiled is a real gap, not an out-of-range query.
+        """
+        if parallelism.cp != 1 and not self.allow_context_parallel:
+            raise ValueError(
+                f"Requested cp={parallelism.cp}, but no cp > 1 training step has ever "
+                "been measured, so this artifact holds no such cell. Construct with "
+                "allow_context_parallel=True to use the analytical projection instead "
+                "(divides the per-token activation terms and widens the optimizer "
+                "shard by cp), and treat the result as unverified."
+            )
         canonical = parallelism.to_profile_parallelism(canonical_dp=True)
-        entry = self.artifact.entry_for(
-            canonical,
-            selector=_selector(
-                component="memory",
-                workload=workload,
-                parameter_dtype=self.parameter_dtype,
-                gradient_dtype=self.gradient_dtype,
-                optimizer_state_dtype=self.optimizer_state_dtype,
-                distributed_optimizer=self.distributed_optimizer,
-            ),
+        selector = _selector(
+            component="memory",
+            workload=workload,
+            parameter_dtype=self.parameter_dtype,
+            gradient_dtype=self.gradient_dtype,
+            optimizer_state_dtype=self.optimizer_state_dtype,
+            distributed_optimizer=self.distributed_optimizer,
         )
+        notes: list[str] = []
+        try:
+            entry = self.artifact.entry_for(
+                canonical,
+                selector=selector,
+                # The only fitted cp is 1. See `HydraulisLatencyModel.predict_with_notes`.
+                ignore_cp=parallelism.cp != 1,
+            )
+        except KeyError:
+            if not self.allow_pp_extrapolation:
+                raise
+            # Borrow the same TP's calibration from whatever PP it was measured
+            # at: `activation_bytes` below is evaluated at the REQUESTED pp (the
+            # formula's own analytical PP dependence), only `activation_scale`/
+            # `residual_constant`/`geometry_*` are borrowed, and those have held
+            # stable to within 1.3% across four very different topologies this
+            # module was validated against (see `activation.py`'s own module
+            # docstring), so this is the same "trust the physics, flag the
+            # result" trade `allow_context_parallel` already makes for `cp > 1`.
+            entry = self.artifact.entry_for(
+                canonical,
+                selector=selector,
+                ignore_pp=True,
+                ignore_cp=parallelism.cp != 1,
+            )
+            notes.append(
+                f"tp={parallelism.tp} has never been measured at pp={parallelism.pp}: "
+                f"borrowing the calibration from the pp={entry.parallelism.pp} cell this "
+                "artifact does hold for this tp. Not a measured cell."
+            )
         microbatches = workload.critical_rank_microbatches(parallelism)
         geometry = ActivationGeometry.from_dict(
             {
@@ -655,7 +766,11 @@ class HydraulisMemoryModel(TrainingMemoryModel):
             }
         )
         feature = activation_bytes(geometry, microbatches, parallelism)
-        notes: list[str] = []
+        if parallelism.cp != 1:
+            notes.append(
+                f"cp={parallelism.cp} is an analytical projection from the cp=1 fit, "
+                "not a measured cell. No real cp > 1 training step backs this number."
+            )
         note = check_feature_range(entry, "activation_bytes", feature, extrapolate=self.extrapolate)
         if note is not None:
             notes.append(note)
@@ -754,6 +869,8 @@ class HydraulisTrainingCost(TrainingCostModel):
         optimizer_state_dtype: str | None = None,
         distributed_optimizer: bool | None = None,
         extrapolate: list[str] | None = None,
+        allow_context_parallel: bool = False,
+        allow_pp_extrapolation: bool = False,
     ) -> HydraulisTrainingCost:
         """Load composable latency and memory models from one artifact.
 
@@ -766,6 +883,24 @@ class HydraulisTrainingCost(TrainingCostModel):
                 Valid names per component:
                   latency: micro_batch_size, pipeline_slots, tokens
                   memory:  activation_bytes, profiled_dp
+            allow_context_parallel: Permit `cp > 1` queries against a `cp == 1` fit.
+                Every entry this artifact can hold was fitted at `cp == 1` (see
+                `_training_records`), so a `cp > 1` request is always an analytical
+                projection, never a measured cell, on every architecture. False (the
+                default) raises on such a request. True answers it and always adds an
+                extrapolation note, independent of `extrapolate`, because this is a
+                structural gap in what can be measured rather than a query landing
+                outside a profiled range.
+            allow_pp_extrapolation: Permit a memory query at a `pp` this artifact never
+                measured, by borrowing the calibration (`activation_scale`,
+                `residual_constant`, geometry) from a `pp` it does hold at the same
+                `tp`. Latency already crosses any `pp` unconditionally -- its fit pools
+                every measured `pp` into one per-layer model, see
+                `latency.py::latency_features` -- so this flag exists only for memory,
+                which fits one cell per `(tp, pp)` rather than pooling (the 1F1B
+                activation peak is measured, not derived). False (the default) raises
+                `KeyError` on an unmeasured `pp`. True answers it and always adds an
+                extrapolation note, independent of `extrapolate`.
         """
         artifact = (
             artifact_or_path
@@ -806,10 +941,13 @@ class HydraulisTrainingCost(TrainingCostModel):
             "optimizer_state_dtype": selected_optimizer_state_dtype,
             "distributed_optimizer": selected_distributed_optimizer,
             "extrapolate": extrapolate_set,
+            "allow_context_parallel": allow_context_parallel,
         }
         return cls(
             latency_model=HydraulisLatencyModel(**common),
-            memory_model=HydraulisMemoryModel(**common),
+            memory_model=HydraulisMemoryModel(
+                **common, allow_pp_extrapolation=allow_pp_extrapolation
+            ),
             model=ModelDescriptor.from_dict(artifact.model),
         )
 

@@ -26,6 +26,13 @@ job:
   # null = no cap.
   max_output_length: null
 
+  # Whether the dataset's regular per-publish ingress top-up stops once
+  # n_versions * batch_size groups have ever been granted. Off by default:
+  # no real system surveyed for this project manages a lifetime admission
+  # budget this way. See JobConfig.ingress_lifetime_cap for the measured
+  # effect of turning it on.
+  ingress_lifetime_cap: false
+
 # Rollout engine settings.
 rollout:
   # Number of rollout engine instances.
@@ -155,6 +162,11 @@ rollout:
     # False matches the run this is aligned against, which scatters every
     # group across both instances.
     enable_group_sticky: false
+
+    # Pin a resumed request (weight-update abort or preemption loopback) back
+    # to the instance it was already on. True: no system this study models
+    # migrates a resumed trajectory across instances.
+    enable_trajectory_sticky: true
 
     # Instance queue depth past which preempted requests go back to the router
     # to be placed again, possibly elsewhere. This is vLLM's
